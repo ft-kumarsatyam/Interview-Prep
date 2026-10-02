@@ -14,6 +14,7 @@ const schema = z.object({
   LLM_BASE_URL: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
+  LEETCODE_USERNAME: z.string().regex(/^[\w-]{1,40}$/).optional(),
   RESEND_API_KEY: z.string().optional(),
   NOTIFY_EMAIL: z.string().optional(),
 });

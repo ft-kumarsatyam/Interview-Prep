@@ -17,6 +17,9 @@ const problemProgressSchema = new Schema(
     reviewCount: { type: Number, default: 0 },
     /** Every day this problem was solved or re-solved — feeds daily counts. */
     solveDates: { type: [String], default: [] },
+    source: { type: String, enum: ["manual", "leetcode"], default: "manual" },
+    /** Imported by LeetCode sync without confidence/time/approach yet. */
+    needsDetails: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

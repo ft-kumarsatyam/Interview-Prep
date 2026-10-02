@@ -24,6 +24,7 @@ const dayLogSchema = new Schema(
     date: { type: String, required: true, unique: true },
     dsaSolved: { type: Number, default: 0 },
     theoryDone: { type: Number, default: 0 },
+    readings: { type: Number, default: 0 },
     quizPassed: { type: Boolean, default: false },
     complete: { type: Boolean, default: false },
     freezeUsed: { type: Boolean, default: false },

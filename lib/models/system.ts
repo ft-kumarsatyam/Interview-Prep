@@ -21,6 +21,12 @@ const settingsSchema = new Schema(
     /** Last day whose streak outcome has been settled. */
     settledThrough: { type: String, default: null },
     googleNewsQueries: { type: [String], default: undefined },
+    topicMasteryPct: { type: Number, default: 70 },
+    leetcodeUsername: { type: String, default: null },
+    leetcodeLastSyncAt: { type: Date, default: null },
+    /** Recent accepted-submission ids already imported (capped). */
+    leetcodeSeenIds: { type: [String], default: [] },
+    newsLastFetchAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
@@ -39,16 +45,20 @@ const articleSchema = new Schema(
     snippet: { type: String, maxlength: 600 },
     aiSummary: { type: String, maxlength: 400 },
     read: { type: Boolean, default: false },
+    /** Local date the article was first opened; feeds DayLog.readings. */
+    readOn: { type: String, default: null },
     bookmarked: { type: Boolean, default: false },
+    titleKey: { type: String, index: true },
   },
   { timestamps: false },
 );
+articleSchema.index({ readOn: 1 });
 articleSchema.index({ fetchedAt: 1 }, { expireAfterSeconds: 30 * 24 * 3600 });
 articleSchema.index({ publishedAt: -1 });
 
 const notificationSchema = new Schema(
   {
-    kind: { type: String, enum: ["plan", "reminder", "streak", "milestone"], required: true },
+    kind: { type: String, enum: ["plan", "reminder", "streak", "milestone", "sync"], required: true },
     title: { type: String, required: true },
     body: { type: String, default: "" },
     read: { type: Boolean, default: false },

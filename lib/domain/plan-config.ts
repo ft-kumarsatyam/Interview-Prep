@@ -42,6 +42,8 @@ export const REVIEWS_ON_SUNDAY = 4;
 export const REVISION_DSA_PER_DAY = 2;
 export const MAX_FREEZE_TOKENS = 2;
 export const FREEZE_EARNED_EVERY = 7;
+/** Soft daily reading goal shown on the dashboard (not part of completion). */
+export const READINGS_PER_DAY = 2;
 
 export interface Phase {
   id: number;

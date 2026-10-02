@@ -65,3 +65,33 @@ export function orderedTopics(): ContentTopic[] {
   const trackOrder = new Map(tracks.map((t) => [t.id, t.order]));
   return topics.toSorted((a, b) => a.week - b.week || (trackOrder.get(a.track) ?? 0) - (trackOrder.get(b.track) ?? 0));
 }
+
+export interface SubtopicInfo {
+  id: string;
+  topicId: string;
+  topicTitle: string;
+  track: string;
+  title: string;
+  week: number;
+  /** Global study order (topic position, then index inside the topic). */
+  position: number;
+}
+
+export const problemBySlug = new Map(problems.map((p) => [p.slug, p]));
+export const topicById = new Map(topics.map((t) => [t.id, t]));
+export const trackById = new Map(tracks.map((t) => [t.id, t]));
+
+/** Every subtopic in study order. */
+export const subtopics: SubtopicInfo[] = orderedTopics().flatMap((t, topicPos) =>
+  t.subtopics.map((title, i) => ({
+    id: subtopicId(t.id, i),
+    topicId: t.id,
+    topicTitle: t.title,
+    track: t.track,
+    title,
+    week: t.week,
+    position: topicPos * 1000 + i,
+  })),
+);
+export const subtopicById = new Map(subtopics.map((s) => [s.id, s]));
+export const mainProblemCount = problems.filter((p) => p.track === "main").length;
