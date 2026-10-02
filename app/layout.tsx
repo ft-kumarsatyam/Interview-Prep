@@ -12,6 +12,7 @@ export const metadata: Metadata = {
   title: { default: "PrepOS", template: "%s · PrepOS" },
   description: "Private training cockpit for senior backend interviews.",
   robots: { index: false, follow: false },
+  appleWebApp: { capable: true, title: "PrepOS", statusBarStyle: "black-translucent" },
 };
 
 export const viewport: Viewport = {

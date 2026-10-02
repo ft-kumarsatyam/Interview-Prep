@@ -7,17 +7,24 @@ import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { requireSession } from "@/lib/auth/dal";
 import { timeAgo } from "@/lib/domain/news";
+import { getNavBadges } from "@/lib/services/nav";
 import { listNotifications } from "@/lib/services/notifications";
 import { logout } from "./actions";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await requireSession();
-  const notes = await listNotifications(20);
+  const [notes, badges] = await Promise.all([listNotifications(20), getNavBadges()]);
   const now = new Date();
   const bellItems: BellItem[] = notes.items.map((n) => ({ ...n, age: timeAgo(new Date(n.createdAt), now) }));
 
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[240px_1fr]">
+      <a
+        href="#main"
+        className="sr-only z-50 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground focus:not-sr-only focus:fixed focus:top-2 focus:left-2"
+      >
+        Skip to content
+      </a>
       <aside className="sticky top-0 hidden h-dvh flex-col border-r bg-sidebar p-4 lg:flex">
         <Link href="/dashboard" className="mb-6 flex items-center gap-2 px-2 text-lg font-semibold">
           <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
@@ -25,7 +32,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </span>
           PrepOS
         </Link>
-        <SidebarNav />
+        <SidebarNav badges={badges} />
         <form action={logout} className="mt-auto">
           <Button variant="ghost" className="w-full justify-start text-muted-foreground" type="submit">
             <LogOut /> Sign out
@@ -49,9 +56,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </form>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 pt-6 pb-24 lg:px-8 lg:pb-10">{children}</main>
+        <main id="main" tabIndex={-1} className="outline-none mx-auto w-full max-w-[1200px] flex-1 px-4 pt-6 pb-24 lg:px-8 lg:pb-10">{children}</main>
       </div>
-      <MobileTabBar />
+      <MobileTabBar badges={badges} />
     </div>
   );
 }

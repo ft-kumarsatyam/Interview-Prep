@@ -12,9 +12,3 @@ export const requireSession = cache(async (): Promise<void> => {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!(await verifySessionToken(token))) redirect("/login");
 });
-
-/** For /api/cron/*: Vercel Cron sends `Authorization: Bearer $CRON_SECRET`. */
-export function isCronAuthorized(request: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  return !!secret && request.headers.get("authorization") === `Bearer ${secret}`;
-}

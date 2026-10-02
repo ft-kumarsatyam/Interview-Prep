@@ -1,5 +1,8 @@
+import { news } from "@/lib/content";
 import { connectDb } from "@/lib/db";
+import { toLocalDate } from "@/lib/domain/dates";
 import { DEFAULT_SETTINGS, type PlanSettings } from "@/lib/domain/plan-config";
+import { mergeRestDays, normaliseQueries, type SettingsInput } from "@/lib/domain/settings";
 import { env } from "@/lib/env";
 import { Settings, SETTINGS_ID } from "@/lib/models/system";
 
@@ -70,4 +73,37 @@ export type SettingsPatch = Partial<
 export async function updateSettings(patch: SettingsPatch): Promise<void> {
   await connectDb();
   await Settings.updateOne({ _id: SETTINGS_ID }, { $set: patch }, { upsert: true });
+}
+
+/**
+ * Apply a validated Settings form. Past rest days stay as they were, and a new
+ * LeetCode username starts a fresh sync history.
+ */
+export async function saveSettings(input: SettingsInput, now = new Date()): Promise<AppSettings> {
+  const current = await getSettings();
+  const today = toLocalDate(now, current.timezone);
+  const leetcodeChanged = input.leetcodeUsername !== current.leetcodeUsername;
+  await connectDb();
+  await Settings.updateOne(
+    { _id: SETTINGS_ID },
+    {
+      $set: {
+        startDate: input.startDate,
+        endDate: input.endDate,
+        quizPassPct: input.quizPassPct,
+        topicMasteryPct: input.topicMasteryPct,
+        minDailyDsa: input.minDailyDsa,
+        maxDailyDsa: input.maxDailyDsa,
+        maxSaturdayDsa: input.maxSaturdayDsa,
+        maxDailyTheory: input.maxDailyTheory,
+        revisionWeeks: input.revisionWeeks,
+        restDays: mergeRestDays(current.restDays, input.restDays, today),
+        googleNewsQueries: normaliseQueries(input.googleNewsQueries, news.googleNews.defaultQueries.map((q) => q.query)),
+        leetcodeUsername: input.leetcodeUsername,
+        ...(leetcodeChanged ? { leetcodeLastSyncAt: null, leetcodeSeenIds: [] } : {}),
+      },
+    },
+    { upsert: true },
+  );
+  return getSettings();
 }
