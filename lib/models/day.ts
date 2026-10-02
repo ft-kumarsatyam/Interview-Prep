@@ -37,14 +37,16 @@ const quizQuestionSchema = new Schema(
   {
     id: { type: String, required: true },
     prompt: { type: String, required: true, maxlength: 500 },
+    code: { type: String, maxlength: 1500 },
     options: { type: [{ type: String, maxlength: 300 }], validate: (v: string[]) => v.length === 4 },
     answerIndex: { type: Number, required: true, min: 0, max: 3 },
     explanation: { type: String, maxlength: 600 },
     // `kind`, not `type`: Mongoose reads a nested `type` key as a type declaration.
     source: {
-      kind: { type: String, enum: ["problem", "subtopic", "article"] },
+      kind: { type: String, enum: ["problem", "subtopic", "pattern", "article"] },
       ref: { type: String },
     },
+    style: { type: String, enum: ["output", "concept", "pattern", "recall", "llm"], default: "llm" },
   },
   { _id: false },
 );
@@ -56,6 +58,7 @@ const quizSchema = new Schema(
     generatedBy: { type: String, enum: ["llm", "bank"], required: true },
     questions: { type: [quizQuestionSchema], default: [] },
     attempts: {
+      // -1 marks an unanswered question.
       type: [{ answers: [Number], correct: Number, pct: Number, submittedAt: Date, _id: false }],
       default: [],
     },
