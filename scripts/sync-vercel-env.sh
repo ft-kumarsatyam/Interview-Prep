@@ -11,7 +11,7 @@ if [[ ! -f .env.local ]]; then
 fi
 
 REQUIRED=(MONGODB_URI AUTH_SECRET ADMIN_EMAIL ADMIN_PASSWORD_HASH_B64 ADMIN_NAME APP_TIMEZONE CRON_SECRET)
-OPTIONAL=(LLM_PROVIDER LLM_API_KEY LLM_MODEL LLM_BASE_URL LEETCODE_USERNAME TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID RESEND_API_KEY NOTIFY_EMAIL)
+OPTIONAL=(LLM_PROVIDER LLM_API_KEY LLM_MODEL LLM_BASE_URL LLM_CHAIN GEMINI_API_KEY GEMINI_MODEL GROQ_API_KEY GROQ_MODEL META_LLAMA_API_KEY META_LLAMA_BASE_URL META_LLAMA_MODEL LEETCODE_USERNAME TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID RESEND_API_KEY NOTIFY_EMAIL)
 
 read_key() {
   grep -E "^$1=" .env.local | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' || true
@@ -29,7 +29,7 @@ fi
 for key in "${REQUIRED[@]}" "${OPTIONAL[@]}"; do
   val=$(read_key "$key")
   if [[ -n "$val" ]]; then
-    printf '%s' "$val" | vercel env add "$key" production --force --project "$PROJECT" >/dev/null
+    printf '%s' "$val" | vercel env add "$key" production --force --project "$PROJECT" >/dev/null 2>&1
     echo "set   $key"
   else
     echo "skip  $key (empty)"
