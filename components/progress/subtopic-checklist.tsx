@@ -17,9 +17,11 @@ export interface ChecklistItem {
 export function SubtopicChecklist({
   items,
   renderExtra,
+  highlightId,
 }: {
   items: ChecklistItem[];
   renderExtra?: (item: ChecklistItem & { done: boolean }) => React.ReactNode;
+  highlightId?: string | null;
 }) {
   const [, startTransition] = useTransition();
   const [done, flip] = useOptimistic(
@@ -46,7 +48,11 @@ export function SubtopicChecklist({
       {items.map((item) => {
         const checked = done.has(item.id);
         return (
-          <li key={item.id} className="rounded-lg px-2 py-2 hover:bg-muted/50 sm:py-1.5">
+          <li
+            key={item.id}
+            aria-current={item.id === highlightId ? "step" : undefined}
+            className={cn("rounded-lg px-2 py-2 hover:bg-muted/50 sm:py-1.5", item.id === highlightId && !checked && "bg-primary/5 ring-1 ring-primary/30")}
+          >
             <label className="flex cursor-pointer items-start gap-3">
               <Checkbox checked={checked} onCheckedChange={() => onToggle(item.id)} className="mt-0.5" />
               <span className="min-w-0 flex-1">

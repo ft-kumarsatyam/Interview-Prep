@@ -73,7 +73,7 @@ export function CommandPalette() {
             <>
               <CommandGroup heading="Topics">
                 {index.topics.map((t) => (
-                  <CommandItem key={t.id} value={`topic ${t.title} ${t.track}`} onSelect={() => go(`/learn?track=${t.track}`)}>
+                  <CommandItem key={t.id} value={`topic ${t.title} ${t.track}`} onSelect={() => go(`/learn/${encodeURIComponent(t.id)}`)}>
                     <BookOpen /> {t.title}
                     <CommandShortcut>wk {t.week}</CommandShortcut>
                   </CommandItem>

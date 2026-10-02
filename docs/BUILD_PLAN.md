@@ -37,13 +37,14 @@ Every prompt assumes the agent has read `AGENTS.md`, which `CLAUDE.md` and `.cur
 | 21 · LeetCode content (statement, official hints, examples fetched lazily and cached in Mongo only), "Copy code + open LeetCode" with auto-detect of the Accepted submission | ✅ done |
 | 22 · Runner v2 (Worker list/tree support, `compare` modes, named edge cases + Edge cases tab, three-step hint ladder, one-time hidden-case reveal, spec-based generator with brute-force and fuzz cross-checks, 15 problems migrated) | ✅ done |
 | 23 · 83 runnable problems (arrays, strings, two pointers, sliding window, stack, binary search, DP, greedy, bits, linked lists, trees), each with a reference, an independent brute force, 200 fuzz inputs and a blind third solution | ✅ done |
+| 24 · Learn redesign (`/learn` index with Continue card and cross-track search, focused `/learn/[topicId]` page, `lib/domain/learn.ts`), OS case quizzes, `satyam-dev.in` on Vercel, AI keys synced to production | ✅ done; GitHub auto-deploy waits on a Vercel GitHub login connection |
 
 The phase prompts below are kept as a record of the spec each phase was built against. The extras listed in the status table (LeetCode sync, mastery quizzes, ports and adapters, idempotent jobs) are described in ARCHITECTURE §3, §8, §9 and §11. Phase 9 is described in ARCHITECTURE §4 (Remember me), §10.1 (reader), §12 (routes) and §15 (PWA).
 
 Known gaps:
 - One-line AI news summaries are not built yet (`articles.aiSummary` is unused).
 - Some sites block article extraction (OpenAI's blog returns 403, Quastor and Uber block feed fetches). Those articles show the snippet and an "Open original" link.
-- The System Design studio has no LLD templates yet; the HLD "Design template" on `/learn` still covers quick notes.
+- The System Design studio has no LLD templates yet; the HLD "Design template" in topic notes on `/learn/[topicId]` still covers quick notes.
 - The DSA runner covers 15 of the 151 core problems. Linked-list and tree problems need bespoke input/output serializers (a plain `deepEqual` on a returned node graph is not enough), as do the ~19 "Design" problems. Hand-authoring the rest is the main content backlog.
 - The Playground's TS mode strips types and reports syntax errors; it does not type-check.
 - Phases 10-17 were verified with typecheck, ESLint, Vitest, `next build`, server-side rendering of the new pages' components and a Node `vm` simulation of the Web Worker, but were not click-tested in a browser.

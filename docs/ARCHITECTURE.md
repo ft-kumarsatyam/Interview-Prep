@@ -2,7 +2,7 @@
 
 PrepOS is a private, single-user web app for a 24-week, zero-to-interview-ready plan for senior backend roles. JavaScript is the main language. It covers DSA in JS, JS/TS and Node.js, DBMS and SQL, OOP and LLD, system design from basic scaling up to big-tech architectures, and AI from fundamentals up. The daily loop is: plan → learn → solve → read → quiz → streak.
 
-**Constraints:** free tiers only (Vercel Hobby, MongoDB Atlas M0, an optional free LLM key; the one opt-in exception is a paid last-resort LLM provider that needs your confirmation), one user, no sign-up, and the default `*.vercel.app` domain.
+**Constraints:** free tiers only (Vercel Hobby, MongoDB Atlas M0, an optional free LLM key; the one opt-in exception is a paid last-resort LLM provider that needs your confirmation), one user, no sign-up, served from `satyam-dev.in` (the `*.vercel.app` URL keeps working).
 
 ---
 
@@ -260,7 +260,9 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 | `/setup` | setup checklist: database seeded, secrets, LeetCode (last sync and error), crons firing, news feeds (failed ones), notifications, LLM, backup age, session (Remember me), each with a fix button or link |
 | `/dsa`, `/dsa/[slug]` | progress per pattern or per **step** (a Pattern \| Sheet toggle: a teaching-order, tick-mark sheet with a per-step progress bar), filters; problem page with solve form, notes, history, Open on LeetCode, and, for problems in `data/dsa-testcases.json`, a **Code** tab: in-browser JS editor, Run (visible cases) and Submit (all cases), a hint ladder, and an **Edge cases** tab (each named edge case with why it matters, run one or all). After a failed Submit the first failing hidden case is revealed once (`ProblemProgress.revealedCases`) and stays visible; other hidden cases remain pass/fail only. A passing Submit opens the normal solve form (`recordSolve`); a failed one marks the problem "attempted" |
 | `/review` | due spaced-repetition queue |
-| `/learn`, `/learn/practice?ref=` | checklists, notes, mastery badges; subtopic practice and topic quiz runner |
+| `/learn` | Continue card, track chips with %, compact topic rows, search across every track; old `?track=x#topic-<id>` links redirect to the topic page |
+| `/learn/[topicId]` | one topic: checklist (next subtopic highlighted), per-subtopic Practice and notes, topic quiz (locked until every subtopic is ticked), resources, related cases, prev/next in the track |
+| `/learn/practice?ref=` | subtopic practice and topic quiz runner |
 | `/design` | System Design studio: the 45-minute framework, case grid with status (new → studying → practised → mastered, mastered = the linked HLD topic quiz), building blocks, latency and capacity cheat sheet |
 | `/design/os`, `/design/dbms` | OS and database practice studios: the same card grid, status and 20-minute mock (definition, example, trade-offs, real systems, follow-ups) on `data/os-dbms-cases.json`. A System Design \| OS \| Databases tab bar switches between the three |
 | `/design/os/[slug]`, `/design/dbms/[slug]` | **Study** tab: the question, what a strong answer covers, diagram, trade-offs, follow-ups, readings. **Mock answer** tab: 20-minute timer and five autosaving sections plus the shared rubric |

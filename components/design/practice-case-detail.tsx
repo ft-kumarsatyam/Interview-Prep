@@ -104,7 +104,7 @@ export async function PracticeCaseDetail({ kind, slug, tab = "study" }: { kind: 
         {critique}
         {topic && (
           <Button asChild size="sm" variant="ghost">
-            <Link href={`/learn?track=${topic.track}`}>
+            <Link href={`/learn/${encodeURIComponent(topic.id)}`}>
               <BookOpen /> Syllabus topic
             </Link>
           </Button>

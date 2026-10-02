@@ -16,7 +16,7 @@ import { getSettings } from "@/lib/services/settings";
 
 export const metadata: Metadata = { title: "Practice" };
 
-const topicHref = (track: string, topicId: string) => `/learn?track=${encodeURIComponent(track)}#topic-${topicId}`;
+const topicHref = (topicId: string) => `/learn/${encodeURIComponent(topicId)}`;
 
 /** Where to go after this run: the next subtopic, then the topic quiz, then the next topic in the track. */
 function nextStepFor(target: PracticeTarget): NextStep | null {
@@ -27,10 +27,10 @@ function nextStepFor(target: PracticeTarget): NextStep | null {
     const index = Number(target.ref.split(":")[1]);
     const next = topic.subtopics[index + 1];
     if (next !== undefined) return { href: `/learn/practice?ref=${encodeURIComponent(`${topic.id}:${index + 1}`)}`, label: `Next: ${next}` };
-    return { href: topicHref(topic.track, topic.id), label: "Tick all and take the topic quiz" };
+    return { href: topicHref(topic.id), label: "Tick all and take the topic quiz" };
   }
   const nextTopic = topics.filter((t) => t.track === topic.track && t.week > topic.week).sort((a, b) => a.week - b.week)[0];
-  return nextTopic ? { href: topicHref(nextTopic.track, nextTopic.id), label: `Next topic: ${nextTopic.title}` } : null;
+  return nextTopic ? { href: topicHref(nextTopic.id), label: `Next topic: ${nextTopic.title}` } : null;
 }
 
 export default async function PracticePage({ searchParams }: PageProps<"/learn/practice">) {
@@ -51,7 +51,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/learn/p
   const back =
     target.scope === "case"
       ? { href: target.href ?? `/learn?track=${target.track}`, label: target.title }
-      : { href: topicHref(target.track, target.topicId), label: target.scope === "subtopic" ? target.topicTitle : `${track} track` };
+      : { href: topicHref(target.topicId), label: target.topicTitle };
 
   return (
     <>

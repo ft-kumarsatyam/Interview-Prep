@@ -8,18 +8,16 @@ export default function LearnLoading() {
         <Skeleton className="h-7 w-32" />
         <Skeleton className="h-4 w-96 max-w-full" />
       </div>
-      <div className="flex gap-1 overflow-hidden">
+      <Skeleton className="h-32 rounded-xl" />
+      <Skeleton className="h-11 w-full rounded-md" />
+      <div className="flex gap-2 overflow-hidden">
         {Array.from({ length: 6 }, (_, i) => (
-          <Skeleton key={i} className="h-9 w-28 shrink-0 rounded-md" />
+          <Skeleton key={i} className="h-10 w-32 shrink-0 rounded-full" />
         ))}
       </div>
-      <Skeleton className="h-36 rounded-xl" />
-      <div className="flex gap-2">
-        <Skeleton className="h-10 w-full rounded-md sm:w-72" />
-      </div>
-      <div className="grid items-start gap-4 md:grid-cols-2">
-        {Array.from({ length: 4 }, (_, i) => (
-          <Skeleton key={i} className="h-56 rounded-xl" />
+      <div className="space-y-px overflow-hidden rounded-xl border">
+        {Array.from({ length: 6 }, (_, i) => (
+          <Skeleton key={i} className="h-16 rounded-none" />
         ))}
       </div>
     </div>
