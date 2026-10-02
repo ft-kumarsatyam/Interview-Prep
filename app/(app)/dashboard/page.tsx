@@ -6,8 +6,11 @@ import { ProgressRing } from "@/components/dashboard/progress-ring";
 import { ProblemList } from "@/components/progress/problem-list";
 import { SubtopicChecklist } from "@/components/progress/subtopic-checklist";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { mainProblemCount } from "@/lib/content";
+import { NewsCard } from "@/components/news/news-card";
+import { mainProblemCount, news } from "@/lib/content";
+import { timeAgo } from "@/lib/domain/news";
 import { READINGS_PER_DAY } from "@/lib/domain/plan-config";
+import { listArticles } from "@/lib/services/news";
 import { formatDate, planClock } from "@/lib/plan-clock";
 import { getDashboard, type PlanProblem } from "@/lib/services/dashboard";
 import { syncLeetCode } from "@/lib/services/leetcode-sync";
@@ -15,6 +18,8 @@ import { LeetCodeCard } from "@/components/leetcode/leetcode-card";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard" };
+
+const newsCategoryName = new Map(news.categories.map((c) => [c.id, c.name]));
 
 function localHour(timeZone: string): number {
   return Number(new Intl.DateTimeFormat("en-GB", { hour: "numeric", hourCycle: "h23", timeZone }).format(new Date()));
@@ -33,7 +38,7 @@ const toItem = (p: PlanProblem, tag?: string) => ({
 export default async function DashboardPage() {
   // Throttled to once per 10 min; a LeetCode outage must never break the dashboard.
   await syncLeetCode().catch(() => null);
-  const data = await getDashboard();
+  const [data, latestNews] = await Promise.all([getDashboard(), listArticles({ filter: "unread", limit: 3 })]);
   const { day, plan, settings, today } = data;
   const clock = planClock(settings);
   const hour = localHour(settings.timezone);
@@ -230,6 +235,28 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {latestNews.length > 0 && (
+        <section aria-labelledby="news-strip">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 id="news-strip" className="flex items-center gap-2 font-medium">
+              <Newspaper className="size-4 text-primary" /> AI &amp; engineering news
+            </h2>
+            <Link href="/news" className="text-sm text-muted-foreground hover:text-primary">
+              All news →
+            </Link>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {latestNews.map((a) => (
+              <NewsCard
+                key={a.id}
+                readingsGoal={READINGS_PER_DAY}
+                item={{ ...a, categoryName: newsCategoryName.get(a.category) ?? a.category, age: a.publishedAt ? timeAgo(new Date(a.publishedAt), new Date()) : null }}
+              />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

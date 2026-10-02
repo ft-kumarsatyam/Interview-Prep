@@ -2,13 +2,19 @@ import Link from "next/link";
 import { Flame, LogOut } from "lucide-react";
 import { MobileTabBar, SidebarNav } from "@/components/layout/app-nav";
 import { CommandPalette } from "@/components/layout/command-palette";
+import { NotificationBell, type BellItem } from "@/components/layout/notification-bell";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { requireSession } from "@/lib/auth/dal";
+import { timeAgo } from "@/lib/domain/news";
+import { listNotifications } from "@/lib/services/notifications";
 import { logout } from "./actions";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await requireSession();
+  const notes = await listNotifications(20);
+  const now = new Date();
+  const bellItems: BellItem[] = notes.items.map((n) => ({ ...n, age: timeAgo(new Date(n.createdAt), now) }));
 
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[240px_1fr]">
@@ -34,6 +40,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </Link>
           <div className="ml-auto flex items-center gap-1">
             <CommandPalette />
+            <NotificationBell items={bellItems} unread={notes.unread} />
             <ThemeToggle />
             <form action={logout} className="lg:hidden">
               <Button variant="ghost" size="icon" type="submit" aria-label="Sign out">

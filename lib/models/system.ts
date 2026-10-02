@@ -62,10 +62,13 @@ const notificationSchema = new Schema(
     title: { type: String, required: true },
     body: { type: String, default: "" },
     read: { type: Boolean, default: false },
+    /** e.g. `plan:2026-10-05`; makes cron retries idempotent. */
+    dedupeKey: { type: String },
   },
   { timestamps: true },
 );
 notificationSchema.index({ read: 1, createdAt: -1 });
+notificationSchema.index({ dedupeKey: 1 }, { unique: true, sparse: true });
 
 /** Failed logins, kept for 15 minutes for throttling. */
 const loginAttemptSchema = new Schema({
