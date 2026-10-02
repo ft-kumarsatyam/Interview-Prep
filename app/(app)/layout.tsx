@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Flame, LogOut } from "lucide-react";
 import { MobileTabBar, SidebarNav } from "@/components/layout/app-nav";
 import { CommandPalette } from "@/components/layout/command-palette";
+import { InstallHint } from "@/components/layout/install-hint";
 import { NotificationBell, type BellItem } from "@/components/layout/notification-bell";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -41,7 +42,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </aside>
 
       <div className="flex min-w-0 flex-col">
-        <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-background/80 px-4 backdrop-blur lg:px-8">
+        <header className="sticky top-0 z-30 flex h-[calc(3.5rem+env(safe-area-inset-top))] items-center justify-between border-b bg-background/80 px-4 pt-[env(safe-area-inset-top)] backdrop-blur lg:px-8">
           <Link href="/dashboard" className="flex items-center gap-2 font-semibold lg:hidden">
             <Flame className="size-5 text-primary" /> PrepOS
           </Link>
@@ -56,7 +57,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </form>
           </div>
         </header>
-        <main id="main" tabIndex={-1} className="outline-none mx-auto w-full max-w-[1200px] flex-1 px-4 pt-6 pb-24 lg:px-8 lg:pb-10">{children}</main>
+        <main id="main" tabIndex={-1} className="outline-none mx-auto w-full max-w-[1200px] flex-1 px-4 pt-6 pb-24 lg:px-8 lg:pb-10">
+          <InstallHint />
+          {children}
+        </main>
       </div>
       <MobileTabBar badges={badges} />
     </div>
