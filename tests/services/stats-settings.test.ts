@@ -4,6 +4,7 @@ import { exportBackup } from "@/lib/services/export";
 import { getNavBadges } from "@/lib/services/nav";
 import { ensureToday } from "@/lib/services/plan";
 import { recordSolve, toggleSubtopic } from "@/lib/services/progress";
+import { seedContent } from "@/lib/services/seed";
 import { saveSettings, getSettings } from "@/lib/services/settings";
 import { getStats } from "@/lib/services/stats";
 import { at, resetDb, startDb, stopDb } from "./db";
@@ -40,6 +41,13 @@ describe("saveSettings", () => {
 
     await saveSettings({ ...form, googleNewsQueries: null }, at("2026-10-10"));
     expect((await getSettings()).googleNewsQueries).toBeNull();
+  });
+
+  it("re-seeding content keeps edited settings", async () => {
+    await saveSettings(form, at("2026-10-10"));
+    const result = await seedContent();
+    expect(result.settingsCreated).toBe(false);
+    expect(await getSettings()).toMatchObject({ leetcodeUsername: "new-user", quizPassPct: 70, restDays: ["2026-10-04", "2026-10-20"] });
   });
 });
 

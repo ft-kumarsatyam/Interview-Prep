@@ -1,5 +1,6 @@
 # CI on every push/PR. Production deploys via Vercel ↔ GitHub (see README §4).
-# After Atlas is ready, add repo secret MONGODB_URI and run the seed job once (Actions tab).
+# Manual run (Actions tab → Deploy → Run workflow): seeds MongoDB, then, if a
+# production URL is given, smoke-tests the login page and both cron endpoints.
 name: Deploy
 
 on:
@@ -7,6 +8,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      production_url:
+        description: "Production URL for smoke tests, e.g. https://prepos.vercel.app (blank = seed only)"
+        required: false
+        default: ""
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -64,3 +70,31 @@ jobs:
           APP_TIMEZONE: ${{ secrets.APP_TIMEZONE }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: npm run seed
+
+  smoke-production:
+    name: Smoke-test production (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.production_url != ''
+    needs: seed-production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login page, auth gate and cron endpoints
+        env:
+          BASE: ${{ inputs.production_url }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          BASE="${BASE%/}"
+          expect() { # expect <status> <description> <curl args...>
+            want=$1; shift; what=$1; shift
+            got=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 90 "$@")
+            if [[ "$got" != "$want" ]]; then echo "✗ $what: expected $want, got $got"; cat /tmp/body; exit 1; fi
+            echo "✓ $what ($got)"
+          }
+          expect 200 "login page" "$BASE/login"
+          expect 307 "dashboard redirects when signed out" "$BASE/dashboard"
+          expect 401 "morning cron rejects missing token" "$BASE/api/cron/morning"
+          expect 401 "evening cron rejects wrong token" -H "Authorization: Bearer wrong" "$BASE/api/cron/evening"
+          expect 200 "morning cron with CRON_SECRET" -H "Authorization: Bearer $CRON_SECRET" "$BASE/api/cron/morning"
+          cat /tmp/body; echo
+          expect 200 "evening cron with CRON_SECRET" -H "Authorization: Bearer $CRON_SECRET" "$BASE/api/cron/evening"
+          cat /tmp/body; echo
