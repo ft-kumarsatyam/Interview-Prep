@@ -51,6 +51,26 @@ const masterySchema = new Schema(
   { timestamps: true },
 );
 
+/** Your System Design practice answer per case (`slug` from data/system-design.json). */
+const designSchema = new Schema(
+  {
+    slug: { type: String, required: true, unique: true },
+    sections: {
+      requirements: { type: String, maxlength: 20_000, default: "" },
+      estimates: { type: String, maxlength: 20_000, default: "" },
+      api: { type: String, maxlength: 20_000, default: "" },
+      dataModel: { type: String, maxlength: 20_000, default: "" },
+      architecture: { type: String, maxlength: 20_000, default: "" },
+      deepDives: { type: String, maxlength: 20_000, default: "" },
+    },
+    /** Checked rubric item ids. */
+    rubric: { type: [String], default: [] },
+    minutesSpent: { type: Number, default: 0, min: 0 },
+  },
+  { timestamps: true },
+);
+
+export type DesignDoc = InferSchemaType<typeof designSchema>;
 export type SnippetDoc = InferSchemaType<typeof snippetSchema>;
 export type PracticeAttemptDoc = InferSchemaType<typeof practiceAttemptSchema>;
 export type MasteryDoc = InferSchemaType<typeof masterySchema>;
@@ -59,3 +79,4 @@ export const Snippet: Model<SnippetDoc> = models.Snippet ?? model("Snippet", sni
 export const PracticeAttempt: Model<PracticeAttemptDoc> =
   models.PracticeAttempt ?? model("PracticeAttempt", practiceAttemptSchema);
 export const Mastery: Model<MasteryDoc> = models.Mastery ?? model("Mastery", masterySchema);
+export const Design: Model<DesignDoc> = models.Design ?? model("Design", designSchema);

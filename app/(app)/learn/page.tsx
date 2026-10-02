@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { Network } from "lucide-react";
 import { LearnBrowser } from "@/components/learn/learn-browser";
 import { PageHeader } from "@/components/shared/page-header";
+import { Button } from "@/components/ui/button";
 import { topics, tracks } from "@/lib/content";
 import { planClock } from "@/lib/plan-clock";
 import { getSubtopicProgressMap } from "@/lib/services/learn";
@@ -23,7 +26,13 @@ export default async function LearnPage({ searchParams }: PageProps<"/learn">) {
       <PageHeader
         title="Learn"
         description="Zero → interview-ready, track by track. Tick subtopics as you study, practice each one, and pass the topic quiz to earn Mastered."
-      />
+      >
+        <Button asChild variant="outline" size="sm">
+          <Link href="/design">
+            <Network /> System Design studio
+          </Link>
+        </Button>
+      </PageHeader>
       <LearnBrowser
         tracks={tracks}
         topics={topics}
