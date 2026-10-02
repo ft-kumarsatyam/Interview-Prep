@@ -3,7 +3,7 @@
 # Usage: ./scripts/sync-vercel-env.sh [project-name]
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PROJECT="${1:-prepos}"
+PROJECT="${1:-interview-prep}"
 
 if [[ ! -f .env.local ]]; then
   echo "Missing .env.local"

@@ -133,7 +133,7 @@ Pick an idea from the bottom of `docs/BUILD_PLAN.md`, check it works, commit.
    | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional | push reminders to Telegram |
    | `RESEND_API_KEY`, `NOTIFY_EMAIL` | optional | push reminders by email |
 
-   Shortcut from your laptop (needs `npm i -g vercel@latest`, `vercel login` and `vercel link`): `./scripts/sync-vercel-env.sh prepos` copies every non-empty key from `.env.local`.
+   Shortcut from your laptop (needs `npm i -g vercel@latest`, `vercel login` and `vercel link`): `./scripts/sync-vercel-env.sh interview-prep` copies every non-empty key from `.env.local`. `.vercelignore` keeps `.env*` files out of CLI uploads.
 4. Deploy (or *Redeploy* after changing env vars). URL: `https://<project>.vercel.app`. Sign in with `ADMIN_EMAIL` and your password.
 5. *Settings → Cron Jobs* should list `/api/cron/morning` (00:00 UTC = 05:30 IST) and `/api/cron/evening` (14:30 UTC = 20:00 IST) from `vercel.json`. On Hobby each fires once a day, somewhere within its hour. The app stays correct without them: opening the dashboard builds today's plan and syncs LeetCode.
 
