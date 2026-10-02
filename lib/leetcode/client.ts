@@ -38,7 +38,7 @@ const statsSchema = z.object({
   }),
 });
 
-async function query(body: { query: string; variables: Record<string, unknown> }): Promise<unknown> {
+export async function query(body: { query: string; variables: Record<string, unknown> }): Promise<unknown> {
   const res = await fetch(ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json", Referer: "https://leetcode.com", "User-Agent": "PrepOS/1.0" },

@@ -59,3 +59,38 @@ describe("buildChecklist", () => {
     expect(item({ ...healthy, session: { remember: false } }, "session").status).toBe("warn");
   });
 });
+
+describe("AI features item", () => {
+  const withLlm = (llm: SetupInput["llm"]): SetupInput => ({ ...healthy, llm });
+
+  it("is a warning, with no Test button, when nothing is configured", () => {
+    const i = item(healthy, "llm");
+    expect(i).toMatchObject({ status: "warn", required: false, actions: [] });
+    expect(i.detail).toContain("GEMINI_API_KEY or GROQ_API_KEY");
+  });
+
+  it("lists the free providers in try order and offers a Test button", () => {
+    const i = item(withLlm({ configured: true, provider: "Gemini", free: ["Gemini", "Groq"], paid: { label: "Meta Llama (paid)", ready: false, missing: ["META_LLAMA_API_KEY"] } }), "llm");
+    expect(i.status).toBe("ok");
+    expect(i.detail).toContain("Gemini then Groq");
+    expect(i.detail).toContain("META_LLAMA_API_KEY");
+    expect(i.actions).toEqual([{ kind: "button", id: "test-llm", label: "Test" }]);
+  });
+
+  it("says the paid provider only runs after confirmation, and never for background jobs", () => {
+    const i = item(withLlm({ configured: true, provider: "Gemini", free: ["Gemini"], paid: { label: "Meta Llama (paid)", ready: true, missing: [] } }), "llm");
+    expect(i.detail).toContain("after you confirm");
+    expect(i.detail).toContain("never for background jobs");
+  });
+
+  it("still works with the older single-provider input", () => {
+    const i = item(withLlm({ configured: true, provider: "gemini" }), "llm");
+    expect(i.status).toBe("ok");
+    expect(i.detail).toContain("gemini");
+  });
+
+  it("a paid provider alone does not make AI 'configured'", () => {
+    const i = item(withLlm({ configured: false, provider: null, free: [], paid: { label: "Meta Llama (paid)", ready: true, missing: [] } }), "llm");
+    expect(i.status).toBe("warn");
+  });
+});

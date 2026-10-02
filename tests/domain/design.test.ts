@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { designBlockById, subtopicById, systemDesign, topicById } from "@/lib/content";
+import { DESIGN_CATEGORIES, designBlockById, subtopicById, systemDesign, topicById } from "@/lib/content";
 import {
   DESIGN_SECTION_IDS,
   PRACTICE_MINUTES,
@@ -96,8 +96,13 @@ describe("data/system-design.json", () => {
     }
   });
 
+  it("uses every category at least once", () => {
+    for (const category of DESIGN_CATEGORIES) expect(cases.some((c) => c.category === category)).toBe(true);
+  });
+
   it.each(cases.map((c) => [c.slug, c] as const))("%s links to real syllabus content and blocks", (_slug, c) => {
     expect(c.slug).toMatch(/^[a-z0-9-]+$/);
+    expect(DESIGN_CATEGORIES).toContain(c.category);
     expect(topicById.has(c.topicId)).toBe(true);
     expect(subtopicById.get(c.practiceRef)?.topicId).toBe(c.topicId);
     for (const b of c.blocks) expect(designBlockById.has(b)).toBe(true);

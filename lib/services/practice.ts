@@ -1,4 +1,4 @@
-import { subtopicById, subtopics, topicById, trackById } from "@/lib/content";
+import { designCaseBySlug, practiceCaseBySlug, subtopicById, subtopics, topicById, trackById } from "@/lib/content";
 import { connectDb } from "@/lib/db";
 import type { DateStr } from "@/lib/domain/dates";
 import {
@@ -9,7 +9,10 @@ import {
   SUBTOPIC_PRACTICE_SIZE,
   TOPIC_QUIZ_SIZE,
 } from "@/lib/domain/mastery";
-import { scoreQuiz } from "@/lib/domain/quiz";
+import { correctAnswerKey, isAnswerCorrect, scoreQuiz } from "@/lib/domain/quiz";
+import { askSubjectForRef } from "@/lib/quiz/subject";
+import { casePath, CASE_QUIZ_SIZE, parseCaseRef, pickCaseQuestions } from "@/lib/domain/case-quiz";
+import { caseQuestions, caseTitle, learnMoreFor } from "@/lib/quiz/case-bank";
 import { seededRng, seedFrom, weightedSample, type Rng } from "@/lib/domain/sampling";
 import { getLlm, type LlmProvider } from "@/lib/llm";
 import { Mastery, PracticeAttempt } from "@/lib/models/learning";
@@ -21,16 +24,25 @@ import { todayIn } from "./plan";
 import { getSettings } from "./settings";
 
 export interface PracticeTarget {
-  scope: "subtopic" | "topic";
+  scope: "subtopic" | "topic" | "case";
   ref: string;
   title: string;
   topicId: string;
   topicTitle: string;
   track: string;
   subtopicIds: string[];
+  /** Cases only: the case page this quiz belongs to. */
+  href?: string;
 }
 
 export function resolvePracticeTarget(ref: string): PracticeTarget | null {
+  const kase = parseCaseRef(ref);
+  if (kase) {
+    const title = caseTitle(ref);
+    if (!title || caseQuestions(ref).length === 0) return null;
+    const topicId = kase.kind === "hld" ? designCaseBySlug.get(kase.slug)!.topicId : practiceCaseBySlug.get(`${kase.kind}:${kase.slug}`)!.topicId;
+    return { scope: "case", ref, title, topicId, topicTitle: title, track: kase.kind, subtopicIds: [], href: casePath(kase.kind, kase.slug) };
+  }
   const sub = subtopicById.get(ref);
   if (sub) {
     return { scope: "subtopic", ref, title: sub.title, topicId: sub.topicId, topicTitle: sub.topicTitle, track: sub.track, subtopicIds: [ref] };
@@ -123,7 +135,12 @@ export async function startPractice(ref: string, llm: LlmProvider | null = getLl
     throw new Error("Tick every subtopic in this topic to unlock its quiz");
   }
   const rng = seededRng(seedFrom(`${ref}:${now.getTime()}`));
-  const questions = target.scope === "topic" ? await topicQuestions(target, rng) : await subtopicQuestions(target, llm, rng);
+  const questions =
+    target.scope === "case"
+      ? pickCaseQuestions(caseQuestions(ref), CASE_QUIZ_SIZE, rng)
+      : target.scope === "topic"
+        ? await topicQuestions(target, rng)
+        : await subtopicQuestions(target, llm, rng);
   if (questions.length === 0) throw new Error("No questions for this topic yet");
   const attempt = await PracticeAttempt.create({
     scope: target.scope,
@@ -134,6 +151,8 @@ export async function startPractice(ref: string, llm: LlmProvider | null = getLl
       code: q.code,
       options: q.options,
       answerIndex: q.answerIndex,
+      ...(q.type && q.type !== "single" ? { type: q.type } : {}),
+      ...(q.answerIndices ? { answerIndices: q.answerIndices } : {}),
       explanation: q.explanation,
       ref: q.source.ref,
     })),
@@ -148,7 +167,7 @@ export interface MasteryState {
   masteredOn: DateStr | null;
 }
 
-async function bumpMastery(ref: string, scope: "subtopic" | "topic", pct: number, masteredOn?: DateStr): Promise<MasteryState> {
+async function bumpMastery(ref: string, scope: "subtopic" | "topic" | "case", pct: number, masteredOn?: DateStr): Promise<MasteryState> {
   const prev = await Mastery.findOne({ ref }).lean();
   const score = nextMasteryScore(prev ? { score: prev.score ?? 0, attempts: prev.attempts ?? 0 } : null, pct);
   const setMastered = masteredOn && !prev?.masteredOn ? { masteredOn } : {};
@@ -184,7 +203,7 @@ export async function submitPractice(attemptId: string, answers: Array<number | 
   const questions = attempt.questions ?? [];
   if (answers.length !== questions.length) throw new Error("Answer count doesn't match");
 
-  const score = scoreQuiz(questions.map((q) => q.answerIndex), answers);
+  const score = scoreQuiz(questions.map(correctAnswerKey), answers);
   const claimed = await PracticeAttempt.updateOne(
     { _id: attempt._id, submittedAt: null },
     { $set: { answers: answers.map((a) => a ?? -1), pct: score.pct, submittedAt: now } },
@@ -206,19 +225,20 @@ export async function submitPractice(attemptId: string, answers: Array<number | 
       if (!target.subtopicIds.includes(q.ref)) return;
       const g = groups.get(q.ref) ?? { right: 0, total: 0 };
       g.total++;
-      if (answers[i] === q.answerIndex) g.right++;
+      if (isAnswerCorrect(q, answers[i])) g.right++;
       groups.set(q.ref, g);
     });
     for (const [ref, g] of groups) await bumpMastery(ref, "subtopic", Math.round((g.right / g.total) * 100));
   } else {
-    mastery = await bumpMastery(target.ref, "subtopic", score.pct);
+    mastery = await bumpMastery(target.ref, target.scope, score.pct);
   }
+  const byId = target.scope === "case" ? new Map(caseQuestions(target.ref).map((q) => [q.id, q])) : null;
 
   return {
     outcome: {
       ...score,
       passed: target.scope === "topic" ? passesTopicQuiz(score.pct, thresholdPct) : score.pct >= s.quizPassPct,
-      review: questions.map((q) => toReview({ id: q.id, answerIndex: q.answerIndex, explanation: q.explanation ?? "" })),
+      review: questions.map((q) => toReview({ id: q.id, subject: askSubjectForRef(q.ref), learnMore: byId?.get(q.id) ? learnMoreFor(target.ref, byId.get(q.id)!) : undefined, answerIndex: q.answerIndex, ...(q.type ? { type: q.type } : {}), ...(q.answerIndices?.length ? { answerIndices: [...q.answerIndices] } : {}), explanation: q.explanation ?? "" })),
     },
     mastery,
     newlyMastered,

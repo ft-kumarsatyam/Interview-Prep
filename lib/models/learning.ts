@@ -5,7 +5,7 @@ const snippetSchema = new Schema(
   {
     title: { type: String, required: true, maxlength: 120 },
     code: { type: String, required: true, maxlength: 20_000 },
-    tag: { type: String, maxlength: 60, default: "" },
+    tag: { type: String, maxlength: 120, default: "" },
   },
   { timestamps: true },
 );
@@ -16,8 +16,11 @@ const practiceQuestionSchema = new Schema(
     id: { type: String, required: true },
     prompt: { type: String, required: true, maxlength: 500 },
     code: { type: String, maxlength: 1500 },
-    options: { type: [{ type: String, maxlength: 300 }], validate: (v: string[]) => v.length === 4 },
-    answerIndex: { type: Number, required: true, min: 0, max: 3 },
+    options: { type: [{ type: String, maxlength: 300 }], validate: (v: string[]) => v.length >= 2 && v.length <= 6 },
+    answerIndex: { type: Number, required: true, min: 0, max: 5 },
+    // Absent on questions stored before multi-select / true-false existed: read it as `type ?? "single"`.
+    type: { type: String, enum: ["single", "multi", "truefalse"] },
+    answerIndices: { type: [Number], default: undefined },
     explanation: { type: String, maxlength: 600 },
     ref: { type: String, required: true },
   },
@@ -27,7 +30,7 @@ const practiceQuestionSchema = new Schema(
 /** One practice run: a subtopic drill (5 questions) or a topic mastery quiz (10). */
 const practiceAttemptSchema = new Schema(
   {
-    scope: { type: String, enum: ["subtopic", "topic"], required: true },
+    scope: { type: String, enum: ["subtopic", "topic", "case"], required: true },
     ref: { type: String, required: true },
     questions: { type: [practiceQuestionSchema], default: [] },
     answers: { type: [Number], default: [] },
@@ -42,7 +45,7 @@ practiceAttemptSchema.index({ ref: 1, createdAt: -1 });
 const masterySchema = new Schema(
   {
     ref: { type: String, required: true, unique: true },
-    scope: { type: String, enum: ["subtopic", "topic"], required: true },
+    scope: { type: String, enum: ["subtopic", "topic", "case"], required: true },
     score: { type: Number, default: 0, min: 0, max: 100 },
     attempts: { type: Number, default: 0 },
     bestPct: { type: Number, default: 0 },
@@ -70,7 +73,23 @@ const designSchema = new Schema(
   { timestamps: true },
 );
 
+/** Your OS / DBMS "explain it" practice answer per case (`kind` + `slug` from data/os-dbms-cases.json). */
+const practiceAnswerSchema = new Schema(
+  {
+    kind: { type: String, enum: ["os", "dbms"], required: true },
+    slug: { type: String, required: true },
+    /** Section id -> markdown text (see EXPLAIN_SECTIONS in lib/domain/practice-cases.ts). */
+    sections: { type: Map, of: { type: String, maxlength: 20_000 }, default: {} },
+    /** Checked rubric item ids. */
+    rubric: { type: [String], default: [] },
+    minutesSpent: { type: Number, default: 0, min: 0 },
+  },
+  { timestamps: true },
+);
+practiceAnswerSchema.index({ kind: 1, slug: 1 }, { unique: true });
+
 export type DesignDoc = InferSchemaType<typeof designSchema>;
+export type PracticeAnswerDoc = InferSchemaType<typeof practiceAnswerSchema>;
 export type SnippetDoc = InferSchemaType<typeof snippetSchema>;
 export type PracticeAttemptDoc = InferSchemaType<typeof practiceAttemptSchema>;
 export type MasteryDoc = InferSchemaType<typeof masterySchema>;
@@ -80,3 +99,4 @@ export const PracticeAttempt: Model<PracticeAttemptDoc> =
   models.PracticeAttempt ?? model("PracticeAttempt", practiceAttemptSchema);
 export const Mastery: Model<MasteryDoc> = models.Mastery ?? model("Mastery", masterySchema);
 export const Design: Model<DesignDoc> = models.Design ?? model("Design", designSchema);
+export const PracticeAnswer: Model<PracticeAnswerDoc> = models.PracticeAnswer ?? model("PracticeAnswer", practiceAnswerSchema);

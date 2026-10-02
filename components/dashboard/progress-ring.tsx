@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 export function ProgressRing({ done, total, complete }: { done: number; total: number; complete: boolean }) {
   const r = 52;
   const c = 2 * Math.PI * r;
-  const frac = total === 0 ? 1 : done / total;
+  const frac = total === 0 ? (complete ? 1 : 0) : done / total;
   return (
     <div className="relative size-36 shrink-0" role="img" aria-label={`${done} of ${total} requirements done`}>
       <svg viewBox="0 0 120 120" className="size-full -rotate-90">
@@ -31,9 +31,9 @@ export function ProgressRing({ done, total, complete }: { done: number; total: n
       <div className="absolute inset-0 grid place-items-center text-center">
         <div>
           <p className={cn("tabular font-mono text-3xl font-semibold", complete && "text-success")}>
-            {done}/{total}
+            {total === 0 ? "—" : `${done}/${total}`}
           </p>
-          <p className="text-xs text-muted-foreground">{complete ? "complete" : "today"}</p>
+          <p className="text-xs text-muted-foreground">{complete ? "complete" : total === 0 ? "free day" : "today"}</p>
         </div>
       </div>
     </div>

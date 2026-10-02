@@ -20,6 +20,8 @@ export interface PlanSubtopic extends SubtopicInfo {
 export interface DashboardData extends TodayState {
   problems: PlanProblem[];
   theory: PlanSubtopic[];
+  /** Sunday's optional extra work from spare hours. Empty on other days. */
+  bonus: { problems: ContentProblem[]; theory: SubtopicInfo[] };
   heatmap: HeatCell[];
   pace: Pace;
   solvedMain: number;
@@ -65,6 +67,10 @@ export async function getDashboard(): Promise<DashboardData> {
       const info = subtopicById.get(id);
       return info ? [{ ...info, done: doneTheory.has(id) }] : [];
     }),
+    bonus: {
+      problems: (plan.bonusDsa ?? []).flatMap((slug) => problemBySlug.get(slug) ?? []),
+      theory: (plan.bonusTheory ?? []).flatMap((id) => subtopicById.get(id) ?? []),
+    },
     heatmap: heatmapCells(
       settings.startDate,
       settings.endDate,

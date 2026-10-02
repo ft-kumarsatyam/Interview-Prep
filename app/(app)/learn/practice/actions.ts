@@ -25,7 +25,7 @@ export async function startPracticeAction(ref: string): Promise<ActionResult<{ r
 
 const submitSchema = z.object({
   attemptId: z.string().regex(/^[a-f0-9]{24}$/),
-  answers: z.array(z.number().int().min(0).max(3).nullable()).min(1).max(20),
+  answers: z.array(z.number().int().min(0).max(63).nullable()).min(1).max(20),
 });
 
 export async function submitPracticeAction(input: z.input<typeof submitSchema>): Promise<ActionResult<{ result: PracticeResult }>> {

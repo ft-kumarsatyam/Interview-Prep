@@ -2,7 +2,7 @@
 
 **Main language:** JavaScript → TypeScript → Node.js. All DSA is solved in JavaScript.
 **Window:** Mon 2026-10-05 → Sun 2027-03-21 (24 weeks)
-**Budget:** 3–4 h on weekdays, 5–6 h on Saturday, Sunday for review
+**Budget:** 3–4 h on weekdays, 5–6 h on Saturday, Sunday for review. Hours are now configurable per weekday in Settings (defaults 3.5 h weekdays, 6 h Saturday, 4 h Sunday) and the plan is scaled to them; Sunday's extra hours become optional bonus work
 **Goal:** Senior Backend Engineer (Node.js) offers by March 2027
 
 | Data file | What's inside |

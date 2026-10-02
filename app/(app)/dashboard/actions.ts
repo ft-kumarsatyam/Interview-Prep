@@ -5,7 +5,7 @@ import { z } from "zod";
 import { requireSession } from "@/lib/auth/dal";
 import { isDateStr } from "@/lib/domain/dates";
 import { syncLeetCode } from "@/lib/services/leetcode-sync";
-import { todayIn } from "@/lib/services/plan";
+import { REPLAN_MAX_HOURS, REPLAN_MIN_HOURS, replanToday, todayIn } from "@/lib/services/plan";
 import { recordSolve, saveProblemNotes, saveSubtopicNotes, toggleSubtopic as toggle } from "@/lib/services/progress";
 import { getSettings } from "@/lib/services/settings";
 
@@ -106,6 +106,22 @@ export async function updateSubtopicNotes(input: z.input<typeof subNotesSchema>)
   try {
     await saveSubtopicNotes(parsed.data.id, parsed.data.notes, parsed.data.confidence);
     return { ok: true };
+  } catch (err) {
+    return fail(err);
+  }
+}
+
+const replanSchema = z.object({ hours: z.coerce.number().min(REPLAN_MIN_HOURS).max(REPLAN_MAX_HOURS) });
+
+/** "I have N hours today": re-plan today's targets from that budget. */
+export async function replanTodayAction(input: z.input<typeof replanSchema>): Promise<ActionResult<{ dsaTarget: number; theoryTarget: number }>> {
+  await requireSession();
+  const parsed = replanSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: `Pick between ${REPLAN_MIN_HOURS} and ${REPLAN_MAX_HOURS} hours` };
+  try {
+    const plan = await replanToday(parsed.data.hours);
+    refresh();
+    return { ok: true, dsaTarget: plan.dsaTarget, theoryTarget: plan.theoryTarget };
   } catch (err) {
     return fail(err);
   }

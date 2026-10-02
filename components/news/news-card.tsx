@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useOptimistic, useTransition } from "react";
-import { Bookmark, Clock, ExternalLink } from "lucide-react";
+import { Bookmark, Check, Clock, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { bookmarkAction, markReadAction } from "@/app/(app)/news/actions";
 import { Button } from "@/components/ui/button";
@@ -36,22 +36,30 @@ export function NewsCard({ item, readingsGoal }: { item: NewsCardItem; readingsG
     start(async () => {
       setState({ read: true });
       const res = await markReadAction(item.id);
-      if (res.ok && res.readings === readingsGoal) toast.success(`Read ${readingsGoal} today. Bonus done.`);
+      if (!res.ok) toast.error(`${res.error}. Reload the page and try again.`);
+      else if (res.readings === readingsGoal) toast.success(`Read ${readingsGoal} today. Bonus done.`);
     });
   };
 
   const onBookmark = () =>
     start(async () => {
-      setState({ bookmarked: !state.bookmarked });
-      const res = await bookmarkAction({ id: item.id, bookmarked: !state.bookmarked });
-      if (!res.ok) toast.error(res.error);
+      const next = !state.bookmarked;
+      setState({ bookmarked: next });
+      const res = await bookmarkAction({ id: item.id, bookmarked: next });
+      if (!res.ok) toast.error(`${res.error}. Reload the page and try again.`);
+      else if (next) toast.success("Bookmarked. Find it under the Bookmarked filter.");
     });
 
   return (
-    <article className={cn("flex flex-col gap-2 rounded-xl border bg-card p-4 transition-colors", state.read && "opacity-70")}>
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+    <article
+      className={cn(
+        "group relative flex flex-col gap-2 rounded-xl border bg-card p-4 transition-colors focus-within:border-primary/50 hover:border-primary/40",
+        state.read && "bg-card/60",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={`https://icons.duckduckgo.com/ip3/${host}.ico`} alt="" width={14} height={14} className="size-3.5 rounded-sm" loading="lazy" />
+        <img src={`https://icons.duckduckgo.com/ip3/${host}.ico`} alt="" width={14} height={14} className="size-3.5 shrink-0 rounded-sm" loading="lazy" />
         <span className="truncate font-medium text-foreground/80">{item.sourceName}</span>
         {item.age && (
           <>
@@ -59,39 +67,67 @@ export function NewsCard({ item, readingsGoal }: { item: NewsCardItem; readingsG
             <span className="shrink-0">{item.age}</span>
           </>
         )}
-        {!state.read && <span className="ml-auto size-2 shrink-0 rounded-full bg-primary" aria-label="Unread" />}
+        <span className="ml-auto shrink-0">
+          {state.read ? (
+            <span className="inline-flex items-center gap-1">
+              <Check className="size-3" aria-hidden /> Read
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 font-medium text-primary">
+              <span className="size-1.5 rounded-full bg-primary" aria-hidden /> New
+            </span>
+          )}
+        </span>
       </div>
-      <Link href={`/news/${item.id}`} className="font-medium leading-snug hover:text-primary hover:underline">
-        {item.title}
-      </Link>
-      {(item.summary || item.snippet) && <p className="line-clamp-3 text-sm text-muted-foreground">{item.summary ?? item.snippet}</p>}
-      {item.readingMinutes || item.tags?.length ? (
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+
+      <h3 className={cn("leading-snug font-medium", state.read && "text-foreground/75")}>
+        <Link
+          href={`/news/${item.id}`}
+          className="line-clamp-3 outline-none group-hover:text-primary after:absolute after:inset-0 after:rounded-xl focus-visible:underline"
+        >
+          {item.title}
+        </Link>
+      </h3>
+
+      {(item.summary || item.snippet) && <p className="line-clamp-2 text-sm text-muted-foreground">{item.summary ?? item.snippet}</p>}
+
+      <div className="mt-auto flex items-center justify-between gap-2 pt-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
           {item.readingMinutes ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-success/12 px-2 py-0.5 font-medium text-success">
-              <Clock className="size-3" aria-hidden /> {item.readingMinutes} min · full article
+              <Clock className="size-3" aria-hidden /> {item.readingMinutes} min
+              <span className="sr-only">, full article</span>
             </span>
           ) : null}
-          {item.tags?.slice(0, 2).map((t) => (
-            <span key={t.id} className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
-              {t.label}
-            </span>
-          ))}
+          {item.tags?.[0] ? (
+            <span className="truncate rounded-full bg-muted px-2 py-0.5 text-muted-foreground">{item.tags[0].label}</span>
+          ) : (
+            <span className="truncate text-muted-foreground">{item.categoryName}</span>
+          )}
         </div>
-      ) : null}
-      <div className="mt-auto flex items-center justify-between pt-1">
-        <span className="truncate text-xs text-muted-foreground">{item.categoryName}</span>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="icon-sm" onClick={onBookmark} aria-pressed={state.bookmarked} aria-label={state.bookmarked ? "Remove bookmark" : "Bookmark"}>
+        <div className="relative z-10 -mr-1.5 flex shrink-0 items-center">
+          <Button
+            variant="ghost"
+            size="icon-lg"
+            onClick={onBookmark}
+            aria-pressed={state.bookmarked}
+            aria-label={state.bookmarked ? "Remove bookmark" : "Bookmark"}
+            title={state.bookmarked ? "Remove bookmark" : "Bookmark"}
+          >
             <Bookmark className={cn(state.bookmarked && "fill-primary text-primary")} />
           </Button>
-          <Button asChild variant="ghost" size="icon-sm" aria-label="Open original in a new tab">
-            <a href={item.url} target="_blank" rel="noopener noreferrer" onClick={onOpenOriginal} onAuxClick={onOpenOriginal}>
+          <Button asChild variant="ghost" size="icon-lg">
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={onOpenOriginal}
+              onAuxClick={onOpenOriginal}
+              aria-label={`Open original on ${host} in a new tab`}
+              title={`Open on ${host}`}
+            >
               <ExternalLink />
             </a>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/news/${item.id}`}>Read</Link>
           </Button>
         </div>
       </div>

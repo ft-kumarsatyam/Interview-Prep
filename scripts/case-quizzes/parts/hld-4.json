@@ -1,0 +1,747 @@
+{
+ "hld:ad-click-aggregator": [
+  {
+   "prompt": "Peak click traffic is 500,000 clicks per second and each click event is about 100 bytes. What raw ingest bandwidth must the click trackers and the Kafka tier sustain at peak, before replication?",
+   "options": [
+    "About 5 MB/s",
+    "About 50 MB/s",
+    "About 500 MB/s",
+    "About 5 GB/s"
+   ],
+   "answerIndex": 1,
+   "explanation": "500,000 x 100 B = 50,000,000 B/s, about 50 MB/s. The average rate (10B clicks/day is roughly 115k/s, about 11.5 MB/s) is lower, but you size for peak. Being off by 10x in either direction is the usual slip when converting events per second to bytes per second.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "Raw clicks are archived for 30 days at roughly 1 TB per day, and the archive keeps 3 copies of every object. About how much physical storage does that archive need?",
+   "options": [
+    "About 30 TB",
+    "About 90 TB",
+    "About 300 TB",
+    "About 900 TB"
+   ],
+   "answerIndex": 1,
+   "explanation": "30 days x 1 TB = 30 TB of logical data, and 3 copies make 90 TB physical. Forgetting the copies gives 30 TB. This cost is the price of being able to reprocess history after a bug fix, which is the raw retention versus reprocessing trade-off.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "A mobile SDK retries the click request when a response times out, so the tracker sometimes receives the same click twice. Billing must not double count. Which approach is most robust?",
+   "options": [
+    "Tell the SDK never to retry, so duplicates cannot occur, and accept that some real clicks are lost",
+    "Attach a unique clickId in the SDK, dedupe on it in the job and write results idempotently",
+    "Make the load balancer reject any second request from the same IP address within a one-second window",
+    "Subtract a fixed estimated duplicate percentage, measured from a sample, from every minute's total"
+   ],
+   "answerIndex": 1,
+   "explanation": "A client-generated clickId makes a retry recognizably the same event, so the job can drop it within the window and idempotent writes keep replays harmless. Disabling retries loses billable clicks, IP rules also drop legitimate distinct clicks (shared NATs), and a fixed percentage is simply inaccurate for billing.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "A phone is in a tunnel and uploads clicks 8 minutes after they happened. Billing must attribute each click to the minute in which it actually occurred. Which windowing basis achieves that?",
+   "options": [
+    "Processing time, meaning the clock of the stream job when it sees the record",
+    "Event time, with watermarks deciding when a window may close",
+    "Log-append time, meaning when the record was appended to the Kafka log",
+    "Arrival time, meaning when the click request reached the edge proxy"
+   ],
+   "answerIndex": 1,
+   "explanation": "Event time uses the timestamp carried by the click, so a late arrival still lands in its true minute; watermarks and allowed lateness decide how long to wait for stragglers. Processing, log-append and edge-arrival times all reflect when the system saw the click, which would shift the late click into a later minute.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "One viral ad gets 40% of all clicks. The Kafka topic is keyed by adId, and you double the partitions from 64 to 128, yet one partition is still overloaded. Why does this not help?",
+   "options": [
+    "Every record for that ad still hashes to one partition, so one consumer gets the whole hot stream",
+    "New partitions stay empty until the next retention cycle, when Kafka rebalances old data into them",
+    "Kafka assigns keys to partitions round-robin, so the hot ad keeps moving between them",
+    "Stream job parallelism is capped at the original partition count"
+   ],
+   "answerIndex": 0,
+   "explanation": "Partitioning by key sends all records with the same key to the same partition however many partitions exist. The fix is to spread the key itself: salt it (adId#n) or pre-aggregate locally, then merge the partial counts downstream. Adding partitions only helps when keys are diverse.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "A bug in the minute-aggregation logic over-counted for the last 3 days. Raw clicks are archived, and the OLAP table is keyed by (ad_id, minute). What is the cleanest way to correct the numbers?",
+   "options": [
+    "Divide the stored counts by the average over-count factor observed in a sample of the affected minutes",
+    "Delete the last 3 days of aggregates and let new incoming traffic gradually refill them",
+    "Run the aggregate rows themselves through the fixed job, since they already hold the counts",
+    "Replay the archived raw events through the fixed job and upsert over the bad rows"
+   ],
+   "answerIndex": 3,
+   "explanation": "Aggregates have already thrown away the per-click detail, so only the raw log can be reprocessed correctly. Replaying it through the corrected job and upserting by (ad_id, minute) overwrites the wrong rows idempotently, which is the Kappa-style replay or the daily batch recompute. Scaling or deleting rows cannot restore true counts.",
+   "anchor": "tradeoffs",
+   "reading": 1
+  },
+  {
+   "prompt": "Dashboards need numbers within a minute or two, but invoices must be exact. Which serving policy satisfies both?",
+   "options": [
+    "Bill from the streaming totals the instant each minute closes, because they are the freshest available",
+    "Hold dashboards back until the daily batch finishes so that they always agree with the invoices",
+    "Stream results for dashboards; bill from totals reconciled by a batch recompute once late data settles",
+    "Use the batch path for dashboards and the streaming path for invoices"
+   ],
+   "answerIndex": 2,
+   "explanation": "Freshness and accuracy pull in opposite directions, so each consumer gets what it needs: low-latency approximate streaming figures for dashboards, and reconciled figures (after late events and retries are resolved) for money. Billing from the live stream risks late-data errors; the other two options invert or delay the tools needlessly.",
+   "anchor": "tradeoffs",
+   "reading": 1
+  },
+  {
+   "prompt": "Select all statements that are correct about watermarks and allowed lateness in an event-time streaming job.",
+   "options": [
+    "A watermark is the engine's heuristic claim that events older than some event time are no longer expected",
+    "Allowed lateness keeps window state around so a straggler can still revise an already emitted result, at the cost of extra state",
+    "A watermark guarantees that no event older than its timestamp can ever arrive",
+    "Raising allowed lateness reduces memory use because windows can close sooner",
+    "Events later than the allowed lateness can go to a side output or the archive and be fixed by a batch reconciliation"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    0,
+    1,
+    4
+   ],
+   "explanation": "A watermark is a progress estimate, not a guarantee, so stragglers are possible. Allowed lateness trades memory and revised outputs for completeness, and events beyond it can be reconciled later from the raw archive. Longer lateness means windows stay open longer, so memory goes up, not down.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "A Flink job restarts from its last checkpoint and re-reads some Kafka records it had already processed. Which sink designs still avoid double counting? Select all that apply.",
+   "options": [
+    "Insert a +1 row for every click as it is processed",
+    "Upsert each window's absolute count keyed by (ad_id, minute) so a replay overwrites the same row",
+    "Commit sink writes through a two-phase, transactional sink coordinated with checkpoints",
+    "Add each emitted window count onto the stored counter with an increment",
+    "Commit consumer offsets to Kafka before processing each record"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    1,
+    2
+   ],
+   "explanation": "Idempotent upserts and checkpoint-coordinated transactional sinks make a replay produce the same final state. Per-click inserts and increments apply the effect again on every replay, and committing offsets before processing is at-most-once: a crash can lose clicks instead of duplicating them, which breaks billing the other way.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "In a checkpointed stream pipeline, 'exactly-once' means each click record is physically delivered over the network only one time, with no replays after failures.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 1,
+   "explanation": "Records can be re-read and re-sent after a crash. What the engine provides is effectively-once state and output: checkpoints restore state, and transactional or idempotent sinks keep replayed records from changing the result twice. Treating it as no-replay delivery leads people to skip idempotent sinks.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "With tumbling one-minute windows keyed by adId, a single click event can be counted in two different windows.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 1,
+   "explanation": "Tumbling windows are fixed-size and do not overlap, so each event belongs to exactly one window. Overlap is a feature of sliding windows, where an event can fall in several. Double counting in this pipeline comes from retries and replays, not from the window shape.",
+   "anchor": "deep-dives"
+  }
+ ],
+ "hld:leaderboard": [
+  {
+   "prompt": "A 10M-player game stores one all-player sorted set in about 1 GB of Redis memory. Product also wants a separate board for each of the last 12 months, each containing all players, plus the all-time board. Roughly how much memory do these boards need?",
+   "options": [
+    "About 2 GB",
+    "About 13 GB",
+    "About 120 GB",
+    "About 1.3 GB"
+   ],
+   "answerIndex": 1,
+   "explanation": "Each board costs about 1 GB (roughly 100 B per member x 10M), and there are 1 + 12 = 13 boards, so about 13 GB. Memory scales with the number of boards, which is why you keep only active players in old seasons or archive them to a database.",
+   "anchor": "tradeoffs"
+  },
+  {
+   "prompt": "The score service handles 5,000 updates per second, and each update is also archived as a roughly 50-byte event in the scores database. About how much new history does that add per day?",
+   "options": [
+    "About 2.2 GB",
+    "About 21.6 GB",
+    "About 216 GB",
+    "About 2.2 TB"
+   ],
+   "answerIndex": 1,
+   "explanation": "5,000/s x 86,400 s is about 432 million events per day, and 432M x 50 B = 21.6 GB. The sorted set stays small because it stores one entry per player; the durable history grows with every update, which matters for retention and partitioning of the DB.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "A game server reports that player p42 earned 25 more points. Higher scores must rank first, and the API then needs p42's 0-based position from the top. Which Redis command pair does that?",
+   "options": [
+    "ZADD lb 25 p42, then ZRANK lb p42",
+    "ZINCRBY lb 25 p42, then ZRANK lb p42",
+    "ZADD lb 25 p42, then ZREVRANK lb p42",
+    "ZINCRBY lb 25 p42, then ZREVRANK lb p42"
+   ],
+   "answerIndex": 3,
+   "explanation": "ZINCRBY adds the delta to the existing score, whereas ZADD would overwrite the total with 25. ZREVRANK counts from the highest score, while ZRANK counts from the lowest, so it would report the position from the bottom of the board.",
+   "anchor": "data-model",
+   "reading": 0
+  },
+  {
+   "prompt": "Two players both have a score of 5,000 in a Redis sorted set. How does Redis order them relative to each other, and what does this mean if the product rule is 'whoever reached the score first ranks higher'?",
+   "options": [
+    "By member string, so the product rule needs the achievement time folded into the score",
+    "By insertion order, so the product rule is already satisfied without any extra work",
+    "By the time of their last ZINCRBY, so the product rule is already satisfied without any extra work",
+    "Randomly on each query, so the product rule cannot be implemented with sorted sets at all"
+   ],
+   "answerIndex": 0,
+   "explanation": "Members with equal scores are ordered lexicographically by member value, not by who got there first. To rank earlier achievers higher you encode time into the score (for example a composite of score and an inverted timestamp that still fits a double's precision) so ties disappear.",
+   "anchor": "probes",
+   "reading": 0
+  },
+  {
+   "prompt": "The weekly board must reset every Monday at 00:00 for 10M players while reads continue. Which approach is best?",
+   "options": [
+    "At midnight, run a cron job that removes every member of the current set one at a time",
+    "Delete the key at midnight and then re-add all 10M players to the new set with a score of zero",
+    "Keep a reset marker on each player and filter out stale scores at read time on every query",
+    "Put the week in the key name, switch writes to the new key at the boundary, archive the old one"
+   ],
+   "answerIndex": 3,
+   "explanation": "A key per season or week (for example lb:2026-W41) makes the reset a pointer switch: the new board starts empty and the old one is archived or expired. Removing 10M members one by one or deleting and reloading the key is slow and risks blocking Redis or showing a half-built board, and read-time filtering adds cost to every query.",
+   "anchor": "data-model",
+   "reading": 0
+  },
+  {
+   "prompt": "A 100M-player game wants to show 'you are in the top 3%' in near real time (scores visible within a second) without keeping an exact rank in one giant sorted set. Which approach fits?",
+   "options": [
+    "Keep counts per score bucket and estimate percentile from the buckets above the player",
+    "Use the Redis Top-K structure to track the position of every individual player in the whole game",
+    "Recompute every player's percentile once each night using a full sort of all scores in the database",
+    "Scan a random 1% sample of the players on every single request"
+   ],
+   "answerIndex": 0,
+   "explanation": "A histogram of counts per score bucket updates in O(1) and a percentile is the sum of buckets above you divided by the total, which is accurate to bucket width. Top-K only tracks heavy hitters, not every player's position, a nightly sort misses the one-second freshness need, and per-request sampling is expensive.",
+   "anchor": "deep-dives",
+   "reading": 1
+  },
+  {
+   "prompt": "ZREVRANK for player p42 returns 1204 (0-based from the top). The page should show 5 players above p42, p42 herself, and 5 players below. Which range read returns exactly those 11 entries?",
+   "options": [
+    "ZREVRANGE lb 1204 1214 WITHSCORES",
+    "ZREVRANGE lb 1194 1214 WITHSCORES",
+    "ZREVRANGE lb 1199 1204 WITHSCORES",
+    "ZREVRANGE lb 1199 1209 WITHSCORES"
+   ],
+   "answerIndex": 3,
+   "explanation": "Positions 1199 to 1209 inclusive are 5 above (1199-1203), p42 (1204) and 5 below (1205-1209), 11 entries. The call costs O(log N + 11) after the rank lookup, so it is cheap even at 10M members. In practice clamp the start at 0 for players near the top.",
+   "anchor": "api",
+   "reading": 0
+  },
+  {
+   "prompt": "A 100M-player board is split across 8 Redis shards by hashing the player id, each shard holding a sorted set of its own players. Select all statements that hold.",
+   "options": [
+    "Taking only the top 13 from each shard (100 / 8) is enough for the global top 100 because hashing balances load",
+    "The global top 100 needs the top 100 from every shard, merged",
+    "A player's exact global rank needs a count of higher-scoring members from every shard, summed",
+    "A single score update must be applied on every shard to keep ranks consistent"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    1,
+    2
+   ],
+   "explanation": "A shard can hold all of the top 100 by chance, so each shard must contribute 100 candidates before merging. Exact rank is a count of members with higher scores across all shards, a scatter-gather. An update only touches the shard that owns the player. This cost is why exact ranks get expensive at huge scale.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "Redis loses the sorted set after a failure with no usable snapshot. Select all sound ways to restore the board.",
+   "options": [
+    "Bulk-load each player's total from the scores database into a fresh sorted set",
+    "Ask each game client to re-submit the score it remembers locally",
+    "Replay the season's durable score events into a new sorted set",
+    "Let new score updates gradually repopulate the set and ignore players who are inactive"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    0,
+    2
+   ],
+   "explanation": "The durable store is the source of truth, so both loading totals and replaying events rebuild an exact board. Client-reported scores are untrusted and invite cheating, and letting traffic repopulate the set silently drops inactive players and produces wrong ranks for everyone below them.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "The sorted set should be treated as a rebuildable hot view, with the durable score history in a database or stream as the source of truth.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 0,
+   "explanation": "Redis gives fast ranks and top-N reads, but the board must survive a lost node, a bad deploy or an audit of suspicious scores. Keeping score events in a durable store lets you rebuild the sorted set at any time, so Redis can stay purely a serving structure.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "Reading the top 100 with ZREVRANGE takes time proportional to the total number of players, so with 10M players it needs a separate precomputed cache.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 1,
+   "explanation": "A skip-list-backed sorted set finds the start of the range in O(log N) and then walks the 100 entries, so the cost is O(log N + 100), nearly independent of 10M members. A precomputed copy is rarely needed for correctness, only perhaps to absorb very hot read traffic.",
+   "anchor": "deep-dives",
+   "reading": 0
+  }
+ ],
+ "hld:nearby-friends": [
+  {
+   "prompt": "At peak, 2M users are connected and each sends a location every 30 s. Each user has about 40 online, opted-in friends who must receive every update. Roughly how many pub/sub deliveries per second does the system perform?",
+   "options": [
+    "About 270,000",
+    "About 2.7 million",
+    "About 27 million",
+    "About 67,000"
+   ],
+   "answerIndex": 1,
+   "explanation": "2,000,000 / 30 is about 66,700 updates/s, and 66,700 x 40 is about 2.7 million deliveries/s. The 67,000 figure is just the publish rate, forgetting fan-out. The multiplier of online friends dominates the load, which is why it is the number to cap for very high-degree users.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "About 33,000 pings per second are written as 50-byte history rows, which is roughly 142 GB per day if every ping is kept. If you store only one of every six pings (about one every 3 minutes), roughly how much history per day results?",
+   "options": [
+    "About 2.4 GB",
+    "About 24 GB",
+    "About 140 GB",
+    "About 240 GB"
+   ],
+   "answerIndex": 1,
+   "explanation": "33,000 / 6 = 5,500 writes/s, x 50 B = 275 KB/s, x 86,400 s is about 23.8 GB per day, roughly a sixth of 142 GB. Sampling (or a short TTL) is how history stays affordable, and it also reduces the privacy exposure of stored trails.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "Why does the design fan out live locations through per-user Redis pub/sub channels instead of a Kafka topic per user?",
+   "options": [
+    "Redis pub/sub guarantees delivery and ordering for every subscriber, which Kafka topics cannot provide",
+    "Kafka topics cannot be created or removed while the cluster is running in production",
+    "Tens of millions of topics are impractical, while ephemeral channels are cheap and a lost update is harmless",
+    "Kafka cannot push messages to WebSocket gateways"
+   ],
+   "answerIndex": 2,
+   "explanation": "A channel in Redis is a lightweight in-memory subscription list with no stored history, which suits data that is replaced every 30 s. Per-user Kafka topics would mean tens of millions of partitions' worth of files and metadata. Redis pub/sub is actually at-most-once, and Kafka topics can be created dynamically.",
+   "anchor": "tradeoffs",
+   "reading": 0
+  },
+  {
+   "prompt": "User A publishes a new location. In the subscription-based design, what does the location service itself do to fan the update out?",
+   "options": [
+    "Reads A's friend list and loops over it, sending a message to each online friend's gateway in turn",
+    "Writes A's cache entry and publishes once to A's channel; Redis delivers to subscribed gateways",
+    "Queries a geohash index for every user near A and then sends a message to each of those users",
+    "Writes the update into every friend's inbox row and then waits for the clients to poll for it"
+   ],
+   "answerIndex": 1,
+   "explanation": "Friends' gateways subscribed to A's channel when they connected, so publish is a single operation and Redis performs the fan-out. Looping over 400 friends per update, or polling inboxes, puts the work and latency on the application tier. A geohash search is unnecessary because the friend list already bounds candidates.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "Clients send a location every 30 s. An engineer sets the loc:{userId} cache TTL to 25 s so that inactive users disappear quickly. What goes wrong?",
+   "options": [
+    "Nothing breaks; a shorter TTL only makes the friends list fresher and costs nothing extra",
+    "Active users expire between pings and flicker; the TTL should exceed about two intervals",
+    "Redis drops all pub/sub subscribers of a user whenever that user's cached key expires",
+    "Redis refuses TTLs shorter than a minute, so every location write fails with an error"
+   ],
+   "answerIndex": 1,
+   "explanation": "With a TTL below the update interval every user's entry lapses before the next ping, and a single lost update on a flaky network also evicts them. A TTL of about 60-120 s keeps active users visible through one missed ping while still clearing inactive ones without a cleanup job.",
+   "anchor": "data-model"
+  },
+  {
+   "prompt": "A gateway fleet is redeployed by restarting every node at once, and every client reconnects immediately. What is the risk, and what is the standard mitigation?",
+   "options": [
+    "Location data is permanently lost across the restart, so deploys must wait for acks=all",
+    "Friend lists go stale during the restart, so cache TTLs should be shortened to one second",
+    "Sticky routing breaks the WebSocket upgrade, so it should be disabled for the deploy",
+    "A reconnect storm overloads the balancer; drain nodes gradually and use jittered client backoff"
+   ],
+   "answerIndex": 3,
+   "explanation": "Millions of simultaneous reconnects each trigger auth, friend lookup and cache reads at the same instant. Draining gateways a few at a time spreads the load, and randomized (jittered) exponential backoff stops clients from retrying in lockstep. Location loss is not the issue, since the next ping repairs the state.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "Because of flaky networks, a client receives a friend update with ts=100 after it already showed the update with ts=130. What is the right handling?",
+   "options": [
+    "Apply it, because the most recently received message is always the most accurate one",
+    "Drop it, because only an update newer than the stored timestamp replaces the position",
+    "Average the two positions together to smooth the friend's apparent movement",
+    "Hold everything and sort it by arrival order at the server before showing it to the user"
+   ],
+   "answerIndex": 1,
+   "explanation": "Updates can be duplicated or reordered, so the timestamp decides which one wins: anything not newer than the stored value is discarded. Applying the late packet would move a friend backwards, and averaging produces a position the friend was never at. The system relies on the next ping anyway, so dropping is cheap.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "A user's phone loses signal and the app is killed, with no clean disconnect. Select all mechanisms that make the system cope.",
+   "options": [
+    "The gateway's heartbeat timeout detects the dead socket and cleans up the connection and its subscriptions",
+    "The location cache entry expires through its TTL, so the user drops out of friends' lists",
+    "The server waits for an explicit logout message before removing the user",
+    "The last known location stays visible until the user next sends an update",
+    "The gateway unsubscribes from the friends' channels when it closes the socket"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    0,
+    1,
+    4
+   ],
+   "explanation": "Mobile clients vanish without saying goodbye, so the server must detect it itself: heartbeats find dead sockets and closing them releases the subscriptions, while the TTL makes the user disappear without a cleanup job. Waiting for a logout, or keeping stale locations indefinitely, would leave ghosts and violate the privacy goal.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "Select all statements that are correct about geohash and quadtree indexes for finding nearby places.",
+   "options": [
+    "Two nearby points can have very different geohash prefixes if they sit on opposite sides of a cell boundary",
+    "A quadtree splits a crowded cell into four, so dense areas get finer cells than sparse ones",
+    "A geohash radius query needs only the point's own cell, with no neighbours",
+    "Friend lookup requires a geohash index because the candidate set is otherwise unbounded"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    0,
+    1
+   ],
+   "explanation": "A shared geohash prefix implies closeness but not the reverse, so a radius query scans the cell plus its 8 neighbours. Quadtrees adapt cell size to density at the price of an in-memory structure to maintain. Friend lookup does not need either index, because the friend list already bounds the candidates.",
+   "anchor": "deep-dives",
+   "reading": 1
+  },
+  {
+   "prompt": "Redis pub/sub keeps no history and can miss messages for a subscriber that is briefly disconnected, which is acceptable here because the next location update arrives within about 30 seconds.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 0,
+   "explanation": "Pub/sub is at-most-once with no replay. Since each ping replaces the previous one and the cache holds the latest position, a missed message is repaired by the next update or by the cache read on reconnect. Durable delivery would add cost for data nobody needs.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "Showing each friend an exact distance is safe because only mutual friends see it, so triangulation by a malicious friend is not a concern.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 1,
+   "explanation": "A friend can move around and read distances from several points, then intersect the circles to find the exact position. Mitigations are coarse distance buckets, rate limiting, and not exposing precise values, which is the accuracy versus leakage trade-off.",
+   "anchor": "tradeoffs"
+  }
+ ],
+ "hld:maps-navigation": [
+  {
+   "prompt": "A tile pyramid has 4^z tiles at zoom level z. You pre-generate every tile for zoom levels 0 through 10 inclusive and render deeper zooms on demand. About how many tiles are pre-generated?",
+   "options": [
+    "About 1.05 million",
+    "About 1.4 million",
+    "About 4.2 million",
+    "About 350 thousand"
+   ],
+   "answerIndex": 1,
+   "explanation": "Zoom 10 alone has 4^10 = 1,048,576 tiles, and levels 0-9 add about a third as many: the sum is (4^11 - 1)/3 = 1,398,101, roughly 1.4 million. Each level has 4x the previous one, which is why high zooms (zoom 21 is about 4.4 trillion) cannot be pre-rendered.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "1M location pings per second of about 100 bytes each land in Kafka, and the topic keeps 3 hours of data. Before replication, about how much storage is that?",
+   "options": [
+    "About 108 GB",
+    "About 1.1 TB",
+    "About 11 TB",
+    "About 360 GB"
+   ],
+   "answerIndex": 1,
+   "explanation": "100 B x 1M/s = 100 MB/s. Over 3 hours (10,800 s) that is 1,080,000 MB, about 1.1 TB. One hour is 360 GB, which is the tempting wrong answer. Replication would multiply this further, which is why the pings are aggregated quickly and only kept for hours.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "A map app wants rotation, smooth zoom and a dark theme without producing a separate tile set for each style. Which tile format fits, and what does it cost?",
+   "options": [
+    "Raster tiles at double resolution, re-rendered on the server for each requested style",
+    "Raster tiles, with the clients simply stretching and rotating the downloaded images",
+    "Vector tiles, but each style still needs its own pre-rendered tile set stored on the CDN",
+    "Vector tiles: the client renders them, in exchange for small payloads and easy restyling"
+   ],
+   "answerIndex": 3,
+   "explanation": "Vector tiles carry geometry and attributes (protobuf), so one tile set supports any style, rotation and smooth zoom, and the payload is smaller than a raster image. The cost is that the client must render. Raster tiles are baked images tied to one style, so each style or rotation means different assets.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "Dijkstra on a continental road graph explores far too many nodes for a cross-country query. What do contraction hierarchies do about it, and what is the main price?",
+   "options": [
+    "They sort roads by speed limit and search only highways, ignoring local roads even near the start and the end of a trip",
+    "They precompute shortcuts that skip minor nodes so queries climb to major roads; the price is preprocessing and live-traffic weights",
+    "They cache the answer for every origin and destination pair that has ever been requested before",
+    "They cut the graph into independent tiles and run Dijkstra on each, so routes cannot cross a tile border"
+   ],
+   "answerIndex": 1,
+   "explanation": "Shortcuts let a query touch only thousands of nodes instead of millions, but they are computed from edge weights, so live traffic invalidates them unless the variant can re-weight shortcuts quickly. The other options either ignore local roads, rely on a cache that cannot cover all pairs, or make cross-region routes impossible.",
+   "anchor": "deep-dives",
+   "reading": 1
+  },
+  {
+   "prompt": "The map data is updated, but tiles are served from a CDN with long cache lifetimes. How do you avoid serving stale tiles without invalidating everything?",
+   "options": [
+    "Purge the entire CDN cache every single time the map data is updated by the data team",
+    "Put the map version in the tile URL so new requests use new cache keys, leaving old tiles valid",
+    "Set the cache lifetime to only a few seconds so that every tile refreshes constantly",
+    "Have every client append a random query string to each tile request it makes"
+   ],
+   "answerIndex": 1,
+   "explanation": "Tiles are immutable per map version, so a versioned path (or tileset id) makes a new version a new cache key, with no purge and no cold CDN. A global purge causes a stampede on the origin, tiny lifetimes destroy the hit rate, and random query strings bypass the cache entirely.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "A driver starts a 3-hour trip right now. Which ETA computation is most sensible?",
+   "options": [
+    "Use live speeds on every edge of the route, because live data is always the freshest",
+    "Use posted speed limits only, since traffic conditions cannot be predicted reliably by any system",
+    "Use historical speeds for every edge of the route, ignoring live data entirely",
+    "Live speeds for nearby edges, historical weekday and time-of-day speeds for later edges"
+   ],
+   "answerIndex": 3,
+   "explanation": "The jam you see now at a segment 2 hours away may be gone by the time you reach it, so far-away edges use typical speeds for the expected arrival time, while nearby edges use live data. Live-only ignores the future, and historical-only ignores the incident right in front of the driver.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "The rerouting service finds a route that is 20 seconds faster for a driver, and traffic readings fluctuate every minute. What policy best balances ETA quality and driver experience?",
+   "options": [
+    "Push every faster route to the driver immediately, because the ETA should always be minimized",
+    "Never reroute during a trip, because ETAs are only estimates and not guarantees to the driver",
+    "Push a new route only when the saving beats a meaningful threshold, avoiding flip-flopping",
+    "Reroute only when the driver explicitly asks for a new route in the app"
+   ],
+   "answerIndex": 2,
+   "explanation": "Constantly switching between near-equal routes distracts drivers, confuses them and loads the servers with recomputations and pushes. A threshold, often with hysteresis, keeps reroutes for significant slowdowns where the saving justifies the interruption.",
+   "anchor": "tradeoffs"
+  },
+  {
+   "prompt": "The road graph is partitioned into geographic regions, each held in memory on one routing node. Select all statements that hold.",
+   "options": [
+    "Every routing node must keep the entire global graph in memory",
+    "Within a region the router can compute an exact route using only that node's memory",
+    "Cross-region trips use precomputed boundary-node distances and stitch the regional segments together",
+    "A closed bridge forces every region's graph to be rebuilt"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    1,
+    2
+   ],
+   "explanation": "Regions are sized to fit on one node, so intra-region routing is exact and local, and cross-region routes are stitched via boundary nodes. A map change rebuilds only the affected partition and its boundary shortcuts, and the new version is swapped in atomically, so global rebuilds and full-graph nodes are not needed.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "Navigation clients stream location data so the system can learn traffic. Select all sound design choices for this pipeline.",
+   "options": [
+    "Devices upload batched pings to save battery and radio use",
+    "Pings are snapped to road edges and aggregated into average speeds per edge per few-minute window",
+    "Every user's full GPS history is stored indefinitely to improve ETAs",
+    "Raw pings are kept briefly in Kafka, and only aggregates are retained long term",
+    "Each ping is written synchronously into the road graph's adjacency lists"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    0,
+    1,
+    3
+   ],
+   "explanation": "Batching cuts battery and bandwidth, map matching plus windowed aggregation turns noisy points into an edge-speed signal, and short retention limits both storage and privacy exposure. Indefinite per-user history is unnecessary and risky, and the routing graph is a read-optimized structure that is not mutated per ping.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "A* search with a heuristic that never overestimates the remaining travel time (such as straight-line distance at maximum speed) still returns an optimal route, while exploring fewer nodes than Dijkstra.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 0,
+   "explanation": "An admissible heuristic keeps A* optimal because it never discards a path that could be cheaper, and the heuristic steers the search toward the goal so fewer nodes are expanded. It is still too slow at global scale, which is why production systems add preprocessing such as contraction hierarchies.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "A map pyramid has 2^z tiles in total at zoom level z.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 1,
+   "explanation": "Each zoom level has 2^z columns and 2^z rows, so 4^z tiles in total. Each level quadruples the tile count, which is why the case keeps pre-generating only low zooms and renders high zooms lazily.",
+   "anchor": "deep-dives",
+   "reading": 0
+  }
+ ],
+ "hld:message-queue": [
+  {
+   "prompt": "A topic ingests 600 MB/s. One partition sustains about 30 MB/s on your brokers. Each consumer in the group can process at most 10 MB/s, and a partition is read by only one consumer in a group. What is the minimum partition count that satisfies both limits?",
+   "options": [
+    "20",
+    "40",
+    "60",
+    "600"
+   ],
+   "answerIndex": 2,
+   "explanation": "Write throughput needs at least 600 / 30 = 20 partitions. Consumption needs 600 / 10 = 60 consumers, and since each partition goes to a single consumer in the group you need at least 60 partitions. The larger requirement wins, and teams usually add headroom on top.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "Ingest is 500 MB/s and the topic uses replication factor 3. Followers fetch each byte from the leader. About how much additional replication traffic crosses the broker network per second?",
+   "options": [
+    "About 500 MB/s",
+    "About 1 GB/s",
+    "About 1.5 GB/s",
+    "About 250 MB/s"
+   ],
+   "answerIndex": 1,
+   "explanation": "Each byte is copied to 2 followers, so replication traffic is 2 x 500 MB/s = 1 GB/s. The 1.5 GB/s figure is total inbound traffic if you also count the producers' own writes. It is easy to forget that the network cost scales with replication factor minus one.",
+   "anchor": "estimates"
+  },
+  {
+   "prompt": "You must tolerate the loss of any single broker without losing an acknowledged message, while still accepting writes during that failure. Which settings do that?",
+   "options": [
+    "Replication factor 3, acks=all, min.insync.replicas=3",
+    "Replication factor 3, acks=1, min.insync.replicas=2",
+    "Replication factor 3, acks=all, min.insync.replicas=2",
+    "Replication factor 2, acks=all, min.insync.replicas=2"
+   ],
+   "answerIndex": 2,
+   "explanation": "With acks=all and min.insync.replicas=2 an ack means at least two replicas have the record, so one broker can fail without data loss and writes still succeed with two in sync. Requiring 3 (or using RF 2 with min 2) blocks writes when one broker is down, and acks=1 ignores min.insync.replicas and can lose the data.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "Orders are keyed by customerId so each customer's events stay ordered inside one partition. Later the topic grows from 12 to 24 partitions. What is the risk?",
+   "options": [
+    "Brokers reject keyed writes until the topic has been deleted and recreated",
+    "Existing records are automatically spread over the new partitions and redelivered to consumers",
+    "Ordering is unaffected, because Kafka remembers which partition each key was placed on before",
+    "The key-to-partition mapping changes, so new events for a customer can land on another partition"
+   ],
+   "answerIndex": 3,
+   "explanation": "The default partitioner computes a hash of the key modulo the partition count, so changing the count remaps keys. Order within one partition still holds, but a single customer's stream can be split across two partitions around the change. This is why partition counts are planned up front.",
+   "anchor": "tradeoffs"
+  },
+  {
+   "prompt": "A consumer commits its offset first and then processes the record. It crashes halfway through processing. After the restart, what happens to that record?",
+   "options": [
+    "It is skipped and effectively lost (at-most-once)",
+    "It is processed again, creating a duplicate (at-least-once)",
+    "The broker holds it until the consumer confirms completion",
+    "It is moved to a dead-letter topic automatically"
+   ],
+   "answerIndex": 0,
+   "explanation": "The committed offset says the record was handled, so the restarted consumer resumes after it and the work is never done. Committing after processing flips the failure into a possible duplicate, which idempotent consumers can tolerate. Brokers neither track completion of application work nor create dead-letter topics on their own.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "One record always makes the consumer throw. Retrying in place blocks its partition, and silently skipping hides the problem. What is the standard handling?",
+   "options": [
+    "Stop the whole consumer group until engineers have fixed the offending record by hand",
+    "Retry a few times, then send it to a dead-letter topic, commit past it and alert",
+    "Raise max.poll.interval.ms so that the consumer has more time to succeed eventually",
+    "Delete the partition that contains the record and then recreate it empty"
+   ],
+   "answerIndex": 1,
+   "explanation": "A dead-letter topic isolates the poison message so the rest of the partition keeps flowing, while keeping the bad record and its error for diagnosis or replay. Stopping the group halts healthy traffic, longer poll intervals do not fix a deterministic failure, and deleting a partition destroys unrelated records.",
+   "anchor": "probes"
+  },
+  {
+   "prompt": "A consumer's handler takes up to 6 minutes per batch, but the maximum allowed gap between poll calls is 5 minutes. The group keeps rebalancing. What is the most likely cause and fix?",
+   "options": [
+    "The brokers are running out of disk space, so add more brokers to the cluster",
+    "The member misses the poll deadline and is evicted; use smaller batches or a longer interval",
+    "There are more consumers than partitions, so remove some of the extra consumers",
+    "The internal offsets topic is corrupt, so it has to be deleted and recreated"
+   ],
+   "answerIndex": 1,
+   "explanation": "A consumer that does not call poll within max.poll.interval.ms is considered failed, so the coordinator removes it and triggers a rebalance, and it rejoins and gets removed again. Reducing batch size, speeding up the handler or raising the interval fixes it. Extra consumers simply sit idle without triggering loops.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "A topic carries the latest profile record per user id, and a new service must rebuild its in-memory state by reading it from the beginning. Retention by time would drop users who have not changed recently. Which cleanup policy fits?",
+   "options": [
+    "Delete retention with a very long time window, such as several years of data",
+    "Delete retention based on total topic size only, ignoring the age of the records entirely",
+    "No cleanup at all, so that every record is kept forever",
+    "Log compaction, keeping the latest record per key and using tombstones for deletes"
+   ],
+   "answerIndex": 3,
+   "explanation": "Compaction guarantees at least the latest value for each key survives, so a full read rebuilds current state, and tombstones delete keys. Time or size retention eventually removes the only record for quiet keys, and keeping everything forever grows without bound while retaining obsolete versions.",
+   "anchor": "tradeoffs"
+  },
+  {
+   "prompt": "Select all statements that are correct about exactly-once behaviour in Kafka-style systems.",
+   "options": [
+    "Idempotent producers use a producer id and sequence numbers so the broker can drop a retried duplicate batch",
+    "Transactions let a consume-process-produce loop atomically write output records and commit its input offsets",
+    "Exactly-once also covers any side effects the consumer performs in an external database",
+    "With transactions on, consumers no longer need idempotent logic for external systems"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    0,
+    1
+   ],
+   "explanation": "Idempotence handles duplicates from producer retries, and transactions make read-process-write within Kafka atomic. A write to an outside database is not part of that transaction, so the consumer still needs idempotency or an outbox. The network cannot give true exactly-once delivery, only effectively-once processing.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "Select all reasons why a log-structured broker can sustain very high throughput.",
+   "options": [
+    "Appends are sequential, which disks and SSDs handle at near hardware speed",
+    "Recent data is served from the OS page cache, and sendfile moves bytes to the socket without copying through user space",
+    "Every message is individually fsynced to guarantee durability before the next append",
+    "Producers batch and compress many records so the per-message overhead is amortized",
+    "The broker keeps all messages in a large in-heap cache and avoids disk reads"
+   ],
+   "type": "multi",
+   "answerIndices": [
+    0,
+    1,
+    3
+   ],
+   "explanation": "Sequential appends, reliance on the page cache with zero-copy sends, and batching plus compression are the main throughput levers. Kafka does not fsync every message (durability comes from replication), and it deliberately avoids a large heap cache, leaning on the kernel instead.",
+   "anchor": "deep-dives",
+   "reading": 0
+  },
+  {
+   "prompt": "A consumer group can increase its parallelism beyond the topic's partition count simply by adding more consumers.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 1,
+   "explanation": "Within a group each partition is assigned to exactly one consumer, so consumers beyond the partition count sit idle. To scale further you must add partitions, which is why partition count caps consumer parallelism and has to be planned.",
+   "anchor": "deep-dives"
+  },
+  {
+   "prompt": "With acks=all, the leader waits until every replica assigned to the partition has the message, including replicas that have fallen out of the in-sync set.",
+   "options": [
+    "True",
+    "False"
+   ],
+   "type": "truefalse",
+   "answerIndex": 1,
+   "explanation": "The leader waits for the members of the in-sync replica set only. Lagging replicas are removed from it, which keeps one slow follower from blocking writes. If the set shrinks below min.insync.replicas, the broker rejects the write rather than risk loss.",
+   "anchor": "deep-dives",
+   "reading": 0
+  }
+ ]
+}

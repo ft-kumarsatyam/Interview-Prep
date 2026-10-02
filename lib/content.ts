@@ -3,10 +3,14 @@
  * read-only fallback for pages that don't need progress data.
  */
 import problemsJson from "@/data/dsa-problems.json";
+import testcasesJson from "@/data/dsa-testcases.json";
+import practiceCasesJson from "@/data/os-dbms-cases.json";
 import newsJson from "@/data/news-sources.json";
 import syllabusJson from "@/data/syllabus.json";
 import systemDesignJson from "@/data/system-design.json";
 import type { DesignSectionId } from "./domain/design";
+import { normaliseHints, type ArgType, type CompareMode, type HintLevel, type ReturnKind, type TestCase } from "./domain/dsa-runner";
+import type { PracticeKind } from "./domain/practice-cases";
 import type { ProblemTrack } from "./domain/planner";
 
 export type Difficulty = "Easy" | "Medium" | "Hard";
@@ -17,6 +21,8 @@ export interface ContentProblem {
   leetcodeId: number;
   difficulty: Difficulty;
   pattern: string;
+  /** Sheet-view step, when it differs from `pattern` (e.g. re-slotted into "Basics & Complexity"). Falls back to `pattern` — see lib/domain/dsa-sheet.ts. */
+  step?: string;
   track: ProblemTrack;
   tier: "core" | "extended";
   url: string;
@@ -65,8 +71,13 @@ export interface DesignBlock {
   keywords: string[];
 }
 
+/** Display order of the /design case groups, mirroring the table of contents of the Alex Xu books. */
+export const DESIGN_CATEGORIES = ["Core & Scaling", "Social & Feed", "Media & Realtime", "Storage & Data", "Payments & Commerce", "Specialized / Vol 2"] as const;
+export type DesignCategory = (typeof DESIGN_CATEGORIES)[number];
+
 export interface DesignCase {
   slug: string;
+  category: DesignCategory;
   title: string;
   topicId: string;
   practiceRef: string;
@@ -87,6 +98,27 @@ export interface DesignCase {
   readings: Array<{ title: string; url: string }>;
 }
 
+/** An OS or DBMS "explain it" practice case — the /design/os and /design/dbms studios. */
+export interface PracticeCase {
+  kind: PracticeKind;
+  slug: string;
+  title: string;
+  topicId: string;
+  practiceRef: string;
+  level: "core" | "advanced";
+  summary: string;
+  keywords: string[];
+  /** The interview question(s), as an interviewer would ask them. */
+  prompt: string[];
+  /** What a strong answer covers. */
+  talkingPoints: string[];
+  /** Optional Mermaid flowchart source (trusted repo content). */
+  diagram?: string;
+  tradeoffs: string[];
+  probes: string[];
+  readings: Array<{ title: string; url: string }>;
+}
+
 export const systemDesign = {
   framework: systemDesignJson.framework as {
     steps: DesignStep[];
@@ -100,7 +132,31 @@ export const systemDesign = {
 export const designCaseBySlug = new Map(systemDesign.cases.map((c) => [c.slug, c]));
 export const designBlockById = new Map(systemDesign.blocks.map((b) => [b.id, b]));
 
+export const practiceCases = (practiceCasesJson as { cases: PracticeCase[] }).cases;
+export const practiceCaseBySlug = new Map(practiceCases.map((c) => [`${c.kind}:${c.slug}`, c]));
+
+export type ProblemTestCase = TestCase;
+
+/** One problem's runner content. Older (v1) entries had flat string hints and no edge tags; both still read fine. */
+export interface ProblemTestcaseEntry {
+  version?: 2;
+  signature: { functionName: string; params: string[]; returnType: string };
+  starter: string;
+  argTypes?: ArgType[];
+  returns?: ReturnKind;
+  compare?: CompareMode;
+  cases: ProblemTestCase[];
+  hints: HintLevel[];
+}
+
+type RawTestcaseEntry = Omit<ProblemTestcaseEntry, "hints"> & { hints: Array<string | HintLevel> };
+
+function loadTestcases(raw: Record<string, RawTestcaseEntry>): Map<string, ProblemTestcaseEntry> {
+  return new Map(Object.entries(raw).map(([slug, e]) => [slug, { ...e, hints: normaliseHints(e.hints) }]));
+}
+
 export const problems = problemsJson as ContentProblem[];
+export const testcaseBySlug = loadTestcases(testcasesJson as unknown as Record<string, RawTestcaseEntry>);
 export const tracks = (syllabusJson.tracks as ContentTrack[]).toSorted((a, b) => a.order - b.order);
 export const topics = syllabusJson.topics as ContentTopic[];
 

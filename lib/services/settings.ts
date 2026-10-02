@@ -2,11 +2,16 @@ import { news } from "@/lib/content";
 import { connectDb } from "@/lib/db";
 import { toLocalDate } from "@/lib/domain/dates";
 import { DEFAULT_SETTINGS, type PlanSettings } from "@/lib/domain/plan-config";
+import { DEFAULT_PAID_SETTINGS, type PaidSettings } from "@/lib/domain/llm-router";
+import { checkGeminiLink, isAskSubject, type AskSubject } from "@/lib/domain/ask-subjects";
+import { DEFAULT_HOURS } from "@/lib/domain/time-budget";
 import { mergeRestDays, normaliseQueries, type SettingsInput } from "@/lib/domain/settings";
 import { env } from "@/lib/env";
 import { Settings, SETTINGS_ID } from "@/lib/models/system";
 
 export interface AppSettings extends PlanSettings {
+  llmPaid: PaidSettings;
+  geminiLinks: Partial<Record<AskSubject, string>>;
   freezeTokens: number;
   settledThrough: string | null;
   topicMasteryPct: number;
@@ -46,6 +51,13 @@ export async function getSettings(): Promise<AppSettings> {
     maxDailyTheory: doc.maxDailyTheory ?? DEFAULT_SETTINGS.maxDailyTheory,
     revisionWeeks: doc.revisionWeeks ?? DEFAULT_SETTINGS.revisionWeeks,
     restDays: doc.restDays ?? [],
+    hoursByDow: doc.hoursByDow?.length === 7 ? [...doc.hoursByDow] : [...DEFAULT_HOURS],
+    llmPaid: {
+      enabled: doc.llmPaidEnabled ?? DEFAULT_PAID_SETTINGS.enabled,
+      dailyCap: doc.llmPaidDailyCap ?? DEFAULT_PAID_SETTINGS.dailyCap,
+      requireConfirm: doc.llmPaidRequireConfirm ?? DEFAULT_PAID_SETTINGS.requireConfirm,
+    },
+    geminiLinks: cleanLinks(doc.geminiLinks),
     freezeTokens: doc.freezeTokens ?? 0,
     settledThrough: doc.settledThrough ?? null,
     topicMasteryPct: doc.topicMasteryPct ?? 70,
@@ -80,6 +92,7 @@ export type SettingsPatch = Partial<
     | "maxDailyTheory"
     | "revisionWeeks"
     | "restDays"
+    | "hoursByDow"
     | "topicMasteryPct"
     | "leetcodeUsername"
     | "googleNewsQueries"
@@ -114,6 +127,11 @@ export async function saveSettings(input: SettingsInput, now = new Date()): Prom
         maxDailyTheory: input.maxDailyTheory,
         revisionWeeks: input.revisionWeeks,
         restDays: mergeRestDays(current.restDays, input.restDays, today),
+        ...(input.hoursByDow ? { hoursByDow: input.hoursByDow } : {}),
+        ...(input.geminiLinks ? { geminiLinks: normaliseLinks(input.geminiLinks) } : {}),
+        ...(input.llmPaidEnabled !== undefined ? { llmPaidEnabled: input.llmPaidEnabled } : {}),
+        ...(input.llmPaidDailyCap !== undefined ? { llmPaidDailyCap: input.llmPaidDailyCap } : {}),
+        ...(input.llmPaidRequireConfirm !== undefined ? { llmPaidRequireConfirm: input.llmPaidRequireConfirm } : {}),
         googleNewsQueries: normaliseQueries(input.googleNewsQueries, news.googleNews.defaultQueries.map((q) => q.query)),
         leetcodeUsername: input.leetcodeUsername,
         ...(leetcodeChanged ? { leetcodeLastSyncAt: null, leetcodeSeenIds: [], leetcodeLastError: null } : {}),
@@ -122,4 +140,21 @@ export async function saveSettings(input: SettingsInput, now = new Date()): Prom
     { upsert: true },
   );
   return getSettings();
+}
+
+/** A lean Map comes back as a plain object; keep only known subjects with valid links. */
+function cleanLinks(raw: unknown): Partial<Record<AskSubject, string>> {
+  const entries = raw instanceof Map ? [...raw] : Object.entries((raw ?? {}) as Record<string, unknown>);
+  const out: Partial<Record<AskSubject, string>> = {};
+  for (const [subject, value] of entries) {
+    if (!isAskSubject(subject) || typeof value !== "string") continue;
+    const check = checkGeminiLink(value);
+    if (check.ok && check.url) out[subject] = check.url;
+  }
+  return out;
+}
+
+/** Validated form links: normalised, blanks dropped. */
+function normaliseLinks(input: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(cleanLinks(input)));
 }

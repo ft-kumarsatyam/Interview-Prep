@@ -19,6 +19,7 @@ import { LLM_PROVIDERS, type LlmProviderName } from "@/lib/llm/types";
 import { fromLlm, subtopicPrompt } from "@/lib/quiz/prompts";
 import { llmQuizSchema, quizBankSchema, quizQuestionSchema, type QuizBank, type QuizQuestion } from "@/lib/quiz/question";
 import { CONCEPTS } from "./quiz-bank/concepts";
+import { FORMAT_QUESTIONS } from "./quiz-bank/formats";
 import { OUTPUT_SNIPPETS } from "./quiz-bank/output-snippets";
 import { NO_RECOGNITION, PATTERN_FACTS } from "./quiz-bank/patterns";
 import { runSnippet } from "./quiz-bank/run-snippet";
@@ -128,6 +129,24 @@ function conceptQuestions(): QuizQuestion[] {
       source: { kind: isPattern ? "pattern" : "subtopic", ref },
       style: "concept",
     });
+  });
+}
+
+/** Multi-select and true/false questions. They don't count toward a subtopic's recall top-up, so adding them never changes the recall set. */
+function formatQuestions(): QuizQuestion[] {
+  return FORMAT_QUESTIONS.map((f) => {
+    if (!subtopicById.has(f.ref)) throw new Error(`unknown subtopic ${f.ref}`);
+    const common = {
+      id: hashId("format", f.type, f.ref, f.prompt),
+      prompt: f.prompt,
+      explanation: f.explanation,
+      source: { kind: "subtopic" as const, ref: f.ref },
+      style: "concept" as const,
+    };
+    if (f.type === "multi") {
+      return quizQuestionSchema.parse({ ...common, type: "multi", options: f.options, answerIndex: f.answers[0], answerIndices: f.answers });
+    }
+    return quizQuestionSchema.parse({ ...common, type: "truefalse", options: ["True", "False"], answerIndex: f.answer ? 0 : 1 });
   });
 }
 
@@ -278,6 +297,7 @@ async function main() {
   const output = await outputQuestions();
   const concept = conceptQuestions();
   const pattern = patternQuestions();
+  const formats = formatQuestions();
   const base = [...output, ...concept, ...pattern];
   const fresh = args.has("llm") ? await llmTopUp(base, keptLlm) : [];
 
@@ -288,14 +308,14 @@ async function main() {
   const recall = recallQuestions(counts);
 
   const byId = new Map<string, QuizQuestion>();
-  for (const q of [...base, ...keptLlm, ...fresh, ...recall]) byId.set(q.id, q);
+  for (const q of [...base, ...formats, ...keptLlm, ...fresh, ...recall]) byId.set(q.id, q);
   const bank: QuizBank = { version: 1, generatedAt: new Date().toISOString(), questions: [...byId.values()] };
   quizBankSchema.parse(bank);
   writeFileSync(OUT, `${JSON.stringify(bank, null, 1)}\n`);
 
   console.log(
     `quiz bank: ${bank.questions.length} questions → ${path.relative(process.cwd(), OUT)}\n` +
-      `  output ${output.length} (vm-verified) · concept ${concept.length} · pattern ${pattern.length} · llm ${keptLlm.length + fresh.length} · recall ${recall.length}`,
+      `  output ${output.length} (vm-verified) · concept ${concept.length} · formats ${formats.length} · pattern ${pattern.length} · llm ${keptLlm.length + fresh.length} · recall ${recall.length}`,
   );
 }
 

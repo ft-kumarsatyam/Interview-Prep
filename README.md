@@ -67,7 +67,7 @@ tests/                 ← Vitest: domain (pure) + services (in-memory MongoDB)
    - *Connect → Drivers* → copy the URI and add `/prepos` before the `?`.
 2. **GitHub + Vercel (Hobby):** to deploy.
 3. **Optional:**
-   - A free Gemini API key (Google AI Studio) or Groq key for AI-generated quizzes. Without one, quizzes come from `data/quiz-bank.json`.
+   - A free Gemini API key (Google AI Studio) and/or a Groq key for AI-written quizzes, hints and explanations. Without one, everything falls back to `data/quiz-bank.json` and static explanations. A Gemini app/Gems subscription is a separate thing and is not an API key.
    - A Telegram bot (via @BotFather) and/or a Resend account for reminders outside the app.
    - A **public** LeetCode profile for auto-sync. No login or cookie is needed.
 
@@ -129,7 +129,9 @@ Pick an idea from the bottom of `docs/BUILD_PLAN.md`, check it works, commit.
    | `APP_TIMEZONE` | ✅ | `Asia/Kolkata` |
    | `CRON_SECRET` | ✅ | `openssl rand -hex 32`. Vercel Cron sends it as `Authorization: Bearer …` |
    | `LEETCODE_USERNAME` | optional | seeds the username on first run (e.g. `imksatyam`); later edits happen in */settings*. Set it in Vercel too, or sync stays off until you enter it in Settings |
-   | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` | optional | AI quizzes; falls back to the bank |
+   | `GEMINI_API_KEY`, `GROQ_API_KEY` (+ optional `GEMINI_MODEL`, `GROQ_MODEL`) | optional | Free AI providers, tried in order with automatic failover; `LLM_CHAIN` sets the order |
+   | `META_LLAMA_API_KEY`, `META_LLAMA_BASE_URL`, `META_LLAMA_MODEL` | optional | A **paid** last resort. Never used by background jobs and only after you confirm in the app; Settings has a daily call cap |
+   | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` | optional | The older single-provider setup, still supported |
    | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional | push reminders to Telegram |
    | `RESEND_API_KEY`, `NOTIFY_EMAIL` | optional | push reminders by email |
 

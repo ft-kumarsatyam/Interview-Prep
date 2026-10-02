@@ -46,7 +46,7 @@ export function SubtopicChecklist({
       {items.map((item) => {
         const checked = done.has(item.id);
         return (
-          <li key={item.id} className="rounded-lg px-2 py-1.5 hover:bg-muted/50">
+          <li key={item.id} className="rounded-lg px-2 py-2 hover:bg-muted/50 sm:py-1.5">
             <label className="flex cursor-pointer items-start gap-3">
               <Checkbox checked={checked} onCheckedChange={() => onToggle(item.id)} className="mt-0.5" />
               <span className="min-w-0 flex-1">

@@ -6,6 +6,7 @@ import {
   eachDay,
   isDateStr,
   saturdayOfWeek,
+  startOfNextLocalDayMs,
   toLocalDate,
   weekNumber,
 } from "@/lib/domain/dates";
@@ -47,5 +48,24 @@ describe("date arithmetic", () => {
     expect(isDateStr("2026-10-05")).toBe(true);
     expect(isDateStr("2026-02-30")).toBe(false);
     expect(isDateStr("5-10-2026")).toBe(false);
+  });
+});
+
+describe("startOfNextLocalDayMs", () => {
+  it("finds local midnight in Asia/Kolkata (UTC+5:30)", () => {
+    const ms = startOfNextLocalDayMs(new Date("2026-10-05T12:00:00Z"), "Asia/Kolkata");
+    expect(new Date(ms).toISOString().slice(0, 16)).toBe("2026-10-05T18:30");
+  });
+
+  it("rolls over exactly when the local date changes", () => {
+    const now = new Date("2026-10-05T18:29:00Z");
+    const ms = startOfNextLocalDayMs(now, "Asia/Kolkata");
+    expect(toLocalDate(new Date(ms - 2000), "Asia/Kolkata")).toBe("2026-10-05");
+    expect(toLocalDate(new Date(ms + 1000), "Asia/Kolkata")).toBe("2026-10-06");
+  });
+
+  it("handles a DST change day (25-hour day in America/New_York)", () => {
+    const ms = startOfNextLocalDayMs(new Date("2026-11-01T12:00:00Z"), "America/New_York");
+    expect(new Date(ms).toISOString().slice(0, 13)).toBe("2026-11-02T05"); // midnight EST = 05:00Z
   });
 });

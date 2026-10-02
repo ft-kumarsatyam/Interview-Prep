@@ -1,8 +1,9 @@
 import { problems, topics } from "@/lib/content";
 import { connectDb } from "@/lib/db";
-import { buildChecklist, type SetupChecklist } from "@/lib/domain/setup";
+import { buildChecklist, type SetupChecklist, type SetupInput } from "@/lib/domain/setup";
 import { env } from "@/lib/env";
 import { leetcodeClient, type LeetCodeClient } from "@/lib/leetcode/client";
+import { describeProviders, resolveProviders } from "@/lib/llm/providers";
 import { Problem, Topic } from "@/lib/models/content";
 import { newsSources } from "./news";
 import { getSettings } from "./settings";
@@ -42,8 +43,20 @@ export async function getSetupChecklist(opts: SetupOptions): Promise<SetupCheckl
     jobs: { lastMorningAt: s.lastMorningRunAt, lastEveningAt: s.lastEveningRunAt },
     news: { lastFetchAt: s.newsLastFetchAt, failed: s.newsLastFailed.length, feeds: newsSources(s.googleNewsQueries).length },
     notify: { telegram: !!(e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_CHAT_ID), email: !!(e.RESEND_API_KEY && e.NOTIFY_EMAIL) },
-    llm: { configured: !!e.LLM_API_KEY, provider: e.LLM_API_KEY ? (e.LLM_PROVIDER ?? "gemini") : null },
+    llm: llmStatus(e),
     backup: { lastExportAt: s.lastExportAt },
     session: { remember: opts.remember },
   });
+}
+
+function llmStatus(e: ReturnType<typeof env>): SetupInput["llm"] {
+  const defs = resolveProviders(e);
+  const free = defs.filter((d) => !d.paid).map((d) => d.label);
+  const paid = describeProviders(e).find((p) => p.id === "meta");
+  return {
+    configured: free.length > 0,
+    provider: free[0] ?? null,
+    free,
+    paid: { label: "Meta Llama (paid)", ready: !!paid?.configured, missing: paid?.missing ?? [] },
+  };
 }

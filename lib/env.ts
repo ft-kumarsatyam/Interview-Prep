@@ -12,6 +12,16 @@ const schema = z.object({
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string().optional(),
   LLM_BASE_URL: z.string().optional(),
+  /** Provider order, comma separated. Default "gemini,groq,meta". The paid provider is always tried last. */
+  LLM_CHAIN: z.string().optional(),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().optional(),
+  GROQ_API_KEY: z.string().optional(),
+  GROQ_MODEL: z.string().optional(),
+  /** Paid last resort. Needs all three: key, an OpenAI-compatible base URL and a model id. */
+  META_LLAMA_API_KEY: z.string().optional(),
+  META_LLAMA_BASE_URL: z.string().optional(),
+  META_LLAMA_MODEL: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
   LEETCODE_USERNAME: z.string().regex(/^[\w-]{1,40}$/).optional(),
@@ -35,4 +45,9 @@ export function env(): Env {
   }
   cached = parsed.data;
   return cached;
+}
+
+/** Test seam: drop the cached env so a test can change process.env. */
+export function resetEnvForTests(): void {
+  cached = undefined;
 }

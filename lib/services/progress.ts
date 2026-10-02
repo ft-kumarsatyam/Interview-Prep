@@ -1,4 +1,4 @@
-import { problemBySlug, subtopicById } from "@/lib/content";
+import { problemBySlug, subtopicById, testcaseBySlug } from "@/lib/content";
 import { connectDb } from "@/lib/db";
 import type { DateStr } from "@/lib/domain/dates";
 import { applySolve } from "@/lib/domain/progress";
@@ -65,6 +65,22 @@ export async function recordSolve(input: SolveInput) {
     { upsert: true },
   );
   return recomputeDay(input.date);
+}
+
+/** Upserts a bare "attempted" row for a Run or a failed Submit. Never downgrades an already-solved problem. */
+export async function markAttempted(slug: string): Promise<void> {
+  if (!problemBySlug.has(slug)) throw new Error(`Unknown problem: ${slug}`);
+  await connectDb();
+  await ProblemProgress.updateOne({ slug }, { $setOnInsert: { status: "attempted" } }, { upsert: true });
+}
+
+/** Reveals one hidden test case for good. Only an index that really is hidden counts, so this can't be used to probe other data. */
+export async function revealHiddenCase(slug: string, index: number): Promise<boolean> {
+  const entry = testcaseBySlug.get(slug);
+  if (!entry || !Number.isInteger(index) || !entry.cases[index]?.hidden) return false;
+  await connectDb();
+  await ProblemProgress.updateOne({ slug }, { $addToSet: { revealedCases: index }, $setOnInsert: { status: "attempted" } }, { upsert: true });
+  return true;
 }
 
 export async function saveProblemNotes(slug: string, notes: string): Promise<void> {

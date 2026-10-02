@@ -1,10 +1,9 @@
 "use server";
 
 import { refresh } from "next/cache";
-import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/lib/auth/dal";
-import { getLlm } from "@/lib/llm";
+import { testProviders } from "@/lib/services/ai-test";
 import { runMorning } from "@/lib/services/cron";
 
 export async function runMorningAction(): Promise<ActionResult<{ message: string }>> {
@@ -17,19 +16,19 @@ export async function runMorningAction(): Promise<ActionResult<{ message: string
     : { ok: true, message: "Morning job ran: news refreshed, plan built, LeetCode synced" };
 }
 
-const probeSchema = z.object({ question: z.string().min(5).max(300), answer: z.string().min(1).max(200) });
-
+/** Tests every configured FREE provider (the paid one is never called from here). */
 export async function testLlmAction(): Promise<ActionResult<{ message: string }>> {
   await requireSession();
-  const llm = getLlm();
-  if (!llm) return { ok: false, error: "LLM_API_KEY isn't set" };
-  try {
-    const res = await llm.generateJson(
-      'Write one short interview question about JavaScript closures and its one-line answer. Reply with JSON only: {"question": "...", "answer": "..."}',
-      probeSchema,
-    );
-    return { ok: true, message: `${llm.name} replied: "${res.question.slice(0, 120)}"` };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message.slice(0, 200) : "LLM call failed" };
-  }
+  const results = await testProviders({ includePaid: false });
+  if (results.length === 0) return { ok: false, error: "No free AI provider is configured (set GEMINI_API_KEY or GROQ_API_KEY)" };
+  const message = results.map((r) => `${r.label}: ${r.ok ? "ok" : "failed"}, ${r.detail}`).join(" | ");
+  return results.some((r) => r.ok) ? { ok: true, message } : { ok: false, error: message.slice(0, 400) };
+}
+
+/** Calls the paid provider once. Costs a small amount and counts toward the daily cap, so it only runs on an explicit click. */
+export async function testPaidLlmAction(): Promise<ActionResult<{ message: string }>> {
+  await requireSession();
+  const [result] = (await testProviders({ includePaid: true })).filter((r) => r.paid);
+  if (!result) return { ok: false, error: "The paid provider isn't configured (needs META_LLAMA_API_KEY, META_LLAMA_BASE_URL and META_LLAMA_MODEL)" };
+  return result.ok ? { ok: true, message: `${result.label} ${result.detail}` } : { ok: false, error: `${result.label}: ${result.detail}` };
 }

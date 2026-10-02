@@ -1,0 +1,1029 @@
+{
+ "cases": [
+  {
+   "kind": "os",
+   "slug": "cpu-scheduling-tradeoffs",
+   "title": "CPU scheduling: FCFS, SJF, priority, round robin, MLFQ",
+   "topicId": "os-process-thread",
+   "practiceRef": "os-process-thread:3",
+   "level": "core",
+   "summary": "Tests whether you can tie each scheduling policy to a metric (turnaround, response time, fairness) and explain why real kernels end up with feedback queues or a fair-share design.",
+   "keywords": [
+    "scheduling",
+    "fcfs",
+    "sjf",
+    "round robin",
+    "mlfq",
+    "convoy effect",
+    "starvation",
+    "cfs"
+   ],
+   "prompt": [
+    "Compare FCFS, SJF, priority and round-robin scheduling. When would you pick each?",
+    "How does the Linux scheduler decide which task runs next, and how does it avoid starving low-priority work?"
+   ],
+   "talkingPoints": [
+    "Start by naming the metrics, because every policy optimises a different one: turnaround time (completion minus arrival), waiting time, response time (first run minus arrival), throughput and fairness. Batch systems care about turnaround, interactive systems care about response time, and you cannot maximise both with one knob.",
+    "FCFS is a FIFO queue and is non-preemptive, so it is trivially simple but suffers the convoy effect. Take bursts of 24, 3 and 3 ms arriving in that order: waits are 0, 24 and 27 (average 17 ms). Run the same jobs shortest first (3, 3, 24) and the waits are 0, 3 and 6 (average 3 ms). One long CPU-bound job in front makes every short or I/O-bound job wait behind it.",
+    "SJF (or its preemptive form SRTF) is provably optimal for average waiting time, but it needs to know the next burst length. Real systems predict it with exponential averaging, tau_next = alpha * last_burst + (1 - alpha) * tau_prev. Its weakness is starvation: a steady stream of short jobs can postpone a long one forever.",
+    "Priority scheduling generalises SJF (priority = 1 / predicted burst is SJF) and is how you express 'this matters more'. Starvation is fixed with aging: raise a task's priority the longer it waits. Mention priority inversion (low-priority holder of a lock blocks a high-priority waiter) and priority inheritance as the fix, with the Mars Pathfinder reset as the classic story.",
+    "Round robin gives each runnable task a quantum and rotates, which bounds response time at roughly (n - 1) * q for n tasks. On the 24/3/3 example with q = 4 ms: the 3 ms jobs finish at 7 and 10 ms and the long one at 30 ms, with first-run times 0, 4 and 7 ms. The quantum is a tuning trade: too large degenerates to FCFS, too small and context-switch overhead dominates. A common rule of thumb is that most bursts should be shorter than the quantum.",
+    "MLFQ is how you get SJF-like behaviour without knowing burst lengths. Several queues with different priorities and quanta; new jobs start at the top, a job that burns its whole quantum is demoted, a job that yields early (I/O-bound, interactive) stays high. Add a periodic priority boost to prevent starvation and per-level time accounting so a program cannot game it by issuing an I/O just before its quantum ends (OSTEP's rules 4 and 5).",
+    "Linux's CFS (the default for normal tasks from 2.6.23) drops explicit queues. Each task tracks vruntime, the CPU time it has received scaled inversely by its weight (derived from nice). A red-black tree keyed on vruntime lets the scheduler pick the leftmost node in O(log n), and a task that has run a lot drifts right. Sleepers wake with vruntime clamped near the queue minimum, so interactive tasks get picked quickly without being able to bank unlimited credit.",
+    "Close with the practical layering: Linux runs real-time classes (SCHED_FIFO, SCHED_RR, SCHED_DEADLINE) above the fair class, nice values and cgroup cpu.weight set shares, and kernels 6.6 and later replaced CFS's pick logic with EEVDF (earliest eligible virtual deadline first), which keeps the virtual-time idea but adds an explicit latency target per task."
+   ],
+   "diagram": "flowchart TD\n  N[New task] --> Q1[Top queue short quantum]\n  Q1 -->|uses full quantum| Q2[Middle queue longer quantum]\n  Q2 -->|uses full quantum| Q3[Bottom queue longest quantum]\n  Q1 -->|blocks early for IO| W[Wait for IO]\n  Q2 -->|blocks early for IO| W\n  W -->|IO done| Q1\n  Q3 -->|periodic boost| Q1",
+   "tradeoffs": [
+    "SJF minimises average waiting time but needs burst prediction and starves long jobs; fairness costs you some average latency.",
+    "Round robin quantum: small gives better response time but more context switches and cache pollution, large gives better throughput but worse interactivity.",
+    "Strict priority gives predictable treatment for important work but invites starvation and priority inversion unless you add aging and priority inheritance.",
+    "MLFQ adapts to behaviour without prior knowledge but has many tunables (queue count, quanta, boost period) and can be gamed by adversarial programs.",
+    "Fair-share designs like CFS optimise long-run fairness, not hard latency guarantees; real-time workloads need a separate class."
+   ],
+   "probes": [
+    "Why is SJF optimal for average waiting time, and how would you prove it with an exchange argument?",
+    "What happens to a CPU-bound task and an I/O-bound task sharing one core under CFS? Walk through their vruntimes.",
+    "How would a program game a naive MLFQ, and what rule stops it?",
+    "What is priority inversion and how does priority inheritance fix it?",
+    "How does context-switch cost change your choice of time quantum?",
+    "How do nice values and cgroup cpu limits interact on a container host?"
+   ],
+   "readings": [
+    {
+     "title": "OSTEP: Scheduling introduction",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched.pdf"
+    },
+    {
+     "title": "OSTEP: Multi-level feedback queue",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-mlfq.pdf"
+    },
+    {
+     "title": "Linux kernel: CFS scheduler design",
+     "url": "https://www.kernel.org/doc/html/latest/scheduler/sched-design-CFS.html"
+    }
+   ]
+  },
+  {
+   "kind": "os",
+   "slug": "thread-pool-design",
+   "title": "Designing a thread pool (and why not thread-per-request)",
+   "topicId": "os-process-thread",
+   "practiceRef": "os-process-thread:1",
+   "level": "core",
+   "summary": "Checks that you understand the cost of threads, how to size a pool for CPU-bound versus I/O-bound work, and how a bounded queue turns overload into backpressure instead of a crash.",
+   "keywords": [
+    "thread pool",
+    "executor",
+    "backpressure",
+    "context switch",
+    "libuv",
+    "threadpoolexecutor",
+    "worker threads"
+   ],
+   "prompt": [
+    "Design a thread pool. What are the components, and how many threads would you create?",
+    "Why not just spawn a new thread for every incoming request?",
+    "Node is single-threaded, yet fs and crypto calls do not block the event loop. How?"
+   ],
+   "talkingPoints": [
+    "Core design: a fixed set of long-lived worker threads, a task queue, and a submit API. Workers loop: take a task (blocking on the queue when empty), run it, repeat. Shutdown needs a poison pill or a closed flag so idle workers wake and exit. The queue is a producer-consumer buffer, so it needs a lock plus condition variables, or a library BlockingQueue.",
+    "Why not thread-per-request: creating a thread costs a kernel task plus a stack (about 1 MiB of reserved address space by default for a Java thread, and typically 8 MiB virtual for a glibc pthread, though only touched pages are committed). Ten thousand concurrent connections means ten thousand stacks and ten thousand runnable candidates for the scheduler, and cost grows with context switches, cache and TLB churn, and unbounded memory. There is also no admission control, so a traffic spike becomes an out-of-memory crash.",
+    "Sizing for CPU-bound work: roughly the number of cores (often cores or cores + 1). More threads than cores just adds context switches without adding compute. Sizing for I/O-bound work: the Goetz formula N = cores * (1 + wait_time / compute_time). With 8 cores and tasks that spend 50 ms waiting for every 5 ms of CPU, that gives 8 * (1 + 10) = 88 threads. Treat it as a starting point and then measure, because wait time varies under load.",
+    "Mixed workloads should be split into separate pools (bulkheads): one for CPU work and one for blocking I/O, so slow downstream calls cannot consume every worker. Also warn about pool-starvation deadlock: if a task running in the pool blocks waiting for a subtask submitted to the same pool and all workers are doing the same, nothing can progress.",
+    "Queue choice is the real design decision. An unbounded queue hides overload: latency grows without limit and memory eventually runs out. A bounded queue forces a policy on overflow: block the submitter, reject (fail fast with 429 or 503), drop oldest, or run the task in the caller thread (Java's CallerRunsPolicy), which slows the producer down naturally and is the simplest backpressure mechanism. A SynchronousQueue hands work straight to a thread and is used when you want to grow threads rather than queue.",
+    "Java's ThreadPoolExecutor has a well-known ordering that trips people up: new tasks first create threads up to corePoolSize, then go into the queue, and only when the queue is full are threads added up to maximumPoolSize, after which the rejection handler fires. So with an unbounded queue maximumPoolSize is never used. Mention keep-alive for retiring excess threads and Executors.newFixedThreadPool using an unbounded LinkedBlockingQueue as a known foot-gun.",
+    "Node and libuv: JavaScript runs on one thread driven by the event loop. Network sockets use epoll (kqueue, IOCP on other OSes) and need no threads. Operations with no good non-blocking OS API, such as most fs calls, dns.lookup (getaddrinfo), zlib, and crypto functions like pbkdf2, scrypt and randomBytes, go to libuv's pool of 4 threads by default, tunable with UV_THREADPOOL_SIZE. Each completion is posted back to the event loop. A gotcha: five concurrent pbkdf2 calls queue behind four workers, so the fifth shows added latency.",
+    "Context-switch cost matters in the discussion: a direct switch is on the order of microseconds, but the indirect cost (cold L1/L2 caches, TLB flushes when switching processes, scheduler overhead) is what hurts when you oversubscribe. For massive I/O concurrency the alternatives are event loops (Node, Netty), or cheap user-space tasks like Go goroutines and Java 21 virtual threads, which let you write blocking-style code without a kernel thread per request."
+   ],
+   "diagram": "flowchart LR\n  C[Incoming requests] --> S[Submit]\n  S -->|queue has space| Q[Bounded task queue]\n  S -->|queue full| R[Reject or caller runs]\n  Q --> W1[Worker 1]\n  Q --> W2[Worker 2]\n  Q --> W3[Worker N]\n  W1 --> D[Result or callback]\n  W2 --> D\n  W3 --> D",
+   "tradeoffs": [
+    "Bigger pool means more parallelism for blocking I/O but more memory, more context switches and more contention on downstream resources like the DB connection pool.",
+    "Unbounded queue never rejects work but converts overload into unbounded latency and eventually out-of-memory; a bounded queue sheds load early but forces callers to handle rejection.",
+    "One shared pool is simple and utilises threads well, but separate pools isolate failures at the cost of idle capacity in each.",
+    "Thread-per-request code is easy to write and debug with real stack traces, while event loops and async code scale better but split logic across callbacks."
+   ],
+   "probes": [
+    "What should the pool do when the queue is full? Compare CallerRuns, Abort and Discard.",
+    "How do you size a pool when the workload is half CPU and half network calls?",
+    "How would you shut the pool down gracefully without losing in-flight tasks?",
+    "A task throws an exception inside a worker. What happens to the worker and to the caller?",
+    "Why does a single slow dns.lookup storm slow down fs.readFile calls in Node?",
+    "How do virtual threads or goroutines change the answer to thread-per-request?"
+   ],
+   "readings": [
+    {
+     "title": "Java ThreadPoolExecutor",
+     "url": "https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html"
+    },
+    {
+     "title": "libuv design overview",
+     "url": "https://docs.libuv.org/en/v1.x/design.html"
+    },
+    {
+     "title": "OSTEP: Threads introduction",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-intro.pdf"
+    }
+   ]
+  },
+  {
+   "kind": "os",
+   "slug": "producer-consumer-bounded-buffer",
+   "title": "Producer-consumer: the bounded buffer",
+   "topicId": "os-sync-deadlock",
+   "practiceRef": "os-sync-deadlock:1",
+   "level": "core",
+   "summary": "The canonical synchronisation question: can you coordinate two kinds of waiting (buffer full, buffer empty) plus mutual exclusion, and do you know the subtle bugs around lock order and condition variables.",
+   "keywords": [
+    "producer consumer",
+    "bounded buffer",
+    "semaphore",
+    "mutex",
+    "condition variable",
+    "spurious wakeup",
+    "lost wakeup"
+   ],
+   "prompt": [
+    "Implement a bounded buffer shared by multiple producers and consumers using semaphores. Now do it with a mutex and condition variables.",
+    "Why must you re-check the condition in a while loop after waiting on a condition variable?"
+   ],
+   "talkingPoints": [
+    "State the three requirements: mutual exclusion on the buffer's internals, producers block when the buffer is full, consumers block when it is empty. They are two different waiting conditions, which is why a mutex alone is not enough.",
+    "Semaphore solution with capacity N: empty = Semaphore(N) counts free slots, full = Semaphore(0) counts filled slots, mutex = Semaphore(1) protects the buffer indices. Producer: wait(empty); lock(mutex); put(item); unlock(mutex); post(full). Consumer: wait(full); lock(mutex); item = get(); unlock(mutex); post(empty). The semaphores count resources, the mutex only guards the short critical section.",
+    "Order matters. If the producer did lock(mutex) first and then wait(empty), then when the buffer is full it sleeps while holding the mutex. The consumer needs that mutex to remove an item and signal empty, so neither can proceed: deadlock. The rule is to acquire the blocking, counting semaphore before the mutex and release the mutex before posting, so you never sleep while holding the lock that your counterpart needs.",
+    "A binary semaphore can imitate a mutex, but they differ in intent and ownership: a mutex has an owner, must be unlocked by the thread that locked it, and enables priority inheritance and recursion checks; a semaphore is a signalling counter that any thread may post. In this problem we use both for exactly those reasons.",
+    "Condition-variable version: one mutex, a count, and two condition variables notFull and notEmpty. Producer: lock; while (count == N) wait(notFull, mutex); put; count++; signal(notEmpty); unlock. Consumer mirrors it with notEmpty and signals notFull. wait atomically releases the mutex and sleeps, then reacquires the mutex before returning, which is what prevents a gap between checking the condition and going to sleep.",
+    "The while loop is mandatory for two reasons. First, spurious wakeups are permitted by POSIX and Java and happen on real systems. Second, with Mesa semantics (everything mainstream: pthreads, Java, Go) signal only makes a waiter runnable. Before it reacquires the lock, another thread can sneak in and consume the item, so the condition may be false again. Using if instead of while therefore causes a consumer to read from an empty buffer.",
+    "Lost wakeup: condition variables have no memory. If a signal is sent while nobody is waiting, it vanishes. The bug appears when a thread tests the predicate without holding the mutex, or changes the shared state without it: the waiter sees 'empty', the producer adds an item and signals, then the waiter goes to sleep and sleeps forever. The cure is to always test and modify the predicate under the same mutex that wait releases.",
+    "Another classic trap is sharing a single condition variable between producers and consumers with signal: a producer can wake another producer instead of a consumer, and everyone sleeps. Fix with two condition variables (as above) or broadcast. Calling signal while holding the lock is safe and simple; signalling after unlocking can reduce wasted wakeups but is easier to get wrong.",
+    "Real systems: Java's ArrayBlockingQueue is exactly a ReentrantLock plus two Conditions; Go channels have a buffer, a lock and wait queues in the runtime; Node streams apply the same idea with highWaterMark and the 'drain' event as backpressure; Kafka producers block or fail when the in-memory buffer is full. For a single producer and single consumer a lock-free ring buffer with head and tail indices is faster."
+   ],
+   "diagram": "flowchart LR\n  P[Producer] -->|wait empty slot| M1[Lock mutex]\n  M1 --> PUT[Put item into buffer]\n  PUT --> U1[Unlock mutex]\n  U1 -->|post full| BUF[Bounded buffer of N slots]\n  BUF -->|wait full slot| M2[Lock mutex]\n  M2 --> GET[Take item from buffer]\n  GET --> U2[Unlock mutex]\n  U2 -->|post empty| C[Consumer]",
+   "tradeoffs": [
+    "Semaphores express counting resources directly and are hard to get wrong in this specific problem, but they have no ownership, so misuse is invisible to tooling; condition variables are more general but need the predicate and while-loop discipline.",
+    "One condition variable with broadcast is simple but wakes everyone (thundering herd); two condition variables are more efficient but need more care.",
+    "A larger buffer smooths bursts and reduces blocking but increases memory and worst-case latency of queued items.",
+    "Lock-based queues are easy to reason about; lock-free SPSC rings give higher throughput but only work for restricted producer/consumer counts and need careful memory ordering."
+   ],
+   "probes": [
+    "What happens if the producer holds the mutex while it waits on the empty semaphore?",
+    "Why can you not replace the while loop with an if if you only have one consumer?",
+    "Show an interleaving that loses a wakeup when the predicate is checked outside the lock.",
+    "What is the difference between Mesa and Hoare monitor semantics, and which do real languages use?",
+    "How would you add graceful shutdown so consumers stop when the producers are done?",
+    "How does Node stream backpressure map onto this problem?"
+   ],
+   "readings": [
+    {
+     "title": "OSTEP: Semaphores",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-sema.pdf"
+    },
+    {
+     "title": "OSTEP: Condition variables",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf"
+    },
+    {
+     "title": "OSTEP: Concurrency bugs",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf"
+    }
+   ]
+  },
+  {
+   "kind": "os",
+   "slug": "deadlock-detect-prevent-recover",
+   "title": "Deadlock: detect, prevent, avoid, recover",
+   "topicId": "os-sync-deadlock",
+   "practiceRef": "os-sync-deadlock:3",
+   "level": "core",
+   "summary": "Checks that you can state the four necessary conditions, map each strategy to the condition it breaks, and connect the theory to the deadlocks you actually see in databases and application code.",
+   "keywords": [
+    "deadlock",
+    "coffman",
+    "wait-for graph",
+    "lock ordering",
+    "banker's algorithm",
+    "resource allocation graph",
+    "database deadlock"
+   ],
+   "prompt": [
+    "What is a deadlock, and what conditions must hold for it to occur?",
+    "How would you detect, prevent or recover from deadlocks? Which would you use in a real service?"
+   ],
+   "talkingPoints": [
+    "Definition: a set of threads or processes each waiting for a resource held by another in the set, so none can make progress. Contrast with livelock (threads keep running but make no progress) and starvation (one thread is perpetually passed over).",
+    "The four Coffman conditions must all hold simultaneously: mutual exclusion (a resource is held exclusively), hold and wait (a thread holds one resource while requesting another), no preemption (resources cannot be forcibly taken), and circular wait (a cycle of threads each waiting on the next). Breaking any one makes deadlock impossible, and that is how to organise prevention strategies.",
+    "Minimal example: T1 locks A then wants B, T2 locks B then wants A. Interleaving: T1 lock(A), T2 lock(B), T1 lock(B) blocks, T2 lock(A) blocks. A resource-allocation graph shows this as a cycle T1 -> B -> T2 -> A -> T1. With single-instance resources a cycle means deadlock; with multiple instances per resource type a cycle is necessary but not sufficient.",
+    "Detection: collapse the resource graph into a wait-for graph (edge Ti -> Tj when Ti waits for something Tj holds) and run a DFS for cycles, O(V + E). The system runs it periodically or when a request blocks too long. Real examples: the JVM's ThreadMXBean.findDeadlockedThreads (and jstack output), Linux lockdep in kernel development, and database lock managers.",
+    "Prevention by lock ordering is the practical workhorse: define a global order on locks and always acquire in that order. For a bank transfer, lock the account with the smaller id first, whichever direction the money flows, which eliminates circular wait. Other prevention: acquire all locks up front (kills hold and wait, but hurts concurrency), or use tryLock with timeout and release everything on failure (kills hold and wait, but you must add randomised backoff to avoid livelock).",
+    "Avoidance means the system only grants a request if the resulting state is safe, meaning some ordering of the processes lets each finish. Banker's algorithm needs each process's maximum claim in advance. Example with 12 units: P0 max 10 holds 5, P1 max 4 holds 2, P2 max 9 holds 2, so 3 are free. P1 can finish (needs 2), freeing to 5; then P0 (needs 5), freeing to 10; then P2 (needs 7). Safe sequence P1, P0, P2. General-purpose OSes do not use it because maximum claims are not known and the check is expensive.",
+    "Recovery options after detection: abort all deadlocked processes (simple, costly), abort one at a time until the cycle breaks (choose a victim by cost, such as work done, locks held, priority and number of times already victimised to avoid starvation), or preempt a resource and roll the victim back to a checkpoint. Rollback needs state you can undo, which is why it lives naturally in databases.",
+    "Real-world case: PostgreSQL. T1 runs UPDATE on row 1 then row 2, T2 updates row 2 then row 1. After deadlock_timeout (default 1 second) a waiting backend runs the deadlock check, finds the cycle and aborts one transaction with SQLSTATE 40P01, which the application should catch and retry. Prevention is the same ideas: update rows in a consistent order (for example sort by primary key, or SELECT ... FOR UPDATE ORDER BY id), keep transactions short, and avoid mixing table-level and row-level lock modes carelessly.",
+    "Production advice: say what you would actually do. Enforce lock ordering and document it, never call unknown code (callbacks, listeners) while holding a lock, prefer lock timeouts so a stuck thread surfaces as an error instead of a hang, and rely on detect-and-retry for databases."
+   ],
+   "diagram": "flowchart LR\n  T1[Thread T1] -->|holds| LA[Lock A]\n  T2[Thread T2] -->|holds| LB[Lock B]\n  T1 -.->|waits for| LB\n  T2 -.->|waits for| LA",
+   "tradeoffs": [
+    "Prevention is deterministic but constrains how code can be written (global lock order, acquire everything up front) and may reduce concurrency.",
+    "Avoidance (Banker's) guarantees safety but needs advance knowledge of maximum demand and is conservative, leaving resources idle.",
+    "Detect-and-recover costs nothing on the happy path but needs a recovery story: aborting and retrying is fine for transactions, dangerous for arbitrary code.",
+    "Lock timeouts convert hangs into errors you can observe, at the risk of false positives under load and the need for retry logic."
+   ],
+   "probes": [
+    "Which Coffman condition does lock ordering break? Which does tryLock with timeout break?",
+    "Can a cycle in a resource-allocation graph exist without deadlock? When?",
+    "How does Postgres decide which transaction to abort, and what should the application do?",
+    "How would you find a deadlock in a production JVM or Node service that has just hung?",
+    "Why can tryLock with retry produce livelock, and how do you mitigate it?",
+    "How would you design a transfer(from, to, amount) function that cannot deadlock?"
+   ],
+   "readings": [
+    {
+     "title": "OSTEP: Concurrency bugs (deadlock)",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf"
+    },
+    {
+     "title": "PostgreSQL: Explicit locking and deadlocks",
+     "url": "https://www.postgresql.org/docs/current/explicit-locking.html"
+    }
+   ]
+  },
+  {
+   "kind": "os",
+   "slug": "thread-safe-lru-cache",
+   "title": "Thread-safe LRU cache",
+   "topicId": "os-sync-deadlock",
+   "practiceRef": "os-sync-deadlock:2",
+   "level": "advanced",
+   "summary": "Checks whether you can make a classic data-structure problem concurrent: spot that reads mutate the recency order, then reason about lock granularity, contention and approximate alternatives used by real caches.",
+   "keywords": [
+    "lru",
+    "cache",
+    "concurrent",
+    "sharding",
+    "read-write lock",
+    "clock",
+    "false sharing",
+    "caffeine"
+   ],
+   "prompt": [
+    "Implement an LRU cache with O(1) operations, then make it safe for many threads. Where does the lock go?",
+    "Would a read-write lock help here? How do real caches like Caffeine, Memcached or Redis deal with this?"
+   ],
+   "talkingPoints": [
+    "Start with the single-threaded design: a hash map from key to node plus a doubly linked list ordered by recency. get(k) finds the node and moves it to the head; put(k, v) inserts at the head and, when over capacity, evicts the tail and deletes it from the map. Everything is O(1), and the invariant to protect is that the map and the list agree.",
+    "Simplest thread-safe version: one mutex around every operation. It is correct and the right first answer, but every operation serialises, so throughput does not scale with cores and a slow value computation done under the lock blocks all readers. Never call user code, load from the database or log while holding it.",
+    "The key insight: get is a write. It moves a node, so a read-write lock cannot let readers run in parallel because they would be concurrently mutating list pointers. A naive RW lock gives you exclusive locking on both paths plus extra overhead. A candidate who says 'use a RW lock because reads dominate' has missed this.",
+    "Sharding (lock striping): split the cache into S segments by hash(key) % S, each with its own map, list and lock. Contention drops roughly by S, and ConcurrentHashMap and Guava's cache (concurrencyLevel segments) use the same idea. The cost is that LRU becomes per-shard approximate: a hot shard can evict a key that is globally more recent than one in a cold shard, and capacity must be divided across shards.",
+    "Take the recency update off the critical path. Caffeine records reads into striped lossy ring buffers and applies them to the eviction policy in batches under a single lock, while the lookup itself hits a ConcurrentHashMap without that lock. Losing an occasional read event is acceptable because recency is only a heuristic. Memcached uses a similar trick, only bumping an item if it has not been bumped recently (on the order of a minute), so most hits do not touch the list at all.",
+    "Approximate algorithms avoid the list. CLOCK keeps entries in a circular array with a reference bit: a hit just sets the bit (a cheap store, no lock needed), and eviction advances a hand, clearing bits and evicting the first entry whose bit is already 0. Redis does not keep a true LRU list either: it stores a small last-access timestamp per key and, on eviction, samples a handful of keys (maxmemory-samples, default 5) and evicts the oldest of the sample, which approximates LRU closely at low cost.",
+    "Mention false sharing as the hidden multicore cost: per-shard locks, counters or hit statistics that sit next to each other in memory share a 64-byte cache line, so different cores updating different shards still invalidate each other's caches. Pad hot fields to a cache line (Java's @Contended, or manual padding) and use striped counters such as LongAdder for hit-rate stats.",
+    "Other correctness points: avoid cache stampedes by making concurrent misses for the same key share one load (per-key future or single-flight) instead of N threads hitting the database; be careful with eviction callbacks that re-enter the cache while a lock is held (self-deadlock); and note that in single-threaded Node you need no locks at all, but a cache shared between worker_threads needs SharedArrayBuffer and Atomics, or a separate process such as Redis."
+   ],
+   "diagram": "flowchart LR\n  K[Key] --> H[Hash to shard]\n  H --> S1[Shard 1 with own lock]\n  H --> S2[Shard 2 with own lock]\n  H --> S3[Shard N with own lock]\n  S1 --> M[Hash map plus linked list]\n  S2 --> M\n  S3 --> M\n  M --> E[Evict tail when full]",
+   "tradeoffs": [
+    "Coarse lock is simplest and exactly LRU but does not scale; sharding scales but makes eviction only approximately global LRU.",
+    "Buffering read events (Caffeine style) keeps the hot path lock-free at the cost of delayed and sometimes dropped recency updates.",
+    "CLOCK and sampled LRU use less memory and avoid list updates on hits but evict less precisely than true LRU.",
+    "More shards reduce contention but waste capacity through imbalance and add per-shard overhead; padding against false sharing trades memory for speed."
+   ],
+   "probes": [
+    "Why does a read-write lock not help a naive LRU cache?",
+    "What goes wrong if you hold the cache lock while loading a missing value from the database?",
+    "How would you pick the number of shards?",
+    "How does Redis evict keys without maintaining an LRU list, and how accurate is it?",
+    "What is false sharing and how would you spot it in a profile?",
+    "How do you prevent a stampede when 1000 threads miss the same key at once?"
+   ],
+   "readings": [
+    {
+     "title": "Redis key eviction",
+     "url": "https://redis.io/docs/latest/develop/reference/eviction/"
+    },
+    {
+     "title": "OSTEP: Beyond physical memory, policies (LRU, Clock)",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys-policy.pdf"
+    },
+    {
+     "title": "OSTEP: Locks",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-locks.pdf"
+    }
+   ]
+  },
+  {
+   "kind": "os",
+   "slug": "paging-vs-segmentation-page-replacement",
+   "title": "Paging vs segmentation, page tables, and page replacement",
+   "topicId": "os-memory-management",
+   "practiceRef": "os-memory-management:4",
+   "level": "core",
+   "summary": "Tests whether you can do address translation by hand, explain fragmentation and TLB cost with numbers, and reason about page replacement policies including Belady's anomaly and thrashing.",
+   "keywords": [
+    "paging",
+    "segmentation",
+    "page table",
+    "tlb",
+    "page replacement",
+    "lru",
+    "belady",
+    "thrashing"
+   ],
+   "prompt": [
+    "Compare paging and segmentation. Translate a virtual address with 4 KiB pages.",
+    "When memory is full and a page fault occurs, which page do you evict? Compare FIFO, LRU, Optimal and Clock.",
+    "What is thrashing and how do you fix it?"
+   ],
+   "talkingPoints": [
+    "Segmentation divides the address space by logical units (code, heap, stack) with a base and limit per segment. It matches how programs are structured and eases sharing and protection, but variable-sized segments cause external fragmentation: plenty of free memory in total but no contiguous hole big enough. Paging uses fixed-size pages and frames, so there is no external fragmentation, but the last page of each region wastes on average half a page of internal fragmentation. Modern x86-64 effectively uses paging only, with flat segments.",
+    "Worked translation with 4 KiB pages (2^12) on a 32-bit address: the low 12 bits are the offset and the top 20 bits are the virtual page number. Take 0x12345678: offset = 0x678, VPN = 0x12345. If the page table maps VPN 0x12345 to frame 0x00ABC, the physical address is 0x00ABC678 (frame number concatenated with the offset). The offset never changes.",
+    "A flat table needs 2^20 entries; at 4 bytes each that is 4 MiB per process, mostly empty. Hence multi-level tables: x86 32-bit splits the VPN into 10 + 10 bits. For 0x12345678 the top 10 bits give directory index 0x48 (72) and the next 10 bits give table index 0x345 (837). Only the second-level tables that are in use exist, so a sparse address space costs little. x86-64 uses four (or five) levels of 9 bits each.",
+    "Cost: with a two-level table a TLB miss costs two extra memory accesses before the data access, so the TLB is what makes paging viable. Illustrative effective access time with a 99% TLB hit rate, 1 ns TLB lookup and 100 ns memory: 0.99 * (1 + 100) + 0.01 * (1 + 100 + 100 + 100) = about 103 ns. Hit rate matters enormously, which is why huge pages (2 MiB) help large heaps by shrinking TLB pressure and why TLB entries must be flushed or tagged (PCID/ASID) on a process switch.",
+    "Page replacement happens on a fault when no frame is free. Optimal (Belady's MIN) evicts the page whose next use is furthest in the future, which is the lower bound but needs the future and is used only as a benchmark. FIFO evicts the oldest-loaded page: cheap but ignores usage, and it can evict a hot page. LRU evicts the least recently used page, exploiting temporal locality, but exact LRU needs a timestamp or list update on every memory reference, which hardware does not support cheaply.",
+    "Clock (second chance) approximates LRU using the hardware reference bit: frames sit in a circle with a hand; at eviction, if the bit is 1 the hand clears it and moves on, if 0 the page is evicted. Enhanced clock also looks at the dirty bit, preferring clean pages because they need no write-back. Linux uses an active/inactive list scheme (and multi-generational LRU in newer kernels) that is a descendant of this idea.",
+    "Belady's anomaly: with FIFO, more frames can cause more faults. On the reference string 1,2,3,4,1,2,5,1,2,3,4,5, FIFO gives 9 faults with 3 frames but 10 faults with 4 frames. LRU and Optimal are stack algorithms (the set of pages in n frames is always a subset of that for n + 1 frames), so they cannot exhibit the anomaly.",
+    "Thrashing: when the sum of the processes' working sets exceeds physical memory, each fault evicts a page another process is about to need, the CPU waits on disk, and utilisation collapses. A scheduler that sees low CPU use and admits more processes makes it worse. Remedies: working-set or page-fault-frequency control, reduce the multiprogramming level (swap a process out entirely), add RAM, and in containers set memory limits so one workload cannot starve the rest; on Linux the OOM killer is the last resort."
+   ],
+   "diagram": "flowchart TD\n  VA[Virtual address] --> SPLIT[Split into page number and offset]\n  SPLIT --> TLB[TLB lookup]\n  TLB -->|hit| PA[Frame number plus offset gives physical address]\n  TLB -->|miss| PT[Walk page table in memory]\n  PT -->|page present| FILL[Fill TLB entry] --> PA\n  PT -->|page absent| PF[Page fault]\n  PF --> EV[Pick victim frame with replacement policy]\n  EV --> LOAD[Load page from disk] --> FILL",
+   "tradeoffs": [
+    "Paging removes external fragmentation but adds internal fragmentation and page-table memory; larger pages cut table size and TLB misses but waste more memory per region.",
+    "Multi-level tables save memory for sparse address spaces at the cost of more memory accesses on a TLB miss.",
+    "True LRU gives better hit rates than FIFO but is too expensive to maintain per reference, so real systems use Clock-like approximations.",
+    "Aggressive multiprogramming raises CPU utilisation until working sets no longer fit, then thrashing destroys throughput."
+   ],
+   "probes": [
+    "Translate virtual address 0x00402ABC with 4 KiB pages if VPN 0x402 maps to frame 0x1F.",
+    "How big is a single-level page table for a 48-bit address space with 4 KiB pages, and why is that impossible?",
+    "What gets flushed from the TLB on a context switch, and how do ASIDs or PCID help?",
+    "Why can FIFO get worse with more memory but LRU cannot?",
+    "How does the OS detect thrashing, and what would you do about it on a production host?",
+    "Why do databases such as Postgres and many JVM setups care about huge pages?"
+   ],
+   "readings": [
+    {
+     "title": "OSTEP: Paging",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-paging.pdf"
+    },
+    {
+     "title": "OSTEP: TLBs",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-tlbs.pdf"
+    },
+    {
+     "title": "OSTEP: Beyond physical memory, mechanisms",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys.pdf"
+    },
+    {
+     "title": "OSTEP: Beyond physical memory, policies",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys-policy.pdf"
+    }
+   ]
+  },
+  {
+   "kind": "os",
+   "slug": "disk-scheduling-and-io-models",
+   "title": "I/O models (select, epoll, io_uring) and disk scheduling",
+   "topicId": "os-filesystems-io",
+   "practiceRef": "os-filesystems-io:5",
+   "level": "advanced",
+   "summary": "Checks that you understand why epoll scales, how readiness-based and completion-based I/O differ, how Node's event loop is built on them, and that disk scheduling mostly mattered for spinning disks.",
+   "keywords": [
+    "epoll",
+    "select",
+    "io_uring",
+    "non-blocking io",
+    "event loop",
+    "libuv",
+    "edge triggered",
+    "disk scheduling"
+   ],
+   "prompt": [
+    "Explain blocking, non-blocking, multiplexed and asynchronous I/O. Why does epoll scale better than select?",
+    "How does Node's event loop handle ten thousand sockets with one thread?",
+    "How does disk scheduling work, and does it still matter with SSDs?"
+   ],
+   "talkingPoints": [
+    "Four models for a read on a socket. Blocking: the thread sleeps in read() until data arrives, so you need a thread per connection. Non-blocking: the fd is set O_NONBLOCK and read() returns EAGAIN immediately if there is no data, so you must poll repeatedly (wasteful on its own). Multiplexed: one thread blocks in select, poll or epoll_wait on many fds and then reads only the ready ones. Asynchronous: you submit the operation and the kernel notifies you when it has completed, with data already transferred (IOCP on Windows, io_uring on Linux).",
+    "select and poll are O(n) per call. With select you rebuild an fd bitmap limited to FD_SETSIZE (1024 by default), copy it into the kernel each call, and scan the whole set on return. poll removes the fixed limit but still copies and scans the full array. With 10,000 connections of which 50 are active, each wakeup walks 10,000 entries to find 50.",
+    "epoll splits registration from waiting. epoll_create makes a kernel-side instance, epoll_ctl adds or removes an fd once, and epoll_wait returns only the ready ones from a ready list the kernel maintains through wakeup callbacks. Cost is roughly O(ready events) rather than O(watched fds), with no per-call copying of the interest set. That is what made 10k+ connections per thread (the C10K problem) practical. BSD and macOS have kqueue, Windows has IOCP.",
+    "Level-triggered versus edge-triggered: level-triggered (default) reports an fd for as long as it is ready, so reading a partial amount is safe because you will be told again. Edge-triggered (EPOLLET) reports only on a state change, so you must set non-blocking and read until EAGAIN, or you will never be woken for the leftover bytes. ET reduces the number of wakeups but is easier to get wrong; mention EPOLLONESHOT and EPOLLEXCLUSIVE for multi-threaded servers to avoid two threads handling the same fd or the thundering herd.",
+    "Readiness versus completion: epoll tells you 'you can read now', and you still make the read syscall. It does not work on regular files, because they are always reported ready, so a 'non-blocking' disk read still blocks on the page cache or disk. io_uring is completion-based: two ring buffers shared between user space and kernel (submission and completion queues) let you batch many operations, including file I/O, with few or even no syscalls. It is powerful but has had a notable security history, and some container runtimes and sandboxes restrict it.",
+    "Node and libuv: the event loop is a single thread cycling through phases (timers, pending callbacks, poll, check, close), and the poll phase is where libuv calls epoll_wait (kqueue or IOCP elsewhere) and dispatches callbacks for ready sockets. Operations that cannot be done with readiness APIs, notably most fs calls, dns.lookup, zlib and some crypto, run on libuv's worker pool (4 threads by default) and signal completion back to the loop. process.nextTick and promise microtasks run between callbacks. Consequence: any long synchronous JavaScript or CPU work blocks every connection.",
+    "Disk scheduling matters when seeks are expensive. Classic example with head at cylinder 53 and requests 98, 183, 37, 122, 14, 124, 65, 67: FCFS travels 640 cylinders, SSTF (nearest first) 236, at the price of starving far requests. SCAN (elevator) sweeps in one direction servicing requests along the way, then reverses, bounding wait; C-SCAN returns to the start without servicing on the way back for more uniform waits.",
+    "SSDs change this: no moving head, so seek-distance ordering is pointless and requests are best sent in parallel across channels with deep queues (NVMe has many queues). Linux therefore commonly runs the 'none' or mq-deadline schedulers on SSD and NVMe, keeping deadline-style fairness and merging, with bfq used where interactivity and per-cgroup fairness matter. What still matters on SSDs is queue depth, write amplification and avoiding small random writes, not head movement."
+   ],
+   "diagram": "flowchart LR\n  S1[Socket 1] --> EP[epoll instance in kernel]\n  S2[Socket 2] --> EP\n  S3[Socket N] --> EP\n  EP -->|epoll wait returns ready list| L[Event loop thread]\n  L --> CB[Run JS callbacks]\n  L -->|fs dns crypto| TP[libuv thread pool]\n  TP -->|completion| L",
+   "tradeoffs": [
+    "Thread-per-connection blocking I/O is simplest to write and debug but caps out on memory and context switching; event loops scale to many idle connections but force non-blocking, callback-structured code and are vulnerable to any blocking call.",
+    "Level-triggered epoll is forgiving but may wake more often; edge-triggered is more efficient but requires draining until EAGAIN and careful handling.",
+    "Readiness APIs (epoll) are mature and portable in idiom but cannot do true async disk I/O; io_uring supports both but is newer, Linux-only and has a larger kernel attack surface.",
+    "Seek-optimising disk schedulers raise throughput on HDDs but may starve requests; on SSDs the scheduling overhead is better spent on fairness and merging than on reordering."
+   ],
+   "probes": [
+    "Why does epoll_wait not scale with the number of idle connections, but select does?",
+    "What happens with edge-triggered epoll if you read only part of the available data?",
+    "Why can you not use epoll for regular files, and what does Node do instead?",
+    "A Node server handles 10k idle websockets fine but dies under a JSON.parse of a 50 MB body. Why?",
+    "What problem does io_uring solve that epoll plus a thread pool does not?",
+    "Which I/O scheduler would you pick for an NVMe database server, and why?"
+   ],
+   "readings": [
+    {
+     "title": "epoll(7) man page",
+     "url": "https://man7.org/linux/man-pages/man7/epoll.7.html"
+    },
+    {
+     "title": "libuv design overview",
+     "url": "https://docs.libuv.org/en/v1.x/design.html"
+    },
+    {
+     "title": "Node.js event loop, timers and nextTick",
+     "url": "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick"
+    },
+    {
+     "title": "OSTEP: Hard disk drives (scheduling)",
+     "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/file-disks.pdf"
+    }
+   ]
+  },
+  {
+   "kind": "os",
+   "slug": "containers-vs-vms",
+   "title": "Containers vs virtual machines (and what a container really is)",
+   "topicId": "os-security-basics",
+   "practiceRef": "os-security-basics:3",
+   "level": "core",
+   "summary": "Tests whether you know that a container is just a constrained Linux process, can compare isolation strength and overhead with VMs, and understand the security implications of a shared kernel.",
+   "keywords": [
+    "container",
+    "virtual machine",
+    "namespaces",
+    "cgroups",
+    "hypervisor",
+    "gvisor",
+    "firecracker",
+    "isolation"
+   ],
+   "prompt": [
+    "What is the difference between a container and a virtual machine?",
+    "What is a Docker container, in terms of Linux primitives? Is it a secure sandbox for untrusted code?"
+   ],
+   "talkingPoints": [
+    "A VM virtualises hardware. A hypervisor (KVM in Linux, with QEMU or similar emulating devices, or Xen, Hyper-V, ESXi) uses CPU extensions such as VT-x or AMD-V to run a complete guest OS with its own kernel, drivers and init. A container virtualises the operating system: processes run on the host kernel but see a restricted view. There is no second kernel, which is the single most important difference.",
+    "What a container actually is on Linux: an ordinary process (tree) started with several clone() or unshare() flags. Namespaces limit what it can see: pid (own process tree where it is pid 1), mnt (its own filesystem view), net (own interfaces and ports), uts (hostname), ipc, user (uid mapping) and cgroup. Cgroups limit what it can use: cpu, memory, pids, io. Add a root filesystem assembled from image layers (overlayfs) and pivot_root, a reduced capability set, a seccomp syscall filter and AppArmor or SELinux profile, and you have Docker. There is no 'container' object in the kernel.",
+    "Cgroups in practice: a memory limit of 512 MiB makes the kernel reclaim and then OOM-kill inside that cgroup instead of hurting the host; cpu.max or cpu shares cap or weight CPU; pids.max stops fork bombs. This is why JVM and Node need container-aware sizing: reading /proc/meminfo shows host memory, not the limit.",
+    "Comparison numbers to state qualitatively: containers start in milliseconds to about a second since there is nothing to boot; a conventional VM takes seconds to boot an OS. A container's overhead is a process plus its page cache, so you can pack many more per host, while each VM reserves memory for a guest kernel. CPU performance is near native in both with hardware virtualisation, but I/O paths differ (virtio, emulated devices) and containers avoid those layers.",
+    "Isolation is the trade-off. A VM guest talks to the hypervisor through a small, narrow interface (hardware virtualisation and a handful of emulated devices). A container talks to the full Linux syscall interface, hundreds of syscalls and subsystems, and a kernel bug reachable from inside gives root on the host. Real example: runc CVE-2019-5736 let a malicious container overwrite the host runc binary. Shared-kernel means shared fate: a kernel panic or a noisy-neighbour issue hits everyone.",
+    "Hardening containers: do not run as root (or use user namespaces so container root maps to an unprivileged host uid), drop capabilities, keep the default seccomp profile, read-only root filesystem, no --privileged, never mount the Docker socket, and keep the kernel patched. Mention that these reduce risk but do not turn a container into a hard multi-tenant boundary against hostile code.",
+    "The middle ground: gVisor interposes a user-space kernel (the Sentry, written in Go) that handles the container's syscalls itself and makes only a small set of host syscalls, shrinking the attack surface at the price of syscall overhead and incomplete compatibility. Firecracker (used by AWS Lambda and Fargate) is a minimal KVM-based microVM monitor with a tiny device model that gives hardware-level isolation with fast boot and low memory per instance. Kata Containers similarly wrap pods in lightweight VMs.",
+    "Practical choice: containers for your own trusted services and CI (density, fast deploys, reproducible images); VMs or microVMs for multi-tenant execution of untrusted code, different kernels or OSes, and strong compliance boundaries. Many real stacks layer them: Kubernetes pods inside VMs. Also note for a Mac developer that Docker Desktop runs containers inside a Linux VM, because macOS has no Linux namespaces."
+   ],
+   "diagram": "flowchart TD\n  HW[Host hardware] --> HV[Hypervisor]\n  HV --> GK[Guest kernel]\n  GK --> VA[App inside VM]\n  HW --> HK[Host kernel]\n  HK --> NS[Namespaces limit what a process sees]\n  HK --> CG[Cgroups limit what it can use]\n  NS --> CP[Container process]\n  CG --> CP",
+   "tradeoffs": [
+    "Containers give fast start and high density but a weaker isolation boundary because all of them share one kernel and its large syscall surface.",
+    "VMs give strong isolation and the ability to run a different kernel or OS but cost more memory, boot time and operational overhead.",
+    "gVisor and Firecracker reduce the attack surface of the shared kernel but add overhead (syscall interception, device emulation) and some compatibility limits.",
+    "Tight cgroup limits protect neighbours but can cause surprise throttling or OOM kills for applications that were sized from host-level numbers."
+   ],
+   "probes": [
+    "Is a container a security boundary? How would you run untrusted user code safely?",
+    "What happens inside the kernel when a container exceeds its memory limit?",
+    "Which namespaces does Docker create by default, and what does the user namespace add?",
+    "Why does a JVM or Node process in a container sometimes size its heap wrongly?",
+    "How does Firecracker achieve fast boot while still using hardware virtualisation?",
+    "What is the difference between a type 1 and a type 2 hypervisor, and where does KVM fit?"
+   ],
+   "readings": [
+    {
+     "title": "namespaces(7) man page",
+     "url": "https://man7.org/linux/man-pages/man7/namespaces.7.html"
+    },
+    {
+     "title": "cgroups(7) man page",
+     "url": "https://man7.org/linux/man-pages/man7/cgroups.7.html"
+    },
+    {
+     "title": "Docker Engine security",
+     "url": "https://docs.docker.com/engine/security/"
+    },
+    {
+     "title": "gVisor documentation",
+     "url": "https://gvisor.dev/docs/"
+    }
+   ]
+  },
+  {
+   "kind": "dbms",
+   "slug": "acid-isolation-levels",
+   "title": "ACID and transaction isolation levels",
+   "topicId": "dbms-transactions",
+   "practiceRef": "dbms-transactions:4",
+   "level": "core",
+   "summary": "Tests whether you can explain each ACID property with a concrete failure, and reason about which anomalies each isolation level allows in Postgres versus MySQL/InnoDB.",
+   "keywords": [
+    "acid",
+    "isolation levels",
+    "dirty read",
+    "phantom read",
+    "write skew",
+    "lost update",
+    "repeatable read",
+    "serializable"
+   ],
+   "prompt": [
+    "Explain ACID using a bank transfer. What does each letter actually protect you from?",
+    "Walk me through the SQL isolation levels and the anomalies each one allows. What are the defaults in Postgres and MySQL?"
+   ],
+   "talkingPoints": [
+    "Use one running example: transfer 100 from account A (balance 500) to account B (balance 200). It is two statements: UPDATE accounts SET balance = balance - 100 WHERE id = 'A'; UPDATE accounts SET balance = balance + 100 WHERE id = 'B'; wrapped in BEGIN ... COMMIT.",
+    "Atomicity: all or nothing. If the process crashes after the debit but before the credit, recovery must undo the debit. Engines do this with a write-ahead log plus undo (InnoDB undo log, Postgres simply never marks the new row versions committed). Without it you destroy 100 of money.",
+    "Consistency: the transaction moves the database from one valid state to another. The database enforces the invariants you declared (CHECK balance >= 0, foreign keys, unique constraints); invariants like total money is conserved are enforced by your transaction logic. This is not the C in CAP, which means linearizability.",
+    "Isolation: concurrent transactions should not see each other's partial work. Durability: once COMMIT returns, the data survives a crash, because the commit record is fsynced to the WAL first (Postgres synchronous_commit = on, InnoDB innodb_flush_log_at_trx_commit = 1). Relaxing those settings trades durability of the last few commits for speed.",
+    "Anomalies by timeline. Dirty read: T1 updates A to 400 but has not committed, T2 reads 400, T1 rolls back. Non-repeatable read: T1 reads A = 500, T2 updates A to 400 and commits, T1 reads again and gets 400. Phantom: T1 runs SELECT ... WHERE balance > 300 and gets 2 rows, T2 inserts a matching row and commits, T1 re-runs and gets 3 rows.",
+    "Lost update and write skew are not in the original SQL-92 anomaly table but matter in practice. Lost update: T1 and T2 both read balance 500 in the app, then write 500 + 10 and 500 + 20, so one write disappears. Write skew: two on-call doctors each check that at least 2 are on call and each set themselves off; both pass the check on their snapshot, both commit, and nobody is on call. Write skew passes under snapshot isolation because the two transactions write different rows.",
+    "What each standard level allows: READ UNCOMMITTED allows dirty reads, non-repeatable reads and phantoms. READ COMMITTED prevents dirty reads only. REPEATABLE READ prevents dirty and non-repeatable reads, and the standard still permits phantoms. SERIALIZABLE prevents all of them, meaning the outcome equals some serial order.",
+    "Postgres: default READ COMMITTED (each statement gets a fresh snapshot). READ UNCOMMITTED behaves exactly like READ COMMITTED, so dirty reads are impossible. REPEATABLE READ is snapshot isolation, which also prevents phantoms but still allows write skew; a concurrent update of the same row aborts the second writer with a serialization failure (SQLSTATE 40001). SERIALIZABLE uses SSI, which tracks read-write dependencies and aborts one transaction of a dangerous cycle, so the application must retry.",
+    "MySQL/InnoDB: default REPEATABLE READ. Plain SELECTs read from a snapshot taken at the first read. Locking reads and writes (SELECT ... FOR UPDATE, UPDATE, DELETE) read the latest committed version and use next-key locks (record plus gap) to block phantoms. Mixing snapshot reads and current reads in one transaction can look inconsistent. InnoDB SERIALIZABLE turns plain SELECTs into SELECT ... FOR SHARE, so it is lock-based and blocks more. In practice: stay at the default, use atomic UPDATE, SELECT FOR UPDATE or version columns for hot spots, and retry on serialization failures."
+   ],
+   "diagram": "flowchart LR\n  A[BEGIN] --> B[Debit account A]\n  B --> C[Credit account B]\n  C --> D[COMMIT]\n  D --> E[Flush commit record to WAL]\n  E --> F[Ack to client]\n  B -->|crash or error| R[Rollback using undo]\n  C -->|crash or error| R\n  R --> S[Both balances unchanged]",
+   "tradeoffs": [
+    "Higher isolation removes anomalies but costs throughput: more blocking in lock-based engines, more aborted and retried transactions in snapshot or SSI engines.",
+    "READ COMMITTED is cheap and the Postgres default, but every statement sees a different snapshot, so multi-statement logic can observe non-repeatable reads and write skew.",
+    "SERIALIZABLE is the simplest correctness story for the application, but you must write retry loops and accept false-positive aborts.",
+    "Targeted tools (SELECT FOR UPDATE, atomic UPDATE, version columns, unique constraints) fix specific anomalies without raising the isolation level for the whole workload.",
+    "Relaxing durability (async commit) buys latency and loses the last few commits on a crash, which is unacceptable for money but fine for analytics events."
+   ],
+   "probes": [
+    "Can a REPEATABLE READ transaction in Postgres see a phantom row? What about in InnoDB?",
+    "Show me a write skew example and three different ways to prevent it.",
+    "Does READ COMMITTED prevent lost updates if I do UPDATE balance = balance + 10? What if I read the balance in the app first?",
+    "What does SERIALIZABLE actually cost in Postgres, and what must the application do differently?",
+    "How is the C in ACID different from the C in CAP?",
+    "Why can InnoDB REPEATABLE READ still lose an update that Postgres REPEATABLE READ would reject?"
+   ],
+   "readings": [
+    {
+     "title": "PostgreSQL: Transaction Isolation",
+     "url": "https://www.postgresql.org/docs/current/transaction-iso.html"
+    },
+    {
+     "title": "MySQL: InnoDB Transaction Isolation Levels",
+     "url": "https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html"
+    },
+    {
+     "title": "Jepsen: Consistency models map",
+     "url": "https://jepsen.io/consistency"
+    }
+   ]
+  },
+  {
+   "kind": "dbms",
+   "slug": "schema-and-indexing-strategy",
+   "title": "Design a schema and indexes for a workload",
+   "topicId": "dbms-storage-indexing",
+   "practiceRef": "dbms-storage-indexing:3",
+   "level": "core",
+   "summary": "Tests whether you derive indexes from the actual queries (column order, covering, selectivity) and understand that every index has a write cost you must justify with EXPLAIN.",
+   "keywords": [
+    "composite index",
+    "leftmost prefix",
+    "covering index",
+    "selectivity",
+    "explain",
+    "write amplification",
+    "partial index"
+   ],
+   "prompt": [
+    "You have an orders table with a few hundred million rows. The app looks up an order by id, lists a user's 20 most recent orders, and an ops job finds pending orders older than an hour. Design the schema and indexes.",
+    "Why not just index every column? How would you prove an index is actually used and worth keeping?"
+   ],
+   "talkingPoints": [
+    "Start from the queries, not the table. Schema: orders(id bigint PK, user_id bigint NOT NULL, status text NOT NULL, total_cents bigint, created_at timestamptz NOT NULL). Q1: WHERE id = ?. Q2: WHERE user_id = ? ORDER BY created_at DESC LIMIT 20. Q3: WHERE status = 'pending' AND created_at < now() - interval '1 hour'.",
+    "Q1 is served by the primary key index. Use a monotonic bigint (or time-ordered ID) rather than a random UUID where you can: in InnoDB the table is clustered on the PK, so random keys cause page splits and a cold working set.",
+    "Q2 needs a composite index (user_id, created_at DESC). Rule of thumb: equality columns first, then the range or sort column. The index is ordered by user_id then created_at, so the planner jumps to one user and reads the first 20 entries already in order, with no Sort node and no full scan of that user's rows.",
+    "Leftmost-prefix rule: an index on (user_id, created_at) also serves WHERE user_id = ? alone, but not WHERE created_at > ? alone, because rows with a given created_at are scattered across all users. So you do not need a separate index on user_id. Reversing the order to (created_at, user_id) would break Q2.",
+    "Covering index: if Q2 selects only id, status, total_cents, created_at, add the extra columns so the query never touches the heap. Postgres 11+: CREATE INDEX ON orders (user_id, created_at DESC) INCLUDE (status, total_cents), giving an Index Only Scan (which also depends on the visibility map being fresh via VACUUM). In InnoDB a secondary index leaf already stores the primary key, so id comes free; add other columns as trailing key columns.",
+    "Selectivity: an index on status alone is nearly useless, because with 5 status values and a skewed distribution the planner will choose a seq scan for the common values. Q3 only cares about a small slice, so use a partial index in Postgres: CREATE INDEX ON orders (created_at) WHERE status = 'pending'. It stays tiny. MySQL has no partial indexes, so there you would index (status, created_at) and accept a larger index.",
+    "Cost of indexes: every INSERT writes to every index, and every UPDATE of an indexed column rewrites index entries (in Postgres it also prevents HOT updates). Indexes consume RAM in the buffer pool and slow down bulk loads and VACUUM. Each index must earn its place from a real query.",
+    "Verify, do not guess. EXPLAIN (ANALYZE, BUFFERS) on production-sized data and look for: Index Scan or Index Only Scan using the intended index, no Sort node for Q2, actual rows close to estimated, low buffer counts. Find dead weight with pg_stat_user_indexes (idx_scan = 0 over a representative period) and drop unused or redundant indexes (an index on (user_id) is redundant next to (user_id, created_at))."
+   ],
+   "tradeoffs": [
+    "Read speed versus write cost: each added index speeds up some queries and taxes every insert, update and delete plus storage and cache.",
+    "Wide covering indexes avoid heap lookups but are bigger and slower to maintain; only cover the hot, frequent queries.",
+    "Partial indexes are small and fast but only help queries whose predicate implies the index predicate (Postgres only).",
+    "Column order in a composite index optimizes one access pattern; supporting a second pattern usually means a second index.",
+    "Over-trusting a guess: an index that helps on a dev dataset can be ignored by the planner at scale, so the decision needs EXPLAIN on realistic data."
+   ],
+   "probes": [
+    "Given an index on (a, b, c), which of these queries can use it: WHERE b = 1; WHERE a = 1 AND c = 3; WHERE a = 1 ORDER BY b?",
+    "Why does a low-selectivity index often get ignored by the planner, and when is it still useful?",
+    "What is the difference between an Index Scan, an Index Only Scan and a Bitmap Heap Scan?",
+    "How would the design change in InnoDB, where the table is clustered on the primary key?",
+    "The table is write-heavy and already has 9 indexes. How do you decide which to drop?",
+    "Would you put the range column or the equality column first, and why?"
+   ],
+   "readings": [
+    {
+     "title": "PostgreSQL: Multicolumn Indexes",
+     "url": "https://www.postgresql.org/docs/current/indexes-multicolumn.html"
+    },
+    {
+     "title": "PostgreSQL: Index-Only Scans and Covering Indexes",
+     "url": "https://www.postgresql.org/docs/current/indexes-index-only-scans.html"
+    },
+    {
+     "title": "Use The Index, Luke",
+     "url": "https://use-the-index-luke.com/"
+    }
+   ]
+  },
+  {
+   "kind": "dbms",
+   "slug": "btree-vs-lsm",
+   "title": "B+ tree versus LSM tree storage engines",
+   "topicId": "dbms-storage-indexing",
+   "practiceRef": "dbms-storage-indexing:5",
+   "level": "advanced",
+   "summary": "Tests whether you understand read, write and space amplification and can match a storage engine design (InnoDB/Postgres versus RocksDB/Cassandra) to a workload.",
+   "keywords": [
+    "b+ tree",
+    "lsm tree",
+    "sstable",
+    "compaction",
+    "memtable",
+    "bloom filter",
+    "write amplification",
+    "rocksdb"
+   ],
+   "prompt": [
+    "Compare a B+ tree and an LSM tree as a storage engine. Why is one write-optimized and the other read-optimized?",
+    "Cassandra and RocksDB use LSM trees but Postgres and InnoDB use B-trees. When would you choose each, and what are the compaction trade-offs?"
+   ],
+   "talkingPoints": [
+    "B+ tree: data lives in fixed-size pages (8 KB in Postgres, 16 KB in InnoDB). Internal nodes hold only keys and child pointers, leaves hold the rows or row pointers and are linked for range scans. With a fanout of hundreds, three or four levels cover hundreds of millions of rows, and the top levels stay in the buffer pool, so a point read is about one or two disk reads.",
+    "B+ tree write path: find the leaf, modify the page in place in memory, append to the WAL for durability, and flush the dirty page later. The cost is random IO and write amplification: changing a 100-byte row dirties a whole page, and engines add more on top (InnoDB doublewrite buffer, Postgres full-page writes after a checkpoint). Page splits fragment the tree.",
+    "LSM write path: append to the WAL, insert into an in-memory sorted memtable, acknowledge. When the memtable is full it is flushed as an immutable, sorted SSTable file with sequential IO. Nothing is updated in place, so writes are cheap and sequential, which is also kind to SSDs.",
+    "LSM read path: check the memtable, then SSTables from newest to oldest until the key is found. That is read amplification, so engines add a Bloom filter per SSTable (skips files that definitely lack the key), a block index, and a block cache. Range scans must merge-iterate across files. Deletes are tombstones that stay until compaction reaches the bottom.",
+    "Compaction is the price of LSM: background merging of SSTables to drop overwritten and deleted data and bound the number of files a read must check. It consumes IO and CPU, and can cause latency spikes or write stalls if it falls behind.",
+    "Leveled compaction (RocksDB default, LevelDB, Cassandra LCS): each level beyond L0 is a set of non-overlapping files roughly 10x larger than the previous. A read checks at most one file per level, and space amplification is low, but a byte may be rewritten many times as it moves down, so write amplification is high.",
+    "Size-tiered compaction (Cassandra STCS, RocksDB universal): merge SSTables of similar size when enough accumulate. Write amplification is lower, so it suits write-heavy loads, but more overlapping files means higher read amplification, and a big merge can need up to roughly double the space temporarily. Cassandra also offers time-window compaction for TTL'd time-series data.",
+    "The amplification triangle (read, write, space): you cannot minimize all three. B-trees favor reads and predictable latency with in-place updates; LSMs favor write throughput and compression (files are immutable, sorted and compress well) at the cost of read and compaction overhead.",
+    "Engines: B-tree family is Postgres, InnoDB, SQLite and MongoDB WiredTiger by default. LSM family is RocksDB, LevelDB, Cassandra, HBase and ScyllaDB; CockroachDB uses Pebble, an LSM, under SQL. Pick an LSM for heavy ingest (events, metrics, messaging, large key-value stores); pick a B-tree for read-heavy OLTP with many secondary indexes and strict tail-latency needs."
+   ],
+   "diagram": "flowchart LR\n  W[Write request] --> L[Append to WAL]\n  L --> M[Memtable in memory]\n  M -->|full| F[Flush to SSTable L0]\n  F --> C[Background compaction]\n  C --> S[Sorted SSTables in lower levels]\n  RQ[Read request] --> M\n  RQ --> BF[Bloom filter check]\n  BF --> S",
+   "tradeoffs": [
+    "LSM gives high sequential write throughput but pays read amplification and background compaction; B-tree gives fast point and range reads but random-write IO and page-level write amplification.",
+    "Leveled compaction lowers read and space amplification but raises write amplification; size-tiered does the opposite.",
+    "LSM compresses well and is SSD-friendly, but compaction can cause tail-latency spikes and needs IO headroom.",
+    "B-trees update in place, so concurrency control and secondary indexes are simpler for OLTP; LSM secondary indexes are harder because overwrites do not remove stale index entries cheaply.",
+    "Deletes in an LSM are tombstones, so delete-heavy or queue-like workloads can degrade reads until compaction cleans up."
+   ],
+   "probes": [
+    "A read for a missing key hits an LSM tree. What work does it do and how do Bloom filters help?",
+    "What is write amplification in an LSM versus a B-tree, and where does each come from?",
+    "Why do Cassandra tombstones cause read problems, and what is gc_grace_seconds for?",
+    "How does the WAL fit in for each design, and why does the LSM need one?",
+    "When would you choose size-tiered over leveled compaction for a real workload?",
+    "Why are range scans in an LSM more expensive than in a B+ tree?"
+   ],
+   "readings": [
+    {
+     "title": "RocksDB Overview",
+     "url": "https://github.com/facebook/rocksdb/wiki/RocksDB-Overview"
+    },
+    {
+     "title": "CMU 15-445 Database Systems (storage and indexes lectures)",
+     "url": "https://15445.courses.cs.cmu.edu/"
+    },
+    {
+     "title": "Apache Cassandra documentation",
+     "url": "https://cassandra.apache.org/doc/latest/"
+    }
+   ]
+  },
+  {
+   "kind": "dbms",
+   "slug": "mvcc-nonblocking-reads",
+   "title": "MVCC: how readers avoid blocking writers",
+   "topicId": "dbms-concurrency-recovery",
+   "practiceRef": "dbms-concurrency-recovery:3",
+   "level": "advanced",
+   "summary": "Tests whether you understand row versioning and snapshot visibility concretely, including the Postgres heap-and-VACUUM model versus the InnoDB undo-log model, and what long transactions cost.",
+   "keywords": [
+    "mvcc",
+    "snapshot",
+    "xmin xmax",
+    "vacuum",
+    "bloat",
+    "undo log",
+    "read view",
+    "hot update"
+   ],
+   "prompt": [
+    "How does MVCC let readers not block writers? Explain how Postgres does it.",
+    "How does InnoDB implement MVCC differently, and why is a long-running transaction dangerous in both?"
+   ],
+   "talkingPoints": [
+    "Core idea: instead of overwriting a row and locking readers out, keep multiple versions. A writer creates a new version; a reader picks the version that was committed as of its snapshot. Readers take no row locks, writers do not wait for readers. Only writer-versus-writer on the same row conflicts.",
+    "Postgres storage model: every heap tuple carries xmin (the transaction ID that created it) and xmax (the transaction ID that deleted or updated it, 0 if live). UPDATE does not modify in place: it inserts a new tuple version with xmin = my xid and sets xmax = my xid on the old one. Both versions sit in the heap; indexes point at tuple locations. Commit status lives in pg_xact.",
+    "Snapshot visibility rule (simplified): a tuple is visible if its xmin committed before my snapshot was taken (and is not in my in-progress list) and either xmax is unset, aborted, or belongs to a transaction not yet visible to me. A snapshot is roughly: the oldest active xid, the next xid to be assigned, and the list of in-progress xids. READ COMMITTED takes a new snapshot per statement; REPEATABLE READ takes one per transaction.",
+    "Cost of that model: dead tuples accumulate. VACUUM (autovacuum) removes tuple versions that no live snapshot can still see and updates the visibility map and free space map. If vacuum cannot keep up, tables and indexes bloat, scans slow down and cache efficiency drops. VACUUM also freezes old xids to prevent transaction ID wraparound.",
+    "HOT (heap-only tuple) updates: if the UPDATE changes no indexed column and the new version fits on the same page, Postgres chains it within the page and adds no new index entries; page pruning can reclaim old versions cheaply. That is why updating an indexed column is more expensive than updating an unindexed one, and why a lower fillfactor helps update-heavy tables.",
+    "InnoDB model: the clustered index record is updated in place and carries DB_TRX_ID and a roll pointer into the undo log. Old versions are reconstructed by following the undo chain. A consistent read uses a read view (the set of transaction IDs active when it was created) and walks back through undo until it finds a visible version. A purge thread discards undo records once no read view needs them.",
+    "Long-running transactions hurt both: they pin the oldest snapshot. In Postgres, VACUUM cannot remove any tuple version newer than that horizon, so bloat grows for the whole database (an idle in transaction session is the classic culprit). In InnoDB the undo history grows (watch history list length) and reads must traverse longer version chains. Mitigate with statement and idle-in-transaction timeouts and by moving long reports to a replica.",
+    "Write-write conflicts: readers never block, but two writers on one row serialize on a row lock. Postgres: the second UPDATE waits for the first. If the first commits, READ COMMITTED re-checks the WHERE clause against the new version and proceeds; REPEATABLE READ and SERIALIZABLE abort with could not serialize access due to concurrent update (first updater wins). InnoDB: the second writer waits on the row lock and then updates the latest committed version, with no error even at REPEATABLE READ, so read-modify-write in application code can lose updates unless you use SELECT FOR UPDATE or an atomic UPDATE."
+   ],
+   "diagram": "flowchart TD\n  U[UPDATE row in transaction T2] --> N[Insert new tuple with xmin T2]\n  U --> O[Set xmax T2 on old tuple]\n  R[Reader with older snapshot] --> V[Visibility check on each tuple]\n  V --> OLD[Sees old tuple version]\n  T[T2 commits] --> NS[New snapshots see new tuple]\n  O --> D[Old tuple becomes dead]\n  D --> VAC[VACUUM reclaims space when no snapshot needs it]",
+   "tradeoffs": [
+    "MVCC buys non-blocking reads and consistent snapshots at the price of extra storage for old versions and background cleanup (VACUUM in Postgres, purge in InnoDB).",
+    "Postgres keeps old versions in the heap (simple, fast rollback, but bloat and vacuum tuning); InnoDB keeps them in undo (compact table, but long version chains and costly rollback of big transactions).",
+    "Snapshot isolation is cheap and avoids most anomalies but still allows write skew; going to SERIALIZABLE adds tracking overhead and aborts.",
+    "HOT updates are cheap but only work when no indexed column changes and the page has room, which constrains how you index update-heavy columns.",
+    "Long transactions and long-lived snapshots are the dominant operational risk, so you trade convenience for timeouts and replica offloading."
+   ],
+   "probes": [
+    "What exactly does VACUUM do, and why can a single idle in transaction session cause bloat across a whole database?",
+    "In Postgres, why does an UPDATE of one column generate a whole new tuple, and what is a HOT update?",
+    "Two transactions run UPDATE on the same row at READ COMMITTED in Postgres. Walk through what each sees.",
+    "How does InnoDB find the old version of a row for a consistent read?",
+    "Does MVCC mean there are no locks? Which operations still take locks?",
+    "What is transaction ID wraparound and how does freezing prevent it?"
+   ],
+   "readings": [
+    {
+     "title": "PostgreSQL: Concurrency Control (MVCC) Introduction",
+     "url": "https://www.postgresql.org/docs/current/mvcc-intro.html"
+    },
+    {
+     "title": "PostgreSQL: Routine Vacuuming",
+     "url": "https://www.postgresql.org/docs/current/routine-vacuuming.html"
+    },
+    {
+     "title": "MySQL: InnoDB Multi-Versioning",
+     "url": "https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html"
+    },
+    {
+     "title": "PostgreSQL: Explicit Locking",
+     "url": "https://www.postgresql.org/docs/current/explicit-locking.html"
+    }
+   ]
+  },
+  {
+   "kind": "dbms",
+   "slug": "two-phase-commit-vs-saga",
+   "title": "Two-phase commit versus the Saga pattern",
+   "topicId": "dbms-distributed",
+   "practiceRef": "dbms-distributed:1",
+   "level": "advanced",
+   "summary": "Tests whether you know why 2PC blocks, what Sagas give up (isolation), and how to choose between them for cross-service workflows such as payments or bookings.",
+   "keywords": [
+    "two phase commit",
+    "2pc",
+    "saga",
+    "compensation",
+    "outbox",
+    "idempotency",
+    "distributed transaction",
+    "xa"
+   ],
+   "prompt": [
+    "How does two-phase commit work, and what happens if the coordinator crashes at the worst moment?",
+    "You are booking a trip: flight, hotel and card charge live in three services. Would you use 2PC or a saga, and how do you make it safe?"
+   ],
+   "talkingPoints": [
+    "2PC goal: atomic commit across several resources. Phase 1 (prepare): the coordinator asks every participant to prepare; each one durably logs everything needed to commit, keeps its locks, and votes yes or no. Phase 2: if all voted yes the coordinator durably logs the commit decision and tells everyone to commit; any no or timeout means abort.",
+    "The failure mode: after a participant votes yes it may not decide alone. If the coordinator dies after collecting votes but before sending the decision, participants are in doubt, holding locks, until the coordinator recovers or an operator resolves them. That is why 2PC is a blocking protocol. Making the coordinator highly available (replicate its log with consensus) fixes this; Spanner does 2PC across Paxos-replicated groups for that reason.",
+    "Real implementations: XA (the X/Open standard used by JTA and supported in MySQL/InnoDB), and Postgres PREPARE TRANSACTION 'gid' followed by COMMIT PREPARED 'gid' or ROLLBACK PREPARED 'gid'. Postgres ships with max_prepared_transactions = 0 and warns that forgotten prepared transactions hold locks and block vacuum, so an external transaction manager must reliably finish them.",
+    "Costs of 2PC: at least two network round trips plus forced log writes, locks held across the network for the whole protocol, availability is the product of all participants being up, and it needs every participant to support it. Third-party APIs (a payment gateway over HTTP) and many NoSQL stores do not. It scales poorly across services owned by different teams.",
+    "Saga: replace one distributed transaction with a sequence of local transactions, each committed independently. If step k fails, run compensating transactions for steps k-1 down to 1. Example: reserve flight, reserve hotel, charge card; if the charge fails, cancel hotel then cancel flight. Compensations are semantic undo (refund, release), not a rollback, and some actions cannot be undone (an email sent), so order steps so that the hard-to-compensate step runs last.",
+    "Orchestration versus choreography: in orchestration a central saga orchestrator (a workflow engine or state machine) tells each service what to do and tracks state, which is easy to reason about and monitor but adds a coordinating component. In choreography each service reacts to events from the others, which has no central point but makes the overall flow hard to see and prone to cyclic dependencies.",
+    "Sagas have no isolation: other transactions can see intermediate state (a flight reserved but not yet paid for). Countermeasures: semantic locks such as status = PENDING that make other flows skip or wait, commutative updates, re-reading before acting, and versioning. The business decides how to present pending states.",
+    "Idempotency is mandatory. Messages are delivered at least once, so every step and every compensation must be safe to repeat (idempotency keys, unique constraints on request ID, conditional updates). Compensations must also tolerate arriving before the action they undo, and be retried until they succeed.",
+    "Outbox pattern: the dual write problem (update DB, then publish to the broker) can lose or duplicate events if the process crashes between them. Write the state change and an outbox row in one local transaction, then a relay (poller or CDC such as Debezium) publishes outbox rows to the broker, and consumers deduplicate by event ID. Choose 2PC for a few co-located databases in one trust domain with short transactions; choose sagas plus outbox for cross-service business workflows that tolerate eventual consistency."
+   ],
+   "diagram": "flowchart LR\n  O[Saga orchestrator] --> A[Reserve flight]\n  A --> B[Reserve hotel]\n  B --> C[Charge card]\n  C -->|success| D[Confirm booking]\n  C -->|failure| X[Compensate]\n  X --> Y[Cancel hotel]\n  Y --> Z[Cancel flight]\n  Z --> E[Booking failed cleanly]",
+   "tradeoffs": [
+    "2PC gives atomicity and strong consistency but blocks on coordinator failure, holds locks across the network and hurts availability and latency.",
+    "Sagas keep services autonomous and available but give only eventual consistency, no isolation, and require you to write and test compensations.",
+    "Orchestration is easier to debug and evolve; choreography has fewer moving parts but a flow that is hard to trace.",
+    "At-least-once delivery plus idempotency is operationally cheaper than exactly-once guarantees, but it pushes dedupe logic into every handler.",
+    "Outbox adds a table and a relay process but removes the lost-event window of dual writes."
+   ],
+   "probes": [
+    "What happens to participants if the coordinator crashes after all of them voted yes?",
+    "Why is 2PC called a blocking protocol, and what does Spanner do about it?",
+    "What if a compensation itself fails or the service it targets is down?",
+    "How do you prevent two customers booking the last hotel room when a saga has no isolation?",
+    "How does the outbox pattern solve the dual write problem, and where can duplicates still appear?",
+    "Where would you still choose 2PC today?"
+   ],
+   "readings": [
+    {
+     "title": "microservices.io: Saga pattern",
+     "url": "https://microservices.io/patterns/data/saga.html"
+    },
+    {
+     "title": "PostgreSQL: PREPARE TRANSACTION",
+     "url": "https://www.postgresql.org/docs/current/sql-prepare-transaction.html"
+    },
+    {
+     "title": "Jepsen: Consistency models map",
+     "url": "https://jepsen.io/consistency"
+    }
+   ]
+  },
+  {
+   "kind": "dbms",
+   "slug": "cap-theorem-in-practice",
+   "title": "CAP theorem and PACELC in practice",
+   "topicId": "dbms-distributed",
+   "practiceRef": "dbms-distributed:0",
+   "level": "core",
+   "summary": "Tests whether you state CAP precisely instead of pick two of three, know PACELC, and can apply it to concrete systems and product decisions.",
+   "keywords": [
+    "cap theorem",
+    "pacelc",
+    "partition",
+    "quorum",
+    "linearizability",
+    "eventual consistency",
+    "dynamo",
+    "write concern"
+   ],
+   "prompt": [
+    "State the CAP theorem precisely. What do people commonly get wrong about it?",
+    "Would you pick consistency or availability for a shopping cart? For a bank ledger? How do real databases expose that choice?"
+   ],
+   "talkingPoints": [
+    "Precise statement: when a network partition occurs, a replicated system must choose between consistency (here meaning linearizability: every read sees the latest completed write) and availability (every non-failing node still answers requests). It is not choose any two of three: partitions will happen in any distributed system, so the real choice is C versus A during a partition. When the network is healthy you can have both.",
+    "CP behavior: the side of the partition that cannot reach a quorum refuses or fails requests. etcd and ZooKeeper (Raft and Zab, majority quorum) and Spanner behave this way: the minority side cannot commit writes or serve linearizable reads. You get correctness and lose availability for clients stuck on that side.",
+    "AP behavior: every reachable replica keeps accepting reads and writes, and replicas diverge and reconcile later. Dynamo-style systems (the original Dynamo, Cassandra, Riak) use quorums and tunable consistency: with N replicas, a read quorum R and write quorum W, choosing R + W > N makes read and write sets overlap, so a read sees the latest acknowledged write in the absence of failures. QUORUM/QUORUM gives stronger behavior; ONE/ONE gives availability and speed. Conflicts are resolved by last-write-wins or by the application (vector clocks, merges). Even R + W > N is not linearizable in all failure cases.",
+    "MongoDB shows the choice per operation: with write concern w: majority and read concern majority (or linearizable), acknowledged writes survive a primary failover and a primary that loses its majority steps down, leaning CP. With w: 1 a write acknowledged by the old primary can be rolled back after a failover, and reads from secondaries can be stale, leaning AP. Recent versions default the write concern to majority in typical replica sets.",
+    "PACELC extends CAP: if there is a Partition, choose Availability or Consistency; Else (normal operation), choose Latency or Consistency. Even with no partition, synchronous replication across regions costs latency. Cassandra and Dynamo lean PA/EL; Spanner and etcd lean PC/EC.",
+    "Common misconceptions: (1) CA systems exist for a distributed database, which is false because you cannot opt out of partitions; (2) a database is simply CP or AP, when the choice is often per operation and per configuration; (3) the C in CAP equals the C in ACID, when it actually means linearizability; (4) the A in CAP means 99.99% uptime, when it means every non-failed node responds, a stronger and different notion. Partitions also include slowness and dropped packets, not just cut cables.",
+    "Apply it to the product. Shopping cart: the user adding an item should almost never be refused, and divergent carts can be merged (union of items), so favor availability (the Dynamo paper motivated this exact case). Bank ledger or inventory of the last seat: double-spending or overselling is worse than a brief error, so favor consistency and fail closed on the minority side.",
+    "How to answer in an interview: name the invariant that must never break, name what you can reconcile later, pick consistency only for the first, and mention the latency cost in the normal case. Use Kleppmann's point that CP and AP are crude labels: ask what consistency model each operation needs (linearizable, causal, read-your-writes, eventual)."
+   ],
+   "tradeoffs": [
+    "Consistency during a partition means some clients get errors or timeouts; availability means clients get answers that may be stale or conflicting.",
+    "Strong consistency across regions costs a cross-region round trip on every write (the PACELC latency side), even with no failures.",
+    "Eventual consistency is fast and highly available but pushes conflict resolution and reasoning about stale reads into the application.",
+    "Tunable quorums let you choose per query, but they make correctness depend on every client using the right setting.",
+    "Fail-closed CP designs protect invariants such as money and unique usernames but need careful retry and timeout behavior in clients."
+   ],
+   "probes": [
+    "Why is pick two of three misleading? What does a CA system even mean?",
+    "In Cassandra with N = 3, what do QUORUM reads and QUORUM writes give you, and what do ONE and ONE give you?",
+    "What is PACELC, and which side of it does a single-region Postgres primary with async replicas sit on?",
+    "In MongoDB, how can an acknowledged write be lost, and which settings prevent it?",
+    "Is a leader-follower setup with async replication CP or AP? What does failover do to the answer?",
+    "How would you design a cart so that two devices adding items during a partition do not lose data?"
+   ],
+   "readings": [
+    {
+     "title": "Martin Kleppmann: Please stop calling databases CP or AP",
+     "url": "https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html"
+    },
+    {
+     "title": "Werner Vogels: Eventually Consistent",
+     "url": "https://www.allthingsdistributed.com/2008/12/eventually_consistent.html"
+    },
+    {
+     "title": "MongoDB: Write Concern",
+     "url": "https://www.mongodb.com/docs/manual/reference/write-concern/"
+    },
+    {
+     "title": "Apache Cassandra documentation",
+     "url": "https://cassandra.apache.org/doc/latest/"
+    }
+   ]
+  },
+  {
+   "kind": "dbms",
+   "slug": "debug-slow-query-explain",
+   "title": "Debug a slow query with EXPLAIN ANALYZE",
+   "topicId": "dbms-query",
+   "practiceRef": "dbms-query:3",
+   "level": "core",
+   "summary": "Tests whether you have a systematic method for reading a Postgres plan (scan types, estimates versus actuals, join algorithms) and fixing the usual culprits: missing index, non-sargable predicate, stale stats, OFFSET paging and N+1.",
+   "keywords": [
+    "explain analyze",
+    "seq scan",
+    "index scan",
+    "bitmap heap scan",
+    "hash join",
+    "statistics",
+    "keyset pagination",
+    "n+1"
+   ],
+   "prompt": [
+    "A query that used to take milliseconds now takes seconds in production. Walk me through how you diagnose it.",
+    "How do you read EXPLAIN ANALYZE output? What are you looking for first?"
+   ],
+   "talkingPoints": [
+    "Method: get the real slow query first (pg_stat_statements, slow query log, or the ORM log), reproduce it with realistic data and parameters, then run EXPLAIN (ANALYZE, BUFFERS). Plain EXPLAIN shows the planner's guess; ANALYZE actually executes the query, so wrap writes in BEGIN ... ROLLBACK. Do not tune on a tiny dev database, because the planner picks different plans at scale.",
+    "Reading the plan: it is a tree, read from the innermost, most-indented node outward. Each node shows (cost=startup..total rows=estimated width=bytes) and, with ANALYZE, (actual time=first..last rows=actual loops=n). Cost units are arbitrary and only comparable within one plan; actual time is per loop, so multiply by loops. Buffers: shared hit means cache, read means disk.",
+    "The first thing to check is estimated rows versus actual rows. A node that estimates 10 rows and returns 2,000,000 means the planner chose its strategy on bad information (for example a nested loop that was supposed to run 10 times and runs 2 million). Fixes: run ANALYZE (stale statistics after a bulk load), raise the statistics target for a skewed column, or CREATE STATISTICS for correlated columns.",
+    "Scan types: Seq Scan reads the whole table (fine for small tables or when most rows match). Index Scan walks the index and fetches heap rows. Index Only Scan answers from the index alone, but only for pages marked all-visible, so watch Heap Fetches and keep VACUUM current. Bitmap Index Scan plus Bitmap Heap Scan collects matching row locations, sorts them by page and fetches in physical order, which is the planner's choice for medium selectivity or combining indexes.",
+    "Join algorithms: Nested Loop probes the inner side once per outer row (great with a small outer side and an index on the inner key, terrible if the estimate was wrong). Hash Join builds a hash table on the smaller input and probes it (good for large unsorted equi-joins; watch for batches spilling to disk). Merge Join needs both inputs sorted, so it shines when indexes already provide order.",
+    "Why an index is not used: a function or cast on the column (WHERE date(created_at) = '2025-03-01', lower(email) = ?) so the index on the raw column is unusable; fix with a range predicate or an expression index. Type mismatch, a leading wildcard LIKE '%abc', the wrong column order against the leftmost-prefix rule, or the planner correctly deciding that most rows match.",
+    "Concrete before (illustrative output, not measured): SELECT id, total_cents FROM orders WHERE user_id = 42 AND date(created_at) = '2025-03-01'. Plan: Seq Scan on orders (cost=0.00..183000.00 rows=1) (actual time=0.05..1450.20 rows=37 loops=1), Filter: ((user_id = 42) AND (date(created_at) = '2025-03-01')), Rows Removed by Filter: 9999963, about 1.4 s. After: add CREATE INDEX ON orders (user_id, created_at) and rewrite as created_at >= '2025-03-01' AND created_at < '2025-03-02'. Plan: Index Scan using orders_user_id_created_at_idx (actual time=0.03..0.15 rows=37 loops=1), Buffers: shared hit=40, well under 1 ms. Both the index and the sargable predicate were needed.",
+    "Pagination: LIMIT 20 OFFSET 100000 must produce and discard 100,000 rows, so cost grows with page depth. Keyset (seek) pagination remembers the last row: WHERE (created_at, id) < (:last_created_at, :last_id) ORDER BY created_at DESC, id DESC LIMIT 20, which uses an index and costs the same on every page. It gives up jumping to arbitrary page numbers.",
+    "N+1: the ORM loads 100 orders, then fires one query per order for its items. Each query is fast in isolation, so EXPLAIN looks fine; the signal is pg_stat_statements showing one tiny query with a huge call count, or a request making hundreds of round trips. Fix with a join, a batched WHERE order_id = ANY(...), eager loading (include or joinedload), or a DataLoader in GraphQL."
+   ],
+   "diagram": "flowchart TD\n  S[Slow query reported] --> E[Run EXPLAIN ANALYZE with BUFFERS]\n  E --> Q[Compare estimated rows with actual rows]\n  Q -->|far apart| A[Run ANALYZE or add extended statistics]\n  Q -->|close| T[Find the most expensive node]\n  T --> I[Seq scan on a large table]\n  I --> F[Add or fix index and make predicate sargable]\n  A --> R[Re-run and compare]\n  F --> R",
+   "tradeoffs": [
+    "A seq scan is not automatically wrong; forcing an index for a predicate that matches a big fraction of the table makes it slower from random heap access.",
+    "More statistics detail and extended statistics improve plans but increase ANALYZE time and planner overhead.",
+    "A new index fixes a read but adds write cost, so confirm the query is frequent enough to justify it.",
+    "Keyset pagination is fast and stable under inserts but cannot jump to page N and needs a unique, indexed sort key.",
+    "Rewriting the application query (sargable predicate, batching) is cheap and permanent, whereas planner hints or settings tweaks are brittle and engine-specific."
+   ],
+   "probes": [
+    "The plan shows estimated rows=1 and actual rows=500000. What went wrong and what do you do?",
+    "Why can an Index Only Scan still show Heap Fetches, and how do you reduce them?",
+    "When does Postgres choose a Bitmap Heap Scan over an Index Scan?",
+    "Explain the three join algorithms and when each wins.",
+    "Why does OFFSET 100000 get slower the deeper you page, and how does keyset pagination fix it?",
+    "How would you spot an N+1 problem if every individual query is fast?"
+   ],
+   "readings": [
+    {
+     "title": "PostgreSQL: Using EXPLAIN",
+     "url": "https://www.postgresql.org/docs/current/using-explain.html"
+    },
+    {
+     "title": "Use The Index, Luke: Fetch the next page (keyset pagination)",
+     "url": "https://use-the-index-luke.com/sql/partial-results/fetch-next-page"
+    },
+    {
+     "title": "PostgreSQL: Index Types",
+     "url": "https://www.postgresql.org/docs/current/indexes-types.html"
+    }
+   ]
+  },
+  {
+   "kind": "dbms",
+   "slug": "secure-a-production-database",
+   "title": "Secure a production database",
+   "topicId": "dbms-ops-security",
+   "practiceRef": "dbms-ops-security:1",
+   "level": "core",
+   "summary": "Tests layered defense: preventing SQL injection correctly, least-privilege roles, network and encryption controls, secrets, auditing, and backups that are proven by restoring.",
+   "keywords": [
+    "sql injection",
+    "parameterized queries",
+    "least privilege",
+    "tls",
+    "encryption at rest",
+    "row level security",
+    "pitr",
+    "audit logging"
+   ],
+   "prompt": [
+    "How do you prevent SQL injection, and why is escaping input not enough?",
+    "You are handed a new production Postgres database for a customer-facing app. What do you put in place to secure it?"
+   ],
+   "talkingPoints": [
+    "SQL injection happens when user input is concatenated into SQL text so the database parses data as code. Example: query = \"SELECT * FROM users WHERE email = '\" + email + \"'\" with email = x' OR '1'='1 returns every user; with stacked statements or UNION it can read other tables or modify data.",
+    "The fix is parameterized queries (prepared statements): the SQL text with placeholders ($1, ?) and the values are sent separately, so the parser never treats values as syntax. In Node: client.query('SELECT * FROM users WHERE email = $1', [email]). Escaping is fragile: it depends on the exact character set and quoting context, and fails for numeric contexts, identifiers and encoding tricks. Parameters are structural, not textual.",
+    "Gotchas: ORMs and query builders are safe only while you use their parameter binding; raw fragments (sequelize.query with a template string, Prisma queryRawUnsafe, Knex raw with interpolation) are injectable. Placeholders cannot bind identifiers or keywords such as ORDER BY column or table names, so for dynamic sort fields use an allowlist map. Validate input as defense in depth, and treat second-order injection (stored data used later in a query) the same way.",
+    "Least privilege with separate roles: an application role with only SELECT, INSERT, UPDATE, DELETE on the tables it needs (no DDL, not a superuser, not the table owner); a migration role used only by the deploy pipeline, which holds DDL rights; a read-only role for analytics and support. Even if injection occurs, the blast radius is limited (no DROP TABLE, no COPY ... PROGRAM, no reading other schemas).",
+    "Network and transport: place the database in a private subnet with no public IP; security groups allow only the app tier (and a bastion or VPN for admins); use TLS for every connection with certificate verification (sslmode=verify-full in Postgres) so the traffic cannot be sniffed or tampered with. Add connection limits and pooling so a leaked credential cannot exhaust the server.",
+    "Encryption and secrets: encryption at rest via disk or volume encryption (cloud-managed keys such as KMS) protects stolen disks and backups, but not a compromised app credential. For highly sensitive fields (card numbers, national IDs) use application-level or column-level encryption with keys outside the database. Keep credentials in a secrets manager rather than in the repo or images, rotate them on a schedule and after any suspected leak, and prefer short-lived credentials (IAM auth).",
+    "Row-level security (Postgres): ALTER TABLE invoices ENABLE ROW LEVEL SECURITY; CREATE POLICY tenant_isolation ON invoices USING (tenant_id = current_setting('app.tenant_id')::bigint); the database then filters rows per tenant even if a query forgets the WHERE clause. It does not apply to the table owner or superusers unless forced (FORCE ROW LEVEL SECURITY), so the app must not connect as the owner.",
+    "Auditing and detection: log connections, DDL and privilege changes; use pgaudit (or MySQL audit plugin) for object-level read and write auditing on sensitive tables; ship logs to a store the database admins cannot alter; alert on anomalies such as bulk reads or new roles. Do not log full parameter values containing secrets or PII.",
+    "Backups and recovery: automated base backups plus continuous WAL archiving give point-in-time recovery, for example restoring to 10:41:59 just before a bad DELETE. Store backups encrypted, in a separate account or region, with immutability or restricted delete rights against ransomware. A backup is only real once you have restored it: schedule restore drills, measure RTO and RPO, and alert when WAL archiving falls behind."
+   ],
+   "diagram": "flowchart LR\n  U[User input] --> A[App with parameterized queries]\n  A -->|TLS verify full| P[Private subnet database]\n  A --> R[App role with minimal grants]\n  R --> P\n  P --> L[Audit logs to separate store]\n  P --> B[Base backups plus WAL archive]\n  B --> T[Regular restore test]\n  K[Secrets manager] --> A",
+   "tradeoffs": [
+    "Least-privilege roles and separate migration credentials add operational friction in the deploy pipeline but sharply limit the blast radius of a bug or leaked credential.",
+    "Column-level encryption protects data from DB admins and dumps but breaks indexing, sorting and searching on those columns.",
+    "Detailed audit logging gives forensics and compliance evidence at the cost of log volume, performance overhead and the risk of logging sensitive values.",
+    "Row-level security centralizes tenant isolation in the database but adds per-query policy overhead and subtle bypass cases (owners, superusers, security definer functions).",
+    "Frequent backups and PITR cost storage and effort, and are worthless unless restores are rehearsed."
+   ],
+   "probes": [
+    "Why can't I just escape single quotes, and what exactly is different about a parameterized query?",
+    "My ORM is parameterized. Where can SQL injection still creep in?",
+    "How do you handle a dynamic ORDER BY column safely?",
+    "What does the application role need, and what must it not have?",
+    "How does point-in-time recovery work, and how would you recover from an accidental DROP TABLE at 3 pm?",
+    "Encryption at rest is on. What threats does that not protect against?"
+   ],
+   "readings": [
+    {
+     "title": "OWASP: SQL Injection Prevention Cheat Sheet",
+     "url": "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
+    },
+    {
+     "title": "OWASP: SQL Injection",
+     "url": "https://owasp.org/www-community/attacks/SQL_Injection"
+    },
+    {
+     "title": "PostgreSQL: Row Security Policies",
+     "url": "https://www.postgresql.org/docs/current/ddl-rowsecurity.html"
+    },
+    {
+     "title": "PostgreSQL: Backup and Restore",
+     "url": "https://www.postgresql.org/docs/current/backup.html"
+    }
+   ]
+  }
+ ]
+}

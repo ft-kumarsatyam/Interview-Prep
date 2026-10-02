@@ -47,6 +47,7 @@ export interface ProblemDetail {
     solveDates: string[];
     source: string;
     needsDetails: boolean;
+    revealedCases: number[];
   } | null;
 }
 
@@ -71,6 +72,7 @@ export async function getProblemDetail(slug: string): Promise<ProblemDetail | nu
           solveDates: p.solveDates ?? [],
           source: p.source ?? "manual",
           needsDetails: !!p.needsDetails,
+          revealedCases: p.revealedCases ?? [],
         }
       : null,
   };

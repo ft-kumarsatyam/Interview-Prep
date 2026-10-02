@@ -20,6 +20,8 @@ const problemProgressSchema = new Schema(
     source: { type: String, enum: ["manual", "leetcode"], default: "manual" },
     /** Imported by LeetCode sync without confidence/time/approach yet. */
     needsDetails: { type: Boolean, default: false },
+    /** Indices of hidden test cases shown to you after a failed Submit (each is revealed once, then visible). */
+    revealedCases: { type: [Number], default: [] },
   },
   { timestamps: true },
 );

@@ -1,5 +1,6 @@
 import { problemBySlug } from "@/lib/content";
 import { connectDb } from "@/lib/db";
+import { toLocalDate, type DateStr } from "@/lib/domain/dates";
 import { planSync } from "@/lib/domain/leetcode";
 import { leetcodeClient, type LeetCodeClient, type LeetCodeStats } from "@/lib/leetcode/client";
 import { ProblemProgress } from "@/lib/models/progress";
@@ -80,5 +81,49 @@ export async function getLeetCodeStats(client: LeetCodeClient = leetcodeClient):
     return await client.stats(s.leetcodeUsername);
   } catch {
     return null;
+  }
+}
+
+/** Polling floor and the window an Accepted submission must fall in to count as "the one I just made". */
+export const CHECK_FLOOR_MS = 30_000;
+const SINCE_MAX_AGE_MS = 6 * 3_600_000;
+const SINCE_SKEW_MS = 2 * 60_000;
+
+export type AcceptedCheck =
+  | { status: "disabled" }
+  | { status: "wait" }
+  | { status: "pending" }
+  | { status: "accepted"; date: DateStr }
+  | { status: "error"; message: string };
+
+/**
+ * After "Copy and open LeetCode": has an Accepted submission of `slug` appeared on your public profile since
+ * `sinceMs`? If so it is imported like any synced solve (needs details), and the date is returned so the solve
+ * form can open. At most one real LeetCode request per 30 s, claimed with a compare-and-set so overlapping
+ * polls can't double up. No cookie is involved: this reads only the public recent-accepted list.
+ */
+export async function checkAccepted(input: { slug: string; sinceMs: number; now?: Date; client?: LeetCodeClient }): Promise<AcceptedCheck> {
+  const now = input.now ?? new Date();
+  const client = input.client ?? leetcodeClient;
+  if (!problemBySlug.has(input.slug)) return { status: "error", message: "Unknown problem" };
+  const s = await getSettings();
+  if (!s.leetcodeUsername) return { status: "disabled" };
+
+  await connectDb();
+  const doc = await Settings.findById(SETTINGS_ID, { leetcodeLastCheckAt: 1 }).lean();
+  const last = doc?.leetcodeLastCheckAt ?? null;
+  if (last && now.getTime() - last.getTime() < CHECK_FLOOR_MS) return { status: "wait" };
+  const claim = await Settings.updateOne({ _id: SETTINGS_ID, leetcodeLastCheckAt: last }, { $set: { leetcodeLastCheckAt: now } });
+  if (claim.modifiedCount === 0) return { status: "wait" };
+
+  const since = Math.min(Math.max(input.sinceMs, now.getTime() - SINCE_MAX_AGE_MS), now.getTime() + SINCE_SKEW_MS);
+  try {
+    const submissions = await client.recentAccepted(s.leetcodeUsername, 20);
+    const match = submissions.find((x) => x.titleSlug === input.slug && x.timestamp * 1000 >= since - SINCE_SKEW_MS);
+    if (!match) return { status: "pending" };
+    await syncLeetCode({ client, force: true, now });
+    return { status: "accepted", date: toLocalDate(new Date(match.timestamp * 1000), s.timezone) };
+  } catch (err) {
+    return { status: "error", message: err instanceof Error ? err.message.slice(0, 200) : "LeetCode check failed" };
   }
 }

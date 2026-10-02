@@ -1,0 +1,650 @@
+{
+  "hld:ticket-booking": [
+    {
+      "prompt": "Two buyers click the same available seat at the same instant. The booking API runs an atomic conditional UPDATE (set status to held WHERE seat is still available). What happens?",
+      "options": [
+        "Both UPDATEs run, the later one overwrites the earlier, and both buyers see success",
+        "Only one UPDATE changes the row; the other affects zero rows and that buyer is told the seat is taken",
+        "The database raises a deadlock error to both buyers and neither of them gets the seat",
+        "Whichever request reached the load balancer first wins, as enforced by the API tier"
+      ],
+      "answerIndex": 1,
+      "explanation": "The database serialises writes to the same row, so the second UPDATE re-evaluates its WHERE clause, sees status is no longer available and changes nothing. The service reads the affected-row count to decide the winner. Arrival order at the load balancer does not decide it, and there is no deadlock because only one row is touched.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "A popular on-sale has 10 million users trying to buy and only 50,000 seats. If every user makes exactly one hold attempt, what is the maximum share of attempts that can succeed?",
+      "options": [
+        "0.05%",
+        "0.5%",
+        "5%",
+        "50%"
+      ],
+      "answerIndex": 1,
+      "explanation": "50,000 / 10,000,000 = 0.005 = 0.5%. At least 99.5% of attempts must fail, which is why the system should absorb most of that traffic in front of the database (waiting room, CDN, fast rejects) instead of letting every request reach the inventory table.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "A virtual waiting room admits users to the booking API at 2,000 users per second. Roughly how long until the first 50,000 users (the number of seats) have been admitted?",
+      "options": [
+        "About 2.5 seconds",
+        "About 25 seconds",
+        "About 4 minutes",
+        "About 42 minutes"
+      ],
+      "answerIndex": 1,
+      "explanation": "50,000 / 2,000 = 25 seconds. The admission rate is set by what the backend can handle, and queue position gives fairness. In practice more than 50,000 are admitted because some buyers abandon, but the arithmetic shows how a controlled rate turns a 10M-user spike into a manageable stream.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "A buyer's card payment succeeds, but by the time the order is confirmed their 10-minute hold has already expired and another buyer may have taken the seat. What is the correct handling?",
+      "options": [
+        "Confirm anyway and flip the seat to sold, since the buyer has already paid",
+        "Extend the expired hold silently so the paid order can proceed",
+        "Flip held to sold only if the hold is still valid for this buyer; otherwise refund or void the payment",
+        "Ignore the payment event and let the buyer retry the whole purchase from scratch"
+      ],
+      "answerIndex": 2,
+      "explanation": "Confirmation must be a conditional write: it succeeds only if the seat is still held by this hold and not expired. If the seat was resold, forcing it would double-sell. The payment must then be refunded or voided. Ignoring it leaves the customer charged with no ticket.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "Why does the design reserve seats with one atomic conditional write in the inventory database instead of acquiring a distributed lock per seat for the whole checkout?",
+      "options": [
+        "Distributed locks are always at least ten times slower than SQL updates",
+        "A lock cannot be created for a seat that is not yet in the database",
+        "Locks cannot expire, so an abandoned checkout would block the seat forever",
+        "A lease-based lock can expire while its holder is paused or delayed and still believes it owns the seat, whereas the conditional write is checked by the database that holds the truth"
+      ],
+      "answerIndex": 3,
+      "explanation": "Lease-based locks have the classic problem that the holder can stall (GC pause, network delay), the lease expires, and a stale writer proceeds. A check-and-set inside the source of truth has no such window. Locks can expire, so the third option is wrong, and the other two claims are not true in general.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    },
+    {
+      "prompt": "A teammate proposes this seat-hold logic. What is wrong with it under concurrent traffic?",
+      "code": "row = SELECT status FROM seats WHERE seat_id = 'A7';\nif row.status == 'available':\n    UPDATE seats SET status = 'held', hold_id = :h\n        WHERE seat_id = 'A7';\n    return OK\nreturn SEAT_TAKEN",
+      "options": [
+        "Each statement is atomic, so the code is safe and only slightly slower than a single UPDATE",
+        "Two requests can both read available before either updates, so both get OK and one hold silently overwrites the other",
+        "The seat row needs a TTL column, and adding one removes the race",
+        "The SELECT should use a larger isolation level only for reads, which makes the later UPDATE safe"
+      ],
+      "answerIndex": 1,
+      "explanation": "This is a check-then-act race: the check and the write are separate steps, so both requests can pass the check. The fix is to put the condition in the UPDATE itself (WHERE status = 'available') and inspect the affected-row count. Per-statement atomicity does not make the pair of statements atomic.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "A user asks to hold three adjacent seats in one request. The conditional UPDATE over those three seat ids reports only 2 rows changed. Given that the group must stay together, what should the service do?",
+      "options": [
+        "Keep the two seats held and tell the user to pick a third one later",
+        "Roll back the two changes (or run it in one transaction) and report a conflict so the request is all-or-nothing",
+        "Retry the same UPDATE in a loop until all three rows change",
+        "Mark the two held seats as sold to avoid leaving gaps in the seat map"
+      ],
+      "answerIndex": 1,
+      "explanation": "A multi-seat hold succeeds only if all rows changed, so a partial result must be undone. Keeping two seats locks inventory for a request that cannot complete, looping may spin forever on a seat someone else is paying for, and marking seats sold without payment is plainly wrong.",
+      "anchor": "deep-dives"
+    },
+    {
+      "type": "multi",
+      "prompt": "Which of these measures protect the database at on-sale time? Select all that apply.",
+      "options": [
+        "A waiting room that admits users at the rate the backend can handle",
+        "Serving the static seat-map layout from a CDN",
+        "Rejecting excess requests early with a quick overload response instead of queueing them inside the API",
+        "Raising the hold time to 60 minutes so fewer hold requests are made",
+        "Having clients retry failed requests immediately and without backoff"
+      ],
+      "answerIndices": [0, 1, 2],
+      "explanation": "Admission control, edge caching of static content and early load shedding all keep traffic away from the inventory DB. A longer hold mostly locks seats up and does not reduce attempts much, and immediate retries without backoff multiply load during exactly the moment the system is saturated.",
+      "anchor": "deep-dives",
+      "reading": 2
+    },
+    {
+      "type": "multi",
+      "prompt": "Holds expire after about 10 minutes. Which approaches correctly make an expired hold's seat available again? Select all that apply.",
+      "options": [
+        "A background worker that periodically releases holds whose expiry time has passed",
+        "Treating a held seat with an expired hold time as available inside the conditional write or the read path",
+        "Relying on the buyer's browser to call a release endpoint when the tab is closed",
+        "Relying on database row locks timing out, which frees the seat automatically"
+      ],
+      "answerIndices": [0, 1],
+      "explanation": "Server-side expiry, either by a sweeper or by a lazy check of hold_expires_at, is reliable. Browsers crash, lose connectivity or never fire the call, so client-driven release cannot be trusted. Row locks last for a transaction and say nothing about the application-level hold state stored in a column.",
+      "anchor": "deep-dives"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "Making the seat hold duration much longer always increases sales, because buyers get more time to finish paying.",
+      "options": ["True", "False"],
+      "answerIndex": 1,
+      "explanation": "A longer hold improves conversion for slow payers but keeps seats unavailable to others, so abandoned checkouts lock up inventory that could have sold. It is a trade-off between conversion and locked-up stock, not a free win.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "Someone argues that once the waiting room limits admissions to 2,000 users per second, the conditional UPDATE is no longer necessary. What is wrong with that argument?",
+      "options": [
+        "The waiting room limits overall rate but not contention, since admitted users can still pick the same seat at the same time",
+        "Waiting rooms are only advisory and users can bypass them in every implementation",
+        "At 2,000 users per second the database cannot handle any writes at all",
+        "The conditional UPDATE is only needed for payments, not seat holds"
+      ],
+      "answerIndex": 0,
+      "explanation": "Rate limiting protects capacity; it does not make two requests for the same seat mutually exclusive. Even at low volume two admitted buyers can click the same seat in the same millisecond, so correctness still comes from the atomic conditional write.",
+      "anchor": "deep-dives"
+    }
+  ],
+  "hld:collaborative-docs": [
+    {
+      "prompt": "Two editors place the cursor at the same position in a shared document and type different characters at the same moment. What outcome should the system guarantee?",
+      "options": [
+        "The later keystroke by wall-clock time overwrites the earlier one",
+        "Both edits are kept and every replica converges to the same text, with the server's ordering deciding which character comes first",
+        "The server rejects the second edit and asks that user to retype it",
+        "Each user keeps seeing their own version until one of them saves"
+      ],
+      "answerIndex": 1,
+      "explanation": "The no-lost-edits and convergence requirements mean both characters survive and everyone ends with identical text. In OT the server orders the concurrent ops and transforms them against each other. Overwriting or rejecting loses work, and per-user diverging versions violates convergence.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "A product needs users to edit for hours offline on phones and merge later, with no always-on central ordering server. Which approach fits best and what is its main cost?",
+      "options": [
+        "Operational transformation, because it needs less per-character metadata",
+        "A CRDT such as Yjs or Automerge, at the cost of extra per-character metadata",
+        "Last-writer-wins on the whole document, at the cost of occasionally dropping edits",
+        "Pessimistic document locking, at the cost of only one editor at a time"
+      ],
+      "answerIndex": 1,
+      "explanation": "CRDTs give each element a unique, ordered identity so replicas can merge without a central authority, which suits offline-first. The price is metadata and tombstone overhead. OT depends on a central server to order and transform ops, so it is a poorer fit for long offline work.",
+      "anchor": "deep-dives",
+      "reading": 2
+    },
+    {
+      "prompt": "Assume 10 editors per active document, each producing about 5 operations per second, and the server broadcasts every operation to the other editors of that document. How many operations per second does the session server receive and send for one active document?",
+      "options": [
+        "Receives 50, sends 50",
+        "Receives 50, sends 450",
+        "Receives 50, sends 500",
+        "Receives 500, sends 450"
+      ],
+      "answerIndex": 1,
+      "explanation": "Incoming: 10 editors x 5 ops/s = 50 ops/s. Each op goes to the 9 other editors, so outgoing = 50 x 9 = 450 messages/s. The fan-out is why per-document traffic is dominated by sends, and why it still fits comfortably on a single server for one doc.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "At peak, 20,000 documents are being actively edited, each at 50 operations per second. One session server can sustain 10,000 operations per second. Ignoring headroom, what is the minimum number of session servers?",
+      "options": [
+        "10",
+        "20",
+        "100",
+        "1,000"
+      ],
+      "answerIndex": 2,
+      "explanation": "Total load = 20,000 x 50 = 1,000,000 ops/s. Dividing by 10,000 ops/s per server gives 100 servers. Real deployments add headroom for failover and spikes, and routing by document id keeps each doc on one server so the load can be spread by hashing.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "All editors of a document are routed to one session server chosen by consistent hashing on the document id. That server crashes. What is the right recovery?",
+      "options": [
+        "The ring assigns the document to another server, which loads the latest snapshot and replays the ops after it from the log; clients resend unacknowledged ops, which are de-duplicated by clientId and sequence number",
+        "Clients switch to a peer-to-peer mesh because the log is no longer trusted",
+        "The document becomes read-only until an operator restores the server",
+        "The new server starts from an empty document and clients re-send their entire local text"
+      ],
+      "answerIndex": 0,
+      "explanation": "Because ops are persisted in an append-only log with periodic snapshots, any server can rebuild the in-memory state. Clients retry unacknowledged ops and (clientId, seq) lets the server drop duplicates. Starting from empty or going read-only would lose edits or availability.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "A document has accumulated a million edits and opening it is slow because the server replays the whole ops log. What is the standard fix?",
+      "options": [
+        "Delete old operations once they are a day old to keep the log short",
+        "Store the document only in memory and rebuild it from clients on demand",
+        "Load the most recent snapshot and replay only the operations recorded after it",
+        "Sort the ops log by operation size so large ops are applied first"
+      ],
+      "answerIndex": 2,
+      "explanation": "Periodic snapshots bound replay work to the tail of the log. Deleting ops would destroy version history and undo, memory-only state loses durability, and reordering ops by size would break the causal order that convergence depends on.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "A prototype has the server assign a sequence number to each incoming op and broadcast it. Clients simply apply every received op as-is on top of their local text, even though they also applied their own pending edits immediately. Two users concurrently edit near each other. What goes wrong?",
+      "options": [
+        "Nothing, since the server's ordering already guarantees convergence",
+        "The server runs out of sequence numbers",
+        "Op positions refer to different document states on different clients, so replicas diverge unless ops are transformed against concurrent ones",
+        "Presence updates will be delayed by the extra ordering"
+      ],
+      "answerIndex": 2,
+      "explanation": "An op like insert at index 5 means something different if a concurrent edit already shifted the text. Ordering alone is not enough: with OT the concurrent ops are transformed so their positions are adjusted. Without it, replicas apply the same ops to different states and drift apart.",
+      "anchor": "deep-dives"
+    },
+    {
+      "type": "multi",
+      "prompt": "Which statements about CRDT-based editing (such as Yjs or Automerge) are correct? Select all that apply.",
+      "options": [
+        "Each character or element gets a unique, ordered identifier so replicas can merge without a central ordering server",
+        "Merging is independent of the order in which updates arrive, so offline edits can be merged later",
+        "They keep extra metadata, including markers for deleted content, which makes documents larger",
+        "They require a central server to assign a total order to every operation",
+        "They cannot support offline edits"
+      ],
+      "answerIndices": [0, 1, 2],
+      "explanation": "CRDTs are designed so concurrent updates commute and converge without central coordination, which is what enables offline work. The trade-off is metadata, including tombstones for deletions. Requiring a central total-order server is the OT model, not the CRDT model.",
+      "anchor": "deep-dives",
+      "reading": 3
+    },
+    {
+      "type": "multi",
+      "prompt": "A document store keeps an append-only ops log per document plus periodic snapshots. Which benefits does this give? Select all that apply.",
+      "options": [
+        "Version history, since any earlier version can be rebuilt by replaying ops up to that point",
+        "Fast document loads, since only the ops after the latest snapshot need replaying",
+        "No need to order concurrent operations, since the log orders them automatically",
+        "No need to route a document's editors to the same server"
+      ],
+      "answerIndices": [0, 1],
+      "explanation": "The log plus snapshots give history, undo and bounded load time. They do not resolve concurrency by themselves: something (the session server in OT, or the CRDT merge rules) still has to order or merge concurrent ops, and server affinity is a separate design choice for keeping state in memory.",
+      "anchor": "data-model"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "Cursor positions and presence information should be appended to the durable ops log so they show up in version history.",
+      "options": ["True", "False"],
+      "answerIndex": 1,
+      "explanation": "Presence is ephemeral and changes constantly, so it is kept in memory and broadcast, not persisted. Writing it to the log would multiply write volume and pollute history with data nobody needs to replay or undo.",
+      "anchor": "data-model"
+    }
+  ],
+  "hld:autocomplete": [
+    {
+      "prompt": "A search box has 20 million daily active users, each running 10 searches per day and typing about 5 characters per search with one request per keystroke. Using 86,400 seconds per day, what is the average request rate?",
+      "options": [
+        "About 1,200 requests per second",
+        "About 5,800 requests per second",
+        "About 11,600 requests per second",
+        "About 116,000 requests per second"
+      ],
+      "answerIndex": 2,
+      "explanation": "20M x 10 x 5 = 1,000,000,000 requests per day. Dividing by 86,400 gives about 11,574, or roughly 11.6k per second on average. Peak would be a multiple of that, so capacity must be planned above the average.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "Why does the design store the top-K completions at every trie node instead of finding them when the request arrives?",
+      "options": [
+        "A lookup becomes proportional to the prefix length, rather than requiring a walk of the whole subtree below the prefix",
+        "It guarantees suggestions are always perfectly fresh",
+        "It removes the need to aggregate query logs",
+        "It lets the trie fit in less memory than storing only the words"
+      ],
+      "answerIndex": 0,
+      "explanation": "For a short prefix such as 'a', the subtree holds a huge part of the vocabulary, so ranking it per keystroke is far too slow for a 50 ms budget. Pre-computed top-K lists make the lookup O(prefix length). It costs extra memory, and does nothing for freshness or log aggregation.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "The UI shows at most 10 suggestions and no re-ranking is done at request time. An engineer sets K to 1,000 at every trie node to 'be safe'. What is the main consequence?",
+      "options": [
+        "Lookups slow down to O(K) per keystroke",
+        "Suggestion quality gets worse because the lists are noisy",
+        "Memory use grows roughly 100x for the cached lists, while almost none of the extra entries are ever shown",
+        "The trie cannot be sharded any more"
+      ],
+      "answerIndex": 2,
+      "explanation": "Cached lists live at every node, so total memory scales with K. Going from 10 to 1,000 inflates that part about 100 times with entries that are never returned. Reading the first 10 of a sorted list is still cheap, and sharding is unaffected.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "A breaking-news query suddenly spikes, but the main trie is rebuilt only every few hours from aggregated logs. Which approach gets the new query into suggestions fast without rebuilding the trie constantly?",
+      "options": [
+        "Rebuild the whole trie after every logged search",
+        "Run stream aggregation with time-decayed counts and merge the resulting small set of trending terms into results at query time, while the full trie is still rebuilt periodically",
+        "Lower K to 1 so new queries replace old ones faster",
+        "Wait for the next scheduled rebuild, since users never notice staleness"
+      ],
+      "answerIndex": 1,
+      "explanation": "A streaming job with decay detects trends in minutes and feeds a small overlay that the suggest service merges with the big, periodically rebuilt trie. A per-search rebuild is far too expensive, K=1 destroys quality, and waiting hours misses the 'trending' requirement.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "The trie is rebuilt offline from fresh counts. Why is the new trie swapped in atomically instead of mutating the live trie in place?",
+      "options": [
+        "Readers never see a half-updated structure with inconsistent cached top-K lists, and no locking is needed on the hot read path",
+        "In-place updates are impossible in any in-memory data structure",
+        "Atomic swaps make the new trie use less memory than the old one",
+        "It guarantees every replica swaps at exactly the same instant"
+      ],
+      "answerIndex": 0,
+      "explanation": "Updating counts in place would require changing top-K lists along every ancestor on the path while serving reads. Building off to the side and swapping a pointer keeps reads lock-free and consistent. Replicas may swap at slightly different times, which is fine given tolerated staleness.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "To shard the trie, a team splits it into 26 shards by the first letter of the prefix. What problem will they hit?",
+      "options": [
+        "Prefixes beginning with different letters cannot be looked up on the same machine",
+        "Some letters get far more queries than others, so a few shards are hot and the load is uneven; ranges should be chosen using measured query load",
+        "Top-K lists cannot be stored on more than one machine",
+        "Sharding by prefix makes it impossible to rebuild the trie"
+      ],
+      "answerIndex": 1,
+      "explanation": "Query traffic is heavily skewed across starting letters and prefixes, so equal-width alphabet ranges produce unbalanced shards. Splitting prefix ranges based on observed traffic or size balances them. Each request carries a full prefix, so routing to one shard is easy.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "The service must offer personalised suggestions while still hitting 20k requests per second at p99 under 50 ms. Which design is most sensible?",
+      "options": [
+        "Build a separate trie for every user and keep them all in memory",
+        "Drop personalisation entirely, since it cannot be done under 50 ms",
+        "Compute personalised suggestions with a full database scan of that user's history on every keystroke",
+        "Fetch the shared global top candidates from the trie, then blend in or re-rank using a small amount of per-user recent data in the service"
+      ],
+      "answerIndex": 3,
+      "explanation": "A hybrid keeps the expensive, shared structure global (and cacheable) and applies cheap per-user adjustment on top. Per-user tries do not scale in memory, and a history scan per keystroke blows the latency budget. Light re-ranking is routinely done within tens of milliseconds.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "type": "multi",
+      "prompt": "Which client-side or edge techniques cut load on the suggest service? Select all that apply.",
+      "options": [
+        "Debouncing keystrokes so a request is sent only after the user pauses briefly",
+        "Caching responses per prefix in the browser",
+        "Caching popular prefixes at a CDN",
+        "Sending a request on every keystroke and never caching, to keep results real-time",
+        "Bypassing the CDN for short prefixes, since they have the most distinct results"
+      ],
+      "answerIndices": [0, 1, 2],
+      "explanation": "Debouncing and per-prefix caching both avoid repeated or wasted requests, and CDN caching serves popular prefixes without reaching the service. Short prefixes are the most popular and repeated, so they are the best candidates for caching, not the worst. Since suggestions may be minutes stale, caching is acceptable.",
+      "anchor": "deep-dives"
+    },
+    {
+      "type": "multi",
+      "prompt": "The requirements say suggestions may be a few minutes stale. Which design choices does that tolerance allow? Select all that apply.",
+      "options": [
+        "Caching suggest responses for a short time at the CDN or browser",
+        "Letting replicas swap to a freshly built trie at slightly different moments",
+        "Aggregating query counts asynchronously from logs instead of in the request path",
+        "Taking a distributed lock on the trie for every search so all replicas stay perfectly in sync",
+        "Updating the trie synchronously before returning each search result"
+      ],
+      "answerIndices": [0, 1, 2],
+      "explanation": "Tolerated staleness is what makes caching, asynchronous aggregation and non-simultaneous swaps acceptable. Locking per search or updating synchronously puts writes on the hot path of a read-heavy, latency-critical service, which is the opposite of what the relaxed requirement lets you avoid.",
+      "anchor": "non-functional"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "The best way to keep popularity ranking current is to increment the matching trie nodes' counts synchronously on every search request.",
+      "options": ["True", "False"],
+      "answerIndex": 1,
+      "explanation": "That puts a write fan-out (every ancestor node and its top-K list) on the hot request path of a read-heavy service. The usual approach is to log queries, aggregate counts offline or in a stream, and rebuild or overlay the trie periodically.",
+      "anchor": "deep-dives"
+    }
+  ],
+  "hld:web-crawler": [
+    {
+      "prompt": "A crawler must fetch 2.6 billion pages per month. Using a 30-day month (about 2.6 million seconds), what is the sustained fetch rate?",
+      "options": [
+        "About 100 pages per second",
+        "About 1,000 pages per second",
+        "About 10,000 pages per second",
+        "About 100,000 pages per second"
+      ],
+      "answerIndex": 1,
+      "explanation": "30 x 86,400 = 2,592,000 seconds. 2.6e9 / 2.6e6 = 1,000 pages per second on average. The case's own figure follows the same arithmetic: 1B pages per month is about 400 per second.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "A crawler fetches 3 billion pages per month and the average page is 150 KB. How much raw content does it download per month?",
+      "options": [
+        "About 45 TB",
+        "About 450 TB",
+        "About 4.5 PB",
+        "About 45 PB"
+      ],
+      "answerIndex": 1,
+      "explanation": "3e9 x 150e3 bytes = 4.5e14 bytes = 450 TB. The case's own estimate (1B pages x 100 KB = 100 TB) scales the same way, which is why a blob store and compression are part of the design.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "Why does the crawler map each host to one back queue served by a single worker at a time, instead of having all workers pull any URL from one shared queue?",
+      "options": [
+        "A shared queue cannot hold more than a million URLs",
+        "A single queue per host makes DNS lookups unnecessary",
+        "With a shared queue many workers could request the same site at once, overloading it and violating politeness rules",
+        "Per-host queues make the fetched pages smaller"
+      ],
+      "answerIndex": 2,
+      "explanation": "Politeness means a bounded request rate per host. If any worker can take any URL, nothing stops dozens of them from hitting the same server simultaneously. One queue per host with one active worker and a delay between requests enforces the limit by construction.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "A Bloom filter is used to check whether a URL has already been seen before enqueueing it. The filter answers 'seen' for a particular URL. What can you conclude?",
+      "options": [
+        "The URL has definitely been seen, because Bloom filters never make mistakes",
+        "The URL has probably been seen, but with a small chance it is new and would be wrongly skipped",
+        "The URL has not been seen, because the filter reports the opposite of what it stores",
+        "Nothing, since a Bloom filter can wrongly miss URLs that were previously added"
+      ],
+      "answerIndex": 1,
+      "explanation": "Bloom filters have false positives but no false negatives. A 'not seen' answer is certain, a 'seen' answer may be wrong. The cost is occasionally skipping a never-crawled URL, which the memory savings usually justify; a backing store can confirm when it matters.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "Two mirror sites serve the same article but each wraps it in different ads and footers. Which technique best detects that these pages are near-duplicates?",
+      "options": [
+        "Compare SHA-256 hashes of the full page bytes",
+        "Compare the URLs after normalisation",
+        "Compare simhash-style fingerprints and treat pages with a small Hamming distance as duplicates",
+        "Compare the response size in bytes"
+      ],
+      "answerIndex": 2,
+      "explanation": "An exact content hash changes if even one byte differs, so it only finds byte-identical copies. Simhash produces similar fingerprints for similar content, so a small Hamming distance flags near-duplicates. URLs differ on mirrors and equal sizes prove nothing.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "The crawler has many machines running the URL frontier. How should URLs be partitioned across them?",
+      "options": [
+        "By a hash of the full URL, so each page is spread evenly",
+        "By a hash of the host, so a site's politeness queue and delay state live on one machine",
+        "Randomly per fetch, so no machine becomes a hotspot",
+        "By file extension, so similar content types are crawled together"
+      ],
+      "answerIndex": 1,
+      "explanation": "Politeness needs one place that knows the last-request time and queue for each host. Hashing by host keeps all of a site's URLs together; hashing by full URL would scatter one site over many machines, each unaware of the others' requests.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "One page changes every hour and another changes about once a year. A crawler re-crawls both on a fixed 30-day interval. What is the main problem and the better approach?",
+      "options": [
+        "Fixed intervals are the most efficient since they keep the schedule predictable",
+        "The fast-changing page is stale most of the time and the slow one wastes budget; adapt the interval to each page's observed change rate",
+        "Both pages should be re-crawled every hour to be safe",
+        "Neither page needs re-crawling after the first fetch"
+      ],
+      "answerIndex": 1,
+      "explanation": "Crawl budget is finite. A uniform interval under-serves frequently changing pages and over-serves static ones. Estimating change frequency and re-crawling accordingly improves freshness for the same budget. Crawling everything hourly would blow the budget.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "Fetch workers each resolve the host name through a blocking DNS call for every single URL, with no caching, at hundreds of fetches per second. What is the issue and the usual fix?",
+      "options": [
+        "DNS lookups become a throughput bottleneck; cache resolutions per host and resolve asynchronously",
+        "DNS must be resolved from scratch on each request because records change within seconds",
+        "DNS lookups are free, so the design is fine",
+        "The fix is to crawl by IP address only and skip host names"
+      ],
+      "answerIndex": 0,
+      "explanation": "Synchronous resolution adds latency to every fetch and can saturate the resolver. Many URLs share a host, so caching with TTL respect removes most lookups, and asynchronous resolution avoids blocking workers. Crawling by raw IP breaks virtual hosting.",
+      "anchor": "architecture"
+    },
+    {
+      "type": "multi",
+      "prompt": "A calendar page links to 'next month' forever, producing infinitely many distinct URLs. Which controls help the crawler escape such traps? Select all that apply.",
+      "options": [
+        "Limiting crawl depth",
+        "Limiting the maximum URL length",
+        "Capping the number of pages fetched per host",
+        "Making the Bloom filter bigger",
+        "Re-fetching robots.txt more often"
+      ],
+      "answerIndices": [0, 1, 2],
+      "explanation": "Depth, URL-length and per-host budget caps bound how far a generated-link trap can drag the crawler. A bigger Bloom filter only reduces false positives, and every trap URL is genuinely new anyway. robots.txt is about permissions, not infinite link spaces.",
+      "anchor": "deep-dives"
+    },
+    {
+      "type": "multi",
+      "prompt": "The URL frontier uses front queues and back queues. Which statements describe their roles correctly? Select all that apply.",
+      "options": [
+        "Front queues order URLs by priority, such as importance and change rate",
+        "Back queues are organised per host so that a host is fetched by one worker at a time with delays",
+        "Back queues detect near-duplicate page content with simhash",
+        "Front queues fetch and cache robots.txt for each host"
+      ],
+      "answerIndices": [0, 1],
+      "explanation": "Priority is handled in front queues and politeness in per-host back queues. Content fingerprinting happens after parsing, on the fetched pages, and robots.txt and DNS are cached by the fetch side per host. Neither belongs to the queue tiers.",
+      "anchor": "deep-dives"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "To stay polite, a crawler must download a host's robots.txt again before every single page request to that host.",
+      "options": ["True", "False"],
+      "answerIndex": 1,
+      "explanation": "robots.txt is cached per host and refreshed periodically (respecting expiry). Re-fetching before every request would double the load on the site, which defeats politeness. A cached copy is the standard approach.",
+      "anchor": "deep-dives"
+    }
+  ],
+  "hld:file-sync": [
+    {
+      "prompt": "A service stores 1 exabyte of logical user data (500M users x 2 GB). Cross-user dedup finds that 30% of the bytes are duplicates of data already stored. How much unique data must be stored, before replication?",
+      "options": [
+        "About 300 PB",
+        "About 700 PB",
+        "About 1.3 EB",
+        "About 7 EB"
+      ],
+      "answerIndex": 1,
+      "explanation": "1 EB = 1,000 PB. Removing 30% leaves 70% = 700 PB. Duplicates become references to an existing block instead of a new copy, which is why content-addressed storage saves so much at this scale. Replication or erasure coding for durability then multiplies this figure.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "With 4 MB blocks, 1 EB of data is about 250 billion blocks (1e18 / 4e6 = 2.5e11). If the index stores a 32-byte SHA-256 hash per block, roughly how big is the hash column alone?",
+      "options": [
+        "About 800 GB",
+        "About 8 TB",
+        "About 80 TB",
+        "About 800 TB"
+      ],
+      "answerIndex": 1,
+      "explanation": "2.5e11 x 32 bytes = 8e12 bytes = 8 TB. Add paths, revisions, locations and indexes and metadata is far larger, which is why block size trades dedup granularity against metadata overhead and the metadata layer must be sharded.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "A 1 GB file (256 blocks of 4 MB) has one byte overwritten in place, without changing the file length. With block hashes checked first, how much must the client upload?",
+      "options": [
+        "The whole 1 GB, because the file hash changed",
+        "About 4 MB, only the one block whose hash changed",
+        "About 1 byte, the byte-level delta",
+        "About 256 hashes and no block data"
+      ],
+      "answerIndex": 1,
+      "explanation": "Only the block containing the modified byte has a new hash; the other 255 hashes match blocks the server already holds. The client uploads that one 4 MB block and commits a new block list. The 256 hashes are sent in the commit, but the new block still has to go up.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "A laptop was offline for an hour and reconnects. How does it learn what changed in the user's folders?",
+      "options": [
+        "It re-downloads every file and compares them locally",
+        "It asks the notification service to push every missed message, which are all retained forever on the connection",
+        "It asks for changes after the last journal cursor it saw, then fetches the new metadata and any missing blocks",
+        "It compares file timestamps with the server clock"
+      ],
+      "answerIndex": 2,
+      "explanation": "The per-namespace journal gives a monotonic cursor, so a returning client can ask exactly for entries after its last position. This catches up reliably regardless of how long it was away. Full re-downloads are wasteful and clock comparisons are unreliable between devices.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "Two devices edit the same file offline and each commits against base revision 5. What should the server do?",
+      "options": [
+        "Accept both and silently let the second overwrite the first",
+        "Accept the first commit as revision 6, reject the second as based on an outdated revision, and keep its content as a conflicted copy",
+        "Reject both and ask the user to redo the edits",
+        "Merge the two block lists byte by byte automatically"
+      ],
+      "answerIndex": 1,
+      "explanation": "The commit carries baseRevision so the server can detect that the file has moved on. The loser is not discarded: keeping a conflicted copy means no data is lost. Overwriting loses work, and a generic automatic byte-level merge can corrupt arbitrary file types.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "A client is uploading 50 new blocks for a modified file and crashes after 30 of them. What should the metadata state be, and what happens on restart?",
+      "options": [
+        "The file revision already points to a block list with 20 missing blocks; the client later fills them in",
+        "The file shows a half-written state so other devices can start downloading the first 30 blocks",
+        "The server deletes the previous version of the file as soon as the first new block arrives",
+        "Metadata is unchanged and still points to the old revision; on restart the client asks which blocks are missing, uploads the remaining 20, and then commits"
+      ],
+      "answerIndex": 3,
+      "explanation": "Blocks are uploaded first and the commit is the single atomic step that points the path at the new block list, validated to reference only existing blocks. A crash before that leaves the old revision intact. The 30 uploaded blocks are reused on retry by their hashes, or garbage-collected if never referenced.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "Why does the design keep file metadata in a strongly consistent database but blocks in cheap object storage?",
+      "options": [
+        "Metadata is far larger than the data, so it needs the best hardware",
+        "Object storage cannot be replicated across data centres",
+        "Blocks change constantly, while paths and revisions never change",
+        "Committing a new revision needs an atomic compare-and-swap on a path's revision, whereas immutable content-addressed blocks need no coordination"
+      ],
+      "answerIndex": 3,
+      "explanation": "Correctness hinges on metadata: concurrent commits to one path must be serialised with a revision check. Blocks are immutable and named by their hash, so duplicates are harmless and they can live in cheap, highly durable storage. The reverse is true of what changes: paths and revisions change, blocks do not.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "100 million online devices each poll the server every 5 seconds asking 'any changes?', and nearly every reply is empty. Roughly what request rate is that, and what is the better alternative?",
+      "options": [
+        "About 500 thousand requests per second; use polling every second instead",
+        "About 20 million requests per second; use long-poll with a cursor so the server answers only when something changes",
+        "About 20 million requests per second; the load is fine because empty responses are free",
+        "About 2 million requests per second; use full file listings instead"
+      ],
+      "answerIndex": 1,
+      "explanation": "100,000,000 / 5 = 20,000,000 requests per second, almost all wasted. Long-polling (or push) holds the connection and replies when the journal advances, trading some open connections for far fewer requests and lower latency. Empty responses still cost connections, TLS, auth and CPU.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "type": "multi",
+      "prompt": "Which benefits come from identifying blocks by a content hash and never modifying them? Select all that apply.",
+      "options": [
+        "Identical blocks across files and users are stored once",
+        "Uploads can be retried safely, since re-uploading the same block is idempotent",
+        "Blocks can be cached aggressively because their content never changes",
+        "The metadata database becomes unnecessary because the hash identifies the file",
+        "Block contents can be edited in place cheaply"
+      ],
+      "answerIndices": [0, 1, 2],
+      "explanation": "Content addressing gives dedup, idempotent uploads and cache-friendliness. It does not replace metadata: paths, revisions, block lists and permissions still live in the database. Blocks are immutable, so edits create new blocks rather than modifying existing ones.",
+      "anchor": "deep-dives"
+    },
+    {
+      "type": "multi",
+      "prompt": "A team shrinks the block size from 4 MB to 1 MB. Which effects should they expect? Select all that apply.",
+      "options": [
+        "A small edit re-uploads less data",
+        "Each file's block list and the total metadata grow",
+        "Transferring a file needs more block requests",
+        "Fewer chances of finding duplicate blocks across files",
+        "The metadata database gets smaller"
+      ],
+      "answerIndices": [0, 1, 2],
+      "explanation": "Smaller blocks give finer-grained dedup and smaller re-uploads per change, at the price of more hashes, more metadata rows and more requests per file. Dedup opportunities generally increase, not decrease, and metadata clearly grows rather than shrinks.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "When two devices make conflicting offline edits to the same file, automatically merging them is the safest default because it avoids creating extra files.",
+      "options": ["True", "False"],
+      "answerIndex": 1,
+      "explanation": "Files are often opaque binaries, so an automatic merge can corrupt data. Keeping both versions as a conflicted copy loses nothing and lets the user reconcile. Auto-merge is only appropriate for formats where the system understands the structure.",
+      "anchor": "tradeoffs"
+    }
+  ]
+}

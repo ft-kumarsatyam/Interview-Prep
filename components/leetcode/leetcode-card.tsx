@@ -13,11 +13,14 @@ export function LeetCodeCard({
   username,
   lastSyncLabel,
   needsDetails,
+  compact,
 }: {
   username: string | null;
   /** Pre-formatted in APP_TIMEZONE on the server to avoid hydration mismatches. */
   lastSyncLabel: string | null;
   needsDetails: Array<{ slug: string; title: string; lastSolvedOn: string }>;
+  /** Just the sync button with its status, for when nothing needs attention. */
+  compact?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
   const [target, setTarget] = useState<SolveTarget | null>(null);
@@ -29,6 +32,21 @@ export function LeetCodeCard({
       else toast.error(`${res.error}.`);
     });
   }
+
+  if (compact && username)
+    return (
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={sync}
+        disabled={pending}
+        className="text-muted-foreground"
+        title={`@${username} · ${lastSyncLabel ? `synced ${lastSyncLabel}` : "never synced"}`}
+      >
+        <RefreshCw className={pending ? "animate-spin" : undefined} />
+        <span className="hidden sm:inline">{lastSyncLabel ? `LeetCode · ${lastSyncLabel}` : "Sync LeetCode"}</span>
+      </Button>
+    );
 
   return (
     <Card>

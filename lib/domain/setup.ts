@@ -33,7 +33,13 @@ export interface SetupInput {
   jobs: { lastMorningAt: Date | null; lastEveningAt: Date | null };
   news: { lastFetchAt: Date | null; failed: number; feeds: number };
   notify: { telegram: boolean; email: boolean };
-  llm: { configured: boolean; provider: string | null };
+  llm: {
+    configured: boolean;
+    provider: string | null;
+    /** Free providers in try order, then whether the paid last resort is ready. */
+    free?: string[];
+    paid?: { label: string; ready: boolean; missing: string[] };
+  };
   backup: { lastExportAt: Date | null };
   session: { remember: boolean };
 }
@@ -176,13 +182,21 @@ function notifyItem({ notify }: SetupInput): SetupItem {
 }
 
 function llmItem({ llm }: SetupInput): SetupItem {
+  const free = llm.free ?? (llm.provider ? [llm.provider] : []);
+  const paid = llm.paid;
+  const chain = free.join(" then ");
+  const paidNote = paid?.ready
+    ? ` ${paid.label} is ready as a last resort: it only runs after you confirm, never for background jobs.`
+    : paid && paid.missing.length > 0 && free.length > 0
+      ? ` Optional paid fallback: set ${paid.missing.join(", ")}.`
+      : "";
   return {
     id: "llm",
-    title: "AI-written quizzes",
+    title: "AI features",
     status: llm.configured ? "ok" : "warn",
     detail: llm.configured
-      ? `Daily quizzes are written by ${llm.provider ?? "the LLM"} from what you did today, with the question bank as fallback.`
-      : "Optional. Without LLM_API_KEY, quizzes come from the 1,147-question bank, which works fine.",
+      ? `${chain || "An AI provider"} write the daily quiz and power hints and explanations, with the question bank as fallback.${paidNote}`
+      : "Optional. Without GEMINI_API_KEY or GROQ_API_KEY the app uses the 1,373-question bank and static explanations, which works fine.",
     required: false,
     actions: llm.configured ? [{ kind: "button", id: "test-llm", label: "Test" }] : [],
   };

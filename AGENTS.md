@@ -11,7 +11,7 @@ Content data lives in `data/*.json`. **Do not edit those files** unless asked. T
 
 ## Hard rules
 - **Single user, no sign-up.** Never add registration, password reset, OAuth providers or a users collection. Credentials come only from `ADMIN_EMAIL` and `ADMIN_PASSWORD_HASH_B64`.
-- **Free tier only:** Vercel Hobby, MongoDB Atlas M0, free LLM tier. No paid services and no Redis.
+- **Free tier only:** Vercel Hobby, MongoDB Atlas M0, free LLM tier. No paid services and no Redis. **One explicit exception, opted into by the owner:** an optional paid LLM provider (`META_LLAMA_*`) that is only ever a last resort after every free provider is exhausted, never used by background jobs, and only after an in-app confirmation, with a daily call cap in Settings. Do not add any other paid dependency, and never put API keys in the repo, the DB or logs.
 - Every "day" is a calendar date in `APP_TIMEZONE` (`YYYY-MM-DD`). Never use `new Date().toDateString()` or server-local time for day logic. Use helpers in `lib/domain/dates.ts`.
 - **The daily quiz is mandatory for streak completion** (ARCHITECTURE §7). Don't weaken this.
 - **Next.js 16** (see the block at the end of this file): use `proxy.ts`, not `middleware.ts`; `cookies()`, `headers()`, `params` and `searchParams` are async; lint with `npx eslint .`; run `npx next typegen` if `PageProps`/`LayoutProps` types are missing.
@@ -20,6 +20,7 @@ Content data lives in `data/*.json`. **Do not edit those files** unless asked. T
 - Business logic goes in pure functions in `lib/domain/*` with Vitest tests. Services in `lib/services/*` do I/O. Pages and Server Actions call services, never Mongoose directly.
 - Every Server Action and API route checks auth (`requireSession()`), except `/api/cron/*`, which checks `Bearer CRON_SECRET`.
 - Validate all inputs with zod. Treat LLM output as untrusted text: validate it and never render it with `dangerouslySetInnerHTML`.
+- Treat every AI answer as untrusted and cache only validated output (`lib/services/ai-cache.ts`).
 - The app must work with **no LLM key** (falls back to `data/quiz-bank.json`) and **without cron** (`ensureToday()` on dashboard load).
 
 ## Conventions

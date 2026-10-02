@@ -1,21 +1,27 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { CheckCircle2, FilePlus2, Play, Save, Trash2, XCircle } from "lucide-react";
+import { Code2, FolderOpen, Loader2, Pencil, Play, Save, Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { deleteSnippetAction, saveSnippetAction } from "@/app/(app)/playground/actions";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
-import { DRILLS, type Drill } from "@/lib/playground/drills";
-import { normalizeOutput, runCode, type LogLine, type RunResult } from "@/lib/playground/runner";
+import type { Drill } from "@/lib/playground/drills";
+import { runCode, type LogLine, type RunResult } from "@/lib/playground/runner";
 import type { SnippetSummary } from "@/lib/services/snippets";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./code-editor";
+import { ConsoleOutput } from "./console-output";
+import { OutputDrills } from "./output-drills";
+import { SnippetList } from "./snippet-list";
+import { useModKey } from "./use-mod-key";
 
 const STARTER = `// ⌘/Ctrl + Enter to run. No DOM, no network, 3 s limit.
+// Helpers: assertEqual(actual, expected, label?), test(name, fn), console.table(...)
 const debounce = (fn, ms) => {
   let t;
   return (...args) => {
@@ -28,187 +34,299 @@ const log = debounce((x) => console.log("fired", x), 50);
 log(1); log(2); log(3);
 console.log("scheduled");`;
 
-const LEVEL_CLASS: Record<LogLine["level"], string> = {
-  log: "text-foreground",
-  info: "text-chart-5",
-  debug: "text-muted-foreground",
-  warn: "text-warning",
-  error: "text-destructive",
-};
+type Pane = "code" | "console";
+interface Current {
+  id?: string;
+  title: string;
+  tag: string;
+}
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{children}</kbd>;
+}
 
 export function Playground({ snippets, initialCode }: { snippets: SnippetSummary[]; initialCode?: string }) {
+  const modKey = useModKey();
+  const [view, setView] = useState<"editor" | "drills">("editor");
+  const [pane, setPane] = useState<Pane>("code");
   const [code, setCode] = useState(initialCode ?? STARTER);
+  const [baseline, setBaseline] = useState(initialCode ?? STARTER);
   const [result, setResult] = useState<RunResult | null>(null);
+  const [liveLogs, setLiveLogs] = useState<LogLine[]>([]);
   const [running, setRunning] = useState(false);
-  const [current, setCurrent] = useState<{ id?: string; title: string; tag: string }>({ title: "", tag: "" });
+  const [current, setCurrent] = useState<Current>({ title: "", tag: "" });
+  const [draft, setDraft] = useState<Current>({ title: "", tag: "" });
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [pending, startTransition] = useTransition();
+  const [tsMode, setTsMode] = useState(false);
+
+  const dirty = code !== baseline;
+  const errorCount = result?.logs.filter((l) => l.level === "error").length ?? 0;
+
+  function confirmDiscard(): boolean {
+    return !dirty || window.confirm("Discard your unsaved changes?");
+  }
 
   async function run() {
     if (running) return;
     setRunning(true);
-    setResult(await runCode(code));
-    setRunning(false);
+    setLiveLogs([]);
+    setPane("console");
+    try {
+      let js = code;
+      if (tsMode) {
+        // typescript is only downloaded the first time TS mode runs.
+        const { transpileTs } = await import("@/lib/playground/ts-check");
+        const out = await transpileTs(code);
+        if (out.errors.length > 0) {
+          setResult({ logs: out.errors.map((text) => ({ level: "error" as const, text })), timedOut: false, ms: 0 });
+          return;
+        }
+        js = out.js;
+      }
+      setResult(await runCode(js, 3000, (line) => setLiveLogs((cur) => [...cur, line])));
+    } catch (err) {
+      setResult({ logs: [{ level: "error", text: err instanceof Error ? err.message : "Could not run" }], timedOut: false, ms: 0 });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function persist(details: Current) {
+    startTransition(async () => {
+      const title = details.title.trim() || "Untitled";
+      const res = await saveSnippetAction({ id: details.id, title, tag: details.tag, code });
+      if (!res.ok) toast.error(`${res.error}.`);
+      else {
+        setCurrent({ id: res.id, title, tag: details.tag });
+        setBaseline(code);
+        setDetailsOpen(false);
+        toast.success(details.id ? "Snippet updated" : "Snippet saved");
+      }
+    });
   }
 
   function save() {
-    startTransition(async () => {
-      const res = await saveSnippetAction({ ...current, title: current.title || "Untitled", code });
-      if (!res.ok) toast.error(`${res.error}.`);
-      else {
-        setCurrent((c) => ({ ...c, id: res.id, title: c.title || "Untitled" }));
-        toast.success("Snippet saved");
-      }
-    });
+    if (pending) return;
+    if (current.id) persist(current);
+    else openDetails();
+  }
+
+  function openDetails() {
+    setDraft(current);
+    setDetailsOpen(true);
+  }
+
+  function openSnippet(s: SnippetSummary) {
+    if (s.id !== current.id && !confirmDiscard()) return;
+    setCurrent({ id: s.id, title: s.title, tag: s.tag });
+    setCode(s.code);
+    setBaseline(s.code);
+    setResult(null);
+    setPane("code");
+    setSnippetsOpen(false);
+  }
+
+  function newSnippet() {
+    if (!confirmDiscard()) return;
+    setCurrent({ title: "", tag: "" });
+    setCode("");
+    setBaseline("");
+    setResult(null);
+    setPane("code");
+    setSnippetsOpen(false);
   }
 
   function remove(id: string) {
     startTransition(async () => {
       const res = await deleteSnippetAction(id);
-      if (!res.ok) toast.error(res.error);
-      else if (current.id === id) setCurrent({ title: "", tag: "" });
+      if (!res.ok) toast.error(`${res.error}. Refresh and try again.`);
+      else {
+        toast.success("Snippet deleted");
+        if (current.id === id) setCurrent({ title: "", tag: "" });
+      }
     });
   }
 
-  return (
-    <Tabs defaultValue="editor">
-      <TabsList>
-        <TabsTrigger value="editor">Editor</TabsTrigger>
-        <TabsTrigger value="drills">Output drills</TabsTrigger>
-      </TabsList>
-      <TabsContent value="editor" className="mt-4 grid gap-4 lg:grid-cols-[220px_1fr]">
-        <Card className="order-2 lg:order-1">
-          <CardHeader className="flex-row items-center justify-between">
-            <CardTitle className="text-sm">Snippets</CardTitle>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label="New snippet"
-              onClick={() => {
-                setCurrent({ title: "", tag: "" });
-                setCode("");
-                setResult(null);
-              }}
-            >
-              <FilePlus2 />
-            </Button>
-          </CardHeader>
-          <CardContent>
-            {snippets.length === 0 ? (
-              <p className="text-xs text-muted-foreground">Saved snippets appear here. Tag them by topic, e.g. js-async.</p>
-            ) : (
-              <ul className="space-y-1">
-                {snippets.map((s) => (
-                  <li key={s.id} className={cn("group flex items-center gap-1 rounded-md", current.id === s.id && "bg-muted")}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCurrent({ id: s.id, title: s.title, tag: s.tag });
-                        setCode(s.code);
-                        setResult(null);
-                      }}
-                      className="min-w-0 flex-1 px-2 py-1.5 text-left text-sm"
-                    >
-                      <span className="block truncate">{s.title}</span>
-                      {s.tag && <span className="block truncate text-xs text-muted-foreground">#{s.tag}</span>}
-                    </button>
-                    <Button size="icon-xs" variant="ghost" aria-label={`Delete ${s.title}`} onClick={() => remove(s.id)} className="opacity-60 group-hover:opacity-100">
-                      <Trash2 />
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        <div className="order-1 space-y-3 lg:order-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Input value={current.title} onChange={(e) => setCurrent((c) => ({ ...c, title: e.target.value }))} placeholder="Snippet title" className="max-w-56" aria-label="Snippet title" />
-            <Input value={current.tag} onChange={(e) => setCurrent((c) => ({ ...c, tag: e.target.value }))} placeholder="tag e.g. js-async" className="max-w-40" aria-label="Snippet tag" />
-            <Button variant="outline" onClick={save} disabled={pending}>
-              <Save /> {current.id ? "Update" : "Save"}
-            </Button>
-            <Button onClick={run} disabled={running} className="ml-auto">
-              <Play /> {running ? "Running…" : "Run"}
-            </Button>
-          </div>
-          <div className="grid gap-3 xl:grid-cols-2">
-            <CodeEditor value={code} onChange={setCode} onRun={run} />
-            <ConsoleOutput result={result} running={running} />
-          </div>
-        </div>
-      </TabsContent>
-      <TabsContent value="drills" className="mt-4 grid gap-4 md:grid-cols-2">
-        {DRILLS.map((d) => (
-          <DrillCard key={d.id} drill={d} />
-        ))}
-      </TabsContent>
-    </Tabs>
-  );
-}
-
-function ConsoleOutput({ result, running }: { result: RunResult | null; running: boolean }) {
-  return (
-    <div className="flex min-h-80 flex-col rounded-lg border bg-muted/30" aria-live="polite">
-      <div className="flex items-center justify-between border-b px-3 py-1.5 text-xs text-muted-foreground">
-        <span>Console</span>
-        {result && <span className="tabular font-mono">{result.timedOut ? "killed after 3 s" : `${result.ms} ms`}</span>}
-      </div>
-      <pre className="flex-1 overflow-auto p-3 font-mono text-[13px] leading-relaxed whitespace-pre-wrap">
-        {running && <span className="text-muted-foreground">Running…</span>}
-        {!running && !result && <span className="text-muted-foreground">Output appears here.</span>}
-        {result?.logs.map((l, i) => (
-          <div key={i} className={LEVEL_CLASS[l.level]}>
-            {l.text}
-          </div>
-        ))}
-        {result && !result.logs.length && !result.timedOut && <span className="text-muted-foreground">(no output)</span>}
-        {result?.timedOut && <div className="text-warning">⏱ Stopped: still running after 3 s (infinite loop or open interval?)</div>}
-      </pre>
-    </div>
-  );
-}
-
-function DrillCard({ drill }: { drill: Drill }) {
-  const [prediction, setPrediction] = useState("");
-  const [actual, setActual] = useState<string | null>(null);
-  const correct = actual !== null && normalizeOutput(prediction) === normalizeOutput(actual);
-
-  async function check() {
-    const res = await runCode(drill.code);
-    setActual(res.logs.map((l) => l.text).join("\n"));
+  function openDrill(d: Drill) {
+    if (!confirmDiscard()) return;
+    setCurrent({ title: "", tag: "" });
+    setCode(d.code);
+    setBaseline(d.code);
+    setResult(null);
+    setPane("code");
+    setView("editor");
   }
 
+  const list = (
+    <SnippetList snippets={snippets} currentId={current.id} onOpen={openSnippet} onNew={newSnippet} onDelete={remove} deleting={pending} />
+  );
+
+  const status = current.id ? (dirty ? "Unsaved changes" : "Saved") : dirty ? "Scratch · not saved" : "Scratch";
+
   return (
-    <Card>
-      <CardHeader>
-        <p className="text-xs text-muted-foreground">{drill.topic}</p>
-        <CardTitle className="text-base">{drill.title}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <pre className="overflow-x-auto rounded-lg bg-muted p-3 font-mono text-xs leading-relaxed">{drill.code}</pre>
-        <Textarea
-          value={prediction}
-          onChange={(e) => setPrediction(e.target.value)}
-          placeholder="Predict the console output, one line per log"
-          className="min-h-20 font-mono text-xs"
-          aria-label={`Prediction for ${drill.title}`}
-        />
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={check} disabled={!prediction.trim()}>
-            Run &amp; compare
-          </Button>
-          {actual !== null && (
-            <span className={cn("flex items-center gap-1 text-sm", correct ? "text-success" : "text-destructive")}>
-              {correct ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
-              {correct ? "Spot on" : "Not quite"}
-            </span>
-          )}
+    <Tabs value={view} onValueChange={(v) => setView(v === "drills" ? "drills" : "editor")}>
+      <TabsList className="h-10! w-full sm:w-fit">
+        <TabsTrigger value="editor" className="px-4">
+          <Code2 /> Editor
+        </TabsTrigger>
+        <TabsTrigger value="drills" className="px-4">
+          <Terminal /> Output drills
+        </TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="editor" forceMount className="mt-4 grid gap-4 data-[state=inactive]:hidden lg:grid-cols-[240px_minmax(0,1fr)]">
+        <aside className="hidden lg:block" aria-label="Snippets">
+          <div className="sticky top-20 max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-xl border bg-card p-3">{list}</div>
+        </aside>
+
+        <div className="min-w-0 space-y-3">
+          <div className="flex items-center gap-2 rounded-xl border bg-card p-2 pl-3">
+            <Button size="icon" variant="outline" className="size-9 shrink-0 lg:hidden" onClick={() => setSnippetsOpen(true)} aria-label={`Open snippets (${snippets.length})`}>
+              <FolderOpen />
+            </Button>
+            <button
+              type="button"
+              onClick={openDetails}
+              className="group flex min-h-9 min-w-0 flex-1 flex-col justify-center rounded-md px-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              aria-label="Edit snippet title and tags"
+            >
+              <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+                <span className="truncate">{current.title || "Untitled snippet"}</span>
+                <Pencil className="size-3 shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" aria-hidden />
+              </span>
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className={cn("size-1.5 rounded-full", dirty ? "bg-warning" : current.id ? "bg-success" : "bg-muted-foreground/40")} aria-hidden />
+                {status}
+              </span>
+            </button>
+            <Button
+              variant={tsMode ? "secondary" : "ghost"}
+              aria-pressed={tsMode}
+              onClick={() => setTsMode((v) => !v)}
+              className="h-9 shrink-0 px-2.5 font-mono text-xs"
+              title="Run TypeScript: types are stripped, syntax errors are reported (no type checking)"
+            >
+              {tsMode ? "TS" : "JS"}
+            </Button>
+            <Button variant="outline" onClick={save} disabled={pending} className="h-9 shrink-0" aria-label={current.id ? "Update snippet" : "Save snippet"}>
+              {pending ? <Loader2 className="animate-spin" /> : <Save />}
+              <span className="hidden sm:inline">{current.id ? "Update" : "Save"}</span>
+            </Button>
+            <Button onClick={run} disabled={running} className="hidden h-9 shrink-0 px-4 lg:inline-flex">
+              {running ? <Loader2 className="animate-spin" /> : <Play />} {running ? "Running…" : "Run"}
+              <span className="ml-1 text-xs opacity-70">{modKey}↵</span>
+            </Button>
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-2">
+            <div className={cn("min-w-0 space-y-1.5", pane !== "code" && "hidden lg:block")}>
+              <CodeEditor value={code} onChange={setCode} onRun={run} onSave={save} minHeight="360px" />
+              <p className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
+                <Kbd>{modKey}</Kbd>
+                <Kbd>Enter</Kbd> run
+                <span className="mx-1" aria-hidden>
+                  ·
+                </span>
+                <Kbd>{modKey}</Kbd>
+                <Kbd>S</Kbd> save
+                <span className="ml-auto">Web Worker · no DOM or network · 3 s limit</span>
+              </p>
+            </div>
+            <ConsoleOutput
+              result={result}
+              liveLogs={liveLogs}
+              running={running}
+              modKey={modKey}
+              onClear={() => setResult(null)}
+              className={cn(pane !== "console" && "hidden lg:flex")}
+            />
+          </div>
+
+          <div className="sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] z-20 -mx-4 flex items-center gap-2 border-t bg-background/95 px-4 py-2 backdrop-blur lg:hidden">
+            <div role="group" aria-label="Playground view" className="flex rounded-lg bg-muted p-[3px]">
+              {(
+                [
+                  { id: "code", label: "Code", icon: Code2 },
+                  { id: "console", label: "Console", icon: Terminal },
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  aria-pressed={pane === p.id}
+                  onClick={() => setPane(p.id)}
+                  className={cn(
+                    "relative inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                    pane === p.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground",
+                  )}
+                >
+                  <p.icon className="size-4" aria-hidden />
+                  {p.label}
+                  {p.id === "console" && errorCount > 0 && pane !== "console" && (
+                    <span className="rounded-full bg-destructive/15 px-1.5 text-[10px] leading-4 font-semibold text-destructive tabular">
+                      {errorCount}
+                      <span className="sr-only"> errors</span>
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <Button onClick={run} disabled={running} className="ml-auto h-10 px-5">
+              {running ? <Loader2 className="animate-spin" /> : <Play />} {running ? "Running…" : "Run"}
+            </Button>
+          </div>
         </div>
-        {actual !== null && !correct && (
-          <pre className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 font-mono text-xs whitespace-pre-wrap">{actual || "(no output)"}</pre>
-        )}
-      </CardContent>
-    </Card>
+      </TabsContent>
+
+      <TabsContent value="drills" forceMount className="mt-4 data-[state=inactive]:hidden">
+        <OutputDrills onOpenInEditor={openDrill} modKey={modKey} />
+      </TabsContent>
+
+      <Sheet open={snippetsOpen} onOpenChange={setSnippetsOpen}>
+        <SheetContent side="left" className="w-[85vw] max-w-sm gap-0 p-0">
+          <SheetHeader className="border-b">
+            <SheetTitle>Snippets</SheetTitle>
+            <SheetDescription>Open, search or delete your saved code.</SheetDescription>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">{list}</div>
+        </SheetContent>
+      </Sheet>
+
+      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <DialogContent className="sm:max-w-md">
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              persist({ ...draft, id: current.id });
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{current.id ? "Snippet details" : "Save snippet"}</DialogTitle>
+              <DialogDescription>Tags are comma separated, e.g. js-async, closures. Link a snippet from your topic notes.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="snippet-title">Title</Label>
+              <Input id="snippet-title" value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} placeholder="Debounce vs throttle" autoFocus maxLength={120} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="snippet-tags">Tags</Label>
+              <Input id="snippet-tags" value={draft.tag} onChange={(e) => setDraft((d) => ({ ...d, tag: e.target.value }))} placeholder="js-async, closures" maxLength={120} />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setDetailsOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={pending || !code.trim()}>
+                {pending ? <Loader2 className="animate-spin" /> : <Save />} {current.id ? "Save changes" : "Save snippet"}
+              </Button>
+            </DialogFooter>
+            {!code.trim() && <p className="text-xs text-destructive">Write some code first; empty snippets can&apos;t be saved.</p>}
+          </form>
+        </DialogContent>
+      </Dialog>
+    </Tabs>
   );
 }

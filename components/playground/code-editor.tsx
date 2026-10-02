@@ -7,28 +7,33 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import { useTheme } from "next-themes";
+import { cn } from "@/lib/utils";
 
 export function CodeEditor({
   value,
   onChange,
   onRun,
+  onSave,
   minHeight = "320px",
   ariaLabel = "Code editor",
+  className,
 }: {
   value: string;
   onChange: (code: string) => void;
   onRun?: () => void;
+  onSave?: () => void;
   minHeight?: string;
   ariaLabel?: string;
+  className?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const themeSlot = useRef(new Compartment());
-  const handlers = useRef({ onChange, onRun });
+  const handlers = useRef({ onChange, onRun, onSave });
   const { resolvedTheme } = useTheme();
 
   useEffect(() => {
-    handlers.current = { onChange, onRun };
+    handlers.current = { onChange, onRun, onSave };
   });
 
   useEffect(() => {
@@ -46,6 +51,15 @@ export function CodeEditor({
                 key: "Mod-Enter",
                 run: () => {
                   handlers.current.onRun?.();
+                  return true;
+                },
+              },
+              {
+                key: "Mod-s",
+                preventDefault: true,
+                run: () => {
+                  if (!handlers.current.onSave) return false;
+                  handlers.current.onSave();
                   return true;
                 },
               },
@@ -77,5 +91,10 @@ export function CodeEditor({
     view.current?.dispatch({ effects: themeSlot.current.reconfigure(resolvedTheme === "light" ? [] : oneDark) });
   }, [resolvedTheme]);
 
-  return <div ref={host} className="overflow-hidden rounded-lg border" />;
+  return (
+    <div
+      ref={host}
+      className={cn("overflow-hidden rounded-lg border focus-within:ring-2 focus-within:ring-ring/50 [&_.cm-editor]:outline-none", className)}
+    />
+  );
 }

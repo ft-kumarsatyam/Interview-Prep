@@ -96,4 +96,196 @@ console.log(0.1 + 0.2 === 0.3);`,
   .finally(() => console.log("finally"))
   .then((x) => console.log(x));`,
   },
+  {
+    id: "event-loop-3",
+    title: "Timers, microtasks and a timer queued from a microtask",
+    topic: "Event loop",
+    code: `setTimeout(() => console.log("t1"), 0);
+setTimeout(() => console.log("t2"), 0);
+Promise.resolve()
+  .then(() => {
+    console.log("p1");
+    setTimeout(() => console.log("t3"), 0);
+  })
+  .then(() => console.log("p2"));
+queueMicrotask(() => console.log("q"));
+console.log("sync");`,
+  },
+  {
+    id: "async-return-await",
+    title: "return a() vs return await a()",
+    topic: "Promises",
+    code: `async function a() { throw new Error("a failed"); }
+async function b() {
+  try { return a(); } catch { return "caught in b"; }
+}
+async function c() {
+  try { return await a(); } catch { return "caught in c"; }
+}
+b().then(console.log, (e) => console.log("b rejected:", e.message));
+c().then(console.log, (e) => console.log("c rejected:", e.message));`,
+  },
+  {
+    id: "prototype-chain",
+    title: "Prototype lookup and shadowing",
+    topic: "Prototypes",
+    code: `function Animal() {}
+Animal.prototype.sound = "generic";
+const dog = new Animal();
+dog.sound = "woof";
+console.log(dog.sound, Object.getPrototypeOf(dog).sound);
+delete dog.sound;
+console.log(dog.sound);
+console.log(dog.hasOwnProperty("sound"), "sound" in dog);`,
+  },
+  {
+    id: "class-fields",
+    title: "Class fields vs prototype methods",
+    topic: "Classes",
+    code: `class A {
+  x = 1;
+  inc() { return ++this.x; }
+  arrow = () => this.x;
+}
+const a = new A();
+const { inc, arrow } = a;
+console.log(arrow());
+console.log(Object.keys(a));
+console.log(Object.getOwnPropertyNames(A.prototype));
+try { inc(); } catch (e) { console.log(e.name); }`,
+  },
+  {
+    id: "this-binding",
+    title: "call, bind and a detached method",
+    topic: "this",
+    code: `"use strict";
+function who() { return this === undefined ? "undefined" : typeof this + ":" + this.n; }
+const o = { n: "o", who };
+console.log(who());
+console.log(o.who());
+console.log(who.call({ n: "called" }));
+console.log(who.bind({ n: "b1" }).bind({ n: "b2" })());
+console.log((0, o.who)());`,
+  },
+  {
+    id: "generators",
+    title: "Generator next(value) plumbing",
+    topic: "Generators",
+    code: `function* g() {
+  const a = yield 1;
+  console.log("got", a);
+  const b = yield a * 2;
+  console.log("got", b);
+  return "done";
+}
+const it = g();
+console.log(it.next("ignored"));
+console.log(it.next(10));
+console.log(it.next(7));
+console.log(it.next());`,
+  },
+  {
+    id: "proxy-reflect",
+    title: "Proxy get/set traps",
+    topic: "Proxy",
+    code: `const target = { a: 1 };
+const p = new Proxy(target, {
+  get(t, k, r) { return k in t ? Reflect.get(t, k, r) : "no_" + String(k); },
+  set(t, k, v) { console.log("set", k, v); return Reflect.set(t, k, v); },
+});
+p.b = 2;
+console.log(p.a, p.b, p.c);
+console.log(Object.keys(target));`,
+  },
+  {
+    id: "nullish-optional",
+    title: "|| vs ?? and logical assignment",
+    topic: "Operators",
+    code: `const cfg = { retries: 0, name: "", nested: null };
+console.log(cfg.retries || 3, cfg.retries ?? 3);
+console.log(JSON.stringify(cfg.name || "anon"), JSON.stringify(cfg.name ?? "anon"));
+console.log(cfg.nested?.deep, cfg.missing?.[0], cfg.fn?.());
+let x = null;
+x ??= "set";
+let y = 0;
+y ||= 5;
+let z = 1;
+z &&= 9;
+console.log(x, y, z);`,
+  },
+  {
+    id: "array-mutators",
+    title: "What array methods return",
+    topic: "Arrays",
+    code: `const a = [3, 1, 2];
+const b = a.sort();
+console.log(a === b, b);
+const c = a.toSorted((x, y) => y - x);
+console.log(c, a);
+console.log([1, 2, 3].splice(1, 1), [1, 2, 3].slice(1, 2));
+console.log([10, 9, 1].sort());
+console.log([1, 2, 3].push(4), [1, 2, 3].pop(), [1, 2, 3].shift());`,
+  },
+  {
+    id: "json-stringify",
+    title: "What JSON.stringify drops",
+    topic: "JSON",
+    code: `const o = { a: undefined, b: () => 1, c: Symbol("s"), d: NaN, e: new Date(0), f: [undefined, () => 1], g: true };
+console.log(JSON.stringify(o));
+console.log(JSON.stringify([undefined]));
+console.log(JSON.stringify({ toJSON() { return "custom"; } }));
+console.log(JSON.stringify("x"), JSON.stringify(undefined));`,
+  },
+  {
+    id: "map-vs-object",
+    title: "Object keys vs Map keys vs Set equality",
+    topic: "Collections",
+    code: `const o = {};
+o[1] = "num";
+o["1"] = "str";
+o[{}] = "obj1";
+o[{ a: 1 }] = "obj2";
+console.log(Object.keys(o));
+const m = new Map();
+m.set(1, "num");
+m.set("1", "str");
+m.set(NaN, "nan");
+console.log(m.size, m.get(NaN), m.get(1), m.get("1"));
+console.log(new Set([1, "1", 1, NaN, NaN, {}, {}]).size);`,
+  },
+  {
+    id: "destructuring-defaults",
+    title: "Destructuring defaults: undefined vs null",
+    topic: "Destructuring",
+    code: `function f({ a = 1, b = 2 } = {}, [c = 3, d = 4] = []) {
+  return [a, b, c, d];
+}
+console.log(f());
+console.log(f({ a: undefined, b: null }, [0]));
+console.log(f({ a: 10 }, [undefined, 5]));`,
+  },
+  {
+    id: "accessors-freeze",
+    title: "Accessors, freeze depth and non-enumerable keys",
+    topic: "Objects",
+    code: `const o = { _v: 1, get v() { return this._v * 2; }, set v(x) { this._v = x; } };
+o.v = 5;
+console.log(o.v, Object.keys(o));
+const f = Object.freeze({ a: 1, inner: { b: 2 } });
+f.a = 99;
+f.inner.b = 99;
+console.log(f.a, f.inner.b, Object.isFrozen(f.inner));
+Object.defineProperty(o, "hidden", { value: 1, enumerable: false });
+console.log(JSON.stringify(o), o.hidden);`,
+  },
+  {
+    id: "parseint-sort",
+    title: "map(parseInt), default sort and string comparison",
+    topic: "Types",
+    code: `console.log(["10", "9", "1"].map(parseInt));
+console.log(parseInt("08"), parseInt("0x1f"), parseInt("12px"), Number("12px"));
+console.log([10, 1, 5].sort(), [10, 1, 5].sort((a, b) => a - b));
+console.log("b" > "a", "B" > "a", "10" < "9", 10 < "9");
+console.log(typeof NaN, typeof null, typeof [], Array.isArray([]));`,
+  },
 ];

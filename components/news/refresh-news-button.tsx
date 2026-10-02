@@ -12,13 +12,14 @@ export function RefreshNewsButton({ label = "Refresh" }: { label?: string }) {
   const onClick = () =>
     start(async () => {
       const res = await refreshNewsAction();
-      if (!res.ok) toast.error(res.error);
-      else if (res.fresh) toast.info("Already refreshed in the last minute");
+      if (!res.ok) toast.error(`${res.error}. Check your connection and try again in a minute.`);
+      else if (res.fresh) toast.info("Already up to date. Feeds were refreshed in the last minute.");
+      else if (res.inserted === 0) toast.info(`No new articles yet${res.failed ? ` · ${res.failed} feed${res.failed === 1 ? "" : "s"} unreachable` : ""}`);
       else toast.success(`${res.inserted} new article${res.inserted === 1 ? "" : "s"}${res.failed ? ` · ${res.failed} feed${res.failed === 1 ? "" : "s"} unreachable` : ""}`);
     });
   return (
-    <Button variant="outline" size="sm" onClick={onClick} disabled={pending}>
-      <RefreshCw className={cn(pending && "animate-spin")} /> {pending ? "Fetching feeds…" : label}
+    <Button variant="outline" className="h-9" onClick={onClick} disabled={pending} aria-busy={pending}>
+      <RefreshCw className={cn(pending && "animate-spin")} aria-hidden /> {pending ? "Fetching feeds…" : label}
     </Button>
   );
 }

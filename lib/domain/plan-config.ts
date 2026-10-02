@@ -15,6 +15,11 @@ export interface PlanSettings {
   revisionWeeks: number;
   /** Planned days off (count as complete, carry no targets). */
   restDays: DateStr[];
+  /**
+   * Study hours per day of week, Sunday first. When set, each day's counts are scaled
+   * to the hours (see lib/domain/time-budget.ts); when absent the plan is count-based.
+   */
+  hoursByDow?: readonly number[];
 }
 
 export const DEFAULT_SETTINGS: PlanSettings = {

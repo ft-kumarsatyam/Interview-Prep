@@ -8,14 +8,14 @@ export default function Loading() {
         <Skeleton className="h-7 w-48" />
         <Skeleton className="h-4 w-80 max-w-full" />
       </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        {Array.from({ length: 4 }, (_, i) => (
-          <Skeleton key={i} className="h-24 rounded-xl" />
+      <div className="flex gap-2 overflow-hidden">
+        {Array.from({ length: 5 }, (_, i) => (
+          <Skeleton key={i} className="h-8 w-24 shrink-0 rounded-full" />
         ))}
       </div>
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2">
         {Array.from({ length: 4 }, (_, i) => (
-          <Skeleton key={i} className="h-64 rounded-xl" />
+          <Skeleton key={i} className="h-48 rounded-xl" />
         ))}
       </div>
     </div>

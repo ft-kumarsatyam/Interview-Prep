@@ -14,8 +14,25 @@ export interface NavBadges {
   "/quiz"?: true;
 }
 
-/** Read-only counts for the sidebar and tab bar; never creates today's plan. */
-export async function getNavBadges(now = new Date()): Promise<NavBadges> {
+/** Today's targets for the sidebar mini-card. Null until the dashboard has created today's plan. */
+export interface NavToday {
+  kind: DayKind;
+  dsaSolved: number;
+  dsaTarget: number;
+  theoryDone: number;
+  theoryTarget: number;
+  quizPassed: boolean;
+  quizUnlocked: boolean;
+  complete: boolean;
+}
+
+export interface NavState {
+  badges: NavBadges;
+  today: NavToday | null;
+}
+
+/** Read-only state for the sidebar and tab bar; never creates today's plan. */
+export async function getNavState(now = new Date()): Promise<NavState> {
   await connectDb();
   const s = await getSettings();
   const today = todayIn(s, now);
@@ -23,21 +40,29 @@ export async function getNavBadges(now = new Date()): Promise<NavBadges> {
     countDueReviews(today),
     unreadArticleCount(),
     DailyPlan.findOne({ date: today }, { kind: 1, dsaTarget: 1, theoryTarget: 1 }).lean(),
-    DayLog.findOne({ date: today }, { dsaSolved: 1, theoryDone: 1, quizPassed: 1 }).lean(),
+    DayLog.findOne({ date: today }, { dsaSolved: 1, theoryDone: 1, quizPassed: 1, complete: 1 }).lean(),
   ]);
-  const quizOpen =
-    !!plan &&
-    !log?.quizPassed &&
-    isQuizUnlocked({
-      kind: plan.kind as DayKind,
-      dsaTarget: plan.dsaTarget,
-      theoryTarget: plan.theoryTarget,
-      dsaSolved: log?.dsaSolved ?? 0,
-      theoryDone: log?.theoryDone ?? 0,
-    });
+  const progress = plan
+    ? {
+        kind: plan.kind as DayKind,
+        dsaTarget: plan.dsaTarget,
+        theoryTarget: plan.theoryTarget,
+        dsaSolved: log?.dsaSolved ?? 0,
+        theoryDone: log?.theoryDone ?? 0,
+      }
+    : null;
+  const quizUnlocked = !!progress && isQuizUnlocked(progress);
+  const quizPassed = !!log?.quizPassed;
   return {
-    ...(reviews > 0 ? { "/review": reviews } : {}),
-    ...(unread > 0 ? { "/news": unread } : {}),
-    ...(quizOpen ? { "/quiz": true as const } : {}),
+    badges: {
+      ...(reviews > 0 ? { "/review": reviews } : {}),
+      ...(unread > 0 ? { "/news": unread } : {}),
+      ...(quizUnlocked && !quizPassed ? { "/quiz": true as const } : {}),
+    },
+    today: progress ? { ...progress, quizPassed, quizUnlocked, complete: !!log?.complete } : null,
   };
+}
+
+export async function getNavBadges(now = new Date()): Promise<NavBadges> {
+  return (await getNavState(now)).badges;
 }

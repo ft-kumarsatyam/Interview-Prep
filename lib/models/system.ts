@@ -17,6 +17,14 @@ const settingsSchema = new Schema(
     maxDailyTheory: { type: Number, default: DEFAULT_SETTINGS.maxDailyTheory },
     revisionWeeks: { type: Number, default: DEFAULT_SETTINGS.revisionWeeks },
     restDays: { type: [String], default: [] },
+    /** Per-subject Gemini project / Gem links for the "Ask Gemini" buttons (subject id -> https link). */
+    geminiLinks: { type: Map, of: String, default: undefined },
+    /** Paid AI fallback (the last provider in the chain). Confirmation is on by default. */
+    llmPaidEnabled: { type: Boolean, default: true },
+    llmPaidDailyCap: { type: Number, default: 20 },
+    llmPaidRequireConfirm: { type: Boolean, default: true },
+    /** Study hours per day of week, Sunday first. Unset = the defaults in lib/domain/time-budget.ts. */
+    hoursByDow: { type: [Number], default: undefined },
     freezeTokens: { type: Number, default: 0 },
     /** Last day whose streak outcome has been settled. */
     settledThrough: { type: String, default: null },
@@ -24,6 +32,8 @@ const settingsSchema = new Schema(
     topicMasteryPct: { type: Number, default: 70 },
     leetcodeUsername: { type: String, default: null },
     leetcodeLastSyncAt: { type: Date, default: null },
+    /** Last "did my submission land?" check from a problem page, so polling can't hammer LeetCode. */
+    leetcodeLastCheckAt: { type: Date, default: null },
     /** Recent accepted-submission ids already imported (capped). */
     leetcodeSeenIds: { type: [String], default: [] },
     newsLastFetchAt: { type: Date, default: null },

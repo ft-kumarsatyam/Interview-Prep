@@ -1,3 +1,47 @@
+import type { QuestionType } from "@/lib/quiz/question";
+
+/**
+ * A stored answer is one number per question: the chosen option index for
+ * `single`/`truefalse` (exactly as before multi-select existed), or a bitmask
+ * over the ORIGINAL option indices for `multi` (bit i set = option i chosen).
+ * The answer key uses the same encoding, so `scoreQuiz` stays a plain
+ * number-to-number comparison. Always compare through `correctAnswerKey`:
+ * reading `answerIndex` directly is wrong for multi-select questions.
+ */
+export interface AnswerKeyed {
+  type?: QuestionType | null;
+  answerIndex: number;
+  answerIndices?: readonly number[] | null;
+}
+
+export function maskOf(indices: readonly number[]): number {
+  return indices.reduce((mask, i) => mask | (1 << i), 0);
+}
+
+export function indicesOf(mask: number, optionCount: number): number[] {
+  return Array.from({ length: optionCount }, (_, i) => i).filter((i) => (mask & (1 << i)) !== 0);
+}
+
+/** `type` is read defensively: stored questions that predate multi-select have none. */
+export function correctAnswerKey(q: AnswerKeyed): number {
+  return (q.type ?? "single") === "multi" ? maskOf(q.answerIndices ?? []) : q.answerIndex;
+}
+
+export function isAnswerCorrect(q: AnswerKeyed, answer: number | null | undefined): boolean {
+  return answer !== null && answer !== undefined && answer >= 0 && answer === correctAnswerKey(q);
+}
+
+/** Option indices the learner picked, for showing "Your answer" in a review. */
+export function chosenIndices(q: AnswerKeyed, answer: number | null | undefined, optionCount: number): number[] {
+  if (answer === null || answer === undefined || answer < 0) return [];
+  return (q.type ?? "single") === "multi" ? indicesOf(answer, optionCount) : [answer];
+}
+
+/** Option indices that are correct, for showing "Correct" in a review. */
+export function correctIndices(q: AnswerKeyed): number[] {
+  return (q.type ?? "single") === "multi" ? [...(q.answerIndices ?? [])] : [q.answerIndex];
+}
+
 export interface QuizScore {
   correct: number;
   total: number;

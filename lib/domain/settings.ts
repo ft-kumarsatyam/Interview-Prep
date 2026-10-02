@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ASK_SUBJECTS, checkGeminiLink, isAskSubject } from "./ask-subjects";
 import { diffDays, isDateStr, type DateStr } from "./dates";
 
 const date = z.string().refine(isDateStr, "Use YYYY-MM-DD");
@@ -19,6 +20,24 @@ export const settingsInputSchema = z
     maxDailyTheory: int(1, 10),
     revisionWeeks: int(0, 8),
     restDays: z.array(date).max(MAX_REST_DAYS),
+    /** Subject id -> Gemini project link (blank removes it). Only https links on Google AI hosts. */
+    geminiLinks: z
+      .record(z.string(), z.string().max(500))
+      .optional()
+      .superRefine((links, ctx) => {
+        for (const [subject, value] of Object.entries(links ?? {})) {
+          if (!isAskSubject(subject)) ctx.addIssue({ code: "custom", path: [subject], message: `Unknown subject (use ${ASK_SUBJECTS.map((s) => s.id).join(", ")})` });
+          else {
+            const check = checkGeminiLink(value);
+            if (!check.ok) ctx.addIssue({ code: "custom", path: [subject], message: check.error });
+          }
+        }
+      }),
+    llmPaidEnabled: z.boolean().optional(),
+    llmPaidDailyCap: int(0, 200).optional(),
+    llmPaidRequireConfirm: z.boolean().optional(),
+    /** Study hours per day of week, Sunday first. 0 = nothing planned beyond the fixed blocks. */
+    hoursByDow: z.array(z.coerce.number().min(0).max(12)).length(7).optional(),
     /** Null resets to the defaults in data/news-sources.json. */
     googleNewsQueries: z.array(z.string().trim().min(2).max(80)).max(MAX_NEWS_QUERIES).nullable(),
     leetcodeUsername: z

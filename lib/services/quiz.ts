@@ -2,7 +2,8 @@ import { problemBySlug, subtopicById, subtopics, type SubtopicInfo } from "@/lib
 import { connectDb } from "@/lib/db";
 import { addDays, type DateStr } from "@/lib/domain/dates";
 import type { DayKind } from "@/lib/domain/planner";
-import { isPassing, scoreQuiz } from "@/lib/domain/quiz";
+import { correctAnswerKey, isAnswerCorrect, isPassing, scoreQuiz } from "@/lib/domain/quiz";
+import { askSubjectForRef } from "@/lib/quiz/subject";
 import { seededRng, seedFrom, shuffle, weightedSample, type Rng } from "@/lib/domain/sampling";
 import { getLlm, type LlmProvider } from "@/lib/llm";
 import { DailyPlan, Quiz } from "@/lib/models/day";
@@ -184,7 +185,7 @@ async function buildWeekly(date: DateStr): Promise<{ questions: QuizQuestion[]; 
   for (const quiz of dailies) {
     const last = quiz.attempts?.at(-1);
     (quiz.questions as QuizQuestion[]).forEach((q, i) => {
-      const weight = !last ? 2 : last.answers?.[i] === q.answerIndex ? 1 : 3;
+      const weight = !last ? 2 : isAnswerCorrect(q, last.answers?.[i]) ? 1 : 3;
       const prev = pool.get(q.id);
       if (!prev || prev.weight < weight) pool.set(q.id, { q: toPlain(q), weight });
     });
@@ -213,6 +214,8 @@ function toPlain(q: QuizQuestion): QuizQuestion {
     ...(q.code ? { code: q.code } : {}),
     options: [...q.options],
     answerIndex: q.answerIndex,
+    ...(q.type && q.type !== "single" ? { type: q.type } : {}),
+    ...(q.answerIndices?.length ? { answerIndices: [...q.answerIndices] } : {}),
     explanation: q.explanation ?? "",
     source: { kind: q.source?.kind ?? "article", ref: q.source?.ref ?? "" },
     style: q.style ?? "llm",
@@ -261,6 +264,8 @@ export interface QuizSnapshot {
 
 type QuizLean = NonNullable<Awaited<ReturnType<typeof getOrCreateQuiz>>>;
 
+const reviewOf = (q: QuizQuestion) => toReview({ ...q, subject: askSubjectForRef(q.source?.ref) });
+
 function snapshot(doc: QuizLean, passPct: number): QuizSnapshot {
   const questions = (doc.questions as QuizQuestion[]).map(toPlain);
   const attempts = (doc.attempts ?? []).map((a) => ({
@@ -286,7 +291,7 @@ function snapshot(doc: QuizLean, passPct: number): QuizSnapshot {
             total: questions.length,
             pct: lastRaw.pct ?? 0,
             passed: (lastRaw.pct ?? 0) >= passPct,
-            review: questions.map(toReview),
+            review: questions.map(reviewOf),
             answers,
           }
         : null,
@@ -336,7 +341,7 @@ export async function submitQuiz(
   const questions = (doc.questions as QuizQuestion[]).map(toPlain);
   if (input.answers.length !== questions.length) throw new Error("Answer count doesn't match the quiz");
 
-  const score = scoreQuiz(questions.map((q) => q.answerIndex), input.answers);
+  const score = scoreQuiz(questions.map(correctAnswerKey), input.answers);
   const passed = isPassing(score, s.quizPassPct);
   await Quiz.updateOne(
     { _id: doc._id },
@@ -348,7 +353,7 @@ export async function submitQuiz(
   );
   const { justCompleted } = await recomputeDay(input.date);
   return {
-    outcome: { ...score, passed, review: questions.map(toReview) },
+    outcome: { ...score, passed, review: questions.map(reviewOf) },
     bestPct: Math.max(doc.bestPct ?? 0, score.pct),
     everPassed: passed || !!doc.passed,
     justCompleted,

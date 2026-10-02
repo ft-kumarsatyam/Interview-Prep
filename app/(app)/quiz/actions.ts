@@ -23,7 +23,7 @@ export async function startQuizAction(): Promise<ActionResult<{ quiz: QuizSnapsh
 const submitSchema = z.object({
   date: z.string().refine(isDateStr),
   kind: z.enum(["daily", "weekly"]),
-  answers: z.array(z.number().int().min(0).max(3).nullable()).min(1).max(40),
+  answers: z.array(z.number().int().min(0).max(63).nullable()).min(1).max(40),
 });
 
 export async function submitQuizAction(input: z.input<typeof submitSchema>): Promise<ActionResult<{ result: SubmitResult }>> {

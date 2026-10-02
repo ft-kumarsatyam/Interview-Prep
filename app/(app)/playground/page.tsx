@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { SquareTerminal } from "lucide-react";
 import { Playground } from "@/components/playground/playground";
 import { PageHeader } from "@/components/shared/page-header";
 import { listSnippets } from "@/lib/services/snippets";
@@ -24,7 +25,11 @@ export default async function PlaygroundPage({ searchParams }: PageProps<"/playg
   const initialCode = decodeSnippetParam(typeof snippet === "string" ? snippet : undefined, snippets);
   return (
     <>
-      <PageHeader title="JS Playground" description="Run JavaScript safely in a Web Worker: no DOM, no network, killed after 3 seconds." />
+      <PageHeader
+        icon={SquareTerminal}
+        title="JS Playground"
+        description="Experiment with JavaScript or TypeScript, save snippets by topic, and train your intuition with predict-the-output drills. Code runs in a sandboxed Web Worker."
+      />
       <Playground snippets={snippets} initialCode={initialCode} />
     </>
   );

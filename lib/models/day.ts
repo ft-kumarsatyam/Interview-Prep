@@ -14,6 +14,12 @@ const dailyPlanSchema = new Schema(
     theoryTarget: { type: Number, required: true },
     theory: { type: [String], default: [] },
     readings: { type: [String], default: [] },
+    /** Present when the day was planned by hours (see lib/domain/time-budget.ts). */
+    hours: { type: Number, default: undefined },
+    estMinutes: { type: Number, default: undefined },
+    /** Sunday only: optional extra work from spare hours. Never counts toward completion. */
+    bonusDsa: { type: [String], default: undefined },
+    bonusTheory: { type: [String], default: undefined },
   },
   { timestamps: true },
 );
@@ -38,12 +44,15 @@ const quizQuestionSchema = new Schema(
     id: { type: String, required: true },
     prompt: { type: String, required: true, maxlength: 500 },
     code: { type: String, maxlength: 1500 },
-    options: { type: [{ type: String, maxlength: 300 }], validate: (v: string[]) => v.length === 4 },
-    answerIndex: { type: Number, required: true, min: 0, max: 3 },
+    options: { type: [{ type: String, maxlength: 300 }], validate: (v: string[]) => v.length >= 2 && v.length <= 6 },
+    answerIndex: { type: Number, required: true, min: 0, max: 5 },
+    // Absent on questions stored before multi-select / true-false existed: read it as `type ?? "single"`.
+    type: { type: String, enum: ["single", "multi", "truefalse"] },
+    answerIndices: { type: [Number], default: undefined },
     explanation: { type: String, maxlength: 600 },
     // `kind`, not `type`: Mongoose reads a nested `type` key as a type declaration.
     source: {
-      kind: { type: String, enum: ["problem", "subtopic", "pattern", "article"] },
+      kind: { type: String, enum: ["problem", "subtopic", "pattern", "article", "case"] },
       ref: { type: String },
     },
     style: { type: String, enum: ["output", "concept", "pattern", "recall", "llm"], default: "llm" },

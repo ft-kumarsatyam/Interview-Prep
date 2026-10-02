@@ -69,7 +69,7 @@ describe("getDesignOverview", () => {
     await addDesignMinutes(feed.slug, 40);
 
     const o = await getDesignOverview();
-    expect(Object.keys(o)).toHaveLength(17);
+    expect(Object.keys(o)).toHaveLength(25);
     expect(o[slug]).toMatchObject({ status: "studying", subtopicsDone: 1 });
     expect(o["web-crawler"].status).toBe("mastered");
     expect(o["file-sync"].status).toBe("mastered");

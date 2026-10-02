@@ -23,6 +23,20 @@ Every prompt assumes the agent has read `AGENTS.md`, which `CLAUDE.md` and `.cur
 | 9c · `/setup` checklist + dashboard "Finish setup" card, job run tracking | ✅ done |
 | 9d · In-app news reader (feed full text, Readability extraction behind an SSRF guard, tags, picks rail, new system design and tech feeds) | ✅ done |
 | 9e · System Design studio (`/design`: 17 cases, diagrams, building blocks, 45-min mock with rubric, related articles) | ✅ done (191 tests) |
+| 10 · Shared Web Worker sandbox (`lib/sandbox/`) + in-app DSA runner (Code tab, Run/Submit, hints, `data/dsa-testcases.json`) | ✅ done: 15 of the 151 core problems seeded |
+| 11 · DSA sheet view (step-ordered, tick-mark progress, `step` field, `sort-an-array`, `relative-sort-array`) | ✅ done |
+| 12 · OS track: 5 new topics (processes/scheduling, memory, synchronization/deadlocks, file systems/I/O, security) | ✅ done |
+| 13 · DBMS track: `dbms-distributed`, `dbms-ops-security`, two more indexing subtopics | ✅ done |
+| 14 · OS and DBMS studios (`/design/os`, `/design/dbms`: 16 cases, 20-min mock) | ✅ done |
+| 15 · System Design Vol 2 (8 new cases, 25 total) and the categorized `/design` list | ✅ done |
+| 16 · Playground upgrade (`assertEqual`/`test`, console helpers, output caps, 22 drills, TS mode, searchable tagged snippets) | ✅ done |
+| 17 · Quiz formats (multi-select, true/false; 112 new bank questions) | ✅ done |
+| 18 · Hours-driven planner (`hoursByDow` in Settings, per-item minute costs learned from your solve times, Sunday bonus work, "hours today" re-plan) | ✅ done |
+| 19 · AI provider chain (Gemini, Groq, paid Meta last resort): failover, cooldowns, answer cache, usage, Setup test, Settings panel | ✅ done |
+| 20 · Ask-Gemini buttons (per-subject project links), cached "Explain my mistake", paid-fallback banner | ✅ done |
+| 21 · LeetCode content (statement, official hints, examples fetched lazily and cached in Mongo only), "Copy code + open LeetCode" with auto-detect of the Accepted submission | ✅ done |
+| 22 · Runner v2 (Worker list/tree support, `compare` modes, named edge cases + Edge cases tab, three-step hint ladder, one-time hidden-case reveal, spec-based generator with brute-force and fuzz cross-checks, 15 problems migrated) | ✅ done |
+| 23 · 83 runnable problems (arrays, strings, two pointers, sliding window, stack, binary search, DP, greedy, bits, linked lists, trees), each with a reference, an independent brute force, 200 fuzz inputs and a blind third solution | ✅ done |
 
 The phase prompts below are kept as a record of the spec each phase was built against. The extras listed in the status table (LeetCode sync, mastery quizzes, ports and adapters, idempotent jobs) are described in ARCHITECTURE §3, §8, §9 and §11. Phase 9 is described in ARCHITECTURE §4 (Remember me), §10.1 (reader), §12 (routes) and §15 (PWA).
 
@@ -30,6 +44,9 @@ Known gaps:
 - One-line AI news summaries are not built yet (`articles.aiSummary` is unused).
 - Some sites block article extraction (OpenAI's blog returns 403, Quastor and Uber block feed fetches). Those articles show the snippet and an "Open original" link.
 - The System Design studio has no LLD templates yet; the HLD "Design template" on `/learn` still covers quick notes.
+- The DSA runner covers 15 of the 151 core problems. Linked-list and tree problems need bespoke input/output serializers (a plain `deepEqual` on a returned node graph is not enough), as do the ~19 "Design" problems. Hand-authoring the rest is the main content backlog.
+- The Playground's TS mode strips types and reports syntax errors; it does not type-check.
+- Phases 10-17 were verified with typecheck, ESLint, Vitest, `next build`, server-side rendering of the new pages' components and a Node `vm` simulation of the Web Worker, but were not click-tested in a browser.
 - White text on the dark-theme `--primary` button measures 4.34:1, just under WCAG AA's 4.5:1. Fixing it means darkening the DESIGN §1 token.
 
 ---

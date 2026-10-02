@@ -1,18 +1,34 @@
+import { classifyHttp } from "@/lib/domain/llm-router";
+import { LlmHttpError, redact } from "./errors";
 import type { CompleteFn, LlmConfig } from "./types";
 
 const TIMEOUT_MS = 30_000;
 
-async function postJson(url: string, body: unknown, headers: Record<string, string>): Promise<unknown> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-    cache: "no-store",
-  });
+/**
+ * Model ids get retired (gemini-2.5-flash and llama-3.3-70b-versatile already stopped working for new keys),
+ * so the Gemini default is the "latest" alias. Set GEMINI_MODEL / GROQ_MODEL to pin one.
+ */
+export const DEFAULT_GEMINI_MODEL = "gemini-flash-latest";
+export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
+
+async function postJson(url: string, body: unknown, headers: Record<string, string>, secrets: string[]): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      cache: "no-store",
+    });
+  } catch (err) {
+    const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+    throw new LlmHttpError(`LLM HTTP 0: ${timedOut ? "timed out" : "network error"}`, 0, timedOut ? "timeout" : "network");
+  }
   if (!res.ok) {
-    const text = (await res.text().catch(() => "")).slice(0, 200);
-    throw new Error(`LLM HTTP ${res.status}: ${text}`);
+    const text = redact((await res.text().catch(() => "")).slice(0, 600), secrets);
+    const { kind, retryAfterSec } = classifyHttp(res.status, text, res.headers.get("retry-after"));
+    throw new LlmHttpError(`LLM HTTP ${res.status}: ${text.slice(0, 200)}`, res.status, kind, retryAfterSec);
   }
   return res.json();
 }
@@ -33,16 +49,17 @@ function textOrThrow(value: unknown, provider: string): string {
 
 /** Google AI Studio (free tier). */
 export function gemini(cfg: LlmConfig): CompleteFn {
-  const model = cfg.model ?? "gemini-2.5-flash";
+  const model = cfg.model ?? DEFAULT_GEMINI_MODEL;
   const base = cfg.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
   return async (prompt) => {
     const data = await postJson(
       `${base}/models/${encodeURIComponent(model)}:generateContent`,
       {
         contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0.7 },
+        generationConfig: { responseMimeType: "application/json", temperature: 0.7, ...(cfg.maxTokens ? { maxOutputTokens: cfg.maxTokens } : {}) },
       },
       { "x-goog-api-key": cfg.apiKey },
+      [cfg.apiKey],
     );
     return textOrThrow(pick(data, ["candidates", 0, "content", "parts", 0, "text"]), "gemini");
   };
@@ -54,22 +71,30 @@ export function anthropic(cfg: LlmConfig): CompleteFn {
   return async (prompt) => {
     const data = await postJson(
       `${base}/messages`,
-      { model, max_tokens: 4096, messages: [{ role: "user", content: prompt }] },
+      { model, max_tokens: cfg.maxTokens ?? 4096, messages: [{ role: "user", content: prompt }] },
       { "x-api-key": cfg.apiKey, "anthropic-version": "2023-06-01" },
+      [cfg.apiKey],
     );
     return textOrThrow(pick(data, ["content", 0, "text"]), "anthropic");
   };
 }
 
-/** Any /chat/completions API: Groq (default), OpenRouter, Together, local Ollama… */
+/** Any /chat/completions API: Groq (default), OpenRouter, Together, a Meta Llama endpoint, local Ollama... */
 export function openaiCompatible(cfg: LlmConfig): CompleteFn {
-  const model = cfg.model ?? "llama-3.3-70b-versatile";
+  const model = cfg.model ?? DEFAULT_GROQ_MODEL;
   const base = (cfg.baseUrl ?? "https://api.groq.com/openai/v1").replace(/\/$/, "");
   return async (prompt) => {
     const data = await postJson(
       `${base}/chat/completions`,
-      { model, temperature: 0.7, response_format: { type: "json_object" }, messages: [{ role: "user", content: prompt }] },
+      {
+        model,
+        temperature: 0.7,
+        response_format: { type: "json_object" },
+        ...(cfg.maxTokens ? { max_tokens: cfg.maxTokens } : {}),
+        messages: [{ role: "user", content: prompt }],
+      },
       { authorization: `Bearer ${cfg.apiKey}` },
+      [cfg.apiKey],
     );
     return textOrThrow(pick(data, ["choices", 0, "message", "content"]), "openai-compatible");
   };

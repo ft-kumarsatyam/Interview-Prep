@@ -10,7 +10,7 @@ const snippetSchema = z.object({
   id: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   title: z.string().trim().min(1, "Give the snippet a title").max(120),
   code: z.string().min(1, "Nothing to save").max(20_000),
-  tag: z.string().trim().max(60).default(""),
+  tag: z.string().trim().max(120).default(""),
 });
 
 export async function saveSnippetAction(input: z.input<typeof snippetSchema>): Promise<ActionResult<{ id: string }>> {

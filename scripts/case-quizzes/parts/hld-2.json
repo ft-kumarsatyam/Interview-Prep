@@ -1,0 +1,725 @@
+{
+  "hld:news-feed": [
+    {
+      "prompt": "A news feed uses pure fan-out on write: every new post id is pushed into each follower's cached timeline. An account with 100 million followers posts once. What is the core problem, and what is the usual remedy?",
+      "options": [
+        "One post triggers about 100 million cache inserts; keep pushing for normal users but merge that account's recent posts in at read time",
+        "The follow graph cannot be read for an account that large; cap followers at a fixed limit",
+        "Reads become O(n) in the number of followees; switch the whole system to pull on read",
+        "Post ids are no longer unique at that scale; move to UUIDs generated per follower"
+      ],
+      "answerIndex": 0,
+      "explanation": "Push makes write cost proportional to follower count, so a celebrity post becomes a huge burst of inserts. The hybrid keeps cheap O(1) reads for ordinary authors and pulls only the few celebrity authors a user follows at read time. Switching everything to pull would make every read slow to fix a problem that only a few accounts cause.",
+      "anchor": "deep-dives",
+      "reading": 0
+    },
+    {
+      "prompt": "A feed service has 300M daily active users, each loading the timeline 5 times a day. Spread evenly over 86,400 seconds, roughly how many timeline reads per second is that on average?",
+      "options": [
+        "About 1.7k per second",
+        "About 17k per second",
+        "About 170k per second",
+        "About 1.7M per second"
+      ],
+      "answerIndex": 1,
+      "explanation": "300M x 5 = 1.5 billion reads per day. Divided by roughly 86,400 seconds, that is about 17,400 reads per second on average. Peak traffic is a multiple of this, which is why the case budgets about 50k per second for peak. The other options are off by a factor of ten in one direction or the other.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "Posts arrive at 50 million per day, which is about 580 per second. Under fan-out on write, the average author has 400 followers instead of 200. Roughly how many timeline-cache inserts per second does that imply?",
+      "options": [
+        "About 58k per second",
+        "About 116k per second",
+        "About 231k per second",
+        "About 460k per second"
+      ],
+      "answerIndex": 2,
+      "explanation": "580 posts/s x 400 followers is about 231k inserts per second. The 116k option is the figure for 200 followers, so it ignores the change, and doubling write amplification doubles inserts. This is the write amplification trade-off: reads stay O(1) but write load scales with the follower count.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "The timeline cache stores only post ids (a capped Redis list per user) and hydrates bodies from a post cache. Which benefits does this give? Select all that apply.",
+      "options": [
+        "Each cached entry is small, so many more timelines fit in memory",
+        "A deleted or edited post is reflected at hydration time without rewriting every follower's list",
+        "The timeline service no longer needs any read from the post cache or posts DB",
+        "Capping list length bounds the memory used per user"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        3
+      ],
+      "explanation": "Ids are tiny, and bodies live in one place, so edits and deletes show up at hydration and the cap bounds per-user memory. The id-only design does not remove the post lookup: that hydration step is exactly where the bodies come from, so claiming no post reads are needed is wrong.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "In a hybrid feed design, a user sees a celebrity's new post because the fan-out workers insert it into that user's cached timeline just like any other post.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "False. The point of the hybrid is that celebrity posts are not fanned out; the timeline service fetches those authors' recent posts at read time and merges them with the pre-built cache. Fanning them out would reintroduce the 100M-insert burst the hybrid exists to avoid.",
+      "anchor": "deep-dives",
+      "reading": 0
+    },
+    {
+      "prompt": "A ranked feed is paged with ?page=2&limit=20, and the service re-scores and re-sorts candidates on every request. Users report seeing the same post on consecutive pages. What is the best fix?",
+      "options": [
+        "Give each page a larger limit so users rarely reach page two",
+        "Return a cursor tied to a stable snapshot of the ranked candidate ids, and continue from it",
+        "Use OFFSET pagination but sort by author id to make results deterministic",
+        "Re-run ranking and drop any post the user has ever seen from the whole history"
+      ],
+      "answerIndex": 1,
+      "explanation": "With re-ranking, scores and new posts shift positions between requests, so an offset lands on items already shown. A cursor into a fixed ranked candidate list (or one that carries the last position plus an exclusion of ids already served) keeps pages consistent. Sorting by author id would destroy the ranking.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "Many accounts are inactive: they have not opened the app in weeks. Which policy best balances freshness against cost?",
+      "options": [
+        "Keep fanning out to every follower's timeline so it is always fresh",
+        "Skip fan-out for long-inactive users and rebuild their timeline on demand when they return",
+        "Delete inactive users' follow edges so fan-out has fewer targets",
+        "Move their timelines to the posts DB and read them synchronously on every load"
+      ],
+      "answerIndex": 1,
+      "explanation": "Pushing into timelines nobody reads wastes writes and cache memory. Rebuilding on demand at next login trades a slower first load for a large saving. Deleting follow edges loses user data, and the DB-only variant just moves cost to every read.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "A fan-out worker consumes 'new post' events and must find all followers of the author. The follows table is only indexed by follower_id. What is the problem?",
+      "options": [
+        "Followers of an author cannot be looked up efficiently, so the data also needs an index or copy keyed by followee_id",
+        "Followers must be stored inside the post row instead",
+        "The table needs a unique constraint on follower_id to be queryable",
+        "A relational database cannot store a many-to-many relationship"
+      ],
+      "answerIndex": 0,
+      "explanation": "Fan-out asks 'who follows X', while timeline reads ask 'whom does Y follow'. Both directions are needed, which is why the data model stores the relation both ways. An index keyed only by follower_id would force a full scan for every post.",
+      "anchor": "data-model",
+      "reading": 1
+    },
+    {
+      "prompt": "A user deletes a post that already sits in many followers' cached timelines (id lists). Which approaches are sound? Select all that apply.",
+      "options": [
+        "Mark the post deleted in the post store and drop ids whose post is missing or deleted when hydrating",
+        "Publish a delete event so workers remove the id from cached timelines asynchronously",
+        "Block the delete request until the id is removed from every follower's list",
+        "Rely only on timeline TTL expiry, accepting that the post may stay visible for days"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "Hydration filtering gives immediate correctness, and an async delete event cleans up the lists eventually. Blocking the author on millions of list edits does not scale and is unnecessary. Relying on TTL alone leaves a deleted post visible to followers, which is a correctness and privacy failure.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "Fan-out on read keeps write cost low because posting only stores one row, but timeline latency grows with the number of accounts a user follows.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "True. Pull builds the timeline by merging recent posts from every followee at request time, so read cost scales with followee count and is hard to keep under a 200 ms target for heavy followers. That is the mirror image of push, whose reads are O(1) but writes explode.",
+      "anchor": "tradeoffs"
+    }
+  ],
+  "hld:chat": [
+    {
+      "prompt": "A chat service has 100M daily users sending 40 messages a day each at about 100 bytes per message (400 GB/day). Roughly how much raw message data accumulates per year, before replication?",
+      "options": [
+        "About 14.6 TB",
+        "About 146 TB",
+        "About 1.46 PB",
+        "About 14.6 PB"
+      ],
+      "answerIndex": 1,
+      "explanation": "400 GB/day x 365 is roughly 146,000 GB, or about 146 TB. With replication (commonly 3x) and multiple years, history reaches the petabyte scale, which is why the case partitions by chat in a wide-column store. The other options are off by factors of ten.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "Each WebSocket gateway can hold about 500k connections. At a future peak of 250 million concurrent connections, what is the minimum number of gateways, ignoring headroom?",
+      "options": [
+        "50",
+        "250",
+        "500",
+        "2,500"
+      ],
+      "answerIndex": 2,
+      "explanation": "250M / 500k = 500 gateways. In practice you add headroom for failures and spikes, so the real fleet is larger. The 250 option divides by 1M instead, and 50 and 2,500 are order-of-magnitude slips.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "Why does the design assign a sequence number per chat rather than one global total order across all messages?",
+      "options": [
+        "Users only need messages ordered within a conversation, and a global sequencer would be a bottleneck and single point of failure",
+        "Global ordering is impossible because clocks differ between phones",
+        "Per-chat numbers use fewer bits, which is what allows partitioning in Cassandra",
+        "A global order would reveal the number of users on the platform"
+      ],
+      "answerIndex": 0,
+      "explanation": "Ordering only matters inside one chat, so each chat can be sequenced independently and spread across shards. A single global counter would limit throughput and availability. Clock differences matter for timestamps, but a server-assigned sequence does not depend on client clocks anyway.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "A sender's phone sends a message, the server persists it, but the ack is lost on a flaky network. The client retries the same send. How should the server behave?",
+      "options": [
+        "Store it again with a new sequence number, since the retry is a new request",
+        "Reject the retry with an error so the client gives up",
+        "Recognise the clientMsgId as already stored and return the original msgId and seq",
+        "Compare timestamps and keep the earlier copy only if it is under a second old"
+      ],
+      "answerIndex": 2,
+      "explanation": "The client-generated clientMsgId makes the send idempotent: the server looks it up and returns the earlier result, so there is no duplicate and the sender learns the seq. Assigning a new seq would show the message twice. Timestamp matching is fragile and unnecessary.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "A WS gateway crashes while handling messages. Which practices help guarantee that no accepted message is lost? Select all that apply.",
+      "options": [
+        "Persist the message and assign its seq before acknowledging the sender",
+        "The client retries unacknowledged sends with the same clientMsgId",
+        "On reconnect the client fetches any messages after its last seen seq",
+        "Keep messages only in gateway memory until the recipient acknowledges them",
+        "Rely on the push notification provider to guarantee delivery"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Durable write before ack plus idempotent client retries plus gap-fetch on reconnect cover the failure windows. Gateway memory is lost with the crash, and push providers are best effort and carry little data, so neither can be the source of truth.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "A phone was offline for a week. What is the most sensible way for it to catch up?",
+      "options": [
+        "The server queues every WebSocket push for a week and replays them on connect",
+        "Push notifications replay each missed message to the device",
+        "The client sends its last seen seq per chat and pages through newer messages from the messages store",
+        "The client re-downloads its entire history for every chat"
+      ],
+      "answerIndex": 2,
+      "explanation": "Because messages are durable and ordered by seq per chat, sync is a pull: ask for everything after last-seen seq, page by page. Server-side replay buffers would be huge and push notifications are lossy. Re-downloading all history wastes bandwidth.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "Messages are stored with chat_id as the partition key and seq as the clustering key. If the table were instead partitioned by sender_id, what would be the main consequence for loading a chat?",
+      "options": [
+        "Nothing, as long as an index on seq exists",
+        "A chat's messages would be scattered across many partitions, so reading history becomes a multi-partition scatter-gather",
+        "Messages would become unordered within each partition",
+        "Group chats would no longer be possible"
+      ],
+      "answerIndex": 1,
+      "explanation": "The access pattern is 'give me the recent messages of this chat'. Partitioning by chat and clustering by seq makes that one sequential read; partitioning by sender spreads it across every participant's partitions and forces merging. Order within a partition is still sorted by its clustering key.",
+      "anchor": "deep-dives",
+      "reading": 0
+    },
+    {
+      "prompt": "At hundreds of millions of connections, long polling is generally the better choice than WebSockets because it holds less state per connected client.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "False. Long polling creates repeated HTTP request/response cycles with headers and re-connection overhead for every message window, which costs more at scale. WebSockets keep one lightweight persistent connection per client, giving lower latency and less per-message overhead.",
+      "anchor": "tradeoffs",
+      "reading": 2
+    },
+    {
+      "prompt": "Presence uses a heartbeat roughly every 30 seconds that refreshes a TTL key. Why not simply mark a user offline when their connection closes?",
+      "options": [
+        "Closing a connection is too slow to detect",
+        "Crashes, dead batteries and network loss often close nothing cleanly, so only expiry of the TTL reveals the user is gone",
+        "Presence must be eventually consistent, so explicit events are forbidden",
+        "WebSockets cannot report disconnects at all"
+      ],
+      "answerIndex": 1,
+      "explanation": "Clean disconnect events are not guaranteed: a phone that loses signal never says goodbye. A TTL key expires on its own when heartbeats stop, so stale 'online' states self-heal. Explicit close events can still be used as an optimisation.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "The service stores messages on the server so it can sync devices. If the product moved to end-to-end encryption, which server-side features would be limited? Select all that apply.",
+      "options": [
+        "Server-side full-text search over message bodies",
+        "Showing message text in push notification previews generated by the server",
+        "Assigning a per-chat sequence number to each message",
+        "Routing a message to the recipient's gateway through the connection registry",
+        "Storing an encrypted blob so an offline device can fetch it later"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "Search and body-based previews need plaintext on the server. Sequencing, routing and storing opaque ciphertext need only metadata, so they keep working, which is why E2E chat can still do ordering and offline sync.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "The registry says the recipient is on gateway 7, but gateway 7 has just crashed. The message was already persisted. What should happen?",
+      "options": [
+        "Retry forwarding until gateway 7 is back so ordering is preserved",
+        "Treat the forward failure like an offline recipient: send a push notification and let the client sync from the store on reconnect",
+        "Delete the message and tell the sender the send failed",
+        "Broadcast the message to every gateway in case the user has moved"
+      ],
+      "answerIndex": 1,
+      "explanation": "Since the message is durable, delivery is just an optimisation over the sync path. A failed forward degrades to the offline case, and the client picks it up by seq on reconnect. Blocking on a dead gateway stalls the chat and broadcasting wastes capacity.",
+      "anchor": "deep-dives"
+    }
+  ],
+  "hld:video-streaming": [
+    {
+      "prompt": "500 hours of video are uploaded every minute, and one hour takes about 1.5 GB across all renditions. About how much new storage is that per day?",
+      "options": [
+        "About 108 TB",
+        "About 1.08 PB",
+        "About 10.8 PB",
+        "About 1.08 EB"
+      ],
+      "answerIndex": 1,
+      "explanation": "500 x 60 x 24 = 720,000 hours per day. 720,000 x 1.5 GB = 1,080,000 GB, which is about 1.08 PB. This matches the case's estimate of roughly 1 PB per day and explains why object storage is required.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "The platform serves 1 billion views per day. Spread evenly, about how many view events per second is that, and what does it suggest for counting?",
+      "options": [
+        "About 1.2k/s, so a single DB row per video is fine",
+        "About 11.6k/s, and viral videos concentrate it onto few keys, so batch and aggregate asynchronously",
+        "About 116k/s, so views must be sharded across a hundred nodes",
+        "About 1.2M/s, so a streaming job cannot keep up"
+      ],
+      "answerIndex": 1,
+      "explanation": "1B / 86,400 is about 11.6k per second on average, and a viral video concentrates a large share on one counter. Client-side batching plus an async aggregation job avoids a hot row and keeps the DB off the hot path. The other figures are off by 10x or more.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "Why is the uploaded video split into chunks before transcoding?",
+      "options": [
+        "HLS and DASH refuse to play unchunked files",
+        "Chunks transcode in parallel across workers, so processing time stops scaling with video length and a failed chunk can be retried alone",
+        "Chunking reduces the final file size of each rendition",
+        "CDNs cannot cache files larger than one chunk"
+      ],
+      "answerIndex": 1,
+      "explanation": "Parallel chunk transcoding shortens time to publish to minutes and limits the blast radius of a failed worker. Segment packaging is a separate step for streaming. Chunking itself does not shrink output or relate to CDN size limits.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "A team increases segment length from 2 s to 10 s. Which outcome is most likely?",
+      "options": [
+        "Better compression and fewer requests, but slower reaction to bandwidth changes",
+        "Faster bitrate switching but higher CDN egress",
+        "Lower start-up time and fewer rebuffers on mobile",
+        "No change, since segment length only affects the manifest"
+      ],
+      "answerIndex": 0,
+      "explanation": "Longer segments amortise keyframes and request overhead, improving efficiency, but the player can only change rendition at a segment boundary, so it reacts more slowly to drops. Short segments are the opposite trade-off.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "Which signals does an adaptive-bitrate player typically use to choose the next segment's rendition? Select all that apply.",
+      "options": [
+        "Measured download throughput of recent segments",
+        "Current buffer occupancy",
+        "A per-segment decision returned by the playback API",
+        "The video's total view count"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "With HLS and DASH the decision is made in the client from measured throughput and buffer level, picking from the ladder in the manifest. The server does not decide per segment, and popularity of a title is not a network signal.",
+      "anchor": "deep-dives",
+      "reading": 1
+    },
+    {
+      "prompt": "A major series launches tomorrow at 09:00 and will be watched by millions immediately. Which CDN strategy fits best?",
+      "options": [
+        "Pull-through caching only, since the CDN fills itself on first request",
+        "Pre-position the segments to edge or ISP caches beforehand during off-peak hours",
+        "Serve it from the origin and scale the origin horizontally",
+        "Cache only the manifest and fetch segments from object storage"
+      ],
+      "answerIndex": 1,
+      "explanation": "For predictable hot content, pre-positioning moves bytes during quiet hours so launch traffic never hits the origin. Pull-through suits the long tail, but a cold start for millions would stampede the origin.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    },
+    {
+      "prompt": "Every view does UPDATE videos SET view_count = view_count + 1 against one row. What goes wrong for a viral video?",
+      "options": [
+        "Reads of that video stop working",
+        "Row lock contention on a hot key serialises the writes and slows or times out the DB",
+        "The counter can never exceed a 32-bit value",
+        "The CDN cache is invalidated on every update"
+      ],
+      "answerIndex": 1,
+      "explanation": "Thousands of increments per second on one row queue behind each other on its lock. Client-side batching and an asynchronous aggregation job turn those into occasional bulk updates. Overflow is a separate matter and the CDN is not involved.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "Because egress dominates cost, maximising the CDN cache hit ratio is more important than saving transcoding compute.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "True. Bytes delivered to viewers dwarf the one-off cost of encoding, so each point of CDN offload cuts the dominant bill and also improves start-up latency. That is why ISP-embedded caches are worth the effort.",
+      "anchor": "non-functional"
+    },
+    {
+      "prompt": "Uploads use a pre-signed multipart URL to object storage instead of POSTing the file to the API servers. What is the main advantage?",
+      "options": [
+        "The video is automatically transcoded by object storage",
+        "The large upload bypasses the application tier and can be resumed part by part",
+        "It removes the need to authenticate the uploader",
+        "It guarantees the file is a valid video"
+      ],
+      "answerIndex": 1,
+      "explanation": "The client streams bytes straight to storage, so API servers are not bandwidth bottlenecks and a failed part can be retried alone. The URL is issued after authentication, and validation and transcoding still happen later in the pipeline.",
+      "anchor": "api"
+    },
+    {
+      "prompt": "A transcode worker crashes halfway through chunk 37 of 120. Which statements hold in a well-designed pipeline? Select all that apply.",
+      "options": [
+        "The chunk's task returns to the queue and another worker retries it",
+        "Outputs are keyed by video, chunk and rendition so a re-run overwrites safely",
+        "The manifest is published only after all required chunks and renditions are done",
+        "The whole video is re-transcoded from chunk 1",
+        "The raw upload is deleted immediately to avoid duplicates"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Queues give at-least-once retries, so tasks must be idempotent. Publishing the manifest last avoids exposing a partial video. Restarting everything wastes work, and deleting the raw file would destroy the input needed for the retry.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "In this design the player fetches segments from the CDN, while the playback API only returns the manifest and metadata.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "True. The playback API reads video metadata and issues the manifest, and every segment request goes to the CDN edge. Proxying bytes through the API would remove the offload that makes the economics work.",
+      "anchor": "architecture"
+    }
+  ],
+  "hld:ride-hailing": [
+    {
+      "prompt": "5M drivers each send a location update every 4 s, which is 1.25M writes/s. If the interval were cut to 2 s, how many updates per second would the location service need to ingest?",
+      "options": [
+        "About 625k per second",
+        "About 1.25M per second",
+        "About 2.5M per second",
+        "About 10M per second"
+      ],
+      "answerIndex": 2,
+      "explanation": "5M / 2 s = 2.5M updates per second: halving the interval doubles the rate. This is why the location path is in-memory and sharded by region rather than backed by a durable database.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "At peak the system sees about 100k ride requests per minute, and 1.25M location updates per second. About how many times larger is the location rate than the request rate?",
+      "options": [
+        "About 75 times",
+        "About 750 times",
+        "About 7,500 times",
+        "About the same"
+      ],
+      "answerIndex": 1,
+      "explanation": "100k per minute is about 1,667 per second. 1.25M / 1,667 is about 750. Location ingest dominates traffic by orders of magnitude, so it gets its own in-memory design while the lower-rate, high-value trip writes go to a strongly consistent DB.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "A shard of the in-memory location index restarts and loses its contents. Which statements are true? Select all that apply.",
+      "options": [
+        "Driver positions repopulate within seconds as drivers send their next updates",
+        "Trip state is unaffected because it lives in the trips DB",
+        "Trips in progress lose their assigned driver",
+        "Matching for that region is impossible until a database backup is restored"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "Locations are ephemeral and refreshed every few seconds, so the index heals itself. Trip assignments and states are persisted separately in the consistent store. That split is why in-memory speed is acceptable for locations but not for trips.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "A rider stands near the edge of an H3 cell. If matching only searches that one cell, what is the risk?",
+      "options": [
+        "Drivers just across the boundary in a neighbouring cell are missed, so search the cell plus its k-ring neighbours",
+        "H3 cannot index a point on an edge",
+        "The query will return duplicate drivers",
+        "It will always find the geometrically nearest driver"
+      ],
+      "answerIndex": 0,
+      "explanation": "Cell boundaries are arbitrary relative to the rider, so close drivers can sit in an adjacent cell. Searching the rider's cell plus its neighbours covers the radius, and candidates are then ranked by ETA.",
+      "anchor": "deep-dives",
+      "reading": 0
+    },
+    {
+      "prompt": "Two candidate drivers: one is 300 m away across a river with the nearest bridge 8 km off; another is 1.2 km away on the same road. How should the matcher rank them?",
+      "options": [
+        "By straight-line distance, since it is the cheapest to compute",
+        "By estimated time of arrival along the road network",
+        "By driver rating alone",
+        "By the order their location updates arrived"
+      ],
+      "answerIndex": 1,
+      "explanation": "Pickup time is what the rider experiences, so rank by ETA using road routing rather than as-the-crow-flies distance. The straight-line shortlist is a fine first filter, but not the final ordering.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "Two ride services try to claim the same driver at once. Which implementation prevents double-booking?",
+      "options": [
+        "Read the driver state, check it is available, then write reserved in a separate call",
+        "Use a per-instance in-memory lock inside each ride service",
+        "A conditional update that atomically sets state to reserved only if it is currently available",
+        "Offer the driver to both riders and let the driver pick one"
+      ],
+      "answerIndex": 2,
+      "explanation": "Compare-and-set in the store that owns the driver state is atomic, so exactly one claim wins. The read-then-write has a race, and per-instance locks do not coordinate across multiple instances.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "Matching each rider greedily to the nearest free driver at request time always minimises total pickup time across all riders.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "False. Greedy choices can steal a driver that would be a much better fit for the next rider, leaving a poor global result. Batching requests over a short window and solving an assignment problem can lower total wait, at the cost of a little added latency.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "A driver is reserved for an offer, then closes the app and never responds. If reserved had no expiry, what would happen?",
+      "options": [
+        "Nothing, because reserved automatically reverts",
+        "The driver would stay unavailable and the rider would never be offered another driver",
+        "The rider would be charged",
+        "The location index would delete the driver"
+      ],
+      "answerIndex": 1,
+      "explanation": "A reservation without a timeout becomes a stuck lock: the driver is invisible to matching and the rider waits. Offers have a short timeout after which the driver returns to available and the next candidate is tried.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "A rider cancels at the same instant the driver accepts. What is the safest way for the trips DB to resolve it?",
+      "options": [
+        "Apply both and let the later timestamp win",
+        "Use a state-conditional update so only one transition from the current state succeeds, and report the loser's failure",
+        "Accept the cancel always because it is cheaper",
+        "Queue both and process them in a random order"
+      ],
+      "answerIndex": 1,
+      "explanation": "Trip transitions should be compare-and-set on the current state (or a version), so concurrent events cannot both apply. The loser gets a clear failure and the trip stays in a valid state. Timestamp-wins is vulnerable to clock skew.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "Which statements compare geohash and H3 correctly? Select all that apply.",
+      "options": [
+        "Neighbouring geohash cells can have very different prefixes, so a prefix match can miss nearby points",
+        "All six neighbours of an H3 hexagon have centres at the same distance",
+        "H3 removes the need to search neighbouring cells",
+        "Geohash cells have identical area at every latitude",
+        "Geohash prefix length can be shortened to search a coarser area"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        4
+      ],
+      "explanation": "Hexagons give uniform neighbour distances, geohash prefixes give simple hierarchical lookups but suffer boundary cases. Both need neighbour searches near edges, and geohash cells narrow towards the poles so their area is not constant.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    },
+    {
+      "prompt": "Dropping an occasional driver location update over UDP is acceptable because the next update, a few seconds later, supersedes it.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "True. Location pings are ephemeral and only the latest one matters, so loss is tolerable and cheaper than reliable delivery. The same logic would be wrong for trip state changes, which must never be lost.",
+      "anchor": "api"
+    }
+  ],
+  "hld:payment-system": [
+    {
+      "prompt": "1M payments a day are processed (about 12 per second). Each payment posts 4 ledger entries. About how many ledger entry rows per second is that on average?",
+      "options": [
+        "About 4.6",
+        "About 46",
+        "About 460",
+        "About 4,600"
+      ],
+      "answerIndex": 1,
+      "explanation": "1M x 4 = 4M rows per day, divided by 86,400 seconds gives roughly 46 per second. That is easily handled by one SQL primary with replicas, which is why the hard part is correctness rather than throughput.",
+      "anchor": "estimates"
+    },
+    {
+      "prompt": "A client sends POST /v1/payments and the connection times out with no response. What should it do?",
+      "options": [
+        "Retry with the same Idempotency-Key so the service returns the original result or finishes the same payment",
+        "Retry with a fresh Idempotency-Key to avoid a conflict",
+        "Look up the order and create a payment only if none exists",
+        "Show a failure and ask the customer to try again"
+      ],
+      "answerIndex": 0,
+      "explanation": "The key lets the server tell a retry from a new payment: it returns the stored outcome rather than charging twice. A new key would risk a second charge, and telling the customer to retry manually invites double payment.",
+      "anchor": "probes",
+      "reading": 0
+    },
+    {
+      "prompt": "A request arrives with an Idempotency-Key that was used earlier, but the amount in the body differs. What should the service do?",
+      "options": [
+        "Process it as a new payment with the new amount",
+        "Return the first response silently, ignoring the new amount",
+        "Reject it as a key reuse with a different request, since the stored request hash does not match",
+        "Overwrite the stored request and charge the difference"
+      ],
+      "answerIndex": 2,
+      "explanation": "A matching key with a different request fingerprint indicates a client bug. Silently returning the old result hides it and process-as-new can double charge. Rejecting with an error is the safe, explicit behaviour.",
+      "anchor": "deep-dives",
+      "reading": 0
+    },
+    {
+      "prompt": "Which statements about a double-entry ledger are correct? Select all that apply.",
+      "options": [
+        "Each transaction's debits and credits must balance, so its entries sum to zero",
+        "Balances are derived from entries, and corrections are new reversing entries",
+        "A refund should edit the original entry in place to keep the table small",
+        "The entries of one transaction may be committed in separate DB transactions",
+        "Keeping the account's balance as a single mutable column is enough for audit"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "Balanced entries make errors detectable, and append-only entries with reversals preserve history. In-place edits and single mutable balances destroy the audit trail, and splitting a transaction's entries across commits can leave the books unbalanced after a crash.",
+      "anchor": "deep-dives",
+      "reading": 2
+    },
+    {
+      "prompt": "The provider's webhook for a charge arrives before your API call to the provider returns. What design handles this correctly?",
+      "options": [
+        "Reject the webhook until the API response has been stored",
+        "Make state transitions idempotent and forward-only, so whichever of the webhook or API response arrives first is applied and the second is a no-op",
+        "Always trust the API response over the webhook",
+        "Delay processing webhooks by a fixed 30 seconds"
+      ],
+      "answerIndex": 1,
+      "explanation": "The payment state machine accepts either source, matches on provider_ref, and ignores stale or duplicate events, so ordering does not matter. Dropping the webhook risks losing the only notification, and fixed delays are guesswork.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "The service commits the payment to the database and then publishes 'payment captured' to Kafka in a separate step. What is the flaw?",
+      "options": [
+        "Kafka cannot store payment data",
+        "A crash between the commit and the publish loses the event, so downstream systems never learn of the capture",
+        "Publishing is too slow after a commit",
+        "The database transaction will not roll back"
+      ],
+      "answerIndex": 1,
+      "explanation": "This is a dual write: two systems cannot be updated atomically. With a transactional outbox, the event is written in the same DB transaction and a relay publishes it, so the event exists if and only if the commit does.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "Every ledger transaction sums to zero, yet the daily provider settlement file totals 1 rupee more than your records. Where do you look first?",
+      "options": [
+        "Inside the ledger, to find the entry that does not balance",
+        "Match payments with the settlement file by provider reference and compare amount and status for each one",
+        "Re-run the day's webhooks",
+        "Check the database indexes"
+      ],
+      "answerIndex": 1,
+      "explanation": "The ledger's internal consistency is already guaranteed, so the gap is between your records and the provider's. Reconciliation line by line on provider_ref finds missing, extra or differing items. Replaying webhooks may add duplicates.",
+      "anchor": "probes"
+    },
+    {
+      "prompt": "It is safe to skip verifying a webhook's signature if the endpoint URL is long and kept secret.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "False. URLs leak through logs and proxies, and anyone who learns it could forge 'payment captured' events. The signature proves the provider sent the payload, so it must be verified, ideally with a timestamp check against replay.",
+      "anchor": "api"
+    },
+    {
+      "prompt": "Which storage choice best fits the ledger and payments tables, given 12 payments per second but zero tolerance for lost or doubled money?",
+      "options": [
+        "A relational database with ACID transactions, accepting reduced availability in a partition",
+        "An eventually consistent key-value store that favours availability",
+        "An in-memory cache with periodic snapshots",
+        "A document store with last-write-wins"
+      ],
+      "answerIndex": 0,
+      "explanation": "The workload is small, so scale is no issue; what matters is atomic multi-row ledger writes and UNIQUE constraints for idempotency. An SQL database provides both. Eventual consistency and last-write-wins can lose or duplicate money.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "The provider call times out after 10 s with an unknown outcome. Which actions are appropriate? Select all that apply.",
+      "options": [
+        "Mark the payment pending or unknown instead of failed",
+        "Retry later with the same provider idempotency key, or query the provider for status",
+        "Mark it failed and let the customer retry with a new key",
+        "Immediately issue a refund in case it was charged"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "The charge may have succeeded, so the outcome must stay unresolved until the provider confirms it via status query, webhook or a safe retry with the same key. Failing it early invites a second charge, and an immediate refund may refund money never taken.",
+      "anchor": "tradeoffs",
+      "reading": 1
+    },
+    {
+      "prompt": "A payment was captured for 100. Two refund requests for 60 each arrive simultaneously, and each reads 'refunded so far = 0' before writing. What can happen, and what fixes it?",
+      "options": [
+        "Both succeed, refunding 120; lock the payment row or use a conditional update on the refunded total inside the transaction",
+        "Both fail, so nothing is refunded; add a retry",
+        "Only the first succeeds because SQL serialises everything by default",
+        "The ledger will reject one because it always balances"
+      ],
+      "answerIndex": 0,
+      "explanation": "This is a classic check-then-act race: both pass the validation. A row lock (SELECT FOR UPDATE) or a conditional update such as refunded_total + 60 <= amount makes the check atomic. A balanced ledger does not prevent over-refunding, since both entries balance.",
+      "anchor": "deep-dives"
+    },
+    {
+      "prompt": "Two concurrent requests with the same Idempotency-Key are safe because the UNIQUE constraint lets only one insert succeed, so the other can wait for or return the first result.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "True. The unique key constraint is enforced by the database even under concurrency, so one request wins the insert and the other sees a conflict and returns or waits for the stored result. A check-then-insert in application code would not give this guarantee.",
+      "anchor": "data-model"
+    }
+  ]
+}

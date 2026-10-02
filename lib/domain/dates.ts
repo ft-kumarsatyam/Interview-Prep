@@ -69,3 +69,19 @@ export function saturdayOfWeek(date: DateStr): DateStr {
   const dow = dayOfWeek(date);
   return dow === 0 ? addDays(date, -1) : addDays(date, 6 - dow);
 }
+
+/**
+ * The instant the next local calendar day starts in `timeZone`, to the second. Found
+ * by searching for the moment `toLocalDate` rolls over, so DST and odd offsets are handled.
+ */
+export function startOfNextLocalDayMs(instant: Date, timeZone: string): number {
+  const today = toLocalDate(instant, timeZone);
+  let lo = instant.getTime();
+  let hi = lo + 26 * 3_600_000;
+  while (hi - lo > 1000) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (toLocalDate(new Date(mid), timeZone) === today) lo = mid;
+    else hi = mid;
+  }
+  return hi;
+}

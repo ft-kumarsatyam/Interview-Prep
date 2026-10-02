@@ -1,0 +1,1258 @@
+{
+  "dbms:acid-isolation-levels": [
+    {
+      "prompt": "A transfer moves 100 from account A (balance 500) to account B (balance 200) as a debit statement followed by a credit statement. The process crashes after the debit but before the credit, and the transaction was never committed. Which ACID property is at stake, and what makes the debit disappear after restart?",
+      "options": [
+        "Isolation: other sessions are blocked from reading A until the crash is resolved",
+        "Durability: the debit was fsynced, so recovery must keep it and replay the credit",
+        "Consistency: the engine notices the totals no longer add up and repairs B on its own",
+        "Atomicity: recovery discards the uncommitted debit using undo or by never committing it"
+      ],
+      "answerIndex": 3,
+      "explanation": "Atomicity means all or nothing. Uncommitted work is rolled back (InnoDB undo log, or Postgres never marking the new row versions committed), so both balances stay unchanged. Durability only covers committed data, and the engine cannot know your 'money is conserved' invariant on its own.",
+      "anchor": "diagram",
+      "reading": 0
+    },
+    {
+      "prompt": "A Postgres REPEATABLE READ transaction runs SELECT ... WHERE balance > 300 and gets 2 rows. Another transaction then inserts a matching row and commits. The first transaction runs the same SELECT again. What does it see?",
+      "options": [
+        "3 rows, because REPEATABLE READ only protects rows that already existed",
+        "An error, because Postgres aborts any transaction whose predicate result has changed",
+        "2 rows, because Postgres REPEATABLE READ is snapshot isolation and also blocks phantoms",
+        "2 rows only if the first query used FOR SHARE, otherwise 3 rows"
+      ],
+      "answerIndex": 2,
+      "explanation": "Postgres REPEATABLE READ takes one snapshot for the whole transaction, so the later insert is invisible: no phantom. That is stronger than the SQL standard requires (which permits phantoms at this level). It still allows write skew.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Two sessions on Postgres at READ COMMITTED each run the pattern below with +10 and +20 respectively, computing the new value in the application. The balance starts at 500. Which change removes the lost update without raising the isolation level or adding retries?",
+      "code": "BEGIN;\nSELECT balance FROM accounts WHERE id = 'A';   -- app reads 500\n-- app computes 500 + 10 = 510\nUPDATE accounts SET balance = 510 WHERE id = 'A';\nCOMMIT;",
+      "options": [
+        "Add an index on accounts(id) so the UPDATE finishes faster and the race window shrinks",
+        "Move the sessions to READ UNCOMMITTED so that neither session ever has to wait on the other",
+        "Use UPDATE accounts SET balance = balance + 10 WHERE id = 'A', one atomic statement",
+        "Add CHECK (balance >= 0) so the database rejects the second write when the two conflict"
+      ],
+      "answerIndex": 2,
+      "explanation": "The final value can be 510 or 520, so one update is lost. An atomic UPDATE takes the row lock and recomputes from the latest committed value. A faster statement only narrows the race, READ UNCOMMITTED behaves like READ COMMITTED in Postgres, and a CHECK constraint says nothing about stale reads.",
+      "anchor": "probes",
+      "reading": 0
+    },
+    {
+      "prompt": "Two on-call doctors each run a transaction that checks 'at least 2 doctors are on call' and then sets themselves off call. Each transaction updates a different row. Which Postgres isolation level prevents both from committing?",
+      "options": [
+        "REPEATABLE READ, because each snapshot is stable for the whole transaction",
+        "SERIALIZABLE, because SSI sees the read-write dependency cycle and aborts one transaction",
+        "READ COMMITTED, because every statement sees the latest committed row",
+        "REPEATABLE READ, because the second updater gets a serialization failure on the same row"
+      ],
+      "answerIndex": 1,
+      "explanation": "This is write skew: both pass the check on their own snapshot and write different rows, so snapshot isolation (Postgres REPEATABLE READ) allows it and no same-row conflict is raised. Only SERIALIZABLE (SSI) aborts one of them, and the application must retry.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "In InnoDB at the default isolation level, transaction T1 runs a plain SELECT count of rows with balance > 300 and gets 2. Transaction T2 inserts a matching row and commits. T1 then repeats the plain SELECT and afterwards runs the same query with FOR UPDATE. What does T1 get?",
+      "options": [
+        "3 rows for the plain SELECT and 3 for FOR UPDATE, because T2 has already committed its insert",
+        "2 rows for the plain SELECT but 3 for FOR UPDATE, since locking reads see the latest data",
+        "2 rows for both, because REPEATABLE READ freezes every read in the transaction",
+        "2 rows for the plain SELECT, and FOR UPDATE blocks until T2 rolls back"
+      ],
+      "answerIndex": 1,
+      "explanation": "Plain SELECTs read from the snapshot taken at the first read, so they still return 2. Locking reads (FOR UPDATE, UPDATE, DELETE) read the latest committed version, so they see 3. Mixing snapshot and current reads in one transaction can therefore look inconsistent. T2 already committed, so nothing blocks.",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "A Postgres application running at SERIALIZABLE gets SQLSTATE 40001 (serialization failure) on a statement inside a transaction. What should the application do?",
+      "options": [
+        "Catch the error and continue with the remaining statements of the same transaction",
+        "Lower the isolation level to READ COMMITTED permanently so the error stops appearing",
+        "Roll back and rerun the whole transaction from BEGIN, with a bounded number of retries",
+        "Re-send only the failed statement, because earlier statements already took effect"
+      ],
+      "answerIndex": 2,
+      "explanation": "A serialization failure means the engine aborted this transaction to preserve a serial order. The whole transaction is rolled back, so the application must restart it from the beginning. Retry loops and tolerance for false-positive aborts are the price of SERIALIZABLE.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    },
+    {
+      "prompt": "Which data is the best candidate for relaxing durability (for example Postgres synchronous_commit = off or InnoDB flush_log_at_trx_commit set to 0 or 2) to gain commit latency?",
+      "options": [
+        "Clickstream analytics events, where losing the last few commits after a crash is acceptable",
+        "Account balances in a payments ledger, where every acknowledged commit must survive a crash",
+        "Unique username claims, where a lost commit could let a duplicate slip in later",
+        "Inventory decrements for the last remaining seat on a flight, where overselling is costly"
+      ],
+      "answerIndex": 0,
+      "explanation": "Relaxed flushing risks losing the last few acknowledged commits on a crash, but not corrupting the database. That is fine for analytics events and unacceptable for money, uniqueness claims or scarce inventory, where an acknowledged write must not vanish.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "Select all approaches that prevent the on-call doctors write skew on Postgres (both doctors must not be able to go off call at the same time).",
+      "options": [
+        "Run the transactions at SERIALIZABLE and retry on serialization failure",
+        "Lock the on-call rows with SELECT ... FOR UPDATE before the application checks the count",
+        "Run the transactions at REPEATABLE READ and rely on snapshot isolation",
+        "Run the transactions at READ COMMITTED so each statement sees fresh data",
+        "Turn on synchronous_commit so commits are flushed before acknowledging"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "SSI aborts one transaction of the dangerous cycle, and explicit row locks make the two transactions serialize on the rows they read. Snapshot isolation and READ COMMITTED both let each check pass on stale or partial data, and flush settings concern durability, not isolation.",
+      "anchor": "probes",
+      "reading": 0
+    },
+    {
+      "prompt": "Select all statements that are correct about default and special behavior of Postgres and MySQL/InnoDB isolation levels.",
+      "options": [
+        "Postgres READ UNCOMMITTED behaves like READ COMMITTED, so dirty reads cannot happen",
+        "InnoDB defaults to REPEATABLE READ, unlike Postgres which defaults to READ COMMITTED",
+        "In Postgres, REPEATABLE READ still allows phantom reads because it follows the SQL standard table",
+        "InnoDB SERIALIZABLE turns plain SELECTs into SELECT ... FOR SHARE, making it lock-based"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        3
+      ],
+      "explanation": "Postgres never exposes dirty reads, and its defaults differ from InnoDB's. InnoDB SERIALIZABLE is lock-based and blocks more. The third statement is wrong: Postgres REPEATABLE READ is snapshot isolation and does prevent phantoms (while permitting write skew).",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "The C in ACID (consistency) and the C in CAP (consistency) mean the same thing.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "ACID consistency means a transaction moves the database between valid states according to declared invariants and your logic. CAP consistency means linearizability: every read sees the latest completed write across replicas. They are unrelated guarantees.",
+      "anchor": "probes",
+      "reading": 2
+    },
+    {
+      "prompt": "On Postgres at READ COMMITTED, two concurrent sessions each running UPDATE balance = balance + 10 on the same row can still lose one of the increments.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "The second UPDATE waits for the first one's row lock, then re-evaluates against the newly committed row version, so both increments apply. The lost update only occurs when the value is read into the application first and written back as a constant.",
+      "anchor": "probes",
+      "reading": 0
+    }
+  ],
+  "dbms:schema-and-indexing-strategy": [
+    {
+      "prompt": "The orders table has hundreds of millions of rows. A hot query is WHERE user_id = ? ORDER BY created_at DESC LIMIT 20. Which index serves it best?",
+      "options": [
+        "Two separate indexes, one on user_id and one on created_at",
+        "A composite index on (created_at, user_id)",
+        "A single index on user_id only",
+        "A composite index on (user_id, created_at DESC)"
+      ],
+      "answerIndex": 3,
+      "explanation": "Equality column first, then the sort column: the planner seeks to one user and reads the first 20 entries already in order, with no Sort node. Reversing the order forces a scan over all users' rows, and a user_id-only index still needs a sort of all of that user's orders.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "An index exists on (user_id, created_at). Which query gets no efficient seek into a contiguous index range from it?",
+      "options": [
+        "WHERE user_id = 7 with no other filter",
+        "WHERE user_id = 7 AND created_at > '2025-01-01'",
+        "WHERE user_id = 7 ORDER BY created_at",
+        "WHERE created_at > '2025-01-01' alone"
+      ],
+      "answerIndex": 3,
+      "explanation": "Entries are ordered by user_id first, so rows with a given created_at are scattered across every user. That is the leftmost-prefix rule. The other three begin with the leading column and can seek, or read already ordered output.",
+      "anchor": "probes",
+      "reading": 0
+    },
+    {
+      "prompt": "An ops job runs WHERE status = 'pending' AND created_at < now() - interval '1 hour'. Only a tiny fraction of the table is ever pending and status has about 5 values. Which Postgres index is the best fit?",
+      "options": [
+        "A plain index on status",
+        "A composite index on (status, created_at) over every row in the table",
+        "A partial index on created_at with WHERE status = 'pending'",
+        "A separate index on every column of the table"
+      ],
+      "answerIndex": 2,
+      "explanation": "A partial index stores only the pending rows, so it stays tiny and cheap to maintain, and the query predicate implies the index predicate. A plain status index has poor selectivity for common values, and indexing every column adds write cost for no query benefit.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    },
+    {
+      "prompt": "A write-heavy table has these indexes: the primary key (id), (user_id), (user_id, created_at) and (status). Which is the clearest candidate to drop with no loss of query support?",
+      "options": [
+        "The primary key index, because lookups by id can be served from the other indexes",
+        "The index on (user_id, created_at), because it is the widest and costs the most to maintain",
+        "The index on (user_id), because the composite index already serves lookups by user_id",
+        "The index on (status), because a status column is never useful for any query"
+      ],
+      "answerIndex": 2,
+      "explanation": "Leftmost prefix: (user_id, created_at) also answers WHERE user_id = ?, so (user_id) is redundant and only adds write cost. The status index may be poor but you must prove that with idx_scan, and dropping the PK or the composite loses real query support.",
+      "anchor": "probes",
+      "reading": 0
+    },
+    {
+      "prompt": "In InnoDB, why is a random UUID primary key typically worse than a monotonically increasing bigint?",
+      "options": [
+        "Rows are clustered by PK, so random inserts land on scattered pages, causing splits and a cold cache",
+        "UUIDs cannot be compared in a B+ tree, so every lookup degrades into a full scan of the table",
+        "Secondary indexes in InnoDB do not store the primary key, so they cannot reference a UUID",
+        "UUID keys disable the buffer pool for the clustered index, so every read goes to disk"
+      ],
+      "answerIndex": 0,
+      "explanation": "InnoDB stores rows in the clustered index in PK order. Random keys insert into arbitrary leaf pages, forcing splits and touching a large part of the tree, while sequential keys append to the right edge. UUIDs compare fine, and secondary indexes do store the PK.",
+      "anchor": "probes",
+      "reading": 2
+    },
+    {
+      "prompt": "A Postgres Index Only Scan on a covering index (created with INCLUDE) still shows a large number of Heap Fetches. What is the most likely cause and fix?",
+      "options": [
+        "The index is missing a needed column, so drop it and rebuild it without the INCLUDE list",
+        "Statistics are stale, so run ANALYZE to refresh the planner's row estimates",
+        "The query returns too many rows, so add a LIMIT to avoid touching the heap at all",
+        "The visibility map is stale for many pages, so run VACUUM to mark them all-visible"
+      ],
+      "answerIndex": 3,
+      "explanation": "Index Only Scan can skip the heap only for pages marked all-visible in the visibility map; otherwise it must fetch the heap tuple to check visibility. VACUUM updates the map. ANALYZE affects estimates, not heap fetches.",
+      "anchor": "probes",
+      "reading": 1
+    },
+    {
+      "prompt": "A teammate adds an index because it helps in a quick test on the 50,000-row dev database. What is the right way to decide whether to keep it in production?",
+      "options": [
+        "Keep it if the indexed column appears in a WHERE clause somewhere in the application code",
+        "Keep it, since extra indexes only ever speed up reads and never slow anything down",
+        "Run EXPLAIN (ANALYZE, BUFFERS) on production-sized data and check idx_scan in pg_stat_user_indexes",
+        "Drop it whenever the index file turns out to be larger than the table itself"
+      ],
+      "answerIndex": 2,
+      "explanation": "A planner can ignore an index at scale that looked fine on tiny data, so verify the plan on realistic volume and measure real usage. Every index taxes inserts, updates, vacuum and cache. Appearing in a WHERE clause says nothing about use, and size alone is not the criterion.",
+      "anchor": "tradeoffs",
+      "reading": 2
+    },
+    {
+      "prompt": "Select all costs that every additional secondary index adds to a write-heavy Postgres table.",
+      "options": [
+        "Each INSERT must also write an entry into the new index",
+        "More memory pressure in shared buffers and the OS cache",
+        "An UPDATE of an indexed column rewrites index entries and cannot be a HOT update",
+        "Slower lookups by primary key",
+        "A shorter VACUUM time because dead tuples are indexed"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Every insert pays for each index, indexes compete for cache, and updating an indexed column defeats HOT updates. PK lookups are unaffected, and more indexes make VACUUM slower, not faster.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "Select all statements that are correct about covering indexes.",
+      "options": [
+        "Postgres 11+ INCLUDE columns let a query be answered with an Index Only Scan without adding them to the sort key",
+        "In InnoDB a secondary index leaf already holds the primary key, so selecting id from it is free",
+        "A covering index is always smaller than the non-covering equivalent",
+        "Index Only Scan always avoids every heap access regardless of VACUUM state"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "INCLUDE adds payload columns without affecting ordering, and InnoDB secondary leaves carry the PK. Extra columns make the index bigger, not smaller, and Postgres still visits the heap for pages not marked all-visible.",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "MySQL supports partial indexes, so the same CREATE INDEX ... WHERE status = 'pending' idea works there as in Postgres.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "MySQL has no partial indexes. The usual workaround is a composite index such as (status, created_at), which indexes every row and is therefore larger. Postgres partial indexes only help queries whose predicate implies the index predicate.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "A Seq Scan node in a plan is always evidence of a missing index.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "A sequential scan is often the right choice for small tables or when a large fraction of rows match, since random heap access through an index would be slower. Judge it from EXPLAIN ANALYZE on realistic data, not by the node name.",
+      "anchor": "tradeoffs",
+      "reading": 2
+    }
+  ],
+  "dbms:btree-vs-lsm": [
+    {
+      "prompt": "Why is the LSM write path considered cheap compared with a B+ tree update in place?",
+      "options": [
+        "It skips the WAL entirely because data files are immutable, so there is nothing to log",
+        "It never merges any data, so there is no background work that has to be done later",
+        "It writes each row to every level at once so a read needs only a single lookup",
+        "It appends to a log and a memtable, then flushes sorted immutable files sequentially"
+      ],
+      "answerIndex": 3,
+      "explanation": "Writes go to the WAL and the memtable, and a full memtable is flushed as one sequential SSTable, avoiding random page writes. The cost is deferred: compaction does the merging later, and the WAL is still required because the memtable is in memory.",
+      "anchor": "diagram",
+      "reading": 0
+    },
+    {
+      "prompt": "An LSM engine checks the Bloom filter of an SSTable for a key and gets a negative answer. What does that tell it?",
+      "options": [
+        "The key is definitely not in that SSTable, so the file can be skipped",
+        "The key is probably not in that SSTable, and the file must still be read to confirm",
+        "The key was deleted and a tombstone exists in that SSTable",
+        "The key exists only in the memtable"
+      ],
+      "answerIndex": 0,
+      "explanation": "Bloom filters have no false negatives: a negative is definitive, so the file is skipped, which makes reads for missing keys cheap. A positive may be a false positive and needs a real lookup. They cannot tell about tombstones or the memtable.",
+      "anchor": "diagram",
+      "reading": 0
+    },
+    {
+      "prompt": "A workload is almost all appends of metrics events at very high rate, rarely read by key, and all data expires after 30 days. Which storage design is the best fit?",
+      "options": [
+        "A B+ tree engine with many secondary indexes to support flexible queries later",
+        "A B+ tree engine keyed by a random UUID so inserts spread evenly across pages",
+        "A B+ tree engine with in-place updates, since each row is written only one time",
+        "An LSM engine, ideally with time-window compaction that drops whole expired files"
+      ],
+      "answerIndex": 3,
+      "explanation": "Heavy sequential ingest suits an LSM's append-and-flush path, and time-window compaction (as in Cassandra) lets TTL'd data drop by deleting whole files. A B+ tree would pay random page writes and extra index maintenance for a workload that rarely reads.",
+      "anchor": "probes",
+      "reading": 2
+    },
+    {
+      "prompt": "A write-heavy ingest cluster runs leveled compaction and compaction IO is saturating the disks, while reads are rare. Which change best matches the trade-off involved?",
+      "options": [
+        "Move to size-tiered compaction: lower write amplification, at the price of more files and space",
+        "Keep leveled compaction but add a much larger block cache, since cache hits reduce compaction IO",
+        "Replace the memtable with an on-disk B+ tree so that no compaction is ever needed",
+        "Disable the Bloom filters to free up CPU so compaction runs faster, since reads are rare anyway"
+      ],
+      "answerIndex": 0,
+      "explanation": "Leveled compaction rewrites data many times as it moves down levels (high write amplification) in exchange for low read and space amplification. Size-tiered does the opposite, which suits write-heavy loads. Removing Bloom filters would hurt reads and not reduce compaction IO.",
+      "anchor": "probes",
+      "reading": 1
+    },
+    {
+      "prompt": "An InnoDB engine uses 16 KB pages. A single 100-byte row is updated, and nothing else on that page changes before the dirty page is flushed. Ignoring the WAL and the doublewrite buffer, roughly how much larger is the page write than the row change?",
+      "options": [
+        "About 1.6x",
+        "About 16x",
+        "About 164x",
+        "About 1,640x"
+      ],
+      "answerIndex": 2,
+      "explanation": "16 KB is 16,384 bytes, and 16,384 / 100 is about 164. This page-level write amplification is the B+ tree cost of in-place updates (the WAL, doublewrite and full-page images add more).",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "A service uses an LSM-backed store as a work queue: items are inserted, consumed and deleted quickly. Reads for the next item get slower over time even though few live rows exist. Why?",
+      "options": [
+        "Memtables grow without bound after deletes, so every read has to scan through memory",
+        "Deletes are tombstones that stay until compaction reaches the bottom, so reads must skip them",
+        "The WAL grows with every delete and has to be replayed again on each read",
+        "Bloom filters stop working correctly once any key has been deleted in the table"
+      ],
+      "answerIndex": 1,
+      "explanation": "A delete in an LSM writes a tombstone, and the shadowed data and tombstone stay until compaction merges them away. Reads have to step over them, so delete-heavy or queue-like patterns degrade. The memtable is flushed when full and the WAL is not read for queries.",
+      "anchor": "tradeoffs",
+      "reading": 2
+    },
+    {
+      "prompt": "Why are range scans typically more expensive on an LSM tree than on a B+ tree?",
+      "options": [
+        "LSM keys are not kept sorted inside an SSTable, so the scan has to sort them at read time",
+        "Scans must merge-iterate the memtable and several SSTables, while B+ tree leaves are linked",
+        "LSM trees cannot read more than one key at a time, so every row costs a separate request",
+        "SSTables use hash indexes that do not support ordered iteration of a key range at all"
+      ],
+      "answerIndex": 1,
+      "explanation": "SSTables are sorted, but the same key range may live in several files and levels, so the scan merges multiple sorted streams (and skips tombstones). A B+ tree reads along a single chain of linked leaf pages.",
+      "anchor": "probes",
+      "reading": 1
+    },
+    {
+      "prompt": "Select all techniques LSM engines use to limit or reduce read amplification.",
+      "options": [
+        "A Bloom filter per SSTable to skip files that lack the key",
+        "A block cache over hot SSTable blocks",
+        "Leveled compaction, which keeps non-overlapping files per level so a read checks at most one file per level",
+        "Flushing the WAL less often",
+        "Keeping tombstones longer before compaction"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Bloom filters, caching and leveled compaction all reduce the number of files or blocks a read touches. WAL flush frequency affects durability and write latency, and longer-lived tombstones make reads worse.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Select all statements that are true about the write path of a B+ tree engine such as Postgres or InnoDB.",
+      "options": [
+        "A change modifies the page in memory and appends to the WAL; the dirty page is flushed later",
+        "Page splits can fragment the tree over time",
+        "Random-key inserts mostly become sequential disk writes",
+        "No WAL is needed because pages are updated in place on disk immediately"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "In-place updates follow the WAL-then-flush pattern and splits cause fragmentation. Random keys produce random page writes (the source of B+ tree write cost), and in-place updates make the WAL more necessary because a crash can leave a half-written page.",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "An LSM engine still needs a write-ahead log, because the memtable lives in memory and would otherwise be lost on a crash.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "Writes are acknowledged after landing in the WAL and the memtable. After a crash the memtable is rebuilt by replaying the WAL, while already flushed SSTables are durable on their own.",
+      "anchor": "probes",
+      "reading": 0
+    },
+    {
+      "prompt": "Compaction in an LSM is purely background housekeeping that affects disk space but never request latency.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "Compaction consumes IO and CPU, and if it falls behind it can cause write stalls and tail-latency spikes. It also bounds read amplification, so it matters for both read and write latency.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    }
+  ],
+  "dbms:mvcc-nonblocking-reads": [
+    {
+      "prompt": "In Postgres, what happens physically when a transaction with id T2 UPDATEs a row?",
+      "options": [
+        "The row is modified in place and the old values are copied to an undo log",
+        "The row is locked exclusively until T2 commits so readers must wait",
+        "A new tuple version is inserted with xmin = T2, and the old tuple gets xmax = T2",
+        "Only the changed column is written to a delta table that readers merge later"
+      ],
+      "answerIndex": 2,
+      "explanation": "Postgres never overwrites in place: the heap keeps both versions, and visibility rules decide which one a snapshot sees. Old versions stay in the heap until VACUUM removes them. Keeping old versions in an undo log is the InnoDB model.",
+      "anchor": "diagram",
+      "reading": 0
+    },
+    {
+      "prompt": "One session sits 'idle in transaction' for hours in Postgres after running a single SELECT at REPEATABLE READ. Why can this cause table and index bloat across the whole database?",
+      "options": [
+        "Its snapshot holds back the xmin horizon, so VACUUM cannot remove newer dead tuples anywhere",
+        "It holds row locks on every table it has ever read, which stops writers from cleaning up",
+        "It blocks autovacuum from even starting on any table in the database until it ends",
+        "It forces every new transaction to share the same snapshot until the session ends"
+      ],
+      "answerIndex": 0,
+      "explanation": "Dead tuple versions can only be removed once no live snapshot can still see them. The old snapshot pins that horizon cluster-wide. It does not hold locks on read rows, and autovacuum runs but cannot reclaim the pinned versions.",
+      "anchor": "probes",
+      "reading": 1
+    },
+    {
+      "prompt": "Two Postgres sessions at READ COMMITTED both run UPDATE accounts SET balance = balance - 10 WHERE id = 1. The first has not committed yet. What does the second session do?",
+      "options": [
+        "It reads the old row version and overwrites it, silently losing the first update",
+        "It waits for the row lock, then re-checks its WHERE clause on the new version and proceeds",
+        "It fails immediately with a serialization error, which the application must retry",
+        "It skips the locked row and reports that zero rows were updated, with no error at all"
+      ],
+      "answerIndex": 1,
+      "explanation": "Writers on the same row serialize on the row lock. At READ COMMITTED the waiter then re-evaluates its WHERE clause on the new version and applies the update, so both decrements land. Aborting with 'could not serialize access' happens at REPEATABLE READ and SERIALIZABLE.",
+      "anchor": "probes",
+      "reading": 3
+    },
+    {
+      "prompt": "The same conflicting UPDATE happens at REPEATABLE READ: transaction 1 updates a row and commits, after transaction 2 already took its snapshot, then transaction 2 tries to update that row. How do Postgres and InnoDB differ?",
+      "options": [
+        "Both abort transaction 2 with a serialization error and require the application to retry",
+        "Both let transaction 2 proceed against the latest committed version of the row",
+        "Postgres lets transaction 2 proceed, while InnoDB aborts it with a deadlock error",
+        "Postgres aborts it with a serialization failure; InnoDB updates the latest version"
+      ],
+      "answerIndex": 3,
+      "explanation": "Postgres follows first-updater-wins at REPEATABLE READ and aborts the second writer with SQLSTATE 40001. InnoDB's writes use current reads, so the second writer waits then updates the latest committed row without error. That is why a read-modify-write in application code can lose updates in InnoDB unless you use FOR UPDATE or an atomic UPDATE.",
+      "anchor": "talking-points",
+      "reading": 2
+    },
+    {
+      "prompt": "In which case can Postgres perform a HOT (heap-only tuple) update?",
+      "options": [
+        "The UPDATE changes only unindexed columns and the new version fits on the same page",
+        "The UPDATE changes an indexed column but the table is small",
+        "The UPDATE changes any column as long as autovacuum is enabled",
+        "The UPDATE rewrites the primary key to a smaller value"
+      ],
+      "answerIndex": 0,
+      "explanation": "HOT chains the new version within the page and adds no new index entries, but it needs no indexed column to change and room on the page. That is why a lower fillfactor helps update-heavy tables, and why indexing a frequently updated column makes every update costlier.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "InnoDB needs an older version of a row for a consistent read. How does it find it?",
+      "options": [
+        "It scans the heap for tuples whose xmax matches its snapshot, the same way Postgres does",
+        "It follows the roll pointer into the undo log until it finds a version its read view can see",
+        "It restores the earlier page image from the doublewrite buffer for every single read",
+        "It replays the redo log up to the snapshot timestamp for each row that it reads"
+      ],
+      "answerIndex": 1,
+      "explanation": "InnoDB updates the clustered record in place and keeps previous versions in the undo log, chained by a roll pointer. The read view tells it which transaction ids count as visible, and the purge thread discards undo records once no view needs them.",
+      "anchor": "probes",
+      "reading": 2
+    },
+    {
+      "prompt": "Why is rolling back a huge transaction usually near-instant in Postgres but slow in InnoDB?",
+      "options": [
+        "Postgres skips the WAL for rollbacks, while InnoDB must log every one of them",
+        "InnoDB must lock the entire table while a rollback runs, which makes it slow",
+        "Postgres just leaves the new tuples uncommitted; InnoDB must apply undo records to revert rows",
+        "InnoDB rollbacks always run through the purge thread, which is single-threaded"
+      ],
+      "answerIndex": 2,
+      "explanation": "Postgres leaves the work as dead tuples for VACUUM to clean up later, so abort is just marking the transaction aborted. InnoDB changed rows in place, so it has to walk the undo log and revert each change. The price in Postgres is bloat and vacuum work.",
+      "anchor": "tradeoffs",
+      "reading": 2
+    },
+    {
+      "prompt": "Select all mitigations for the operational risk of long-running transactions pinning old snapshots.",
+      "options": [
+        "Set idle_in_transaction_session_timeout and statement timeouts",
+        "Run long reporting queries on a read replica",
+        "Raise the isolation level to SERIALIZABLE so snapshots are released sooner",
+        "Run VACUUM FULL repeatedly on the busy tables"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "Timeouts stop forgotten sessions from pinning the horizon, and a replica keeps reports off the primary. SERIALIZABLE does not release snapshots earlier, and repeated VACUUM FULL cannot reclaim versions the pinned snapshot still needs (and takes heavy locks).",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "Select all statements that are correct about MVCC.",
+      "options": [
+        "Readers do not take row locks to read from their snapshot",
+        "Two writers updating the same row still conflict on a row lock",
+        "VACUUM also freezes old transaction ids to prevent transaction id wraparound",
+        "MVCC means the database takes no locks at all",
+        "Postgres stores old row versions in an undo log"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "MVCC removes reader-writer blocking but not writer-writer conflicts, and VACUUM freezing is part of keeping the xid counter safe. Locks still exist (row locks, DDL locks), and old versions live in the heap in Postgres, not in undo (that is InnoDB).",
+      "anchor": "talking-points",
+      "reading": 3
+    },
+    {
+      "prompt": "In Postgres, an UPDATE that changes only an unindexed column modifies the existing tuple in place without creating a new version.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "Every UPDATE creates a new tuple version. If no indexed column changes and the page has room, it is a cheaper HOT update chained within the page, but it is still a new version, and the old one remains until pruned or vacuumed.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "In Postgres, READ COMMITTED takes a single snapshot at the start of the transaction and uses it for every statement.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "READ COMMITTED takes a new snapshot for each statement. REPEATABLE READ and SERIALIZABLE take one snapshot per transaction, which is why only the stricter levels give repeatable reads.",
+      "anchor": "talking-points",
+      "reading": 0
+    }
+  ],
+  "dbms:two-phase-commit-vs-saga": [
+    {
+      "prompt": "In two-phase commit, the coordinator crashes after every participant voted yes but before it sends any commit or abort decision. What is the state of the participants?",
+      "options": [
+        "They abort on their own after a short timeout, since no decision ever arrived",
+        "They commit on their own, since every vote that was collected was a yes",
+        "They elect one participant to decide the outcome among themselves using a quorum",
+        "They are in doubt, holding locks until the coordinator recovers or an operator steps in"
+      ],
+      "answerIndex": 3,
+      "explanation": "After voting yes a participant gave up the right to decide alone: the coordinator may have decided either way. That blocking is why 2PC is called a blocking protocol. Replicating the coordinator log with consensus (as Spanner does) removes the single point of failure.",
+      "anchor": "probes",
+      "reading": 1
+    },
+    {
+      "prompt": "A saga has three steps: reserve a seat (compensable by releasing it), charge the card (compensable by refund) and send a confirmation email (cannot be undone). In which order should they run?",
+      "options": [
+        "Send the email first so the customer knows immediately",
+        "Email, charge, then reserve, since compensations run in reverse",
+        "Reserve, charge, then send the email last",
+        "Charge, email, then reserve, to get the money first"
+      ],
+      "answerIndex": 2,
+      "explanation": "Put the step that cannot be compensated at the end, after every step that might fail. If it ran earlier, a later failure would leave an email you cannot take back. The compensable steps can run first and be undone by compensating transactions.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Why is 2PC usually a poor fit when one of the participants is a third-party payment gateway reached over HTTP?",
+      "options": [
+        "2PC cannot run over a network because it needs shared memory between participants",
+        "Third-party APIs rarely expose prepare/commit and cannot hold locks for the protocol",
+        "2PC only supports exactly two participants, so a three-service flow is impossible",
+        "HTTP does not allow a second request to be sent after the first one has returned"
+      ],
+      "answerIndex": 1,
+      "explanation": "2PC requires every participant to implement prepare/commit/abort and keep resources locked between phases. Typical external APIs and many NoSQL stores expose none of that, so a saga with compensations (for example a refund) is the practical choice.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "An outbox relay publishes rows from the outbox table to the broker, marking each as sent afterwards. It crashes after publishing a row but before marking it. What is the outcome after restart?",
+      "options": [
+        "The event is lost, because the broker already saw it",
+        "The event is published again, so consumers must deduplicate by event id",
+        "The database rolls back the original business transaction",
+        "The broker rejects the second publish automatically, so no duplicate exists"
+      ],
+      "answerIndex": 1,
+      "explanation": "The outbox removes the lost-event window of dual writes, but the relay is at-least-once: it will resend an unmarked row. Consumers therefore need idempotent handling keyed by event id.",
+      "anchor": "probes",
+      "reading": 2
+    },
+    {
+      "prompt": "A saga has no isolation, and two customers try to book the last hotel room at the same moment. Which saga step design avoids selling it twice?",
+      "options": [
+        "Run every local transaction at SERIALIZABLE isolation and add no other protection",
+        "Let both flows run to completion and rely on a refund for the customer who loses",
+        "Reserve the room first with a PENDING status (a semantic lock) that the second flow sees",
+        "Accept eventual consistency and reconcile any double booking at the end of the day"
+      ],
+      "answerIndex": 2,
+      "explanation": "A semantic lock such as status = PENDING makes the intermediate state visible and claimable by the first flow. Serializable local transactions only isolate within one step, not across the saga, and compensating the loser later still produces a bad experience.",
+      "anchor": "probes",
+      "reading": 0
+    },
+    {
+      "prompt": "A team wants one place to see the state of every in-flight booking and to debug stuck flows easily. Which saga style fits best, and what does it cost?",
+      "options": [
+        "Choreography, at the cost of every service needing knowledge of the entire flow",
+        "Choreography, at the cost of having to drop idempotency from every handler",
+        "Orchestration, at the cost of an extra coordinating component to build and operate",
+        "Orchestration, at the cost of needing 2PC between all of the participating services"
+      ],
+      "answerIndex": 2,
+      "explanation": "A central orchestrator or workflow engine tracks state and tells each service what to do, so the flow is easy to reason about and monitor. The trade-off is an extra component. Choreography has no central point but makes the flow hard to trace and prone to cyclic dependencies.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    },
+    {
+      "prompt": "Because of message reordering, a 'cancel hotel reservation' compensation for booking R arrives at the hotel service before the original 'reserve' request for R. What is the correct behavior?",
+      "options": [
+        "Ignore the cancel because there is nothing to undo, then process the reserve normally",
+        "Return an error and crash the service so it is redelivered",
+        "Process the reserve first by buffering cancels in memory until the reserve arrives",
+        "Record that R is cancelled so the late reserve becomes a no-op"
+      ],
+      "answerIndex": 3,
+      "explanation": "Compensations must tolerate arriving before the action they undo. Persisting a cancel marker keyed by the request id makes the late reserve a no-op. Dropping the cancel would leak a reservation, and in-memory buffering is lost on restart.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Select all reasons why 2PC is costly across independently owned services.",
+      "options": [
+        "Locks are held across the network for the duration of the protocol",
+        "Overall availability depends on every participant (and the coordinator) being up",
+        "Every participant must support the prepare and commit protocol",
+        "It cannot guarantee that all participants reach the same outcome",
+        "It requires exactly-once message delivery from the broker"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Those three are the practical costs: lock duration, multiplied failure probability and participant support. 2PC does guarantee a common outcome (that is its purpose), and it does not rely on a message broker at all.",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "Select all measures that make saga steps and compensations safe under at-least-once delivery.",
+      "options": [
+        "A unique constraint on the request id so a repeated step is rejected or ignored",
+        "Conditional updates, for example only move status from PENDING to CONFIRMED",
+        "Retrying compensations until they succeed",
+        "Tracking seen message ids only in an in-process memory set"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Messages can be delivered more than once, so each handler must be repeatable, and compensations must eventually succeed. An in-memory set is lost on restart and not shared between instances, so duplicates slip through.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Postgres enables prepared transactions by default, so PREPARE TRANSACTION works on a fresh install.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "max_prepared_transactions defaults to 0, which disables the feature until you raise it. Forgotten prepared transactions hold locks and block vacuum, so an external transaction manager must reliably finish them with COMMIT PREPARED or ROLLBACK PREPARED.",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "A saga's compensating transaction is a true rollback that restores the database to exactly the state before the step ran.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "Each saga step was already committed locally, so compensation is a new semantic action (refund, release) rather than a rollback. Other transactions may have seen the intermediate state, and some actions cannot be undone at all.",
+      "anchor": "talking-points",
+      "reading": 0
+    }
+  ],
+  "dbms:cap-theorem-in-practice": [
+    {
+      "prompt": "Which statement is the most accurate way to state the CAP theorem?",
+      "options": [
+        "Any distributed database must pick two of consistency, availability and partition tolerance",
+        "A system can safely be CA if it is deployed within a single data center",
+        "During a partition, a system must pick between linearizability and all live nodes answering",
+        "Availability means reaching 99.99% uptime, and that goal conflicts with strong consistency"
+      ],
+      "answerIndex": 2,
+      "explanation": "Partitions are unavoidable in distributed systems, so the real choice is C versus A while one is happening. When the network is healthy you can have both. 'Pick two' is misleading, and A in CAP means every non-failed node responds, not a high uptime percentage.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "A Dynamo-style store has N = 3 replicas. Which read/write replica counts guarantee that every read quorum overlaps every write quorum (R + W > N)?",
+      "options": [
+        "R = 1, W = 1",
+        "R = 1, W = 2",
+        "R = 2, W = 1",
+        "R = 2, W = 2"
+      ],
+      "answerIndex": 3,
+      "explanation": "R + W must exceed N = 3. QUORUM/QUORUM gives 2 + 2 = 4, so the sets overlap. Combinations such as 1 + 2 or 2 + 1 sum to exactly 3, which still allows a read set that misses the latest write, and ONE/ONE (2) favors speed and availability.",
+      "anchor": "probes",
+      "reading": 3
+    },
+    {
+      "prompt": "Two devices add different items to the same shopping cart on opposite sides of a partition in an AP system. Which reconciliation best preserves the user's intent?",
+      "options": [
+        "Merge the two carts by taking the union of items",
+        "Keep the cart with the later timestamp (last write wins) and discard the other",
+        "Reject writes on the side that cannot reach a quorum",
+        "Keep the cart from the replica with the most items and delete the other"
+      ],
+      "answerIndex": 0,
+      "explanation": "A cart can be merged safely, so the union keeps both additions and the user is almost never refused. Last write wins silently drops items, and rejecting writes sacrifices availability for something that did not need strong consistency (the Dynamo cart use case).",
+      "anchor": "probes",
+      "reading": 1
+    },
+    {
+      "prompt": "What does the 'ELC' part of PACELC (Else Latency or Consistency) add to CAP?",
+      "options": [
+        "With no partition, you still trade latency against consistency, e.g. synchronous cross-region writes",
+        "It says partitions never occur in a healthy network, so CAP says nothing about normal operation",
+        "It says that availability and latency are the same property measured in different units",
+        "It says that eventual consistency is impossible whenever no partition is present"
+      ],
+      "answerIndex": 0,
+      "explanation": "CAP only describes behavior during a partition. PACELC notes that even in normal operation, replicating synchronously for consistency costs latency, while replying earlier risks stale reads. Cassandra and Dynamo lean to latency, Spanner and etcd to consistency.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    },
+    {
+      "prompt": "A MongoDB write is acknowledged with w: 1 by the primary, which then fails before replicating it and a secondary is elected. What can happen, and which setting prevents it?",
+      "options": [
+        "The write is always preserved, because the old primary rejoins and pushes it to the new primary",
+        "The write is lost permanently only when the disk fails",
+        "The write may be rolled back; w: majority (with majority read concern for reads) prevents this",
+        "The write is applied twice; idempotent writes prevent this"
+      ],
+      "answerIndex": 2,
+      "explanation": "With w: 1 an acknowledgement means only the primary has it, so a failover can roll it back. With w: majority a write survives failover and a primary that loses its majority steps down, leaning consistent. Reads from secondaries can also be stale.",
+      "anchor": "probes",
+      "reading": 2
+    },
+    {
+      "prompt": "A 5-node etcd cluster is split so that 2 nodes cannot reach the other 3. What happens?",
+      "options": [
+        "Both sides keep accepting writes independently and merge their states after healing",
+        "The 3-node side keeps serving writes; the 2-node side cannot commit or do linearizable reads",
+        "The whole cluster stops serving requests until the partition has healed completely",
+        "The 2-node side wins the election because it happens to contain the old leader"
+      ],
+      "answerIndex": 1,
+      "explanation": "etcd uses Raft with majority quorum, so only the side with 3 of 5 nodes can elect a leader and commit. The minority refuses requests, which is the CP choice: correctness at the expense of availability for clients on that side.",
+      "anchor": "talking-points"
+    },
+    {
+      "prompt": "A booking system must never sell the last seat twice, and overselling is worse for the business than a temporary error. During a partition, what should the node on the minority side do?",
+      "options": [
+        "Accept the booking and reconcile duplicates after the partition heals",
+        "Accept the booking but mark it unconfirmed so it can be cancelled later",
+        "Fail or reject the request (fail closed) until it can reach a quorum",
+        "Answer from a stale cache so the user always sees a result"
+      ],
+      "answerIndex": 2,
+      "explanation": "When the invariant must never break, favor consistency: the side that cannot confirm the seat with a quorum should refuse. Accepting and reconciling later is the right call for mergeable data like carts, not for scarce inventory.",
+      "anchor": "tradeoffs"
+    },
+    {
+      "prompt": "Select all statements that are correct about systems that favor consistency during a partition (CP behavior).",
+      "options": [
+        "Nodes on the side without a quorum refuse or fail some requests",
+        "etcd and ZooKeeper behave this way through majority quorums",
+        "Clients stuck on the minority side see errors or timeouts rather than stale data",
+        "All nodes keep accepting writes and reconcile later",
+        "The system becomes unavailable to every client everywhere"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "CP means the minority side fails closed while the majority side can continue. Accepting writes on every node and reconciling later is the AP choice, and the majority side usually remains available, so the whole system is not down.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Select all statements that are accurate about CAP in practice.",
+      "options": [
+        "Partitions include slow or dropped packets, not just cut cables",
+        "The choice between consistency and availability can be made per operation or per configuration, for example MongoDB write concern",
+        "The C in CAP means linearizability, not ACID consistency",
+        "A distributed database can be CA by being careful to avoid partitions",
+        "A database is simply CP or AP forever, independent of settings"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Real partitions are often just delays and drops, and many systems expose the choice per request. The idea of a distributed CA system fails because you cannot opt out of partitions, and most systems are tunable rather than strictly CP or AP.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "The A in CAP is satisfied by any system that achieves 99.99% uptime.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "CAP availability means every non-failing node must respond to every request, which is a different and stronger property than an uptime percentage.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Even with R + W > N, a Dynamo-style quorum system is not guaranteed to be linearizable in all failure cases.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "Quorum overlap helps a read see the latest acknowledged write when no failures interfere, but sloppy quorums, concurrent writes, hinted handoff and partial writes can still produce stale or non-linearizable reads.",
+      "anchor": "talking-points",
+      "reading": 0
+    }
+  ],
+  "dbms:debug-slow-query-explain": [
+    {
+      "prompt": "A query got slow. EXPLAIN ANALYZE shows a nested loop where the planner estimated 10 rows and the node actually returned 2,000,000. What is the best first move?",
+      "options": [
+        "Add an index on every column that appears in the join condition and the filters",
+        "Run ANALYZE, raise the statistics target or add extended statistics so estimates match reality",
+        "Raise work_mem to its maximum so that the nested loop can run entirely in memory",
+        "Switch the application's list endpoints from keyset to OFFSET pagination for stability"
+      ],
+      "answerIndex": 1,
+      "explanation": "A huge gap between estimated and actual rows means the planner chose its strategy on bad information, for example stale statistics after a bulk load. Fix the estimates first; indexes or memory settings treat symptoms and may not address why the wrong plan was chosen.",
+      "anchor": "diagram",
+      "reading": 0
+    },
+    {
+      "prompt": "The query below is slow even though an index exists on orders (user_id, created_at). Why does the plan use a Seq Scan and how is it fixed?",
+      "code": "SELECT id, total_cents\nFROM orders\nWHERE user_id = 42\n  AND date(created_at) = '2025-03-01';",
+      "options": [
+        "The index is defined on the wrong table, so create an equivalent one on the users table",
+        "The function on created_at defeats the index; rewrite the filter as a created_at range",
+        "The query has no LIMIT, so the planner skips indexes; add LIMIT 1 to enable them",
+        "Selecting two columns forces a heap scan, so select only id to make the index usable"
+      ],
+      "answerIndex": 1,
+      "explanation": "A function on the indexed column makes the predicate non-sargable, so the planner cannot seek in the index. Rewrite as created_at >= '2025-03-01' AND created_at < '2025-03-02' (or create an expression index on date(created_at)).",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "A nested loop's inner node shows: Index Scan ... (actual time=0.020..0.030 rows=1 loops=50000). Approximately how much time does that node account for in total?",
+      "options": [
+        "About 0.03 ms",
+        "About 30 ms",
+        "About 1.5 seconds",
+        "About 15 seconds"
+      ],
+      "answerIndex": 2,
+      "explanation": "Actual time in EXPLAIN ANALYZE is per loop, so multiply by loops: 0.030 ms x 50,000 = 1,500 ms, about 1.5 s. Reading the per-loop figure as the total is the classic mistake when judging a nested loop.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "A paginated list uses LIMIT 20 OFFSET 100000 with ORDER BY on an indexed column. Exactly how many rows must the executor produce internally to return that page, and which technique keeps deep pages as cheap as the first?",
+      "options": [
+        "20 rows, because LIMIT stops the scan early and the offset costs nothing",
+        "100,000 rows, then keyset pagination on an indexed sort key to stop the growth",
+        "100,020 rows, of which 100,000 are discarded; keyset pagination on an indexed sort key",
+        "100,020 rows, of which 100,000 are discarded; a larger LIMIT per page fixes it"
+      ],
+      "answerIndex": 2,
+      "explanation": "The executor must produce the 100,000 skipped rows and then the 20 returned ones, 100,020 in total, so cost grows with page depth. Keyset (seek) pagination uses WHERE (created_at, id) < (last values) on an index, so every page costs the same. A larger LIMIT does not remove the skipping.",
+      "anchor": "talking-points",
+      "reading": 1
+    },
+    {
+      "prompt": "Every individual query in an endpoint looks fast in EXPLAIN, yet the endpoint is slow. pg_stat_statements shows one tiny SELECT by order_id with 100 calls per request. What is the problem and fix?",
+      "options": [
+        "A missing index on order_id; add one so that every one of those tiny lookups is faster",
+        "N+1 queries: load related rows with a join, batched ANY(...) lookup or eager loading",
+        "Stale statistics; run ANALYZE so the planner stops choosing the wrong plan here",
+        "Lock contention between requests; shorten the transactions so they hold locks briefly"
+      ],
+      "answerIndex": 1,
+      "explanation": "One query per parent row (N+1) is invisible in a single plan because each query is fast; the signal is a high call count and many round trips. Batch the lookups instead of making each one faster.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "When does the Postgres planner typically pick a Bitmap Heap Scan?",
+      "options": [
+        "A medium fraction of rows matches, or several indexes combine",
+        "Exactly one row is expected, so a single index probe will do",
+        "Almost all rows match, so reading the whole table is cheaper",
+        "The table has no usable index at all on the filtered column"
+      ],
+      "answerIndex": 0,
+      "explanation": "A bitmap scan collects matching row locations, orders them by page, and fetches in physical order, avoiding random heap access for medium selectivity. A single-row lookup uses an Index Scan, and a predicate matching most rows gets a Seq Scan.",
+      "anchor": "talking-points",
+      "reading": 2
+    },
+    {
+      "prompt": "A plan shows a Seq Scan on a 5 million row table where the filter returns about 60% of the rows. What is the most reasonable response?",
+      "options": [
+        "Add an index on the filtered column and force it with enable_seqscan = off in production",
+        "Treat it as probably correct: reading most of a table sequentially beats random index access",
+        "Always replace Seq Scan nodes with Bitmap Heap Scan nodes, since bitmap scans are faster",
+        "Partition the table by the filtered column immediately, so the scan touches fewer rows"
+      ],
+      "answerIndex": 1,
+      "explanation": "A seq scan is not automatically wrong. When a large fraction of rows match, an index would add random IO and be slower. Forcing planner settings is brittle; fix the query or the data model if the result set itself is the problem.",
+      "anchor": "tradeoffs",
+      "reading": 0
+    },
+    {
+      "prompt": "Which join situation favors a Nested Loop over a Hash Join?",
+      "options": [
+        "Two very large unsorted tables joined on a plain equality condition between them",
+        "A tiny outer side (about 10 rows) probing an inner table indexed on the join key",
+        "Both inputs already arrive sorted on the join key because of existing indexes",
+        "A cross join with no join condition, which must produce every possible row pair"
+      ],
+      "answerIndex": 1,
+      "explanation": "A nested loop probes the inner side once per outer row, so it wins when the outer side is tiny and each probe is an indexed lookup. Large unsorted equi-joins suit hash joins, and sorted inputs suit merge joins. It is terrible if the outer estimate is badly wrong.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Select all reasons an existing B-tree index on a column might not be used for a predicate.",
+      "options": [
+        "A leading wildcard such as LIKE '%abc'",
+        "A function on the column, such as lower(email) = ? against a plain index on email",
+        "A column-order mismatch against the leftmost-prefix rule",
+        "The predicate uses plain equality on the indexed column",
+        "The index is a B-tree"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Leading wildcards, functions without a matching expression index, and skipping the leading composite column all defeat a plain B-tree seek. Equality on an indexed column and the B-tree type are what the index is built for.",
+      "anchor": "talking-points",
+      "reading": 2
+    },
+    {
+      "prompt": "Select all valid ways to eliminate an N+1 query pattern.",
+      "options": [
+        "Use a join to fetch parents and children together",
+        "Batch the child lookups with WHERE parent_id = ANY(...)",
+        "Use eager loading in the ORM (include or joinedload) or a DataLoader",
+        "Add an index on the foreign key and keep one query per parent",
+        "Increase the connection pool size so more of the queries run at once"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "All three reduce the number of round trips. Indexing the foreign key makes each of the N queries cheaper but still leaves N round trips, and a bigger pool only hides the symptom while adding load.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "EXPLAIN ANALYZE actually executes the statement, so for an UPDATE or DELETE you should wrap it in BEGIN ... ROLLBACK.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "Plain EXPLAIN only shows the planner's estimate, whereas ANALYZE runs the query and reports real times and rows, including side effects for writes. A transaction that you roll back keeps the data unchanged.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "The cost numbers in an EXPLAIN plan are measured in milliseconds.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "Costs are arbitrary planner units, meaningful only when comparing plans for the same query. The real timings appear as actual time (in ms) when you use ANALYZE.",
+      "anchor": "talking-points",
+      "reading": 0
+    }
+  ],
+  "dbms:secure-a-production-database": [
+    {
+      "prompt": "Why is escaping single quotes not a reliable defense against SQL injection?",
+      "options": [
+        "Quotes are not special characters in SQL, so escaping them accomplishes nothing at all",
+        "Escaping only works in the Postgres dialect and breaks down on every other database engine",
+        "It is fragile in numeric and identifier contexts, whereas parameters never mix data into SQL",
+        "Escaping makes queries run noticeably slower than the equivalent prepared statement would"
+      ],
+      "answerIndex": 2,
+      "explanation": "Parameterized queries send the SQL text and the values separately, so the parser never treats a value as syntax. Escaping is textual and fragile: numeric positions have no quotes to escape, identifiers need different rules, and encoding tricks have bypassed it.",
+      "anchor": "prompt",
+      "reading": 0
+    },
+    {
+      "prompt": "Why does replacing the interpolation below with a $1 placeholder not work, and what is the safe fix?",
+      "code": "const col = req.query.sort;\nconst rows = await db.query(\n  `SELECT id, name FROM users ORDER BY ${col}`\n);",
+      "options": [
+        "Placeholders cannot bind identifiers; map the input through an allowlist of known columns",
+        "Placeholders are only allowed in INSERT statements, so switch to an ORM for every query",
+        "Placeholders cannot appear after ORDER BY in Postgres, so strip semicolons from the input",
+        "The driver does not support $1 with SELECT, so escape the value with a regex first"
+      ],
+      "answerIndex": 0,
+      "explanation": "Bind parameters carry values, not identifiers or keywords. For dynamic sort fields, look the user's input up in a fixed map of allowed column names and insert only the mapped constant. Stripping characters or regex escaping is the fragile approach.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Which of these is still injectable even though the application uses a query builder?",
+      "options": [
+        "knex('users').where({ email })",
+        "knex.raw('SELECT * FROM users WHERE email = ?', [email])",
+        "client.query('SELECT * FROM users WHERE email = $1', [email])",
+        "knex.raw(`SELECT * FROM users WHERE email = '${email}'`)"
+      ],
+      "answerIndex": 3,
+      "explanation": "Query builders are safe only while you use their parameter binding. A raw fragment built with string interpolation puts the user's text into the SQL, so it is as injectable as concatenation. The other three bind the value separately.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "What should the application's database role hold on a customer-facing Postgres database?",
+      "options": [
+        "Superuser rights, limited by pg_hba rules to connections from the app subnet only",
+        "Ownership of every table so that schema migrations run without a second credential",
+        "Only SELECT, INSERT, UPDATE and DELETE on the tables it needs, with no DDL and no ownership",
+        "SELECT on everything plus DDL rights so the app can create missing indexes itself"
+      ],
+      "answerIndex": 2,
+      "explanation": "Least privilege limits the blast radius of an injection or leaked credential: no DROP TABLE, no reading other schemas, no COPY ... PROGRAM. DDL belongs to a separate migration role used by the deploy pipeline, and owners also bypass row-level security by default.",
+      "anchor": "talking-points",
+      "reading": 3
+    },
+    {
+      "prompt": "Disk and volume encryption at rest is enabled on the database. Which threat does it NOT protect against?",
+      "options": [
+        "A stolen disk or volume snapshot taken from the storage layer of the cloud provider",
+        "A leaked copy of the database backup files written to object storage",
+        "A compromised app credential or SQL injection, since the database decrypts for any valid session",
+        "An engineer physically removing drives from a decommissioned server in the data center"
+      ],
+      "answerIndex": 2,
+      "explanation": "Encryption at rest protects data on stolen media and backups. Once the database is running, it transparently decrypts for any valid session, so injection or a stolen app password still reads everything. Column-level encryption with keys held outside the database covers more.",
+      "anchor": "talking-points",
+      "reading": 3
+    },
+    {
+      "prompt": "At 10:42:00 a bad DELETE wiped a table in production. Nightly base backups and continuous WAL archiving are in place. What is the best recovery approach?",
+      "options": [
+        "Restore the most recent nightly backup and accept losing everything since",
+        "Replay all archived WAL to the latest point so the delete is repeated and then undone by hand",
+        "Restore a base backup and replay WAL only up to a target just before the delete, 10:41:59",
+        "Run VACUUM FULL, which restores deleted rows"
+      ],
+      "answerIndex": 2,
+      "explanation": "Point-in-time recovery restores a base backup and replays WAL only up to the chosen target, so you lose a second or two of data instead of a day. Replaying everything would re-apply the bad DELETE, and VACUUM does not resurrect deleted rows.",
+      "anchor": "talking-points",
+      "reading": 3
+    },
+    {
+      "prompt": "A Postgres table has a row-level security policy for tenant isolation, but the application connects as the table's owner. What is the effect?",
+      "options": [
+        "Policies still apply, because row-level security is enforced for every role in the database",
+        "Policies apply only to SELECT statements, so inserts and updates are never filtered",
+        "The database refuses the connection, because owners may not connect to RLS-protected tables",
+        "The owner bypasses the policies unless FORCE ROW LEVEL SECURITY is set, so use a non-owner role"
+      ],
+      "answerIndex": 3,
+      "explanation": "Table owners and superusers are exempt from row-level security by default, so tenant isolation silently disappears if the app connects as the owner. Use a separate non-owner application role (and FORCE for owners where needed).",
+      "anchor": "talking-points",
+      "reading": 2
+    },
+    {
+      "prompt": "Nightly backups have shown a success status for a year. Which claim about them has still not been verified?",
+      "options": [
+        "That the scheduled backup job actually ran on each of those nights",
+        "That the job exited with a success status on every one of its runs",
+        "That backup files were produced and written to the storage location",
+        "That the data can be restored within the required RTO and RPO"
+      ],
+      "answerIndex": 3,
+      "explanation": "A backup is only real once it has been restored. Restore drills reveal corrupt or incomplete backups, missing WAL, wrong keys and recovery times that miss the RTO and RPO. Success status shows only that the job ran.",
+      "anchor": "diagram",
+      "reading": 3
+    },
+    {
+      "prompt": "Select all network and transport controls that belong in a hardened production database setup.",
+      "options": [
+        "Place the database in a private subnet with no public IP",
+        "Allow inbound connections only from the app tier and a bastion or VPN for admins",
+        "Use TLS with certificate verification, such as sslmode=verify-full",
+        "Rely on sslmode=require alone, which already prevents man-in-the-middle attacks",
+        "Open the database port to the internet and depend on a strong password"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Private networking, narrow security groups and verified TLS layer the defense. sslmode=require encrypts but does not verify the server certificate, so it does not stop an active attacker, and exposing the port widens the attack surface.",
+      "anchor": "talking-points",
+      "reading": 3
+    },
+    {
+      "prompt": "Select all practices that belong in secrets handling and auditing for the database.",
+      "options": [
+        "Keep credentials in a secrets manager and rotate them on a schedule and after any suspected leak",
+        "Ship audit logs to a store the database admins cannot alter",
+        "Avoid logging full parameter values that contain secrets or PII",
+        "Commit database passwords to the repo as long as the repo is private",
+        "Keep audit logs only on the database host for fast access"
+      ],
+      "type": "multi",
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Managed, rotated credentials, tamper-resistant logs and careful logging all reduce risk. Passwords in a repo leak through clones and history, and logs stored only on the host can be altered or lost by whoever compromises it.",
+      "anchor": "talking-points",
+      "reading": 0
+    },
+    {
+      "prompt": "Strict input validation, such as allowing only alphanumeric characters, is a sufficient replacement for parameterized queries.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 1,
+      "explanation": "Validation is a useful defense in depth, but it is not a structural guarantee: allowlists get loosened, other contexts need different rules, and second-order injection can use stored data later. Parameterized queries remain the primary defense.",
+      "anchor": "prompt",
+      "reading": 0
+    },
+    {
+      "prompt": "Encryption at rest protects the data if an attacker obtains a copy of the disk or backup files.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "type": "truefalse",
+      "answerIndex": 0,
+      "explanation": "That is the threat encryption at rest addresses: stolen disks, snapshots and backups are unreadable without the keys. It does not help against authorized-looking sessions on the running database.",
+      "anchor": "talking-points",
+      "reading": 3
+    }
+  ]
+}

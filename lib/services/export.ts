@@ -1,6 +1,6 @@
 import { connectDb } from "@/lib/db";
 import { DailyPlan, DayLog, Quiz } from "@/lib/models/day";
-import { Design, Mastery, PracticeAttempt, Snippet } from "@/lib/models/learning";
+import { Design, Mastery, PracticeAnswer, PracticeAttempt, Snippet } from "@/lib/models/learning";
 import { ProblemProgress, SubtopicProgress } from "@/lib/models/progress";
 import { Article, Notification, Settings } from "@/lib/models/system";
 
@@ -13,7 +13,7 @@ export const EXPORT_VERSION = 1;
  */
 export async function exportBackup(now = new Date()) {
   await connectDb();
-  const [settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs] =
+  const [settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers] =
     await Promise.all([
       Settings.find().lean(),
       ProblemProgress.find().lean(),
@@ -27,11 +27,12 @@ export async function exportBackup(now = new Date()) {
       Notification.find().sort({ createdAt: 1 }).lean(),
       Article.find({ $or: [{ read: true }, { bookmarked: true }] }, { content: 0 }).lean(),
       Design.find().lean(),
+      PracticeAnswer.find().lean(),
     ]);
   return {
     app: "PrepOS",
     version: EXPORT_VERSION,
     exportedAt: now.toISOString(),
-    collections: { settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs },
+    collections: { settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers },
   };
 }

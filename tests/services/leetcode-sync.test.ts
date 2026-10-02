@@ -76,3 +76,73 @@ describe("syncLeetCode", () => {
     expect((await syncLeetCode({ force: true })).status).toBe("disabled");
   });
 });
+
+import { CHECK_FLOOR_MS, checkAccepted } from "@/lib/services/leetcode-sync";
+
+describe("checkAccepted (copy and open, then detect)", () => {
+  const T0 = new Date("2026-10-06T10:00:00Z");
+  const since = T0.getTime();
+  const sub = (id: string, slug: string, offsetSec: number): AcSubmission => ({ id, titleSlug: slug, timestamp: Math.floor(T0.getTime() / 1000) + offsetSec });
+
+  it("is pending until the submission appears", async () => {
+    const client = fake([sub("x", "valid-anagram", 10)]);
+    expect(await checkAccepted({ slug: "two-sum", sinceMs: since, now: T0, client })).toEqual({ status: "pending" });
+  });
+
+  it("detects an Accepted submission made after you clicked, imports it and returns its local date", async () => {
+    const client = fake([sub("a", "two-sum", 45)]);
+    const res = await checkAccepted({ slug: "two-sum", sinceMs: since, now: new Date(T0.getTime() + 60_000), client });
+    expect(res).toEqual({ status: "accepted", date: "2026-10-06" });
+    expect(await ProblemProgress.findOne({ slug: "two-sum" }).lean()).toMatchObject({ status: "solved", source: "leetcode", needsDetails: true });
+  });
+
+  it("ignores an older Accepted submission of the same problem", async () => {
+    const client = fake([sub("old", "two-sum", -3 * 3600)]);
+    expect(await checkAccepted({ slug: "two-sum", sinceMs: since, now: new Date(T0.getTime() + 60_000), client })).toEqual({ status: "pending" });
+  });
+
+  it("allows a little clock skew between your machine and LeetCode", async () => {
+    const client = fake([sub("a", "two-sum", -60)]);
+    expect((await checkAccepted({ slug: "two-sum", sinceMs: since, now: new Date(T0.getTime() + 60_000), client })).status).toBe("accepted");
+  });
+
+  it("makes at most one LeetCode request per 30 seconds, however often it is polled", async () => {
+    const client = fake([]);
+    expect((await checkAccepted({ slug: "two-sum", sinceMs: since, now: T0, client })).status).toBe("pending");
+    expect((await checkAccepted({ slug: "two-sum", sinceMs: since, now: new Date(T0.getTime() + CHECK_FLOOR_MS - 1) , client })).status).toBe("wait");
+    expect(client.calls).toBe(1);
+    expect((await checkAccepted({ slug: "two-sum", sinceMs: since, now: new Date(T0.getTime() + CHECK_FLOOR_MS), client })).status).toBe("pending");
+    expect(client.calls).toBe(2);
+  });
+
+  it("overlapping polls cannot both go through", async () => {
+    const client = fake([]);
+    const results = await Promise.all([1, 2, 3, 4].map(() => checkAccepted({ slug: "two-sum", sinceMs: since, now: T0, client })));
+    expect(results.filter((r) => r.status === "pending")).toHaveLength(1);
+    expect(client.calls).toBe(1);
+  });
+
+  it("explains itself when no username is set, and rejects unknown problems", async () => {
+    await Settings.updateOne({ _id: "settings" }, { $set: { leetcodeUsername: null } });
+    expect(await checkAccepted({ slug: "two-sum", sinceMs: since, now: T0, client: fake([]) })).toEqual({ status: "disabled" });
+    await Settings.updateOne({ _id: "settings" }, { $set: { leetcodeUsername: "tester" } });
+    expect((await checkAccepted({ slug: "nope-nope", sinceMs: since, now: T0, client: fake([]) })).status).toBe("error");
+  });
+
+  it("reports a LeetCode failure without throwing", async () => {
+    const client: LeetCodeClient = {
+      async recentAccepted() {
+        throw new Error("LeetCode responded 503");
+      },
+      async stats() {
+        return null;
+      },
+    };
+    expect(await checkAccepted({ slug: "two-sum", sinceMs: since, now: T0, client })).toEqual({ status: "error", message: "LeetCode responded 503" });
+  });
+
+  it("a nonsense sinceMs can't reach further back than the 6 hour window", async () => {
+    const client = fake([sub("old", "two-sum", -7 * 3600)]);
+    expect((await checkAccepted({ slug: "two-sum", sinceMs: 0, now: new Date(T0.getTime() + 60_000), client })).status).toBe("pending");
+  });
+});

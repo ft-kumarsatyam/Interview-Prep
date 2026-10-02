@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { subtopics } from "@/lib/content";
+import { correctAnswerKey, isAnswerCorrect } from "@/lib/domain/quiz";
 import { jsonProvider } from "@/lib/llm";
 import { Quiz } from "@/lib/models/day";
 import { Mastery, PracticeAttempt } from "@/lib/models/learning";
@@ -26,7 +27,7 @@ async function doTodaysWork(date: string) {
 
 async function answerKey(date: string, kind: "daily" | "weekly") {
   const doc = await Quiz.findOne({ date, kind }).lean();
-  return doc!.questions.map((q) => q.answerIndex);
+  return doc!.questions.map(correctAnswerKey);
 }
 
 describe("daily quiz", () => {
@@ -60,7 +61,7 @@ describe("daily quiz", () => {
     expect((await recomputeDay(TUE)).day.complete).toBe(true);
 
     const review = await getQuizReview(TUE, "daily");
-    expect(review?.items.every((q) => q.chosen === q.answerIndex)).toBe(true);
+    expect(review?.items.every((q) => isAnswerCorrect(q, q.chosen))).toBe(true);
   });
 
   it("only accepts today's quiz", async () => {
@@ -131,7 +132,7 @@ describe("practice and mastery", () => {
   const subs = subtopics.filter((s) => s.topicId === topicId).map((s) => s.id);
 
   async function key(attemptId: string) {
-    return (await PracticeAttempt.findById(attemptId).lean())!.questions.map((q) => q.answerIndex);
+    return (await PracticeAttempt.findById(attemptId).lean())!.questions.map(correctAnswerKey);
   }
 
   it("runs ungated subtopic practice and rolls scores into mastery", async () => {

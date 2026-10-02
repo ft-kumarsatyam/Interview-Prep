@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ArrowRight, Clock, FileText } from "lucide-react";
+import { ArrowRight, Clock, ExternalLink, FileText, Newspaper } from "lucide-react";
 import { ArticleMarkdown } from "@/components/news/article-markdown";
 import { ReaderActions } from "@/components/news/reader-actions";
+import { Button } from "@/components/ui/button";
 import { news } from "@/lib/content";
 import { tagLabel } from "@/lib/domain/article";
 import { READINGS_PER_DAY } from "@/lib/domain/plan-config";
@@ -41,9 +42,7 @@ export default async function ArticlePage({ params }: PageProps<"/news/[id]">) {
 
   return (
     <article className="mx-auto max-w-2xl pb-8">
-      <Link href="/news" className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="size-4" /> News
-      </Link>
+      <ReaderActions id={article.id} url={article.url} read={article.read} bookmarked={article.bookmarked} readingsGoal={READINGS_PER_DAY} />
 
       <header className="space-y-3">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
@@ -65,24 +64,24 @@ export default async function ArticlePage({ params }: PageProps<"/news/[id]">) {
             </>
           )}
         </div>
-        <h1 className="text-2xl font-semibold leading-tight tracking-tight text-balance sm:text-3xl">{article.title}</h1>
+        <h1 className="text-2xl leading-tight font-semibold tracking-tight text-balance sm:text-3xl">{article.title}</h1>
         <div className="flex flex-wrap items-center gap-1.5">
-          <Link href={`/news?cat=${article.category}`} className="rounded-full border px-2.5 py-0.5 text-xs hover:bg-muted">
+          <Link
+            href={`/news?cat=${article.category}`}
+            className="inline-flex h-7 items-center rounded-full border px-2.5 text-xs hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
+          >
             {catName.get(article.category) ?? article.category}
           </Link>
           {article.tags.map((t) => (
-            <Link key={t} href={`/news?tag=${t}`} className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs text-primary hover:bg-primary/15">
+            <Link
+              key={t}
+              href={`/news?tag=${t}`}
+              className="inline-flex h-7 items-center rounded-full bg-primary/10 px-2.5 text-xs text-primary hover:bg-primary/15 focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
+            >
               {tagLabel.get(t) ?? t}
             </Link>
           ))}
         </div>
-        <ReaderActions
-          id={article.id}
-          url={article.url}
-          read={article.read}
-          bookmarked={article.bookmarked}
-          readingsGoal={READINGS_PER_DAY}
-        />
       </header>
 
       {showLead && (
@@ -107,23 +106,50 @@ export default async function ArticlePage({ params }: PageProps<"/news/[id]">) {
             <p className="text-sm text-muted-foreground">
               {article.contentStatus === "headline"
                 ? "Google News links only resolve in a browser, so PrepOS can't show this one inline."
-                : `${host} didn't let PrepOS read the page${article.contentError ? ` (${article.contentError})` : ""}.`}{" "}
-              Use <span className="font-medium text-foreground">Open original</span> above.
+                : `${host} didn't let PrepOS read the page${article.contentError ? ` (${article.contentError})` : ""}.`}
             </p>
             {article.snippet && <p className="mt-4 border-l-2 pl-3 text-sm">{article.snippet}</p>}
+            <Button asChild className="mt-4 h-9">
+              <a href={article.url} target="_blank" rel="noopener noreferrer">
+                Read it on {host} <ExternalLink aria-hidden />
+              </a>
+            </Button>
           </div>
         )}
       </div>
 
-      <footer className="mt-10 flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm">
-        <a href={article.url} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground">
-          Source: {host}
-        </a>
-        {next && (
-          <Link href={`/news/${next.id}`} className="inline-flex max-w-full items-center gap-1 font-medium text-primary hover:underline">
-            <span className="truncate">Next unread: {next.title}</span> <ArrowRight className="size-4 shrink-0" />
+      <footer className="mt-10 space-y-4 border-t pt-6">
+        {next ? (
+          <Link
+            href={`/news/${next.id}`}
+            className="group flex items-center gap-3 rounded-xl border bg-card p-4 transition-colors hover:border-primary/50 focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Up next · unread in {catName.get(article.category) ?? "this category"}</p>
+              <p className="mt-1 line-clamp-2 leading-snug font-medium group-hover:text-primary">{next.title}</p>
+            </div>
+            <ArrowRight className="size-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" aria-hidden />
           </Link>
+        ) : (
+          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+            You&apos;re caught up on {catName.get(article.category) ?? "this category"}.
+          </p>
         )}
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <Button asChild variant="outline" className="h-9">
+            <Link href="/news?f=unread">
+              <Newspaper aria-hidden /> All unread news
+            </Link>
+          </Button>
+          <a
+            href={article.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex min-h-9 items-center gap-1 text-muted-foreground hover:text-foreground"
+          >
+            Source: {host} <ExternalLink className="size-3.5" aria-hidden />
+          </a>
+        </div>
       </footer>
     </article>
   );
