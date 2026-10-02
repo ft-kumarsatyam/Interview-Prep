@@ -1,0 +1,138 @@
+# Design — PrepOS
+
+**Feel:** a focused training cockpit. It is calm, dark-first and data-dense without clutter, and one glance at the dashboard answers *"what do I do today, and am I on track?"* The app is also a portfolio piece, so the craft should be visible: consistent spacing, real empty states and smooth micro-interactions.
+
+Built with Tailwind v4 + shadcn/ui (New York style) + lucide-react icons. Light theme supported, dark is the default.
+
+---
+
+## 1. Visual system
+
+### Colour tokens (CSS variables in `app/globals.css`, consumed by shadcn)
+
+| Token | Dark | Light | Use |
+|---|---|---|---|
+| `--background` | `#0B0D12` | `#FAFAFB` | Page |
+| `--card` | `#12151C` | `#FFFFFF` | Cards, sidebar |
+| `--muted` | `#1A1E27` | `#F1F2F5` | Inputs, hover rows |
+| `--border` | `#232836` | `#E4E6EB` | 1px borders |
+| `--foreground` | `#E7E9EE` | `#11131A` | Text |
+| `--muted-foreground` | `#8A90A2` | `#5B6172` | Secondary text |
+| `--primary` | `#7C5CFF` (violet) | `#6A4BF0` | Primary actions, progress |
+| `--success` | `#22C55E` | `#16A34A` | Done, Easy |
+| `--warning` | `#F59E0B` | `#D97706` | Medium, due reviews |
+| `--danger` | `#EF4444` | `#DC2626` | Hard, broken streak |
+| `--streak` | `#FF7A1A` | `#EA580C` | Flame, streak counters |
+
+Track accents (chips, topic headers): JS/TS yellow · Node lime · DSA orange · DBMS emerald · OOP violet · LLD indigo · HLD blue · CS amber · AI pink · Behavioral slate. These are defined in `syllabus.json → tracks[].color` and mapped to static Tailwind classes in `components/shared/badges.tsx`.
+
+Difficulty badges: Easy = success, Medium = warning, Hard = danger, all as soft tinted backgrounds (10–15% alpha) with full-colour text.
+
+### Typography
+- **Inter** for UI and **JetBrains Mono** for numbers, complexities and code, both loaded with `next/font`.
+- Scale: 12 / 14 (body) / 16 / 20 / 24 / 32 / 48 (hero numbers). Numbers use `tabular-nums`.
+
+### Spacing, shape, depth
+- 4px base grid. Card padding 20–24px. Grid gaps of 16px on mobile and 24px on desktop.
+- Radius: 12px for cards, 8px for inputs and buttons, full for chips.
+- No heavy shadows. Use a 1px border, plus a subtle inner glow (`ring-1 ring-white/5`) on dark cards. The only gradient is the hero progress ring (violet → pink).
+
+### Motion
+- 150–200 ms ease-out on hover and press. Checklist items strike through and fade when ticked.
+- Completing the day shows a **confetti burst** (canvas-confetti, once per day) and the flame icon plays a 600 ms scale-bounce.
+- Respect `prefers-reduced-motion`.
+
+## 2. Layout
+
+- **Desktop (≥1024px):** a 240px left sidebar (logo, nav, streak mini-card at the bottom) and a top bar (page title, today's date, notification bell, theme toggle, command palette `⌘K`).
+- **Mobile:** the sidebar becomes a bottom tab bar (Dashboard · DSA · Learn · Quiz · News) and the top bar collapses. The app is installable as a PWA.
+- Content max-width 1200px, centred.
+
+Sidebar nav: Dashboard, DSA, Review (badge = due count), Learn, JS Playground, Quiz (dot when today's quiz is unlocked and not yet passed), News (badge = unread), Stats, Settings. The source of truth is `components/layout/nav-items.ts`.
+
+## 3. Pages
+
+### 3.1 Login
+Centred card on a dark background with a faint animated grid or noise. It contains the logo, "PrepOS", the tagline "Senior Backend · March 2027", email and password fields, and a Sign in button. **No sign-up link and no "forgot password".** Errors are inline, and after 5 failures it shows "Too many attempts, try again in N min".
+
+### 3.2 Dashboard (the main screen)
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Good evening, {ADMIN_NAME} · Fri, 9 Oct · Week 1 of 24 · Language & Foundations │
+├──────────────────────────────┬──────────────┬──────────────┬──────────────┤
+│  TODAY                       │ 🔥 Streak    │ ✅ Solved     │ ⏳ Countdown  │
+│  (◔ progress ring 3/4)       │   12 days    │  87 / 604    │  163 days    │
+│  ☐ DSA  2/4  →               │  best 15 ·❄2 │  on pace ▲   │  to Mar 21   │
+│  ☐ Theory 1/2 →              ├──────────────┴──────────────┴──────────────┤
+│  ☐ Read 0/3 →                │  Activity heatmap (24 weeks × 7 days)      │
+│  🔒 Daily quiz (unlocks…)    │  ■■□■■■■ …  legend: none/partial/complete  │
+├──────────────────────────────┼────────────────────────────────────────────┤
+│  Today's problems            │  This week's theory                        │
+│  • Two Sum  Easy  Arrays [↗][✓]│  HLD · Caching: ☑ Cache-aside ☐ Eviction  │
+│  • 3Sum     Med   2-Ptr  [↗][✓]│  LLD · Parking Lot ☐                       │
+│  Review due: Koko (struggled)│                                            │
+├──────────────────────────────┴────────────────────────────────────────────┤
+│  📰 AI & Eng news: 3 cards (source, title, 1-line summary, "Read")        │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Progress ring:** the share of the four day-requirements done. The centre shows "3/4", and at 100% it turns green and fires confetti.
+- **Ticking ✓ on a problem** opens a compact sheet with confidence (easy/ok/struggled), minutes taken, a one-line approach, and time/space complexity. Saving updates the ring immediately (optimistic UI).
+- **Streak card:** flame icon, current and best streak, freeze tokens as ❄ icons. If today is incomplete after 20:00, the card pulses amber with "Finish today to keep your streak".
+- **Heatmap:** the full 24-week plan window. Cell colours: empty (future), muted (missed), warning (partial), success (complete), blue outline (freeze used). Hovering a cell shows that day's counts.
+- **"On pace" indicator:** solved compared with the expected count for today. ▲ green when ahead, ▼ red when behind, with the size of the gap.
+- **Notification banner** at the top when there are unread notifications (e.g. the morning plan or the evening reminder).
+
+### 3.3 DSA
+- Track tabs: **DSA (in JS)** · **JavaScript** (30 Days of JS) · **SQL**. The DSA tab is split into **Pass 1 · Core (151)** and **Pass 2 · Extended (453)**. *(The read-only version of this is built.)*
+- The header shows overall progress, a "Core ✅" milestone, a difficulty split donut and solved-this-week.
+- Each **pattern accordion** carries a progress bar and an "x / y" count. Inside it is a table with order #, title (links out to LeetCode ↗), difficulty badge, status, confidence and last solved date.
+- Filters: pattern, difficulty, status (todo/solved/struggled), and search. Sort by order (default) or by last solved.
+- **Problem log page** (`/dsa/[slug]`): a big "Open on LeetCode ↗" button, form fields, and a markdown notes editor with preview. It also shows a review history timeline.
+
+### 3.4 Review
+A queue of cards due today. Each card offers "Open ↗", then "Re-solved: easy / ok / struggled". An empty state says "Nothing due. 🎉"
+
+### 3.5 Learn
+- A wrapping track tab bar (JS & TS · Node · DSA concepts · DBMS & SQL · OOP · LLD · HLD · CS · AI · Behavioral) above a 2-column grid of topic cards: week chip, level label (Basics → Interview/Big-tech), title, subtopic progress bar, resource chips (hostname + ↗) and a "current week" highlight. `?track=` preselects a tab. *(The read-only version is built.)*
+- The topic page has the subtopic checklist (each item expands into a markdown notes field), resource links, and a "Practice quiz" button that runs 5 questions from the bank for this topic.
+- HLD topics get a "Design template" button that inserts the standard skeleton (Requirements / Estimates / API / Data model / HLD / Deep dives / Trade-offs) into the notes.
+
+### 3.5b JS Playground
+- A split view: editor on the left (CodeMirror 6, JS/TS syntax, `⌘↵` to run), console on the right. Logs are colour-coded by level, and timing is shown.
+- Code runs in a **Web Worker** with a 3 s timeout (terminated on infinite loops) and has no DOM or network access, which is safe for experiments.
+- **Snippets** sidebar: save, rename and tag by topic (e.g. `js-async`). Snippets can be linked from a subtopic's notes.
+- **Output drills:** event-loop / `this` / closure puzzles. You predict the console output first, then run the code and compare. Results can feed the daily quiz.
+
+### 3.6 Quiz
+- **Locked state:** a lock icon plus "Solve at least 1 problem and check 1 topic to unlock", with links to both.
+- **Unlocked:** one question per screen with a progress dots header. Options are large tappable cards, with keyboard shortcuts 1–4 and Enter.
+- **After submitting:** the score with a radial gauge and pass/fail, then each question with your answer, the correct one and the explanation, plus "Retake" (reshuffled). A pass animates the dashboard ring step to complete.
+- History lists date, score, pass/fail, and a "Practice wrong answers" action.
+
+### 3.7 News
+Category pills (All · AI Labs (Google · OpenAI · DeepMind) · AI News · JavaScript & Node · Databases · System Design · Big-Tech Engineering · Career), a "Google News" row of keyword chips (editable in Settings), unread/bookmarked filters, unread/bookmarked filters and a card list (source favicon, title, age, snippet or AI summary). Clicking "Read ↗" opens the link in a new tab and marks the item read. A "Browse-only sources" section sits at the bottom.
+
+### 3.8 Stats
+Problems per day (bar, last 30 days), cumulative solved compared with plan (line, actual vs ideal), difficulty mix by week (stacked bar), quiz scores (line with a pass-line at 60%), and a track coverage radar or bars.
+
+### 3.9 Settings
+Plan dates, timezone, quiz pass %, rest days (date picker), notification channels with a test button, "Export backup (JSON)" and "Re-seed content".
+
+## 4. Components (shadcn-based)
+
+`Card`, `Badge`, `Button`, `Checkbox`, `Progress`, `Tabs`, `Accordion`, `Sheet`, `Dialog`, `Tooltip`, `Command` (⌘K: jump to any problem or topic), `Sonner` toasts, `Skeleton`.
+Built: `PageHeader`, `EmptyState`/`ComingInPhase`, `DifficultyBadge`, `TrackChip`, `SidebarNav`, `MobileTabBar`, `ThemeToggle`.
+To build: `ProgressRing`, `StreakCard`, `Heatmap`, `DifficultyBadge`, `TrackChip`, `ProblemRow`, `SolveSheet`, `QuizPlayer`, `NewsCard`, `CountdownCard`, `PaceIndicator`.
+
+## 5. States and copy
+
+- Every list has a **skeleton** loading state and a friendly **empty state** with an icon, one line and one action.
+- Copy is short and encouraging, never guilt-tripping. Examples: "2 more to go 💪", "Streak saved with a freeze ❄", "You're 6 problems ahead of plan."
+- Every error toast includes what to do next.
+
+## 6. Accessibility
+- WCAG AA contrast in both themes. Status is never shown by colour alone (icons and text sit next to the colour).
+- Full keyboard navigation with visible focus rings (`ring-primary`).
+- `aria-live` region for quiz feedback and checklist progress.
