@@ -1,17 +1,19 @@
 import type { Metadata } from "next";
-import { RotateCcw } from "lucide-react";
-import { ComingInPhase } from "@/components/shared/empty-state";
+import { ReviewQueue } from "@/components/progress/review-queue";
 import { PageHeader } from "@/components/shared/page-header";
+import { todayIn } from "@/lib/services/plan";
+import { getReviewQueue } from "@/lib/services/problems";
+import { getSettings } from "@/lib/services/settings";
 
 export const metadata: Metadata = { title: "Review" };
 
-export default function ReviewPage() {
+export default async function ReviewPage() {
+  const today = todayIn(await getSettings());
+  const items = await getReviewQueue(today);
   return (
     <>
-      <PageHeader title="Review" description="Spaced-repetition re-solves due today." />
-      <ComingInPhase icon={RotateCcw} title="Review queue" phase={4}>
-        Problems you mark as struggled come back after 3, 7 and 21 days; ok ones after 14.
-      </ComingInPhase>
+      <PageHeader title="Review" description="Spaced repetition: re-solve from scratch, then rate how it went. Every re-solve counts toward today's DSA target." />
+      <ReviewQueue items={items} />
     </>
   );
 }

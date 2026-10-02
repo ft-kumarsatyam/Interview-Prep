@@ -10,6 +10,8 @@ import { mainProblemCount } from "@/lib/content";
 import { READINGS_PER_DAY } from "@/lib/domain/plan-config";
 import { formatDate, planClock } from "@/lib/plan-clock";
 import { getDashboard, type PlanProblem } from "@/lib/services/dashboard";
+import { syncLeetCode } from "@/lib/services/leetcode-sync";
+import { LeetCodeCard } from "@/components/leetcode/leetcode-card";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -29,6 +31,8 @@ const toItem = (p: PlanProblem, tag?: string) => ({
 });
 
 export default async function DashboardPage() {
+  // Throttled to once per 10 min; a LeetCode outage must never break the dashboard.
+  await syncLeetCode().catch(() => null);
   const data = await getDashboard();
   const { day, plan, settings, today } = data;
   const clock = planClock(settings);
@@ -168,6 +172,18 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <LeetCodeCard
+        username={settings.leetcodeUsername}
+        lastSyncLabel={
+          settings.leetcodeLastSyncAt
+            ? new Intl.DateTimeFormat("en-IN", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: settings.timezone }).format(
+                settings.leetcodeLastSyncAt,
+              )
+            : null
+        }
+        needsDetails={data.needsDetails}
+      />
 
       <Card>
         <CardHeader>

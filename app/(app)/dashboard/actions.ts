@@ -4,6 +4,7 @@ import { refresh } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/lib/auth/dal";
 import { isDateStr } from "@/lib/domain/dates";
+import { syncLeetCode } from "@/lib/services/leetcode-sync";
 import { todayIn } from "@/lib/services/plan";
 import { recordSolve, saveProblemNotes, saveSubtopicNotes, toggleSubtopic as toggle } from "@/lib/services/progress";
 import { getSettings } from "@/lib/services/settings";
@@ -56,6 +57,25 @@ export async function toggleSubtopic(id: string): Promise<ActionResult<{ done: b
     return { ok: true, done, justCompleted };
   } catch (err) {
     return fail(err);
+  }
+}
+
+export async function syncLeetCodeNow(): Promise<ActionResult<{ message: string }>> {
+  await requireSession();
+  const res = await syncLeetCode({ force: true });
+  refresh();
+  switch (res.status) {
+    case "disabled":
+      return { ok: false, error: "Add your LeetCode username in Settings first" };
+    case "error":
+      return { ok: false, error: res.message };
+    case "throttled":
+      return { ok: true, message: "A sync is already running" };
+    case "ok":
+      return {
+        ok: true,
+        message: res.imported ? `Imported ${res.imported} new solve${res.imported === 1 ? "" : "s"}` : "Up to date: no new accepted submissions",
+      };
   }
 }
 

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Flame, LogOut } from "lucide-react";
 import { MobileTabBar, SidebarNav } from "@/components/layout/app-nav";
+import { CommandPalette } from "@/components/layout/command-palette";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { requireSession } from "@/lib/auth/dal";
@@ -32,6 +33,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <Flame className="size-5 text-primary" /> PrepOS
           </Link>
           <div className="ml-auto flex items-center gap-1">
+            <CommandPalette />
             <ThemeToggle />
             <form action={logout} className="lg:hidden">
               <Button variant="ghost" size="icon" type="submit" aria-label="Sign out">
