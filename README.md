@@ -81,11 +81,14 @@ Paste the **Phase 3** prompt from `docs/BUILD_PLAN.md`, check it works, commit, 
 
 ## 4. Deploy to Vercel
 
-1. Push to GitHub, then in Vercel choose *Add New → Project → Import*.
-2. Add every variable from `.env.example` (Production).
-3. Deploy. The app lives at `https://<project>.vercel.app`.
-4. Run `npm run seed` once with the production `MONGODB_URI`.
-5. On your phone, open the URL and choose "Add to Home Screen".
+1. **Atlas:** finish M0 setup (§1). Patch local URI: `node scripts/set-mongodb-uri.mjs cluster0.YOUR_ID.mongodb.net` then `npm run seed`.
+2. **GitHub:** push this repo (e.g. `itnetqwix/prepos`). Actions workflow `.github/workflows/deploy.yml` runs test, typecheck, lint, and build on every push/PR.
+3. **GitHub secrets** (Settings → Secrets → Actions): mirror production env — `MONGODB_URI`, `AUTH_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH_B64`, `ADMIN_NAME`, `APP_TIMEZONE`, `CRON_SECRET`. Run the **Seed MongoDB (manual)** workflow once after Atlas is live.
+4. **Vercel:** *Add New → Project → Import* the repo, framework Next.js, region **Mumbai (bom1)**. Add the same variables as in `.env.example` for **Production** (and Preview if you want preview DB).
+5. Deploy. URL: `https://<project>.vercel.app`. Sign in with `ADMIN_EMAIL` / your hashed password.
+6. Optional: *Add to Home Screen* on your phone.
+
+`vercel.json` holds cron entries (Phase 6); empty until then.
 
 ## 5. How a day works (once Phases 3–6 land)
 

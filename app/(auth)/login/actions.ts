@@ -22,11 +22,24 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   if (!parsed.success) return { error: parsed.error.issues[0].message, email };
 
   const ip = (await headers()).get("x-forwarded-for")?.split(",")[0].trim() || "local";
-  const wait = await throttleMinutes(ip);
+  let wait = 0;
+  try {
+    wait = await throttleMinutes(ip);
+  } catch {
+    return {
+      error:
+        "Cannot reach MongoDB. Set a real MONGODB_URI in .env.local (Atlas M0), run npm run seed, then restart npm run dev.",
+      email,
+    };
+  }
   if (wait > 0) return { error: `Too many attempts. Try again in ${wait} min.`, email };
 
   if (!(await checkCredentials(parsed.data.email, parsed.data.password))) {
-    await recordFailure(ip);
+    try {
+      await recordFailure(ip);
+    } catch {
+      /* throttle write is best-effort when DB is down */
+    }
     return { error: "Incorrect email or password.", email };
   }
 
