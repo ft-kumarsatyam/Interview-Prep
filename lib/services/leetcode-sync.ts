@@ -57,10 +57,10 @@ export async function syncLeetCode(opts: { force?: boolean; now?: Date; client?:
     await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { leetcodeSeenIds: seen } });
 
     if (plan.intents.length > 0) {
-      const titles = plan.intents.map((i) => problemBySlug.get(i.slug)?.title ?? i.slug);
+      const titles = [...new Set(plan.intents.map((i) => problemBySlug.get(i.slug)?.title ?? i.slug))];
       await Notification.create({
         kind: "sync",
-        title: `Imported ${plan.intents.length} solve${plan.intents.length === 1 ? "" : "s"} from LeetCode`,
+        title: `Imported ${plan.intents.length} solve${plan.intents.length === 1 ? "" : "s"} of ${titles.length} problem${titles.length === 1 ? "" : "s"} from LeetCode`,
         body: `${titles.slice(0, 3).join(", ")}${titles.length > 3 ? "…" : ""}. Add confidence so reviews are scheduled right.`,
       });
     }
