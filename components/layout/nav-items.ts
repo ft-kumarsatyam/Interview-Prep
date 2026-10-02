@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Settings,
   SquareTerminal,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
@@ -29,4 +30,5 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/news", label: "News", icon: Newspaper, mobile: true },
   { href: "/stats", label: "Stats", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/setup", label: "Setup", icon: Wrench },
 ];

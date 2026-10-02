@@ -1,4 +1,7 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { Wrench } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/shared/page-header";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { SettingsTools } from "@/components/settings/settings-tools";
@@ -16,7 +19,13 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description="Plan dates, pass marks, rest days, news keywords, LeetCode and backups." />
+      <PageHeader title="Settings" description="Plan dates, pass marks, rest days, news keywords, LeetCode and backups.">
+        <Button asChild variant="outline" size="sm">
+          <Link href="/setup">
+            <Wrench /> Setup checklist
+          </Link>
+        </Button>
+      </PageHeader>
       <div className="space-y-4">
         <SettingsForm
           today={todayIn(s)}

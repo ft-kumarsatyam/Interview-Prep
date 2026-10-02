@@ -7,6 +7,7 @@ import type { NotifyChannel } from "@/lib/notify";
 import { runEvening, runMorning } from "@/lib/services/cron";
 import { listArticles, markArticleRead, refreshNews, setBookmark } from "@/lib/services/news";
 import { notify } from "@/lib/services/notifications";
+import { getSetupChecklist } from "@/lib/services/setup";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 process.env.CRON_SECRET = "cron-secret-cron-secret";
@@ -99,6 +100,21 @@ describe("notifications and cron", () => {
     expect(res).toMatchObject({ reminded: true, pushed: ["telegram"] });
     expect((await runEvening(at("2026-10-06"), [ch])).reminded).toBe(false);
     expect((await Notification.findOne({ kind: "reminder" }).lean())?.body).toMatch(/^Left: \d+ DSA problems?/);
+  });
+
+  it("setup checklist sees the job runs, news failures and missing LeetCode username", async () => {
+    process.env.AUTH_SECRET ??= "test-secret-that-is-at-least-32-characters";
+    const before = await getSetupChecklist({ remember: true, now: at("2026-10-06") });
+    expect(before.items.find((i) => i.id === "jobs")?.status).toBe("todo");
+
+    await runMorning(at("2026-10-06"), { fetcher: fakeFetcher({ hf: [item("https://hf.co/1", "A")] }), channels: [] });
+    const after = await getSetupChecklist({ remember: false, now: new Date(at("2026-10-06").getTime() + 3_600_000) });
+    const byId = Object.fromEntries(after.items.map((i) => [i.id, i]));
+    expect(byId.jobs.detail).toContain("Morning ran 1h ago");
+    expect(byId.news.detail).toContain("1 of");
+    expect(byId.leetcode.status).toBe("todo");
+    expect(byId.session.status).toBe("warn");
+    expect(byId.database.status).toBe("todo");
   });
 
   it("cron routes reject a missing or wrong bearer token", async () => {

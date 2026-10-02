@@ -1,6 +1,21 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BookOpen, CalendarClock, Code2, Flame, Lock, ListChecks, Newspaper, Snowflake, TrendingDown, TrendingUp } from "lucide-react";
+import {
+  BookOpen,
+  CalendarClock,
+  ChevronRight,
+  Code2,
+  Flame,
+  Lock,
+  ListChecks,
+  Newspaper,
+  Snowflake,
+  TrendingDown,
+  TrendingUp,
+  Wrench,
+} from "lucide-react";
+import { currentSession } from "@/lib/auth/dal";
+import { getSetupChecklist } from "@/lib/services/setup";
 import { Heatmap } from "@/components/dashboard/heatmap";
 import { ProgressRing } from "@/components/dashboard/progress-ring";
 import { ProblemList } from "@/components/progress/problem-list";
@@ -38,7 +53,12 @@ const toItem = (p: PlanProblem, tag?: string) => ({
 export default async function DashboardPage() {
   // Throttled to once per 10 min; a LeetCode outage must never break the dashboard.
   await syncLeetCode().catch(() => null);
-  const [data, latestNews] = await Promise.all([getDashboard(), listArticles({ filter: "unread", limit: 3 })]);
+  const session = await currentSession();
+  const [data, latestNews, setup] = await Promise.all([
+    getDashboard(),
+    listArticles({ filter: "unread", limit: 3 }),
+    getSetupChecklist({ remember: session.remember }),
+  ]);
   const { day, plan, settings, today } = data;
   const clock = planClock(settings);
   const hour = localHour(settings.timezone);
@@ -80,6 +100,25 @@ export default async function DashboardPage() {
             : `Week ${clock.week} of ${clock.totalWeeks} · ${clock.phase?.name}`}
         </p>
       </div>
+
+      {setup.requiredLeft > 0 && (
+        <Link
+          href="/setup"
+          className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-sm transition-colors hover:bg-accent/50"
+        >
+          <Wrench className="size-4 shrink-0 text-primary" aria-hidden />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium">Finish setup: {setup.done}/{setup.total}</span>{" "}
+            <span className="text-muted-foreground">
+              {setup.items
+                .filter((i) => i.required && i.status !== "ok")
+                .map((i) => i.title)
+                .join(" · ")}
+            </span>
+          </span>
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        </Link>
+      )}
 
       {data.unreadNotifications.length > 0 && (
         <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm" role="status">

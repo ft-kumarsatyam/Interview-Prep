@@ -27,6 +27,13 @@ const settingsSchema = new Schema(
     /** Recent accepted-submission ids already imported (capped). */
     leetcodeSeenIds: { type: [String], default: [] },
     newsLastFetchAt: { type: Date, default: null },
+    /** Feed ids that failed on the last refresh (for the Setup page). */
+    newsLastFailed: { type: [String], default: [] },
+    /** Last LeetCode sync error, cleared on the next successful sync. */
+    leetcodeLastError: { type: String, default: null },
+    lastMorningRunAt: { type: Date, default: null },
+    lastEveningRunAt: { type: Date, default: null },
+    lastExportAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

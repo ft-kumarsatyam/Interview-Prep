@@ -210,7 +210,7 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="leetcode" className="scroll-mt-20">
         <CardHeader>
           <CardTitle>LeetCode</CardTitle>
           <CardDescription>Your public username. Recent accepted solves are imported automatically (no password needed).</CardDescription>

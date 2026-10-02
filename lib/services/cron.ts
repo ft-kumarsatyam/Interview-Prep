@@ -6,6 +6,7 @@ import { syncLeetCode } from "./leetcode-sync";
 import { refreshNews } from "./news";
 import { notify } from "./notifications";
 import { ensureToday } from "./plan";
+import { markRun } from "./settings";
 
 type StepResult = { ok: true; detail: unknown } | { ok: false; error: string };
 
@@ -37,6 +38,7 @@ export async function runMorning(now = new Date(), deps: { channels?: readonly N
     return { kind: state.plan.kind, notified: res.created, pushed: res.pushed };
   });
   const leetcode = await step(() => syncLeetCode({ force: true, now }));
+  await markRun("lastMorningRunAt", now);
   return { today, news, plan, leetcode };
 }
 
@@ -44,6 +46,7 @@ export async function runMorning(now = new Date(), deps: { channels?: readonly N
 export async function runEvening(now = new Date(), channels?: readonly NotifyChannel[]) {
   const leetcode = await step(() => syncLeetCode({ now }));
   const state = await ensureToday(now);
+  await markRun("lastEveningRunAt", now);
   const msg = eveningReminder(state.day, state.streak);
   if (!msg) return { today: state.today, reminded: false, leetcode };
   const res = await notify({ kind: "reminder", ...msg, dedupeKey: `reminder:${state.today}` }, { push: true, channels });

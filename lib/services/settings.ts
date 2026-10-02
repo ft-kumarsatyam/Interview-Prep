@@ -15,6 +15,11 @@ export interface AppSettings extends PlanSettings {
   leetcodeSeenIds: string[];
   googleNewsQueries: string[] | null;
   newsLastFetchAt: Date | null;
+  newsLastFailed: string[];
+  leetcodeLastError: string | null;
+  lastMorningRunAt: Date | null;
+  lastEveningRunAt: Date | null;
+  lastExportAt: Date | null;
 }
 
 /** The settings singleton, created on first read. Day logic always uses APP_TIMEZONE. */
@@ -49,7 +54,18 @@ export async function getSettings(): Promise<AppSettings> {
     leetcodeSeenIds: doc.leetcodeSeenIds ?? [],
     googleNewsQueries: doc.googleNewsQueries?.length ? doc.googleNewsQueries : null,
     newsLastFetchAt: doc.newsLastFetchAt ?? null,
+    newsLastFailed: doc.newsLastFailed ?? [],
+    leetcodeLastError: doc.leetcodeLastError ?? null,
+    lastMorningRunAt: doc.lastMorningRunAt ?? null,
+    lastEveningRunAt: doc.lastEveningRunAt ?? null,
+    lastExportAt: doc.lastExportAt ?? null,
   };
+}
+
+/** Timestamps the Setup page reads to tell whether jobs and backups are happening. */
+export async function markRun(field: "lastMorningRunAt" | "lastEveningRunAt" | "lastExportAt", at = new Date()): Promise<void> {
+  await connectDb();
+  await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { [field]: at } }, { upsert: true });
 }
 
 export type SettingsPatch = Partial<
@@ -100,7 +116,7 @@ export async function saveSettings(input: SettingsInput, now = new Date()): Prom
         restDays: mergeRestDays(current.restDays, input.restDays, today),
         googleNewsQueries: normaliseQueries(input.googleNewsQueries, news.googleNews.defaultQueries.map((q) => q.query)),
         leetcodeUsername: input.leetcodeUsername,
-        ...(leetcodeChanged ? { leetcodeLastSyncAt: null, leetcodeSeenIds: [] } : {}),
+        ...(leetcodeChanged ? { leetcodeLastSyncAt: null, leetcodeSeenIds: [], leetcodeLastError: null } : {}),
       },
     },
     { upsert: true },

@@ -40,6 +40,7 @@ export async function refreshNews(opts: { force?: boolean; now?: Date; fetcher?:
   if (claim.modifiedCount === 0) return { status: "fresh", lastFetchAt: now };
 
   const { results, failed } = await fetchAll(newsSources(s.googleNewsQueries), opts.fetcher);
+  await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { newsLastFailed: failed } });
   const candidates = results.flatMap((r) => r.items.map((i) => i.url));
   const existing = await Article.find({ urlHash: { $in: candidates.map(urlHash) } }, { titleKey: 1 }).lean();
   const recentKeys = await Article.find({ fetchedAt: { $gte: new Date(now.getTime() - 7 * 86_400_000) } }, { titleKey: 1 }).lean();

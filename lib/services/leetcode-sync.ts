@@ -54,7 +54,7 @@ export async function syncLeetCode(opts: { force?: boolean; now?: Date; client?:
       await recordSolve({ slug: intent.slug, date: intent.date, source: "leetcode" });
     }
     const seen = [...new Set([...submissions.map((x) => x.id), ...s.leetcodeSeenIds])].slice(0, SEEN_CAP);
-    await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { leetcodeSeenIds: seen } });
+    await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { leetcodeSeenIds: seen, leetcodeLastError: null } });
 
     if (plan.intents.length > 0) {
       const titles = [...new Set(plan.intents.map((i) => problemBySlug.get(i.slug)?.title ?? i.slug))];
@@ -66,7 +66,9 @@ export async function syncLeetCode(opts: { force?: boolean; now?: Date; client?:
     }
     return { status: "ok", imported: plan.intents.length, untracked: plan.untracked.length };
   } catch (err) {
-    return { status: "error", message: err instanceof Error ? err.message : "LeetCode sync failed" };
+    const message = err instanceof Error ? err.message : "LeetCode sync failed";
+    await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { leetcodeLastError: message.slice(0, 300) } });
+    return { status: "error", message };
   }
 }
 
