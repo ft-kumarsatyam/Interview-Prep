@@ -12,14 +12,18 @@ Every prompt assumes the agent has read `AGENTS.md`, which `CLAUDE.md` and `.cur
 | 0 · Scaffold (Next 16, Tailwind 4, shadcn, Vitest, theme tokens) | ✅ done |
 | 1 · DB, auth, seed (Mongoose models, jose session, login + throttle, `proxy.ts`, seed/hash scripts) | ✅ done and tested |
 | 2 · Domain logic + tests (dates, planner, streak, SRS, quiz scoring) | ✅ done (33 tests) |
-| 3 · Services + live dashboard | ⏭ next |
-| 4 · DSA progress, Review, Learn checklists, JS Playground | |
-| 5 · Quiz engine | |
-| 6 · News + notifications + cron | |
-| 7 · Stats, settings, polish, PWA | |
-| 8 · Deploy | |
+| 3 · Services + live dashboard (`recordSolve` single write path, in-memory Mongo service tests) | ✅ done |
+| 4 · DSA progress, Review, Learn checklists, JS Playground, ⌘K, **LeetCode sync** (public username, "Fill in details" inbox) | ✅ done |
+| 5 · Quiz engine (LLM + verified bank, weekly quiz) + **subtopic practice and topic "Mastered" quizzes** | ✅ done |
+| 6 · News + notifications + cron (Telegram/Resend push, LeetCode sync in cron) | ✅ done |
+| 7 · Stats (LeetCode card, JS mastery radar), settings, export, PWA, skeletons, nav badges, a11y | ✅ done |
+| 8 · Deploy (walkthrough in README §4, env sync script, manual smoke-test workflow) | ✅ done |
 
-Also available now: read-only `/dsa`, `/learn` and `/news` (straight from `data/*.json`), and a static dashboard showing week, phase, countdown and this week's topics.
+The phase prompts below are kept as a record of the spec each phase was built against. The extras listed in the status table (LeetCode sync, mastery quizzes, ports and adapters, idempotent jobs) are described in ARCHITECTURE §3, §8, §9 and §11.
+
+Known gaps:
+- One-line AI news summaries are not built yet (`articles.aiSummary` is unused).
+- White text on the dark-theme `--primary` button measures 4.34:1, just under WCAG AA's 4.5:1. Fixing it means darkening the DESIGN §1 token.
 
 ---
 
@@ -55,7 +59,7 @@ Also available now: read-only `/dsa`, `/learn` and `/news` (straight from `data/
 > Build `/quiz` (locked → player → results with explanations, retake reshuffled) and `/quiz/history`. Passing sets `DayLog.quizPassed` and re-evaluates the day. Add the Sunday weekly quiz.
 
 ### Phase 6 — News, notifications, cron
-> Implement `lib/news/fetch.ts` per ARCHITECTURE §9 using rss-parser. Include the Google News keyword feeds from `settings.googleNewsQueries`, falling back to the defaults in `data/news-sources.json`. Dedupe by URL hash and title.
+> Implement `lib/news/fetch.ts` per ARCHITECTURE §10 using rss-parser. Include the Google News keyword feeds from `settings.googleNewsQueries`, falling back to the defaults in `data/news-sources.json`. Dedupe by URL hash and title.
 >
 > Turn `/news` into a reader (category pills, keyword chips, unread/bookmarked filters, mark read on click). Reading counts toward today's `readings`.
 >
@@ -77,5 +81,6 @@ Also available now: read-only `/dsa`, `/learn` and `/news` (straight from `data/
 - **"Explain my mistake"** on a wrong quiz answer, using one LLM call.
 - **RAG over your own notes** with Atlas Vector Search (available on M0). This makes the week-16 topic real.
 - **An MCP server for PrepOS** (`get_today_plan`, `mark_solved`) so Claude can read and update your progress. This makes the week-17 topic real.
-- **LeetCode auto-sync:** the public GraphQL `recentAcSubmissionList(username)` query can auto-tick solved problems.
 - **Mock-interview timer** with HLD and LLD templates and a self-review rubric.
+- **AI news summaries:** one batched LLM call per morning fills `articles.aiSummary` for the newest AI items.
+- **Full LeetCode history import:** an opt-in `LEETCODE_SESSION` cookie for backfilling beyond the last 20 accepted submissions. (Public sync is already done; see ARCHITECTURE §9.)
