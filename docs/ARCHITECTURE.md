@@ -33,7 +33,7 @@ PrepOS is a private, single-user web app for a 24-week, zero-to-interview-ready 
 | Validation | **zod 4** (env, Server Action input, LLM output) |
 | Tests | **Vitest 4**: `tests/domain` (pure) and `tests/services` (real Mongo via **mongodb-memory-server**, dev-only) |
 | Scripts | **tsx** (`seed`, `hash`, `quiz-bank`, `icons`), **sharp** (icons, dev-only) |
-| Features | `rss-parser` (news), plain `fetch` adapters for the LLM, LeetCode GraphQL, Telegram and Resend (no SDKs), Recharts 3 (stats), CodeMirror 6 (playground), react-markdown (notes) |
+| Features | `rss-parser` (news), `@mozilla/readability` + `linkedom` + `turndown` (in-app article reader), plain `fetch` adapters for the LLM, LeetCode GraphQL, Telegram and Resend (no SDKs), Recharts 3 (stats), CodeMirror 6 (playground), react-markdown (notes, articles), mermaid (system design diagrams, loaded on demand) |
 
 > Next 16 differences agents must respect (see `node_modules/next/dist/docs/`): `middleware.ts` is now **`proxy.ts`**; `cookies()`, `headers()`, `params` and `searchParams` are **async only**; `next lint` is gone (use `npx eslint .`); `revalidateTag` needs a second argument; route types `PageProps<'/x'>` and `LayoutProps` come from `next typegen`.
 >
@@ -48,7 +48,7 @@ PrepOS is a private, single-user web app for a 24-week, zero-to-interview-ready 
                 │    ▼                                                                 │
                 │  app/(app)/** pages (RSC) ─▶ requireSession() ─▶ lib/services/* ─┬──▶ MongoDB Atlas M0
                 │  Server Actions (writes)  ─▶ requireSession() ─▶ lib/domain/* (pure)  │
-                │  app/api/cron/* ─▶ Bearer CRON_SECRET ─▶ services ────────────────┼──▶ RSS + Google News
+                │  app/api/cron/* ─▶ Bearer CRON_SECRET ─▶ services ────────────────┼──▶ RSS + Google News + article pages
                 │                                     lib/{leetcode,llm,news,notify} ├──▶ LeetCode GraphQL (public)
                 │                                     (adapters, zod-validated)      └──▶ LLM, Telegram, Resend
                 └─────────────────────────────────────────────────────────────────────┘
@@ -70,8 +70,12 @@ PrepOS is a private, single-user web app for a 24-week, zero-to-interview-ready 
   1. zod-validate the form
   2. check the per-IP throttle (5 failures in 15 min, stored in `loginattempts` with a TTL index)
   3. compare the email in constant time, then always run bcrypt
-  4. on success, `createSession()` sets the `prepos_session` cookie: HS256 JWT, `sub: "owner"`, 30 days, httpOnly, sameSite=lax, secure in production
-- `proxy.ts`: an optimistic redirect only. It skips `/api/*` and static files.
+  4. on success, `createSession({ remember })` sets the `prepos_session` cookie: HS256 JWT with `sub: "owner"` and a `rem` claim, httpOnly, sameSite=lax, secure in production
+- **Remember me** (`lib/domain/session-policy.ts`, tested):
+  - Ticked (the default): the token and the cookie last **30 days**. Once the token is 7 days old, `proxy.ts` re-issues it on the next request (sliding expiry), so a phone you use weekly stays signed in.
+  - Unticked: a browser-session cookie (no `Expires`) whose token also expires after **12 hours**, and it is never renewed.
+  - An installed iPhone web app keeps its own cookie jar, so sign in once from the home-screen app with Remember me ticked.
+- `proxy.ts`: an optimistic redirect plus the sliding renewal. It skips `/api/*`, static files, `/sw.js` and `/offline`.
 - `lib/auth/dal.ts → requireSession()`: the **real** check, called by the `(app)` layout and by every Server Action and route handler that touches data. Cron routes use `lib/auth/cron.ts → isCronAuthorized()` instead: a constant-time comparison against `Bearer CRON_SECRET` that fails closed when the secret isn't set.
 - There is no registration route, no user collection and no password reset. To change the password, re-run `npm run hash` and update the env var.
 
@@ -83,7 +87,8 @@ Static content is versioned in git under `data/`, seeded into Mongo, and also im
 |---|---|
 | `data/dsa-problems.json` | 669 problems: `{slug, title, leetcodeId, difficulty, pattern, track: main\|js\|sql, tier: core\|extended, url, order}`. `order` is per track. In `main`, all 151 `core` problems come first (pass 1), then `extended` (pass 2), each in pattern order, easy → hard |
 | `data/syllabus.json` | 10 tracks, 70 topics, 410 subtopics: `{id, track, week, level 1–4, title, subtopics[], resources[]}` |
-| `data/news-sources.json` | 46 RSS feeds in 7 categories, 5 default Google News keyword queries (URL template), browse-only links |
+| `data/news-sources.json` | 54 RSS feeds in 8 categories (incl. System Design and Tech News), 5 default Google News keyword queries (URL template), browse-only links |
+| `data/system-design.json` | the 45-minute framework (6 steps, latency and capacity numbers, a 10-item rubric), 12 building blocks, and 17 case studies, each with requirements, estimates, API, data model, a mermaid diagram, deep dives, trade-offs, interviewer probes and real write-ups. Every case links to an HLD syllabus topic and a `practiceRef` subtopic |
 
 Subtopic id = `${topicId}:${index}`. **Never reorder or delete subtopics inside a topic once progress exists.** Append new ones instead, or progress rows will point at the wrong item.
 
@@ -103,14 +108,15 @@ Every `YYYY-MM-DD` value is a **local date in `APP_TIMEZONE`** (default `Asia/Ko
 | `practiceattempts` | scope subtopic\|topic, ref, questions[], answers[], pct, submittedAt | subtopic drill = 5 questions, topic quiz = 10 |
 | `masteries` | ref ⓤ, scope, score 0–100 (EMA), attempts, bestPct, masteredOn | `masteredOn` is set only by a passed topic quiz |
 | `snippets` | title, code, tag | Playground saves |
-| `settings` | _id `"settings"`, plan dates, clamps, quizPassPct, topicMasteryPct, restDays[], freezeTokens, settledThrough, googleNewsQueries (null = defaults), leetcodeUsername, leetcodeLastSyncAt, leetcodeSeenIds[] (cap 200), newsLastFetchAt | singleton |
-| `articles` | urlHash ⓤ, url, title, titleKey, sourceId, sourceName, category, publishedAt?, fetchedAt, snippet, aiSummary, read, readOn, bookmarked | TTL 30 days on `fetchedAt`; bookmarking unsets `fetchedAt` so saved articles never expire |
+| `settings` | _id `"settings"`, plan dates, clamps, quizPassPct, topicMasteryPct, restDays[], freezeTokens, settledThrough, googleNewsQueries (null = defaults), leetcodeUsername, leetcodeLastSyncAt, leetcodeLastError, leetcodeSeenIds[] (cap 200), newsLastFetchAt, newsLastFailed[], lastMorningRunAt, lastEveningRunAt, lastExportAt | singleton; the last five feed `/setup` |
+| `articles` | urlHash ⓤ, url, title, titleKey, sourceId, sourceName, category, publishedAt?, fetchedAt, snippet, aiSummary, read, readOn, bookmarked, **content** (markdown, ≤ 80k chars), contentStatus full\|extracted\|failed\|headline\|null, contentError, readingMinutes, leadImage, tags[] | TTL 30 days on `fetchedAt`; bookmarking unsets `fetchedAt` so saved articles never expire. Indexes on `tags` and `{contentStatus, category}` |
+| `designs` | slug ⓤ, sections{requirements, estimates, api, dataModel, architecture, deepDives} (≤ 20k chars each), rubric[] (checked ids), minutesSpent | your System Design mock answers, one per case |
 | `notifications` | kind plan\|reminder\|streak\|milestone\|sync, title, body, read, dedupeKey ⓤ (sparse) | |
 | `loginattempts` | ip, at | TTL 15 min |
 
 ## 7. Domain rules (`lib/domain/*`), *implemented and tested*
 
-Modules: `dates`, `plan-config`, `planner`, `streak`, `srs`, `quiz`, `progress`, `pace`, `heatmap`, `leetcode`, `mastery`, `sampling` (seeded RNG, weighted sampling), `news`, `reminders`, `stats`, `settings`.
+Modules: `dates`, `plan-config`, `planner`, `streak`, `srs`, `quiz`, `progress`, `pace`, `heatmap`, `leetcode`, `mastery`, `sampling` (seeded RNG, weighted sampling), `news`, `article` (reading time, tags, SSRF URL checks, source diversity), `reminders`, `stats`, `settings`, `session-policy`, `setup` (checklist), `design` (rubric score, case status, related-article ranking).
 
 **Day kinds** (`planner.dayKind`):
 - `outside` (before start or after end)
@@ -209,14 +215,23 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 - **Reading:** opening an article sets `readOn = today` the first time, which feeds `DayLog.readings`.
 - **Deferred:** one-line AI summaries. The `aiSummary` field exists but nothing writes it yet.
 
+### 10.1 In-app reader (`/news/[id]`), free and without an LLM
+- **Feed body first:** at ingest, the item's `content:encoded` (or Atom content) goes through `lib/news/markdown.ts`: turndown converts it to markdown and drops script, style, iframe, form and svg. Links are kept only if http(s) and resolved against the article URL; images only if https. The result is capped at 80k characters on a paragraph boundary. At least 250 words gives `contentStatus: "full"`; shorter bodies are teasers and stay `null`. Google News items are `headline` (their link is a redirect, not the article).
+- **Extraction** (`lib/news/extract.ts`) for teasers: the page is fetched and run through Mozilla Readability on linkedom, then converted to markdown the same way. A result gives `extracted`; a failure gives `failed` plus `contentError`, and failed articles are never retried.
+  - **SSRF guard:** `isSafeUrl` allows http(s) only, with no credentials, no explicit port, no localhost/`.local`/`.internal`/dotless hosts and no private IP literals. Before each hop, the host's DNS answers are checked with `isPrivateAddress` (RFC 1918, loopback, link-local, CGNAT, benchmarking, documentation ranges, IPv6 ULA and mapped addresses). Redirects are followed by hand (at most 3, each re-checked). Requests time out after 10 s, the body is capped at 3 MB, and only HTML content types are accepted.
+- **When it runs:** the morning cron prefetches up to 20 recent teasers from the system-design, engineering, ai-labs and databases categories (4 at a time, 25 s budget). Any other teaser is extracted on demand the first time you open it (typically under 1 s).
+- **Rendering:** react-markdown with `skipHtml`, links open in a new tab with `noopener noreferrer nofollow`, and images are https-only, lazy-loaded and `no-referrer`. Nothing goes through `dangerouslySetInnerHTML`.
+- **Discovery:** `classifyTags` adds up to 4 topic tags (system-design, distributed, databases, caching, queues, infra, reliability, security, llm, javascript, career) from title and body. `/news` has a "System design picks" rail (long reads, at most 2 per source), topic chips (`?tag=`) and a "Full articles" filter (`?f=full`). The dashboard strip prefers long reads.
+- **Size:** about 300 full bodies average roughly 18 KB each (≈ 5.5 MB). With the 30-day TTL that stays well under the 512 MB M0 limit. `listArticles` never loads `content`, and the export leaves it out.
+
 ## 11. Scheduled jobs and notifications
 
 | Path | Cron (UTC) | IST | Does |
 |---|---|---|---|
-| `/api/cron/morning` | `0 0 * * *` | 05:30 | refresh news (forced) → `ensureToday` (settle past days, build plan) → "Today's plan" notification + push → LeetCode sync (forced) |
+| `/api/cron/morning` | `0 0 * * *` | 05:30 | refresh news (forced) → prefetch article text (§10.1) → `ensureToday` (settle past days, build plan) → "Today's plan" notification + push → LeetCode sync (forced) |
 | `/api/cron/evening` | `30 14 * * *` | 20:00 | LeetCode sync → `ensureToday` → if today is incomplete: "Today isn't done yet" reminder listing what's left + push |
 
-- Each step runs independently (one failing step doesn't skip the others), and the JSON response reports every step's outcome. `maxDuration = 60`.
+- Each step runs independently (one failing step doesn't skip the others), and the JSON response reports every step's outcome. `maxDuration = 60`. Each run stamps `lastMorningRunAt` / `lastEveningRunAt`, which `/setup` uses to show whether the crons are actually firing.
 - Hobby crons run once a day and fire somewhere within the scheduled hour. **Correctness never depends on them:** the dashboard calls `ensureToday()`, which settles past days, creates today's plan if missing and syncs LeetCode.
 - Free fallback: cron-job.org or a GitHub Actions `schedule` hitting the same URLs with the bearer secret.
 - **Notifications** (`services/notifications.ts`) are always stored for the in-app bell. They're pushed to every configured channel in `lib/notify` (Telegram `sendMessage`, Resend email) only for plan and reminder kinds. Push failures are logged and never fail the job.
@@ -226,19 +241,24 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 | Route | What |
 |---|---|
 | `/login` | single-user sign-in with throttling |
-| `/dashboard` | progress ring, streak, pace, heatmap, today's problems, side-tracks, review, theory, "Fill in details" inbox, news strip |
+| `/dashboard` | progress ring, streak, pace, heatmap, today's problems, side-tracks, review, theory, "Fill in details" inbox, news strip, "Finish setup" card while required setup items are open |
+| `/setup` | setup checklist: database seeded, secrets, LeetCode (last sync and error), crons firing, news feeds (failed ones), notifications, LLM, backup age, session (Remember me), each with a fix button or link |
 | `/dsa`, `/dsa/[slug]` | progress per pattern, filters; problem page with solve form, notes, history, Open on LeetCode |
 | `/review` | due spaced-repetition queue |
 | `/learn`, `/learn/practice?ref=` | checklists, notes, mastery badges; subtopic practice and topic quiz runner |
+| `/design` | System Design studio: the 45-minute framework, case grid with status (new → studying → practised → mastered, mastered = the linked HLD topic quiz), building blocks, latency and capacity cheat sheet |
+| `/design/[slug]` | **Study** tab: requirements, estimates, API, data model, mermaid diagram, deep dives, trade-offs, interviewer probes, blocks used, real write-ups, related articles from your feed. **Mock interview** tab: 45-minute timer with per-section pacing, six markdown sections (autosave), self-review rubric; links to the practice quiz for the case's subtopic |
 | `/playground` | CodeMirror + Web Worker runner (3 s timeout), snippets, output drills, `?snippet=` preload |
 | `/quiz`, `/quiz/history`, `/quiz/history/[date]` | daily/weekly quiz (locked → player → results), past quizzes with explanations |
-| `/news` | reader with category pills, keyword chips, filters (`?cat=&src=&f=`) |
+| `/news` | category pills, topic chips, system design picks rail, filters (`?cat=&src=&tag=&f=`, `f=full` for readable articles) |
+| `/news/[id]` | in-app reader (§10.1): full text, reading time, tags, bookmark, open original, next unread; marks the article read |
 | `/stats` | solves per day, cumulative vs ideal, difficulty by week, quiz trend, track coverage, LeetCode card, JS mastery radar |
 | `/settings` | plan, quiz and mastery thresholds, rest days, news keywords, LeetCode username, notifications test, export, re-seed |
 | `/api/palette` | ⌘K search index (session) |
 | `/api/export` | JSON backup download (session) |
 | `/api/cron/morning`, `/api/cron/evening` | scheduled jobs (`Bearer CRON_SECRET`) |
 | `/manifest.webmanifest` | PWA manifest (`app/manifest.ts`) |
+| `/offline`, `/sw.js` | offline fallback page and service worker (public, outside the proxy) |
 
 ## 13. Folder structure
 
@@ -247,30 +267,32 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 ├── app/
 │   ├── (auth)/login/                 sign-in page, form, Server Action
 │   ├── (app)/layout.tsx  loading.tsx sidebar, top bar, bell, mobile tabs + badges, requireSession, skeleton
-│   ├── (app)/<page>/page.tsx         dashboard, dsa, review, learn, playground, quiz, news, stats, settings
+│   ├── (app)/<page>/page.tsx         dashboard, dsa, review, learn, design, playground, quiz, news, stats, settings, setup
 │   ├── (app)/<page>/actions.ts       Server Actions (zod + requireSession + refresh())
 │   ├── api/{cron/*,export,palette}/  route handlers
+│   ├── offline/                      offline fallback page (cached by public/sw.js)
 │   ├── manifest.ts  apple-icon.png  icon.svg  layout.tsx  globals.css
-├── components/        ui (shadcn) · layout · dashboard · dsa · learn · progress · quiz · playground · news · stats · settings · leetcode · shared
+├── components/        ui (shadcn) · layout · dashboard · dsa · learn · design · progress · quiz · playground · news · stats · settings · setup · leetcode · shared
 ├── lib/
 │   ├── domain/        pure logic (see §7)
 │   ├── services/      plan, day, progress, problems, learn, practice, mastery, quiz, leetcode-sync,
-│   │                  news, notifications, cron, stats, nav, settings, seed, export, snippets, dashboard
+│   │                  news, notifications, cron, stats, nav, settings, seed, export, snippets, dashboard,
+│   │                  setup, designs
 │   ├── leetcode/      GraphQL client (adapter)
 │   ├── llm/           provider interface + gemini / anthropic / openai-compatible adapters
-│   ├── news/          feed fetcher (adapter)
+│   ├── news/          feed fetcher, article extractor (adapters), HTML → markdown
 │   ├── notify/        Telegram / Resend channels (adapter)
 │   ├── quiz/          question schema, bank loader, LLM prompts
 │   ├── playground/    worker runner, drills, share links
 │   ├── models/        content, progress, day, learning, system (Mongoose)
 │   ├── auth/          session (jose), dal (requireSession), credentials (bcrypt + throttle), cron
 │   ├── content.ts  plan-clock.ts  db.ts  env.ts  utils.ts
-├── data/              dsa-problems, syllabus, news-sources, quiz-bank (generated)
+├── data/              dsa-problems, syllabus, news-sources, system-design, quiz-bank (generated)
 ├── scripts/           seed, hash-password, generate-quiz-bank (+ quiz-bank/ sources), generate-icons,
 │                      sync-vercel-env.sh, set-mongodb-uri.mjs, publish-github.sh
 ├── tests/domain/      pure unit tests
 ├── tests/services/    service tests on mongodb-memory-server (fakes for LeetCode, feeds, channels, LLM)
-├── public/            PWA icons
+├── public/            PWA icons, iOS splash screens, sw.js
 ├── proxy.ts  vercel.json (crons, bom1)
 └── docs/              ARCHITECTURE, DESIGN, ROADMAP, BUILD_PLAN
 ```
@@ -290,13 +312,18 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 
 - **Serverless Mongo:** the connection is cached on `globalThis` (pool size 5). Atlas Network Access must allow `0.0.0.0/0`, because Vercel has no fixed IPs, so use a long database password. Functions are pinned to `bom1` (Mumbai), next to the cluster.
 - **Seed is idempotent:** it upserts by key, removes content rows no longer in the JSON, and never touches progress or an existing settings document. It's available as `npm run seed` and as *Re-seed content* in Settings (`lib/services/seed.ts`).
-- **Backups:** M0 has no automated backups. `/api/export` downloads every user collection as JSON (`version: 1`): settings, progress, plans, day logs, quizzes, masteries, practice attempts, snippets, notifications, and read or bookmarked articles.
-- **PWA:** `app/manifest.ts` (standalone, start `/dashboard`, maskable icon, shortcuts) plus the Apple touch icon. There's no service worker, because the app needs the network for every page anyway.
+- **Backups:** M0 has no automated backups. `/api/export` downloads every user collection as JSON (`version: 1`): settings, progress, plans, day logs, quizzes, masteries, practice attempts, snippets, notifications, System Design answers, and read or bookmarked articles (without their body text). Each export stamps `lastExportAt`, and `/setup` nags when the last one is over 7 days old.
+- **PWA / iPhone app:** `app/manifest.ts` (standalone, start `/dashboard`, maskable icon, shortcuts), the Apple touch icon, `apple-mobile-web-app-*` metadata, iOS splash screens for current iPhone sizes (`public/splash/`), `viewport-fit=cover` with safe-area padding on the top bar and bottom tabs, and an "Add to Home Screen" hint for iOS Safari.
+  - `public/sw.js` caches only build assets and icons (cache-first) plus the `/offline` page. Navigations always go to the network and fall back to `/offline`. Signed-in HTML and data are never cached, so nothing personal sits on the device and there's no stale-data problem.
+  - The worker is served with `no-cache` and a strict CSP. A version bump in the file clears old caches.
 - **Hydration:** relative times ("2h ago") are computed on the server and passed down as strings. Client code that needs a calendar key uses `Intl.DateTimeFormat`, never `toDateString`.
 - **Security:**
   - `requireSession()` is close to the data, and `proxy.ts` is only a convenience redirect.
   - Server Actions validate their input.
   - Secrets are server-only (no `NEXT_PUBLIC_*` secrets).
-  - LLM and RSS content is rendered as text.
+  - LLM and RSS content is rendered as text; article bodies go through markdown with raw HTML skipped (§10.1).
+  - Server-side article fetches pass the SSRF guard in §10.1.
+  - Response headers: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`.
+  - Mermaid runs with `securityLevel: "strict"` and only renders diagrams from `data/system-design.json`; a content test rejects `click` directives and script URLs.
 - **Accessibility:** a skip link to `#main`, visible focus rings, `aria-live` regions for quiz results and toasts, labelled nav badges, and charts that are backed by text tiles. Lighthouse on mobile `/login`: performance 94, accessibility 95, best practices 100. The one finding is that white text on the dark-theme `--primary` (#7C5CFF) measures 4.34:1, just under the 4.5:1 AA minimum.
-- **Testing:** 100 Vitest tests. Domain tests cover planner, streak, SRS, quiz, LeetCode `planSync` (including midnight IST), mastery, news merge, reminders, stats and settings. Service tests run on an in-memory MongoDB and cover `ensureToday`, `recordSolve`, sync idempotency, quiz pass flows, practice and mastery, news refresh, cron auth and dedupe, export, and re-seeding keeping settings. Every phase was also click-tested in the browser on desktop and mobile widths.
+- **Testing:** 191 Vitest tests. Domain tests cover planner, streak, SRS, quiz, LeetCode `planSync` (including midnight IST), mastery, news merge, article tags and SSRF checks, HTML → markdown, session policy, setup checklist, design scoring and the integrity of `data/system-design.json` (topics, subtopic refs, blocks, diagram syntax). Service tests run on an in-memory MongoDB and cover `ensureToday`, `recordSolve`, sync idempotency, quiz pass flows, practice and mastery, news refresh, full-text ingest, on-demand extraction and prefetch limits, cron auth and dedupe, design answers and overview, export, and re-seeding keeping settings. Every phase was also click-tested in the browser on desktop and mobile widths.

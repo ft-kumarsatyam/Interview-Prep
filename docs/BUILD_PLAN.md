@@ -18,11 +18,18 @@ Every prompt assumes the agent has read `AGENTS.md`, which `CLAUDE.md` and `.cur
 | 6 · News + notifications + cron (Telegram/Resend push, LeetCode sync in cron) | ✅ done |
 | 7 · Stats (LeetCode card, JS mastery radar), settings, export, PWA, skeletons, nav badges, a11y | ✅ done |
 | 8 · Deploy (walkthrough in README §4, env sync script, manual smoke-test workflow) | ✅ done |
+| 9a · Remember me (30-day sliding session vs 12 h browser session) | ✅ done |
+| 9b · iPhone app (safe areas, splash screens, service worker + `/offline`, install hint, security headers) | ✅ done |
+| 9c · `/setup` checklist + dashboard "Finish setup" card, job run tracking | ✅ done |
+| 9d · In-app news reader (feed full text, Readability extraction behind an SSRF guard, tags, picks rail, new system design and tech feeds) | ✅ done |
+| 9e · System Design studio (`/design`: 17 cases, diagrams, building blocks, 45-min mock with rubric, related articles) | ✅ done (191 tests) |
 
-The phase prompts below are kept as a record of the spec each phase was built against. The extras listed in the status table (LeetCode sync, mastery quizzes, ports and adapters, idempotent jobs) are described in ARCHITECTURE §3, §8, §9 and §11.
+The phase prompts below are kept as a record of the spec each phase was built against. The extras listed in the status table (LeetCode sync, mastery quizzes, ports and adapters, idempotent jobs) are described in ARCHITECTURE §3, §8, §9 and §11. Phase 9 is described in ARCHITECTURE §4 (Remember me), §10.1 (reader), §12 (routes) and §15 (PWA).
 
 Known gaps:
 - One-line AI news summaries are not built yet (`articles.aiSummary` is unused).
+- Some sites block article extraction (OpenAI's blog returns 403, Quastor and Uber block feed fetches). Those articles show the snippet and an "Open original" link.
+- The System Design studio has no LLD templates yet; the HLD "Design template" on `/learn` still covers quick notes.
 - White text on the dark-theme `--primary` button measures 4.34:1, just under WCAG AA's 4.5:1. Fixing it means darkening the DESIGN §1 token.
 
 ---
@@ -81,6 +88,6 @@ Known gaps:
 - **"Explain my mistake"** on a wrong quiz answer, using one LLM call.
 - **RAG over your own notes** with Atlas Vector Search (available on M0). This makes the week-16 topic real.
 - **An MCP server for PrepOS** (`get_today_plan`, `mark_solved`) so Claude can read and update your progress. This makes the week-17 topic real.
-- **Mock-interview timer** with HLD and LLD templates and a self-review rubric.
+- **LLD mock interviews:** the System Design studio's timer and rubric, with class-diagram templates for LLD cases (parking lot, elevator, splitwise).
 - **AI news summaries:** one batched LLM call per morning fills `articles.aiSummary` for the newest AI items.
 - **Full LeetCode history import:** an opt-in `LEETCODE_SESSION` cookie for backfilling beyond the last 20 accepted submissions. (Public sync is already done; see ARCHITECTURE §9.)
