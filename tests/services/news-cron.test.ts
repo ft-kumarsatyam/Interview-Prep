@@ -5,7 +5,17 @@ import { Article, Notification, Settings } from "@/lib/models/system";
 import type { FeedFetcher } from "@/lib/news/fetch";
 import type { NotifyChannel } from "@/lib/notify";
 import { runEvening, runMorning } from "@/lib/services/cron";
-import { listArticles, markArticleRead, refreshNews, setBookmark } from "@/lib/services/news";
+import type { Extractor } from "@/lib/news/extract";
+import {
+  ensureArticleContent,
+  getArticle,
+  listArticles,
+  markArticleRead,
+  nextUnread,
+  prefetchArticleContent,
+  refreshNews,
+  setBookmark,
+} from "@/lib/services/news";
 import { notify } from "@/lib/services/notifications";
 import { getSetupChecklist } from "@/lib/services/setup";
 import { at, resetDb, startDb, stopDb } from "./db";
@@ -31,6 +41,20 @@ function fakeFetcher(byId: Record<string, RawItem[]>): FeedFetcher & { calls: nu
     { calls: 0 },
   );
   return f;
+}
+
+const longBody = `<h2>Sharding</h2><p>${Array(300).fill("partition keys spread load").join(" ")}</p><img src="https://cdn.x/d.png">`;
+
+function fakeExtractor(fail: string[] = []): Extractor & { calls: string[] } {
+  const calls: string[] = [];
+  return Object.assign(
+    async (url: string) => {
+      calls.push(url);
+      if (fail.includes(url)) throw new Error("HTTP 403");
+      return { markdown: `## Extracted\n\n${Array(1200).fill("cache").join(" ")}`, leadImage: "https://og.x/i.png" };
+    },
+    { calls },
+  );
 }
 
 function fakeChannel(): NotifyChannel & { sent: string[] } {
@@ -62,6 +86,62 @@ describe("news", () => {
     expect(await listArticles({ filter: "unread" })).toHaveLength(1);
   });
 
+  it("stores full feed bodies as markdown, leaves teasers for extraction, marks Google News headline-only", async () => {
+    await refreshNews({
+      fetcher: fakeFetcher({
+        bytebytego: [{ ...item("https://blog.bytebytego.com/p/shard", "How sharding works"), contentHtml: longBody }],
+        infoq: [{ ...item("https://www.infoq.com/news/x", "Short teaser"), contentHtml: "<p>Only a teaser.</p>" }],
+        "gn-backend": [item("https://news.google.com/rss/articles/abc", "System design news")],
+      }),
+      now: at("2026-10-06"),
+    });
+    const list = await listArticles();
+    const by = Object.fromEntries(list.map((a) => [a.title, a]));
+    expect(by["How sharding works"]).toMatchObject({ contentStatus: "full", readingMinutes: 5, leadImage: "https://cdn.x/d.png" });
+    expect(by["How sharding works"].tags).toContain("distributed");
+    expect(by["Short teaser"].contentStatus).toBeNull();
+    expect(by["System design news"].contentStatus).toBe("headline");
+    expect(list.every((a) => !("content" in a))).toBe(true);
+
+    const full = await getArticle(by["How sharding works"].id);
+    expect(full?.content).toMatch(/^## Sharding\n\npartition keys/);
+    expect(await listArticles({ minMinutes: 5 })).toHaveLength(1);
+    expect(await listArticles({ tag: "distributed" })).toHaveLength(1);
+  });
+
+  it("extracts on demand once, records failures and never retries them", async () => {
+    await refreshNews({
+      fetcher: fakeFetcher({ infoq: [item("https://www.infoq.com/a", "A"), item("https://www.infoq.com/b", "B")] }),
+      now: at("2026-10-06"),
+    });
+    const [a, b] = (await listArticles()).toSorted((x, y) => x.title.localeCompare(y.title));
+    const ex = fakeExtractor(["https://www.infoq.com/b"]);
+    expect(await ensureArticleContent(a.id, ex)).toBe("extracted");
+    expect(await ensureArticleContent(a.id, ex)).toBe("extracted");
+    expect(await ensureArticleContent(b.id, ex)).toBe("failed");
+    expect(await ensureArticleContent(b.id, ex)).toBe("failed");
+    expect(ex.calls).toEqual(["https://www.infoq.com/a", "https://www.infoq.com/b"]);
+
+    const got = await getArticle(a.id);
+    expect(got).toMatchObject({ contentStatus: "extracted", readingMinutes: 5, leadImage: "https://og.x/i.png", tags: ["caching"] });
+    expect((await getArticle(b.id))?.contentError).toBe("HTTP 403");
+    expect(await nextUnread(a.id, "system-design")).toMatchObject({ id: b.id });
+  });
+
+  it("prefetch only touches untried articles in reading categories, within the limit", async () => {
+    await refreshNews({
+      fetcher: fakeFetcher({
+        infoq: [item("https://www.infoq.com/1", "One"), item("https://www.infoq.com/2", "Two"), item("https://www.infoq.com/3", "Three")],
+        "js-weekly": [item("https://javascriptweekly.com/1", "JS")],
+      }),
+      now: at("2026-10-06"),
+    });
+    const ex = fakeExtractor();
+    expect(await prefetchArticleContent({ limit: 2, concurrency: 2, extractor: ex })).toEqual({ tried: 2, extracted: 2, failed: 0 });
+    expect(await prefetchArticleContent({ extractor: ex })).toEqual({ tried: 1, extracted: 1, failed: 0 });
+    expect(ex.calls.some((u) => u.includes("javascriptweekly"))).toBe(false);
+  });
+
   it("exempts bookmarks from the 30-day cleanup", async () => {
     await refreshNews({ fetcher: fakeFetcher({ hf: [item("https://hf.co/1", "A")] }), now: at("2026-10-06") });
     const [a] = await listArticles();
@@ -84,12 +164,14 @@ describe("notifications and cron", () => {
   it("morning: news, plan and notification; safe to re-run", async () => {
     const ch = fakeChannel();
     const fetcher = fakeFetcher({ hf: [item("https://hf.co/1", "A")] });
-    const res = await runMorning(at("2026-10-06"), { channels: [ch], fetcher });
+    const extractor = fakeExtractor();
+    const res = await runMorning(at("2026-10-06"), { channels: [ch], fetcher, extractor });
     expect(res.today).toBe("2026-10-06");
     expect(res.news).toMatchObject({ ok: true });
+    expect(res.articles).toMatchObject({ ok: true, detail: { tried: 1, extracted: 1 } });
     expect(res.plan).toMatchObject({ ok: true, detail: { kind: "study", notified: true } });
     expect(res.leetcode).toMatchObject({ ok: true, detail: { status: "disabled" } });
-    await runMorning(at("2026-10-06"), { channels: [ch], fetcher });
+    await runMorning(at("2026-10-06"), { channels: [ch], fetcher, extractor });
     expect(await Notification.countDocuments({ kind: "plan" })).toBe(1);
     expect(ch.sent).toEqual(["Today's plan is ready"]);
   });
@@ -107,7 +189,7 @@ describe("notifications and cron", () => {
     const before = await getSetupChecklist({ remember: true, now: at("2026-10-06") });
     expect(before.items.find((i) => i.id === "jobs")?.status).toBe("todo");
 
-    await runMorning(at("2026-10-06"), { fetcher: fakeFetcher({ hf: [item("https://hf.co/1", "A")] }), channels: [] });
+    await runMorning(at("2026-10-06"), { fetcher: fakeFetcher({ hf: [item("https://hf.co/1", "A")] }), extractor: fakeExtractor(), channels: [] });
     const after = await getSetupChecklist({ remember: false, now: new Date(at("2026-10-06").getTime() + 3_600_000) });
     const byId = Object.fromEntries(after.items.map((i) => [i.id, i]));
     expect(byId.jobs.detail).toContain("Morning ran 1h ago");

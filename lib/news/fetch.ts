@@ -3,10 +3,19 @@ import { cleanSnippet, safeUrl, type FeedSource, type RawItem } from "@/lib/doma
 
 const TIMEOUT_MS = 10_000;
 const MAX_BYTES = 5_000_000;
+/** Raw HTML kept per item before conversion; the markdown is capped again at CONTENT_MAX. */
+const MAX_CONTENT_HTML = 400_000;
 const USER_AGENT = "Mozilla/5.0 (compatible; PrepOS/1.0; personal RSS reader)";
 /** blog.google stalls on an XML-only Accept header, so keep the wildcard. */
 const ACCEPT = "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.8";
-const parser = new Parser();
+const parser = new Parser<Record<string, unknown>, { "content:encoded"?: string; mediaContent?: { $?: { url?: string; medium?: string } } }>({
+  customFields: { item: [["media:content", "mediaContent"]] },
+});
+
+function imageUrl(raw: string | undefined): string | null {
+  const url = safeUrl(raw);
+  return url?.startsWith("https:") ? url : null;
+}
 
 export type FeedFetcher = (source: FeedSource) => Promise<RawItem[]>;
 
@@ -26,12 +35,17 @@ export const fetchFeed: FeedFetcher = async (source) => {
     if (!url || !title) return [];
     const date = item.isoDate ?? item.pubDate;
     const publishedAt = date ? new Date(date) : null;
+    const body = item["content:encoded"] ?? item.content ?? "";
+    const enclosure = item.enclosure?.type?.startsWith("image/") ? item.enclosure.url : undefined;
+    const media = item.mediaContent?.$?.medium === "image" || /\.(jpe?g|png|webp|gif)(\?|$)/i.test(item.mediaContent?.$?.url ?? "") ? item.mediaContent?.$?.url : undefined;
     return [
       {
         url,
         title,
         publishedAt: publishedAt && !Number.isNaN(publishedAt.getTime()) ? publishedAt : null,
         snippet: cleanSnippet(item.contentSnippet ?? item.content ?? item.summary),
+        ...(body.length > 0 ? { contentHtml: body.slice(0, MAX_CONTENT_HTML) } : {}),
+        ...(imageUrl(enclosure ?? media) ? { leadImage: imageUrl(enclosure ?? media)! } : {}),
       },
     ];
   });

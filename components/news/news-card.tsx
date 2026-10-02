@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useOptimistic, useTransition } from "react";
-import { Bookmark, ExternalLink } from "lucide-react";
+import { Bookmark, Clock, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { bookmarkAction, markReadAction } from "@/app/(app)/news/actions";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,9 @@ export interface NewsCardItem {
   summary: string | null;
   read: boolean;
   bookmarked: boolean;
+  /** Minutes of stored full text; null when the reader would have to fetch it. */
+  readingMinutes?: number | null;
+  tags?: Array<{ id: string; label: string }>;
 }
 
 type CardState = Pick<NewsCardItem, "read" | "bookmarked">;
@@ -27,7 +31,7 @@ export function NewsCard({ item, readingsGoal }: { item: NewsCardItem; readingsG
   const [state, setState] = useOptimistic<CardState, Partial<CardState>>({ read: item.read, bookmarked: item.bookmarked }, (s, patch) => ({ ...s, ...patch }));
   const host = new URL(item.url).hostname.replace(/^www\./, "");
 
-  const onRead = () => {
+  const onOpenOriginal = () => {
     if (state.read) return;
     start(async () => {
       setState({ read: true });
@@ -57,27 +61,37 @@ export function NewsCard({ item, readingsGoal }: { item: NewsCardItem; readingsG
         )}
         {!state.read && <span className="ml-auto size-2 shrink-0 rounded-full bg-primary" aria-label="Unread" />}
       </div>
-      <a
-        href={item.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={onRead}
-        onAuxClick={onRead}
-        className="font-medium leading-snug hover:text-primary hover:underline"
-      >
+      <Link href={`/news/${item.id}`} className="font-medium leading-snug hover:text-primary hover:underline">
         {item.title}
-      </a>
+      </Link>
       {(item.summary || item.snippet) && <p className="line-clamp-3 text-sm text-muted-foreground">{item.summary ?? item.snippet}</p>}
+      {item.readingMinutes || item.tags?.length ? (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          {item.readingMinutes ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-success/12 px-2 py-0.5 font-medium text-success">
+              <Clock className="size-3" aria-hidden /> {item.readingMinutes} min · full article
+            </span>
+          ) : null}
+          {item.tags?.slice(0, 2).map((t) => (
+            <span key={t.id} className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+              {t.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-auto flex items-center justify-between pt-1">
-        <span className="text-xs text-muted-foreground">{item.categoryName}</span>
-        <div className="flex items-center gap-1">
+        <span className="truncate text-xs text-muted-foreground">{item.categoryName}</span>
+        <div className="flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="icon-sm" onClick={onBookmark} aria-pressed={state.bookmarked} aria-label={state.bookmarked ? "Remove bookmark" : "Bookmark"}>
             <Bookmark className={cn(state.bookmarked && "fill-primary text-primary")} />
           </Button>
-          <Button asChild variant="outline" size="sm">
-            <a href={item.url} target="_blank" rel="noopener noreferrer" onClick={onRead}>
-              Read <ExternalLink />
+          <Button asChild variant="ghost" size="icon-sm" aria-label="Open original in a new tab">
+            <a href={item.url} target="_blank" rel="noopener noreferrer" onClick={onOpenOriginal} onAuxClick={onOpenOriginal}>
+              <ExternalLink />
             </a>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/news/${item.id}`}>Read</Link>
           </Button>
         </div>
       </div>

@@ -56,9 +56,19 @@ const articleSchema = new Schema(
     readOn: { type: String, default: null },
     bookmarked: { type: Boolean, default: false },
     titleKey: { type: String, index: true },
+    /** Article body as markdown (never HTML). Left out of list queries. */
+    content: { type: String, maxlength: 90_000 },
+    /** null = not tried yet; see ContentStatus in lib/domain/article.ts. */
+    contentStatus: { type: String, enum: ["full", "extracted", "failed", "headline", null], default: null },
+    contentError: { type: String, maxlength: 300 },
+    readingMinutes: { type: Number },
+    leadImage: { type: String },
+    tags: { type: [String], default: [] },
   },
   { timestamps: false },
 );
+articleSchema.index({ tags: 1 });
+articleSchema.index({ contentStatus: 1, category: 1 });
 articleSchema.index({ readOn: 1 });
 articleSchema.index({ fetchedAt: 1 }, { expireAfterSeconds: 30 * 24 * 3600 });
 articleSchema.index({ publishedAt: -1 });

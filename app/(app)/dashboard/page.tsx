@@ -21,9 +21,10 @@ import { ProgressRing } from "@/components/dashboard/progress-ring";
 import { ProblemList } from "@/components/progress/problem-list";
 import { SubtopicChecklist } from "@/components/progress/subtopic-checklist";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { toCardItem } from "@/components/news/card-item";
 import { NewsCard } from "@/components/news/news-card";
-import { mainProblemCount, news } from "@/lib/content";
-import { timeAgo } from "@/lib/domain/news";
+import { mainProblemCount } from "@/lib/content";
+import { isLongRead } from "@/lib/domain/article";
 import { READINGS_PER_DAY } from "@/lib/domain/plan-config";
 import { listArticles } from "@/lib/services/news";
 import { formatDate, planClock } from "@/lib/plan-clock";
@@ -33,8 +34,6 @@ import { LeetCodeCard } from "@/components/leetcode/leetcode-card";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard" };
-
-const newsCategoryName = new Map(news.categories.map((c) => [c.id, c.name]));
 
 function localHour(timeZone: string): number {
   return Number(new Intl.DateTimeFormat("en-GB", { hour: "numeric", hourCycle: "h23", timeZone }).format(new Date()));
@@ -54,11 +53,12 @@ export default async function DashboardPage() {
   // Throttled to once per 10 min; a LeetCode outage must never break the dashboard.
   await syncLeetCode().catch(() => null);
   const session = await currentSession();
-  const [data, latestNews, setup] = await Promise.all([
+  const [data, unreadNews, setup] = await Promise.all([
     getDashboard(),
-    listArticles({ filter: "unread", limit: 3 }),
+    listArticles({ filter: "unread", limit: 30 }),
     getSetupChecklist({ remember: session.remember }),
   ]);
+  const latestNews = [...unreadNews.filter((a) => isLongRead(a)), ...unreadNews.filter((a) => !isLongRead(a))].slice(0, 3);
   const { day, plan, settings, today } = data;
   const clock = planClock(settings);
   const hour = localHour(settings.timezone);
@@ -287,11 +287,7 @@ export default async function DashboardPage() {
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             {latestNews.map((a) => (
-              <NewsCard
-                key={a.id}
-                readingsGoal={READINGS_PER_DAY}
-                item={{ ...a, categoryName: newsCategoryName.get(a.category) ?? a.category, age: a.publishedAt ? timeAgo(new Date(a.publishedAt), new Date()) : null }}
-              />
+              <NewsCard key={a.id} readingsGoal={READINGS_PER_DAY} item={toCardItem(a, new Date())} />
             ))}
           </div>
         </section>

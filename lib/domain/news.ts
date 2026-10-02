@@ -17,6 +17,9 @@ export interface RawItem {
   title: string;
   publishedAt: Date | null;
   snippet: string;
+  /** Article body from `content:encoded` / Atom `content`, when the feed carries it. */
+  contentHtml?: string;
+  leadImage?: string;
 }
 
 export interface NewsItem extends RawItem {
@@ -43,6 +46,10 @@ export function titleKey(title: string): string {
     .replace(/\s+/g, " ");
 }
 
+function safeCodePoint(n: number): string {
+  return n > 31 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : " ";
+}
+
 /** Plain-text excerpt from feed HTML. Output is rendered as text, never as HTML. */
 export function cleanSnippet(html: string | undefined, max = SNIPPET_MAX): string {
   if (!html) return "";
@@ -55,6 +62,8 @@ export function cleanSnippet(html: string | undefined, max = SNIPPET_MAX): strin
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d{1,7});/g, (_, n: string) => safeCodePoint(Number(n)))
+    .replace(/&#x([\da-f]{2,5});/gi, (_, h: string) => safeCodePoint(parseInt(h, 16)))
     .replace(/\s+/g, " ")
     .trim();
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
