@@ -4,7 +4,7 @@ import { Playground } from "@/components/playground/playground";
 import { PageHeader } from "@/components/shared/page-header";
 import { listSnippets } from "@/lib/services/snippets";
 
-export const metadata: Metadata = { title: "JS Playground" };
+export const metadata: Metadata = { title: "Playground" };
 
 /** `?snippet=` is a saved snippet id or base64url-encoded code (e.g. from a quiz question). */
 function decodeSnippetParam(raw: string | undefined, saved: Array<{ id: string; code: string }>): string | undefined {
@@ -27,8 +27,8 @@ export default async function PlaygroundPage({ searchParams }: PageProps<"/playg
     <>
       <PageHeader
         icon={SquareTerminal}
-        title="JS Playground"
-        description="Experiment with JavaScript or TypeScript, save snippets by topic, and train your intuition with predict-the-output drills. Code runs in a sandboxed Web Worker."
+        title="Playground"
+        description="Experiment in JavaScript, TypeScript or Python, save snippets by topic, and train your intuition with predict-the-output drills. Code runs in a sandboxed Web Worker in your browser."
       />
       <Playground snippets={snippets} initialCode={initialCode} />
     </>

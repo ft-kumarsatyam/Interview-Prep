@@ -2,7 +2,8 @@ import { env } from "@/lib/env";
 
 export interface NotifyChannel {
   name: "telegram" | "email";
-  send(title: string, body: string): Promise<void>;
+  /** `html` is an optional richer body for email; channels that can't render it use `body`. */
+  send(title: string, body: string, html?: string): Promise<void>;
 }
 
 const TIMEOUT_MS = 10_000;
@@ -26,10 +27,49 @@ export function telegramChannel(token: string, chatId: string): NotifyChannel {
 export function emailChannel(apiKey: string, to: string): NotifyChannel {
   return {
     name: "email",
-    send: (title, body) =>
+    send: (title, body, html) =>
       post("https://api.resend.com/emails", {
         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ from: "PrepOS <onboarding@resend.dev>", to: [to], subject: title, text: body }),
+        body: JSON.stringify({
+          from: "PrepOS <onboarding@resend.dev>",
+          to: [to],
+          subject: title,
+          text: body,
+          ...(html ? { html } : {}),
+        }),
+      }),
+  };
+}
+
+/** Accepts a plain `xkeysib-…` key or the base64 MCP form `{"api_key":"xkeysib-…"}`. */
+export function brevoApiKey(raw: string): string {
+  const key = raw.trim();
+  if (key.startsWith("xkeysib-")) return key;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(key, "base64").toString("utf8"));
+    if (parsed && typeof parsed === "object" && "api_key" in parsed && typeof parsed.api_key === "string") {
+      return parsed.api_key;
+    }
+  } catch {
+    // Not base64 JSON: use as given.
+  }
+  return key;
+}
+
+export function brevoChannel(apiKey: string, sender: string, to: string): NotifyChannel {
+  const key = brevoApiKey(apiKey);
+  return {
+    name: "email",
+    send: (title, body, html) =>
+      post("https://api.brevo.com/v3/smtp/email", {
+        headers: { "content-type": "application/json", accept: "application/json", "api-key": key },
+        body: JSON.stringify({
+          sender: { name: "PrepOS", email: sender },
+          to: [{ email: to }],
+          subject: title,
+          textContent: body,
+          ...(html ? { htmlContent: html } : {}),
+        }),
       }),
   };
 }
@@ -39,7 +79,10 @@ export function configuredChannels(): NotifyChannel[] {
   const e = env();
   const channels: NotifyChannel[] = [];
   if (e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_CHAT_ID) channels.push(telegramChannel(e.TELEGRAM_BOT_TOKEN, e.TELEGRAM_CHAT_ID));
-  if (e.RESEND_API_KEY && e.NOTIFY_EMAIL) channels.push(emailChannel(e.RESEND_API_KEY, e.NOTIFY_EMAIL));
+  if (e.NOTIFY_EMAIL) {
+    if (e.BREVO_API_KEY && e.BREVO_SENDER_EMAIL) channels.push(brevoChannel(e.BREVO_API_KEY, e.BREVO_SENDER_EMAIL, e.NOTIFY_EMAIL));
+    else if (e.RESEND_API_KEY) channels.push(emailChannel(e.RESEND_API_KEY, e.NOTIFY_EMAIL));
+  }
   return channels;
 }
 
@@ -48,8 +91,9 @@ export async function pushToChannels(
   title: string,
   body: string,
   channels: readonly NotifyChannel[] = configuredChannels(),
+  html?: string,
 ): Promise<{ sent: string[]; failed: string[] }> {
-  const results = await Promise.allSettled(channels.map((c) => c.send(title, body)));
+  const results = await Promise.allSettled(channels.map((c) => c.send(title, body, html)));
   const sent: string[] = [];
   const failed: string[] = [];
   results.forEach((r, i) => {

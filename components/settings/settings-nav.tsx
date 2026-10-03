@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bell, Bot, CalendarDays, CalendarOff, Clock, Code2, Database, Gauge, Newspaper, Sparkles, Wallet, type LucideIcon } from "lucide-react";
+import { Bell, Bot, CalendarDays, CalendarOff, Clock, Code2, Database, Gauge, Newspaper, Sparkles, Timer, Wallet, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface SettingsSection {
@@ -17,6 +17,7 @@ export const SETTINGS_GROUPS: Array<{ label: string; sections: SettingsSection[]
       { id: "plan", label: "Plan and targets", icon: CalendarDays },
       { id: "hours", label: "Study hours", icon: Clock },
       { id: "quiz", label: "Quiz and mastery", icon: Gauge },
+      { id: "mocks", label: "Weekly mocks", icon: Timer },
       { id: "rest-days", label: "Rest days", icon: CalendarOff },
     ],
   },

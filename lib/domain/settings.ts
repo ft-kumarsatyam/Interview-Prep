@@ -36,6 +36,9 @@ export const settingsInputSchema = z
     llmPaidEnabled: z.boolean().optional(),
     llmPaidDailyCap: int(0, 200).optional(),
     llmPaidRequireConfirm: z.boolean().optional(),
+    /** Weekly mock days, 0 = Sunday … 6 = Saturday. Never affect the streak. */
+    mockDsaWeekday: int(0, 6).optional(),
+    mockHldWeekday: int(0, 6).optional(),
     /** Study hours per day of week, Sunday first. 0 = nothing planned beyond the fixed blocks. */
     hoursByDow: z.array(z.coerce.number().min(0).max(12)).length(7).optional(),
     /** Null resets to the defaults in data/news-sources.json. */

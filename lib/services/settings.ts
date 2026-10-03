@@ -4,6 +4,7 @@ import { toLocalDate } from "@/lib/domain/dates";
 import { DEFAULT_SETTINGS, type PlanSettings } from "@/lib/domain/plan-config";
 import { DEFAULT_PAID_SETTINGS, type PaidSettings } from "@/lib/domain/llm-router";
 import { checkGeminiLink, isAskSubject, type AskSubject } from "@/lib/domain/ask-subjects";
+import { DEFAULT_MOCK_SCHEDULE } from "@/lib/domain/mock";
 import { DEFAULT_HOURS } from "@/lib/domain/time-budget";
 import { mergeRestDays, normaliseQueries, type SettingsInput } from "@/lib/domain/settings";
 import { env } from "@/lib/env";
@@ -12,6 +13,7 @@ import { Settings, SETTINGS_ID } from "@/lib/models/system";
 export interface AppSettings extends PlanSettings {
   llmPaid: PaidSettings;
   geminiLinks: Partial<Record<AskSubject, string>>;
+  mockSchedule: { dsaWeekday: number; hldWeekday: number };
   freezeTokens: number;
   settledThrough: string | null;
   topicMasteryPct: number;
@@ -58,6 +60,10 @@ export async function getSettings(): Promise<AppSettings> {
       requireConfirm: doc.llmPaidRequireConfirm ?? DEFAULT_PAID_SETTINGS.requireConfirm,
     },
     geminiLinks: cleanLinks(doc.geminiLinks),
+    mockSchedule: {
+      dsaWeekday: doc.mockDsaWeekday ?? DEFAULT_MOCK_SCHEDULE.dsaWeekday,
+      hldWeekday: doc.mockHldWeekday ?? DEFAULT_MOCK_SCHEDULE.hldWeekday,
+    },
     freezeTokens: doc.freezeTokens ?? 0,
     settledThrough: doc.settledThrough ?? null,
     topicMasteryPct: doc.topicMasteryPct ?? 70,
@@ -132,6 +138,8 @@ export async function saveSettings(input: SettingsInput, now = new Date()): Prom
         ...(input.llmPaidEnabled !== undefined ? { llmPaidEnabled: input.llmPaidEnabled } : {}),
         ...(input.llmPaidDailyCap !== undefined ? { llmPaidDailyCap: input.llmPaidDailyCap } : {}),
         ...(input.llmPaidRequireConfirm !== undefined ? { llmPaidRequireConfirm: input.llmPaidRequireConfirm } : {}),
+        ...(input.mockDsaWeekday !== undefined ? { mockDsaWeekday: input.mockDsaWeekday } : {}),
+        ...(input.mockHldWeekday !== undefined ? { mockHldWeekday: input.mockHldWeekday } : {}),
         googleNewsQueries: normaliseQueries(input.googleNewsQueries, news.googleNews.defaultQueries.map((q) => q.query)),
         leetcodeUsername: input.leetcodeUsername,
         ...(leetcodeChanged ? { leetcodeLastSyncAt: null, leetcodeSeenIds: [], leetcodeLastError: null } : {}),

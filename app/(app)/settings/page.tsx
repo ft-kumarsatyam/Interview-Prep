@@ -53,6 +53,8 @@ export default async function SettingsPage() {
               llmPaidEnabled: s.llmPaid.enabled,
               llmPaidDailyCap: s.llmPaid.dailyCap,
               llmPaidRequireConfirm: s.llmPaid.requireConfirm,
+              mockDsaWeekday: s.mockSchedule.dsaWeekday,
+              mockHldWeekday: s.mockSchedule.hldWeekday,
               hoursByDow: s.hoursByDow ? [...s.hoursByDow] : [...DEFAULT_HOURS],
               googleNewsQueries: s.googleNewsQueries ?? defaultQueries,
               leetcodeUsername: s.leetcodeUsername ?? "",
@@ -63,7 +65,12 @@ export default async function SettingsPage() {
           <SettingsTools
             channels={[
               { name: "Telegram", configured: !!(e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_CHAT_ID), envVars: "TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID" },
-              { name: "Email (Resend)", configured: !!(e.RESEND_API_KEY && e.NOTIFY_EMAIL), envVars: "RESEND_API_KEY, NOTIFY_EMAIL" },
+              {
+                name: "Email (Brevo)",
+                configured: !!(e.BREVO_API_KEY && e.BREVO_SENDER_EMAIL && e.NOTIFY_EMAIL),
+                envVars: "BREVO_API_KEY, BREVO_SENDER_EMAIL, NOTIFY_EMAIL",
+              },
+              { name: "Email (Resend, fallback)", configured: !!(e.RESEND_API_KEY && e.NOTIFY_EMAIL), envVars: "RESEND_API_KEY, NOTIFY_EMAIL" },
             ]}
           />
         </div>

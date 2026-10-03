@@ -9,8 +9,8 @@ const LABEL: Record<HintKind, string> = { nudge: "Nudge", approach: "Approach", 
 const BUTTON: Record<HintKind, string> = { nudge: "Show a nudge", approach: "Show the approach", pseudocode: "Show pseudocode" };
 
 /** Hints are a ladder: each step gives away more, so you only reveal as much as you need. */
-export function HintReveal({ hints }: { hints: HintLevel[] }) {
-  const [revealed, setRevealed] = useState(0);
+export function HintReveal({ hints, initialRevealed = 0, onReveal }: { hints: HintLevel[]; initialRevealed?: number; onReveal?: (revealed: number) => void }) {
+  const [revealed, setRevealed] = useState(initialRevealed);
   const next = nextHint(hints, revealed);
   if (hints.length === 0) return null;
 
@@ -26,7 +26,11 @@ export function HintReveal({ hints }: { hints: HintLevel[] }) {
         </div>
       ))}
       {next && (
-        <Button type="button" variant="outline" className="h-9" onClick={() => setRevealed((r) => r + 1)}>
+        <Button type="button" variant="outline" className="h-9" onClick={() => {
+            setRevealed(revealed + 1);
+            onReveal?.(revealed + 1);
+          }}
+        >
           <Lightbulb /> {BUTTON[next.kind]}
           <span className="tabular font-mono text-xs text-muted-foreground">
             {revealed + 1}/{hints.length}

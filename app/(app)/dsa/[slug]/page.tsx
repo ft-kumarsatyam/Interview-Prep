@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Circle, CircleDot, ExternalLink, RefreshCw } from "lucide-react";
 import { AskGemini } from "@/components/ai/ask-gemini";
-import { CodeRunner } from "@/components/dsa/code-runner";
+import { DsaIde } from "@/components/dsa/dsa-ide";
 import { ProblemStatement, ProblemStatementSkeleton } from "@/components/dsa/problem-statement";
 import { ProblemNotes } from "@/components/dsa/problem-notes";
 import { ProblemWorkspace } from "@/components/dsa/problem-workspace";
@@ -45,6 +45,68 @@ export default async function ProblemPage({ params }: PageProps<"/dsa/[slug]">) 
   const prev = position > 0 ? siblings[position - 1] : undefined;
   const next = position >= 0 && position < siblings.length - 1 ? siblings[position + 1] : undefined;
   const backHref = `/dsa?${new URLSearchParams({ ...(problem.track === "main" ? {} : { track: problem.track }), pattern: problem.pattern }).toString()}`;
+
+  if (entry) {
+    return (
+      <div className="space-y-3">
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <Link
+            href={backHref}
+            className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded-md text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            aria-label={`Back to ${problem.pattern}`}
+          >
+            <ChevronLeft className="size-4" />
+            <span className="hidden max-w-40 truncate sm:inline">{problem.pattern}</span>
+          </Link>
+          <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight">
+            <span className="mr-1.5 font-mono text-sm font-normal text-muted-foreground">{problem.leetcodeId}.</span>
+            {problem.title}
+          </h1>
+          <DifficultyBadge difficulty={problem.difficulty} />
+          <StatusChip progress={progress} lastSolved={lastSolved} />
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <SolveButton
+              size="sm"
+              target={{ slug: problem.slug, title: problem.title, date: progress?.needsDetails ? lastSolved : undefined }}
+              label={progress?.needsDetails ? "Fill in details" : solved ? "Log re-solve" : "Mark solved"}
+              variant={solved && !progress?.needsDetails ? "secondary" : "outline"}
+            />
+            <Button size="icon" variant="outline" className="size-8" asChild>
+              <a href={problem.url} target="_blank" rel="noreferrer" aria-label="Open on LeetCode" title="Open on LeetCode">
+                <ExternalLink />
+              </a>
+            </Button>
+            {siblings.length > 1 && (
+              <>
+                <span className="tabular hidden font-mono text-xs text-muted-foreground md:inline">
+                  {position + 1}/{siblings.length}
+                </span>
+                <SiblingButton problem={prev} direction="prev" compact />
+                <SiblingButton problem={next} direction="next" compact />
+              </>
+            )}
+          </div>
+        </header>
+        <DsaIde
+          slug={problem.slug}
+          title={problem.title}
+          entry={entry}
+          difficulty={problem.difficulty}
+          pattern={problem.pattern}
+          url={problem.url}
+          revealedCases={progress?.revealedCases ?? []}
+          solveCount={progress?.solveDates.length ?? 0}
+          statement={
+            <Suspense fallback={<ProblemStatementSkeleton />}>
+              <ProblemStatement slug={problem.slug} url={problem.url} plain />
+            </Suspense>
+          }
+          notes={<ProblemNotes slug={problem.slug} initial={progress?.notes ?? ""} />}
+          history={<History progress={progress} solved={solved} />}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -116,11 +178,6 @@ export default async function ProblemPage({ params }: PageProps<"/dsa/[slug]">) 
             <ProblemStatement slug={problem.slug} url={problem.url} />
           </Suspense>
         }
-        code={
-          entry ? (
-            <CodeRunner slug={problem.slug} title={problem.title} entry={entry} difficulty={problem.difficulty} pattern={problem.pattern} url={problem.url} revealedCases={progress?.revealedCases ?? []} />
-          ) : undefined
-        }
         notes={
           <Card>
             <CardHeader>
@@ -166,18 +223,20 @@ function StatusChip({ progress, lastSolved }: { progress: ProblemDetail["progres
   );
 }
 
-function SiblingButton({ problem, direction }: { problem?: ContentProblem; direction: "prev" | "next" }) {
+function SiblingButton({ problem, direction, compact }: { problem?: ContentProblem; direction: "prev" | "next"; compact?: boolean }) {
   const Icon = direction === "prev" ? ChevronLeft : ChevronRight;
   const label = direction === "prev" ? "Previous problem" : "Next problem";
+  const size = compact ? "icon" : "icon-lg";
+  const cls = compact ? "size-8" : undefined;
   if (!problem) {
     return (
-      <Button variant="outline" size="icon-lg" disabled aria-label={label}>
+      <Button variant="outline" size={size} className={cls} disabled aria-label={label}>
         <Icon />
       </Button>
     );
   }
   return (
-    <Button variant="outline" size="icon-lg" asChild>
+    <Button variant="outline" size={size} className={cls} asChild>
       <Link href={`/dsa/${problem.slug}`} aria-label={`${label}: ${problem.title}`} title={problem.title}>
         <Icon />
       </Link>

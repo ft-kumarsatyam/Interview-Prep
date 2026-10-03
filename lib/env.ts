@@ -27,6 +27,12 @@ const schema = z.object({
   LEETCODE_USERNAME: z.string().regex(/^[\w-]{1,40}$/).optional(),
   RESEND_API_KEY: z.string().optional(),
   NOTIFY_EMAIL: z.string().optional(),
+  /** Brevo v3 key (`xkeysib-…`) or the base64 MCP form `{"api_key":"xkeysib-…"}`. */
+  BREVO_API_KEY: z.string().optional(),
+  /** Must be a verified sender in Brevo. */
+  BREVO_SENDER_EMAIL: z.email().optional(),
+  /** Public base URL used for links in emails, e.g. https://satyam-dev.in */
+  APP_URL: z.url().optional(),
 });
 
 export type Env = z.infer<typeof schema>;

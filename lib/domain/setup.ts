@@ -175,7 +175,7 @@ function notifyItem({ notify }: SetupInput): SetupItem {
     status: channels.length ? "ok" : "warn",
     detail: channels.length
       ? `Morning plan and evening reminder are pushed to ${channels.join(" and ")}.`
-      : "Optional. Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID or RESEND_API_KEY + NOTIFY_EMAIL to get reminders on your phone. iPhone home-screen apps can't receive push here.",
+      : "Optional. Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID or NOTIFY_EMAIL + BREVO_API_KEY + BREVO_SENDER_EMAIL (or RESEND_API_KEY) to get reminders and the morning digest on your phone. iPhone home-screen apps can't receive push here.",
     required: false,
     actions: channels.length ? [{ kind: "button", id: "test-notify", label: "Send test" }] : [],
   };

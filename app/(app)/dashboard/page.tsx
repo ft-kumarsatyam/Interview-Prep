@@ -39,6 +39,8 @@ import { formatDate, planClock } from "@/lib/plan-clock";
 import { getDashboard, type PlanProblem } from "@/lib/services/dashboard";
 import { syncLeetCode } from "@/lib/services/leetcode-sync";
 import { LeetCodeCard } from "@/components/leetcode/leetcode-card";
+import { WeeklyMocksCard } from "@/components/mock/weekly-mocks-card";
+import { weeklyMocks } from "@/lib/services/mock";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -81,6 +83,7 @@ export default async function DashboardPage() {
   ]);
   const latestNews = [...unreadNews.filter((a) => isLongRead(a)), ...unreadNews.filter((a) => !isLongRead(a))].slice(0, 3);
   const { day, plan, settings, today } = data;
+  const mockSlots = await weeklyMocks(today, settings.mockSchedule);
   const clock = planClock(settings);
   const hour = localHour(settings.timezone);
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
@@ -384,6 +387,8 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <WeeklyMocksCard slots={mockSlots} today={today} compact />
 
       {day.kind === "sunday" && data.bonus.problems.length + data.bonus.theory.length > 0 && (
         <Card id="bonus">

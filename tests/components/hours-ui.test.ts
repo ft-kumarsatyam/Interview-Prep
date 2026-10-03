@@ -46,6 +46,8 @@ describe("SettingsForm study hours", () => {
     llmPaidRequireConfirm: true,
     googleNewsQueries: [],
     leetcodeUsername: "",
+    mockDsaWeekday: 6,
+    mockHldWeekday: 0,
   };
 
   it("renders seven day inputs in Sunday-first order and the weekly total", () => {

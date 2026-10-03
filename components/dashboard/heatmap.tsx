@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { HeatCell, HeatState } from "@/lib/domain/heatmap";
 import { formatDate } from "@/lib/plan-clock";
 import { cn } from "@/lib/utils";
@@ -32,10 +33,12 @@ export function Heatmap({ cells }: { cells: HeatCell[] }) {
         {weeks.map((week, wi) => (
           <div key={wi} className="flex flex-col gap-1" aria-hidden>
             {week.map((cell) => (
-              <div
+              <Link
                 key={cell.date}
+                href={`/calendar/${cell.date}`}
+                tabIndex={-1}
                 title={`${formatDate(cell.date)} · ${STATE_LABEL[cell.state]} · ${cell.dsaSolved} solved · ${cell.theoryDone} theory`}
-                className={cn("size-3 rounded-[3px] sm:size-3.5", STATE_CLASS[cell.state])}
+                className={cn("size-3 rounded-[3px] transition-transform hover:scale-125 sm:size-3.5", STATE_CLASS[cell.state])}
               />
             ))}
           </div>
@@ -47,6 +50,9 @@ export function Heatmap({ cells }: { cells: HeatCell[] }) {
             <span className={cn("size-3 rounded-[3px]", STATE_CLASS[s])} /> {STATE_LABEL[s]}
           </span>
         ))}
+        <Link href="/calendar" className="ml-auto text-primary hover:underline">
+          Open calendar
+        </Link>
       </div>
     </div>
   );

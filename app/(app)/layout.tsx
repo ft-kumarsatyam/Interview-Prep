@@ -68,7 +68,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <ThemeToggle />
           </div>
         </header>
-        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1200px] flex-1 px-4 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] outline-none sm:pt-6 lg:px-8 lg:pb-10">
+        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1200px] flex-1 px-4 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] outline-none sm:pt-6 lg:px-8 lg:pb-10 has-[[data-ide]]:max-w-none md:has-[[data-ide]]:pt-3 lg:has-[[data-ide]]:px-4 lg:has-[[data-ide]]:pb-3">
           <InstallHint />
           {children}
         </main>

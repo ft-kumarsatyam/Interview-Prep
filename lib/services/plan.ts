@@ -1,7 +1,7 @@
 import { problemBySlug, problems, subtopics } from "@/lib/content";
 import { connectDb } from "@/lib/db";
 import { addDays, eachDay, toLocalDate, type DateStr } from "@/lib/domain/dates";
-import { buildDailyPlan, dayKind, type DailyPlanDraft } from "@/lib/domain/planner";
+import { buildDailyPlan, dayKind, type DailyPlanDraft, type ProblemState, type ReviewState, type SubtopicState } from "@/lib/domain/planner";
 import { bestStreak, currentStreak, settleDays, type DayRecord, type StreakEvent } from "@/lib/domain/streak";
 import { estimateCosts, type Costs } from "@/lib/domain/time-budget";
 import { DailyPlan, DayLog } from "@/lib/models/day";
@@ -91,7 +91,8 @@ export async function loadCosts(): Promise<Costs> {
   return estimateCosts(history);
 }
 
-async function draftFor(s: AppSettings, date: DateStr, extra: { hoursOverride?: number } = {}): Promise<DailyPlanDraft> {
+/** Current progress in the shape the planner takes. */
+export async function loadPlanInputs(): Promise<{ problems: ProblemState[]; reviews: ReviewState[]; subtopics: SubtopicState[]; costs: Costs }> {
   const [progressRows, doneSubtopics, costs] = await Promise.all([
     ProblemProgress.find({}, { slug: 1, status: 1, nextReviewAt: 1 }).lean(),
     SubtopicProgress.find({}, { subtopicId: 1 }).lean(),
@@ -99,15 +100,16 @@ async function draftFor(s: AppSettings, date: DateStr, extra: { hoursOverride?: 
   ]);
   const solved = new Set(progressRows.filter((p) => p.status === "solved").map((p) => p.slug));
   const done = new Set(doneSubtopics.map((d) => d.subtopicId));
-  return buildDailyPlan({
-    date,
-    settings: s,
+  return {
     problems: problems.map((p) => ({ slug: p.slug, track: p.track, order: p.order, solved: solved.has(p.slug), difficulty: p.difficulty })),
     reviews: progressRows.filter((p) => p.nextReviewAt).map((p) => ({ slug: p.slug, nextReviewAt: p.nextReviewAt! })),
     subtopics: subtopics.map((t) => ({ id: t.id, week: t.week, position: t.position, done: done.has(t.id) })),
     costs,
-    ...extra,
-  });
+  };
+}
+
+async function draftFor(s: AppSettings, date: DateStr, extra: { hoursOverride?: number } = {}): Promise<DailyPlanDraft> {
+  return buildDailyPlan({ date, settings: s, ...(await loadPlanInputs()), ...extra });
 }
 
 /** Drop undefined keys so optional time fields don't reach Mongo as null. */

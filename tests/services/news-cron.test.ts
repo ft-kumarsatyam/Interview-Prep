@@ -57,9 +57,21 @@ function fakeExtractor(fail: string[] = []): Extractor & { calls: string[] } {
   );
 }
 
-function fakeChannel(): NotifyChannel & { sent: string[] } {
+function fakeChannel(): NotifyChannel & { sent: string[]; bodies: string[]; htmls: (string | undefined)[] } {
   const sent: string[] = [];
-  return { name: "telegram", sent, send: async (title) => void sent.push(title) };
+  const bodies: string[] = [];
+  const htmls: (string | undefined)[] = [];
+  return {
+    name: "telegram",
+    sent,
+    bodies,
+    htmls,
+    send: async (title, body, html) => {
+      sent.push(title);
+      bodies.push(body);
+      htmls.push(html);
+    },
+  };
 }
 
 describe("news", () => {
@@ -173,7 +185,20 @@ describe("notifications and cron", () => {
     expect(res.leetcode).toMatchObject({ ok: true, detail: { status: "disabled" } });
     await runMorning(at("2026-10-06"), { channels: [ch], fetcher, extractor });
     expect(await Notification.countDocuments({ kind: "plan" })).toBe(1);
-    expect(ch.sent).toEqual(["Today's plan is ready"]);
+    expect((await Notification.findOne({ kind: "plan" }).lean())?.title).toBe("Today's plan is ready");
+    expect(ch.sent).toEqual(["Today's targets · 2026-10-06"]);
+    expect(ch.bodies[0]).toMatch(/DSA problems?.*then the daily quiz/);
+    expect(ch.bodies[0]).toContain("Daily quiz");
+    expect(ch.htmls[0]).toContain("<h2");
+  });
+
+  it("morning on a rest day: a day-off note instead of targets", async () => {
+    await Settings.updateOne({ _id: "settings" }, { $set: { restDays: ["2026-10-06"] } });
+    const ch = fakeChannel();
+    const res = await runMorning(at("2026-10-06"), { channels: [ch], fetcher: fakeFetcher({}), extractor: fakeExtractor() });
+    expect(res.plan).toMatchObject({ ok: true, detail: { kind: "rest", notified: true } });
+    expect((await Notification.findOne({ kind: "plan" }).lean())?.title).toBe("Day off");
+    expect(ch.sent).toEqual(["Day off · 2026-10-06"]);
   });
 
   it("evening: reminds when incomplete, once", async () => {

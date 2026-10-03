@@ -2,38 +2,62 @@
 
 import { useEffect, useRef } from "react";
 import { javascript } from "@codemirror/lang-javascript";
-import { Compartment, EditorState, Prec } from "@codemirror/state";
+import { python } from "@codemirror/lang-python";
+import { indentUnit } from "@codemirror/language";
+import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import { useTheme } from "next-themes";
+import type { Language } from "@/lib/domain/starters";
 import { cn } from "@/lib/utils";
+
+const languageExtension = (lang: Language): Extension =>
+  lang === "python" ? [python(), indentUnit.of("    ")] : [javascript({ typescript: lang === "typescript" }), indentUnit.of("  ")];
+
+const sizing = (fontSize: number, minHeight: string, fill: boolean) =>
+  EditorView.theme({
+    "&": fill ? { height: "100%", fontSize: `${fontSize}px` } : { minHeight, fontSize: `${fontSize}px` },
+    ".cm-scroller": { fontFamily: "var(--font-jetbrains)", ...(fill ? { overflow: "auto" } : {}) },
+  });
 
 export function CodeEditor({
   value,
   onChange,
   onRun,
+  onSubmit,
   onSave,
+  language = "typescript",
+  fontSize = 13,
   minHeight = "320px",
+  fill = false,
   ariaLabel = "Code editor",
   className,
 }: {
   value: string;
   onChange: (code: string) => void;
   onRun?: () => void;
+  /** Mod-Shift-Enter. */
+  onSubmit?: () => void;
   onSave?: () => void;
+  language?: Language;
+  fontSize?: number;
   minHeight?: string;
+  /** Fill the parent's height and scroll inside, instead of growing with the content. */
+  fill?: boolean;
   ariaLabel?: string;
   className?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const themeSlot = useRef(new Compartment());
-  const handlers = useRef({ onChange, onRun, onSave });
+  const langSlot = useRef(new Compartment());
+  const sizeSlot = useRef(new Compartment());
+  const handlers = useRef({ onChange, onRun, onSubmit, onSave });
   const { resolvedTheme } = useTheme();
 
   useEffect(() => {
-    handlers.current = { onChange, onRun, onSave };
+    handlers.current = { onChange, onRun, onSubmit, onSave };
   });
 
   useEffect(() => {
@@ -44,9 +68,17 @@ export function CodeEditor({
         doc: value,
         extensions: [
           basicSetup,
-          javascript({ typescript: true }),
+          langSlot.current.of(languageExtension(language)),
           Prec.highest(
             keymap.of([
+              {
+                key: "Mod-Shift-Enter",
+                run: () => {
+                  if (!handlers.current.onSubmit) return false;
+                  handlers.current.onSubmit();
+                  return true;
+                },
+              },
               {
                 key: "Mod-Enter",
                 run: () => {
@@ -69,7 +101,7 @@ export function CodeEditor({
             if (u.docChanged) handlers.current.onChange(u.state.doc.toString());
           }),
           EditorView.contentAttributes.of({ "aria-label": ariaLabel }),
-          EditorView.theme({ "&": { minHeight, fontSize: "13px" }, ".cm-scroller": { fontFamily: "var(--font-jetbrains)" } }),
+          sizeSlot.current.of(sizing(fontSize, minHeight, fill)),
           themeSlot.current.of([]),
         ],
       }),
@@ -91,10 +123,18 @@ export function CodeEditor({
     view.current?.dispatch({ effects: themeSlot.current.reconfigure(resolvedTheme === "light" ? [] : oneDark) });
   }, [resolvedTheme]);
 
+  useEffect(() => {
+    view.current?.dispatch({ effects: langSlot.current.reconfigure(languageExtension(language)) });
+  }, [language]);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: sizeSlot.current.reconfigure(sizing(fontSize, minHeight, fill)) });
+  }, [fontSize, minHeight, fill]);
+
   return (
     <div
       ref={host}
-      className={cn("overflow-hidden rounded-lg border focus-within:ring-2 focus-within:ring-ring/50 [&_.cm-editor]:outline-none", className)}
+      className={cn("overflow-hidden rounded-lg border focus-within:ring-2 focus-within:ring-ring/50 [&_.cm-editor]:outline-none", fill && "h-full", className)}
     />
   );
 }

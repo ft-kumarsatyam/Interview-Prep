@@ -18,27 +18,30 @@ Frontend and backend live in **one Next.js 16 repo**, deployed on Vercel with Mo
 
 | Content | Details |
 |---|---|
-| 669 LeetCode problems (free, links checked) | 604 DSA (151 core first, then 453 extended) · 35 JavaScript (*30 Days of JS*) · 30 SQL |
+| 671 LeetCode problems (free, links checked) | 606 DSA (151 core first, then extended) · 35 JavaScript (*30 Days of JS*) · 30 SQL; 83 runnable in the in-app IDE |
 | 70 topics, 410 subtopics | 10 tracks: JS & TS · Node · DSA concepts · DBMS & SQL · OOP · LLD · HLD · CS · AI · Behavioral |
 | 1,147 bank quiz questions | per DSA pattern and per subtopic; JS output-prediction answers are verified by actually running the code |
 | 54 news feeds + Google News keyword feeds | AI labs, AI news, JS/Node, databases, system design (ByteByteGo, System Design One, AlgoMaster…), big-tech engineering, tech news, career |
-| 17 system design case studies | URL shortener, KV store, rate limiter, ID generator, notifications, news feed, chat, video streaming, ride hailing, payments, ticket booking, collaborative docs, autocomplete, web crawler, file sync, ad click aggregator, leaderboard |
+| 25 system design case studies | URL shortener, KV store, rate limiter, ID generator, notifications, news feed, chat, video streaming, ride hailing, payments, ticket booking, collaborative docs, autocomplete, web crawler, file sync, ad click aggregator, leaderboard and more |
 
 ## Status
 
-All build phases (0–9) are done. See `docs/BUILD_PLAN.md` for the phase list and the ideas backlog.
+All build phases (0–25) are done. See `docs/BUILD_PLAN.md` for the phase list and the ideas backlog.
 
 | Area | What you get |
 |---|---|
-| Dashboard | Today's plan, progress ring, streak and freeze tokens, pace, 24-week heatmap, "Fill in details" inbox for synced solves, news strip (long reads first), "Finish setup" card |
+| Dashboard | Today's plan, progress ring, streak and freeze tokens, pace, 24-week heatmap (click a day to open it in the calendar), this week's mocks, "Fill in details" inbox for synced solves, news strip (long reads first), "Finish setup" card |
+| Calendar | `/calendar` month view of the whole plan: past days with what was done, future days as a projection of the topics and problems planned for that date, weekly mock days |
 | Setup | `/setup` checklist: database, secrets, LeetCode, crons, feeds, notifications, LLM, backups, session, each with a fix button |
 | System Design | `/design`: 45-minute framework, building blocks, latency/capacity cheat sheet, 17 cases (requirements → estimates → API → data model → diagram → deep dives → trade-offs → interviewer probes), mock-interview timer with autosaved sections and rubric, related articles from your feed |
-| DSA / Review | Progress per pattern, filters, `/dsa/[slug]` with solve form, markdown notes and history, spaced-repetition review queue |
+| DSA / Review | Progress per pattern, filters, `/dsa/[slug]` with solve form, markdown notes and history, and a laptop-sized IDE (resizable problem and editor panes, JavaScript, TypeScript or Python, editable test cases, Run and Submit); spaced-repetition review queue |
+| Problems | Questions from anywhere: generate one with the free AI or paste a problem with your own test cases, then solve it in the same IDE. Kept out of the daily plan |
+| Mock interviews | DSA, JavaScript, Node.js, system design (HLD), LLD, SQL, project deep dive, behavioral and a full loop, each timed (auto-submits at zero) and scored out of 100 on tests, time and a rubric (free-AI grading with a self-review fallback). Weekly DSA and system design mocks on days you pick; they never affect the streak |
 | Learn | Checklists per topic, notes, a **Practice** quiz on every subtopic (mastery %) and a **topic quiz** that awards *Mastered* |
 | Quiz | Daily quiz (LLM or bank) that gates the streak, Sunday weekly quiz, history with explanations |
-| Playground | CodeMirror editor, Web Worker runner with a 3 s timeout, saved snippets, output-prediction drills |
+| Playground | CodeMirror editor for JavaScript, TypeScript or Python, Web Worker runner with a 3 s timeout, saved snippets, output-prediction drills |
 | News | In-app reader with full article text (from the feed or extracted from the page), reading time, topic tags, system design picks, "Full articles" filter, bookmarks; reading counts toward the day |
-| Stats / Settings | Recharts dashboards, LeetCode card, JS mastery radar; plan, quiz, rest days, keywords, LeetCode username, JSON export |
+| Stats / Settings | Recharts dashboards, LeetCode card, JS mastery radar; plan, quiz, rest days, study hours, weekly mock days, keywords, LeetCode username, JSON export |
 | Ops | Morning/evening cron, notification bell, optional Telegram/email push, iPhone/Android home-screen app with offline page, Remember me (30-day sliding session), ⌘K palette |
 
 ## Repo map
@@ -68,7 +71,7 @@ tests/                 ← Vitest: domain (pure) + services (in-memory MongoDB)
 2. **GitHub + Vercel (Hobby):** to deploy.
 3. **Optional:**
    - A free Gemini API key (Google AI Studio) and/or a Groq key for AI-written quizzes, hints and explanations. Without one, everything falls back to `data/quiz-bank.json` and static explanations. A Gemini app/Gems subscription is a separate thing and is not an API key.
-   - A Telegram bot (via @BotFather) and/or a Resend account for reminders outside the app.
+   - A Telegram bot (via @BotFather) and/or a Brevo (or Resend) account for reminders and a morning email digest outside the app.
    - A **public** LeetCode profile for auto-sync. No login or cookie is needed.
 
 ## 2. Run locally
@@ -81,7 +84,7 @@ npm run hash -- 'a-long-password-you-will-remember'   # paste output as ADMIN_PA
 openssl rand -base64 32                               # paste as AUTH_SECRET
 openssl rand -hex 32                                  # paste as CRON_SECRET
 # fill MONGODB_URI, ADMIN_EMAIL, ADMIN_NAME (and optionally LEETCODE_USERNAME) in .env.local
-npm run seed        # loads 669 problems, 70 topics and settings (safe to re-run)
+npm run seed        # loads 671 problems, 70 topics and settings (safe to re-run)
 npm run dev         # http://localhost:3000 → sign in → open /setup to see what's left
 ```
 
@@ -133,7 +136,10 @@ Pick an idea from the bottom of `docs/BUILD_PLAN.md`, check it works, commit.
    | `META_LLAMA_API_KEY`, `META_LLAMA_BASE_URL`, `META_LLAMA_MODEL` | optional | A **paid** last resort. Never used by background jobs and only after you confirm in the app; Settings has a daily call cap |
    | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` | optional | The older single-provider setup, still supported |
    | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional | push reminders to Telegram |
-   | `RESEND_API_KEY`, `NOTIFY_EMAIL` | optional | push reminders by email |
+   | `NOTIFY_EMAIL` | optional | where email reminders and the morning digest go |
+   | `BREVO_API_KEY`, `BREVO_SENDER_EMAIL` | optional | email via Brevo's REST API (free, 300/day). Preferred over Resend when set. Verify the sender in Brevo and turn off API-key IP blocking (*Security → Authorised IPs*), since Vercel has no fixed IPs |
+   | `RESEND_API_KEY` | optional | email via Resend, used when Brevo isn't set |
+   | `APP_URL` | optional | public URL (e.g. `https://satyam-dev.in`) for links in the morning email |
 
    Shortcut from your laptop (needs `npm i -g vercel@latest`, `vercel login` and `vercel link`): `./scripts/sync-vercel-env.sh interview-prep` copies every non-empty key from `.env.local`. `.vercelignore` keeps `.env*` files out of CLI uploads.
 4. Deploy (or *Redeploy* after changing env vars). URL: `https://<project>.vercel.app`. Sign in with `ADMIN_EMAIL` and your password.
@@ -173,10 +179,12 @@ It opens on the dashboard. On Android, long-press the icon for shortcuts to the 
 
 1. **05:30:** news refreshes, past days are settled, today's plan is built and LeetCode syncs. DSA is 2/day in weeks 1–2, 3/day in weeks 3–4, then adaptive (Saturday double), plus a JS-track or SQL problem and 2–3 theory subtopics.
 2. Solve on LeetCode **in JavaScript**. Accepted submissions sync automatically (on dashboard load, at most every 10 minutes, or with *Sync now*). Fill in confidence, time and approach from the *Fill in details* inbox so spaced repetition stays accurate. You can also tick problems by hand.
-3. Check off theory subtopics, take the 5-question **Practice** quiz to build mastery, and try code in the **JS Playground**. When a topic's subtopics are all done, its **topic quiz** (≥ 70%) earns *Mastered*.
+3. Check off theory subtopics, take the 5-question **Practice** quiz to build mastery, and try code in the **Playground**. When a topic's subtopics are all done, its **topic quiz** (≥ 70%) earns *Mastered*.
 4. Read 2–3 articles in the in-app reader (System design picks are a good default).
    On HLD weeks, study the matching case in **System Design** and run a 45-minute mock.
 5. **Pass the daily quiz (≥ 60%)** to complete the day. 🔥 It unlocks after 1 problem and 1 subtopic.
 6. **20:00:** you get a reminder if anything is left.
 
 Sunday is the re-solve and weekly quiz day. A 7-day streak earns a ❄ freeze token (max 2).
+
+Once a week, take the **DSA mock** and the **System design mock** from `/mock` (Saturday and Sunday by default, changeable in Settings). Use `/calendar` to see what's planned for any future date.

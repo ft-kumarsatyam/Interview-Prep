@@ -46,7 +46,7 @@ export async function getDashboard(): Promise<DashboardData> {
     ProblemProgress.find({ slug: { $in: slugs } }, { slug: 1, solveDates: 1, confidence: 1 }).lean(),
     SubtopicProgress.find({ subtopicId: { $in: plan.theory } }, { subtopicId: 1 }).lean(),
     DayLog.find({ date: { $gte: settings.startDate, $lte: settings.endDate } }).lean(),
-    ProblemProgress.countDocuments({ status: "solved", slug: { $in: mainSlugs() } }),
+    countSolvedMain(),
     ProblemProgress.find({ needsDetails: true }, { slug: 1, lastSolvedOn: 1 }).sort({ lastSolvedOn: -1 }).limit(10).lean(),
     Notification.find({ read: false }).sort({ createdAt: -1 }).limit(3).lean(),
   ]);
@@ -93,6 +93,11 @@ export async function getDashboard(): Promise<DashboardData> {
     })),
     unreadNotifications: notes.map((n) => ({ id: String(n._id), title: n.title, body: n.body ?? "" })),
   };
+}
+
+export async function countSolvedMain(): Promise<number> {
+  await connectDb();
+  return ProblemProgress.countDocuments({ status: "solved", slug: { $in: mainSlugs() } });
 }
 
 let mainSlugCache: string[] | undefined;

@@ -19,7 +19,12 @@ export interface NotificationItem {
  */
 export async function notify(
   input: { kind: NotificationKind; title: string; body: string; dedupeKey?: string },
-  opts: { push?: boolean; channels?: readonly NotifyChannel[] } = {},
+  opts: {
+    push?: boolean;
+    channels?: readonly NotifyChannel[];
+    /** A fuller message for Telegram/email; the in-app notification keeps `input`. */
+    pushContent?: { title: string; body: string; html?: string };
+  } = {},
 ): Promise<{ created: boolean; pushed: string[] }> {
   await connectDb();
   if (input.dedupeKey) {
@@ -32,7 +37,8 @@ export async function notify(
   } else {
     await Notification.create(input);
   }
-  const pushed = opts.push ? (await pushToChannels(input.title, input.body, opts.channels)).sent : [];
+  const content = opts.pushContent ?? { title: input.title, body: input.body };
+  const pushed = opts.push ? (await pushToChannels(content.title, content.body, opts.channels, content.html)).sent : [];
   return { created: true, pushed };
 }
 

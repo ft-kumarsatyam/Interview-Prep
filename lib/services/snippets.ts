@@ -1,5 +1,6 @@
 import { isValidObjectId } from "mongoose";
 import { connectDb } from "@/lib/db";
+import { isLanguage, type Language } from "@/lib/domain/starters";
 import { Snippet } from "@/lib/models/learning";
 
 export interface SnippetSummary {
@@ -7,6 +8,7 @@ export interface SnippetSummary {
   title: string;
   tag: string;
   code: string;
+  language: Language;
   updatedAt: string;
 }
 
@@ -18,18 +20,20 @@ export async function listSnippets(): Promise<SnippetSummary[]> {
     title: r.title,
     tag: r.tag ?? "",
     code: r.code,
+    language: isLanguage(r.language) ? r.language : "javascript",
     updatedAt: (r.updatedAt as Date | undefined)?.toISOString() ?? "",
   }));
 }
 
-export async function saveSnippet(input: { id?: string; title: string; code: string; tag: string }): Promise<string> {
+export async function saveSnippet(input: { id?: string; title: string; code: string; tag: string; language?: Language }): Promise<string> {
   await connectDb();
+  const language = input.language ?? "javascript";
   if (input.id) {
     if (!isValidObjectId(input.id)) throw new Error("Unknown snippet");
-    await Snippet.updateOne({ _id: input.id }, { $set: { title: input.title, code: input.code, tag: input.tag } });
+    await Snippet.updateOne({ _id: input.id }, { $set: { title: input.title, code: input.code, tag: input.tag, language } });
     return input.id;
   }
-  const doc = await Snippet.create({ title: input.title, code: input.code, tag: input.tag });
+  const doc = await Snippet.create({ title: input.title, code: input.code, tag: input.tag, language });
   return String(doc._id);
 }
 

@@ -11,6 +11,7 @@ const snippetSchema = z.object({
   title: z.string().trim().min(1, "Give the snippet a title").max(120),
   code: z.string().min(1, "Nothing to save").max(20_000),
   tag: z.string().trim().max(120).default(""),
+  language: z.enum(["javascript", "typescript", "python"]).default("javascript"),
 });
 
 export async function saveSnippetAction(input: z.input<typeof snippetSchema>): Promise<ActionResult<{ id: string }>> {

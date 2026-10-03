@@ -187,12 +187,12 @@ async function __runHarness(code, harness) {
   try {
     fn = await new AsyncFunction(code + "\nreturn typeof " + harness.functionName + " === 'function' ? " + harness.functionName + " : undefined;")();
   } catch (e) {
-    send({ type: "log", level: "error", text: "Uncaught " + fmt(e) });
+    send({ type: "log", level: "error", text: "Uncaught " + fmt(e), crash: true });
     send({ type: "done" });
     return;
   }
   if (typeof fn !== "function") {
-    send({ type: "log", level: "error", text: "No function named '" + harness.functionName + "' was found." });
+    send({ type: "log", level: "error", text: "No function named '" + harness.functionName + "' was found.", crash: true });
     send({ type: "done" });
     return;
   }

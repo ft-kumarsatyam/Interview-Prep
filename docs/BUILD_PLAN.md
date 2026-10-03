@@ -38,14 +38,22 @@ Every prompt assumes the agent has read `AGENTS.md`, which `CLAUDE.md` and `.cur
 | 22 · Runner v2 (Worker list/tree support, `compare` modes, named edge cases + Edge cases tab, three-step hint ladder, one-time hidden-case reveal, spec-based generator with brute-force and fuzz cross-checks, 15 problems migrated) | ✅ done |
 | 23 · 83 runnable problems (arrays, strings, two pointers, sliding window, stack, binary search, DP, greedy, bits, linked lists, trees), each with a reference, an independent brute force, 200 fuzz inputs and a blind third solution | ✅ done |
 | 24 · Learn redesign (`/learn` index with Continue card and cross-track search, focused `/learn/[topicId]` page, `lib/domain/learn.ts`), OS case quizzes, `satyam-dev.in` on Vercel, AI keys synced to production | ✅ done; GitHub auto-deploy waits on a Vercel GitHub login connection |
+| 25A · IDE shell (`components/ide/`: resizable problem and editor panes sized for a laptop, editable and custom test cases, Result and Console tabs, full screen, mobile tabs) on `/dsa/[slug]` | ✅ done |
+| 25B · Multi-language runner: JavaScript, TypeScript and Python (Pyodide in its own Worker, same harness and `compare` modes), per-language starters and drafts, Python in the Playground | ✅ done |
+| 25C · Questions from anywhere (`/problems`: AI-generated or pasted problems, cases verified against a reference solution in the browser before saving, `customproblems`/`customsolves`, never in the plan) | ✅ done |
+| 25D · Calendar (`/calendar` month grid and `/calendar/[date]`; past days from frozen plans, future days from the pure `projectDays` simulation; heatmap cells link in) | ✅ done |
+| 25E · Mock interviews: nine types, server-authoritative timer with auto-submit, coding rounds in the IDE, hybrid scoring (tests and time, free-AI rubric grading, self-review fallback), report with strengths, gaps and practise-next links (`mocksessions`) | ✅ done |
+| 25F · Weekly DSA and System design mocks: weekdays in Settings, dashboard card, calendar badges; never gate the streak | ✅ done |
 
 The phase prompts below are kept as a record of the spec each phase was built against. The extras listed in the status table (LeetCode sync, mastery quizzes, ports and adapters, idempotent jobs) are described in ARCHITECTURE §3, §8, §9 and §11. Phase 9 is described in ARCHITECTURE §4 (Remember me), §10.1 (reader), §12 (routes) and §15 (PWA).
 
 Known gaps:
 - One-line AI news summaries are not built yet (`articles.aiSummary` is unused).
 - Some sites block article extraction (OpenAI's blog returns 403, Quastor and Uber block feed fetches). Those articles show the snippet and an "Open original" link.
-- The System Design studio has no LLD templates yet; the HLD "Design template" in topic notes on `/learn/[topicId]` still covers quick notes.
-- The DSA runner covers 15 of the 151 core problems. Linked-list and tree problems need bespoke input/output serializers (a plain `deepEqual` on a returned node graph is not enough), as do the ~19 "Design" problems. Hand-authoring the rest is the main content backlog.
+- The System Design studio has no LLD templates yet; the HLD "Design template" in topic notes on `/learn/[topicId]` still covers quick notes. LLD mock rounds are written answers graded on a rubric.
+- The DSA runner covers 83 of the 606 main problems; the rest fall back to LeetCode. "Design" problems (class-based APIs) are not runnable yet, in the sheet or as custom problems. Custom problems fill some of the gap for practice and mocks.
+- Mock prompts live in `lib/domain/mock-bank.ts` rather than `data/`, so the content files stay untouched.
+- Python needs a one-time Pyodide download (about 10 MB from the jsDelivr CDN) on first run, and doesn't work offline until it's cached.
 - The Playground's TS mode strips types and reports syntax errors; it does not type-check.
 - Phases 10-17 were verified with typecheck, ESLint, Vitest, `next build`, server-side rendering of the new pages' components and a Node `vm` simulation of the Web Worker, but were not click-tested in a browser.
 - White text on the dark-theme `--primary` button measures 4.34:1, just under WCAG AA's 4.5:1. Fixing it means darkening the DESIGN §1 token.
@@ -106,6 +114,6 @@ Known gaps:
 - **"Explain my mistake"** on a wrong quiz answer, using one LLM call.
 - **RAG over your own notes** with Atlas Vector Search (available on M0). This makes the week-16 topic real.
 - **An MCP server for PrepOS** (`get_today_plan`, `mark_solved`) so Claude can read and update your progress. This makes the week-17 topic real.
-- **LLD mock interviews:** the System Design studio's timer and rubric, with class-diagram templates for LLD cases (parking lot, elevator, splitwise).
+- **LLD class-diagram templates** for the LLD mock round (parking lot, elevator, splitwise).
 - **AI news summaries:** one batched LLM call per morning fills `articles.aiSummary` for the newest AI items.
 - **Full LeetCode history import:** an opt-in `LEETCODE_SESSION` cookie for backfilling beyond the last 20 accepted submissions. (Public sync is already done; see ARCHITECTURE §9.)

@@ -232,6 +232,48 @@ export function buildDailyPlan(input: {
   };
 }
 
+/**
+ * Preview future days by planning each one as if every earlier planned item were done: solved problems
+ * leave the pool, finished subtopics leave the theory queue, and planned reviews are cleared. `seed`
+ * (usually today's frozen plan) is treated as done first. A projection, not a promise: real plans are
+ * only frozen on the day itself and follow your actual progress.
+ */
+export function projectDays(input: {
+  from: DateStr;
+  to: DateStr;
+  settings: PlanSettings;
+  problems: ProblemState[];
+  reviews: ReviewState[];
+  subtopics: SubtopicState[];
+  costs?: Costs;
+  seed?: Pick<DailyPlanDraft, "dsaNew" | "dsaReview" | "jsProblem" | "sqlProblem" | "theory">;
+}): DailyPlanDraft[] {
+  const solved = new Set(input.problems.filter((p) => p.solved).map((p) => p.slug));
+  const done = new Set(input.subtopics.filter((t) => t.done).map((t) => t.id));
+  const reviewed = new Set<string>();
+  const markDone = (p: NonNullable<typeof input.seed>) => {
+    for (const slug of [...p.dsaNew, p.jsProblem, p.sqlProblem]) if (slug) solved.add(slug);
+    for (const slug of p.dsaReview) reviewed.add(slug);
+    for (const id of p.theory) done.add(id);
+  };
+  if (input.seed) markDone(input.seed);
+
+  const out: DailyPlanDraft[] = [];
+  for (const date of eachDay(input.from, input.to)) {
+    const plan = buildDailyPlan({
+      date,
+      settings: input.settings,
+      problems: input.problems.map((p) => (p.solved || !solved.has(p.slug) ? p : { ...p, solved: true })),
+      reviews: input.reviews.filter((r) => !reviewed.has(r.slug)),
+      subtopics: input.subtopics.map((t) => (t.done || !done.has(t.id) ? t : { ...t, done: true })),
+      costs: input.costs,
+    });
+    out.push(plan);
+    markDone(plan);
+  }
+  return out;
+}
+
 function clamp(n: number, min: number, max: number): number {
   return Math.min(Math.max(n, min), max);
 }

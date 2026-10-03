@@ -62,7 +62,7 @@ Centred card on a dark background with a faint animated grid or noise. It contai
 │  Good evening, {ADMIN_NAME} · Fri, 9 Oct · Week 1 of 24 · Language & Foundations │
 ├──────────────────────────────┬──────────────┬──────────────┬──────────────┤
 │  TODAY                       │ 🔥 Streak    │ ✅ Solved     │ ⏳ Countdown  │
-│  (◔ progress ring 3/4)       │   12 days    │  87 / 604    │  163 days    │
+│  (◔ progress ring 3/4)       │   12 days    │  87 / 606    │  163 days    │
 │  ☐ DSA  2/4  →               │  best 15 ·❄2 │  on pace ▲   │  to Mar 21   │
 │  ☐ Theory 1/2 →              ├──────────────┴──────────────┴──────────────┤
 │  ☐ Read 0/3 →                │  Activity heatmap (24 weeks × 7 days)      │
@@ -80,7 +80,8 @@ Centred card on a dark background with a faint animated grid or noise. It contai
 - **Progress ring:** the share of the four day-requirements done. The centre shows "3/4", and at 100% it turns green and fires confetti.
 - **Ticking ✓ on a problem** opens a compact sheet with confidence (easy/ok/struggled), minutes taken, a one-line approach, and time/space complexity. Saving updates the ring immediately (optimistic UI).
 - **Streak card:** flame icon, current and best streak, freeze tokens as ❄ icons. If today is incomplete after 20:00, the card pulses amber with "Finish today to keep your streak".
-- **Heatmap:** the full 24-week plan window. Cell colours: empty (future), muted (missed), warning (partial), success (complete), blue outline (freeze used). Hovering a cell shows that day's counts.
+- **Heatmap:** the full 24-week plan window. Cell colours: empty (future), muted (missed), warning (partial), success (complete), blue outline (freeze used). Hovering a cell shows that day's counts, clicking opens that day in the calendar.
+- **This week's mocks:** a compact card with the DSA and System design slots (scheduled, today, missed, or done with the score). Informational only.
 - **"On pace" indicator:** solved compared with the expected count for today. ▲ green when ahead, ▼ red when behind, with the size of the gap.
 - **Notification banner** at the top when there are unread notifications (e.g. the morning plan or the evening reminder).
 
@@ -90,6 +91,25 @@ Centred card on a dark background with a faint animated grid or noise. It contai
 - Each **pattern accordion** carries a progress bar and an "x / y" count. Inside it is a table with order #, title (links out to LeetCode ↗), difficulty badge, status, confidence and last solved date.
 - Filters: pattern, difficulty, status (todo/solved/struggled), and search. Sort by order (default) or by last solved.
 - **Problem log page** (`/dsa/[slug]`): a big "Open on LeetCode ↗" button, form fields, and a markdown notes editor with preview. It also shows a review history timeline.
+- **IDE shell** (`components/ide/`, used by `/dsa/[slug]`, `/problems/[slug]` and mock coding rounds), tuned for a 13–14" laptop:
+  - From `lg`: two resizable panes. Left: tabs per page (Problem, Notes and History on `/dsa`; Problem, Solution and Solves on `/problems`). Right: the editor on top and a resizable bottom panel (Testcases, Result, Edge cases, Console). Pane sizes persist per page type. A full-screen toggle hides the app chrome.
+  - Below `lg`: a Problem | Code tab switch, the editor at a fixed comfortable height.
+  - Toolbar: language select (JavaScript, TypeScript, Python), font size, reset to starter, full screen; Run (visible and custom cases) and Submit (all cases, hidden ones pass/fail only). Python shows a one-time "Loading Python…" state while Pyodide downloads.
+  - Test cases are editable JSON per parameter; you can add up to 8 of your own. The Result tab shows Accepted / Wrong answer with per-case chips, expected vs actual, runtime and console output.
+
+### 3.3b Problems (questions from anywhere)
+- `/problems`: your custom problems (title, difficulty, topic, source AI or pasted, solved state), a **Generate** dialog (topic, difficulty, optional company style) and a **Paste a problem** link. Without an AI key, Generate opens an unsolved runnable sheet problem instead.
+- `/problems/new`: statement first, an optional "Fill the rest with AI" button, then title, difficulty, topic, function name, typed parameters, return type, comparison, test cases as `[args] => expected` lines (`hidden` prefix for hidden cases), hints and an optional reference solution. Saving runs the reference solution on every case first.
+- `/problems/[slug]`: the IDE shell with the statement, hint ladder, a Solution pane (revealed on request) and the solve history.
+
+### 3.3c Calendar
+- `/calendar`: a Monday-first month grid inside the plan window, prev/next month. Each cell shows the date, a completion dot for past days, and DSA, theory and review counts with estimated hours (future days are a labelled projection). Rest and Sunday cells are muted; today is outlined. Weekly mock days carry a "DSA mock" or "SD mock" badge (green once done). On phones, cells shrink to the date plus a `DSA·theory` count.
+- `/calendar/[date]`: the day's sections (New DSA, Theory, Reviews, JS and SQL, Bonus) as link lists with done ticks for past days, a projection banner for future days, the scheduled weekly mock linking to `/mock` or its report, and prev/next day buttons.
+
+### 3.3d Mock interviews
+- `/mock`: an active-session banner (Resume), this week's slots, a grid of the nine interview types (minutes, what's in it, real-interview length), and history with a score trend. Starting opens a dialog listing the rounds, the problem source (sheet, custom or mixed, when you have custom problems), an optional "Fresh questions from the AI" checkbox and a project description for the project round.
+- `/mock/[id]`: a sticky bar with the type, the current round and its suggested minutes, a numbered question stepper (answered ones turn green, rounds are spaced apart), a countdown that turns red under 5 minutes, and Submit. Coding questions use the IDE shell (hints cost points and say so); MCQs are large option cards with the code above; written questions show context and one textarea per section with a hint and suggested minutes. Everything autosaves; at zero the session submits itself.
+- `/mock/[id]/report`: the total out of 100 (or "waiting for grades"), round score tiles, Strengths / Gaps / Practise next cards, then each question: tests passed, time and hints for coding; your choice vs the answer and the explanation for MCQs; rubric scores with feedback, what a strong answer covers and a reference answer for written ones. Ungraded written answers get a 0–4 self-review form per criterion; AI grades can be overridden.
 
 ### 3.4 Review
 A queue of cards due today. Each card offers "Open ↗", then "Re-solved: easy / ok / struggled". An empty state says "Nothing due. 🎉"
@@ -99,8 +119,8 @@ A queue of cards due today. Each card offers "Open ↗", then "Re-solved: easy /
 - The topic page has the subtopic checklist (each item expands into a markdown notes field), resource links, and a "Practice quiz" button that runs 5 questions from the bank for this topic.
 - HLD topics get a "Design template" button that inserts the standard skeleton (Requirements / Estimates / API / Data model / HLD / Deep dives / Trade-offs) into the notes.
 
-### 3.5b JS Playground
-- A split view: editor on the left (CodeMirror 6, JS/TS syntax, `⌘↵` to run), console on the right. Logs are colour-coded by level, and timing is shown.
+### 3.5b Playground
+- A split view: editor on the left (CodeMirror 6, JavaScript, TypeScript or Python, `⌘↵` to run), console on the right. Logs are colour-coded by level, and timing is shown.
 - Code runs in a **Web Worker** with a 3 s timeout (terminated on infinite loops) and has no DOM or network access, which is safe for experiments.
 - **Snippets** sidebar: save, rename and tag by topic (e.g. `js-async`). Snippets can be linked from a subtopic's notes.
 - **Output drills:** event-loop / `this` / closure puzzles. You predict the console output first, then run the code and compare. Results can feed the daily quiz.
@@ -118,7 +138,7 @@ Category pills (All · AI Labs (Google · OpenAI · DeepMind) · AI News · Java
 Problems per day (bar, last 30 days), cumulative solved compared with plan (line, actual vs ideal), difficulty mix by week (stacked bar), quiz scores (line with a pass-line at 60%), and a track coverage radar or bars.
 
 ### 3.9 Settings
-Plan dates, timezone, quiz pass %, rest days (date picker), notification channels with a test button, "Export backup (JSON)" and "Re-seed content".
+Plan dates, timezone, quiz pass %, rest days (date picker), study hours per weekday, weekly mock days (DSA and System design weekday selects), notification channels with a test button, "Export backup (JSON)" and "Re-seed content".
 
 ## 4. Components (shadcn-based)
 

@@ -25,6 +25,9 @@ const settingsSchema = new Schema(
     llmPaidRequireConfirm: { type: Boolean, default: true },
     /** Study hours per day of week, Sunday first. Unset = the defaults in lib/domain/time-budget.ts. */
     hoursByDow: { type: [Number], default: undefined },
+    /** Weekly mock days (0 = Sunday … 6 = Saturday). Shown on the dashboard and calendar; never gate the streak. */
+    mockDsaWeekday: { type: Number, default: undefined },
+    mockHldWeekday: { type: Number, default: undefined },
     freezeTokens: { type: Number, default: 0 },
     /** Last day whose streak outcome has been settled. */
     settledThrough: { type: String, default: null },

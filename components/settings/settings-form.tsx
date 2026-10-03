@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { CalendarDays, CalendarOff, Clock, Code2, Gauge, Loader2, Lock, Newspaper, Plus, RotateCcw, Save, Sparkles, Wallet, X, type LucideIcon } from "lucide-react";
+import { CalendarDays, CalendarOff, Clock, Code2, Gauge, Loader2, Lock, Newspaper, Plus, RotateCcw, Save, Sparkles, Timer, Wallet, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { saveSettingsAction } from "@/app/(app)/settings/actions";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,12 @@ import { MAX_NEWS_QUERIES, MAX_REST_DAYS, settingsInputSchema, type SettingsInpu
 import { formatDuration } from "@/lib/domain/time-budget";
 import { cn } from "@/lib/utils";
 
-export type SettingsFormValues = Omit<SettingsInput, "leetcodeUsername" | "googleNewsQueries" | "hoursByDow" | "llmPaidEnabled" | "llmPaidDailyCap" | "llmPaidRequireConfirm" | "geminiLinks"> & {
+export type SettingsFormValues = Omit<
+  SettingsInput,
+  "leetcodeUsername" | "googleNewsQueries" | "hoursByDow" | "llmPaidEnabled" | "llmPaidDailyCap" | "llmPaidRequireConfirm" | "geminiLinks" | "mockDsaWeekday" | "mockHldWeekday"
+> & {
+  mockDsaWeekday: number;
+  mockHldWeekday: number;
   /** Subject id -> your Gemini project link ("" = none). */
   geminiLinks: Record<string, string>;
   llmPaidEnabled: boolean;
@@ -27,6 +32,8 @@ export type SettingsFormValues = Omit<SettingsInput, "leetcodeUsername" | "googl
 };
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+const WEEKDAY_OPTIONS = [1, 2, 3, 4, 5, 6, 0].map((value) => ({ value, label: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][value] }));
+const SELECT = "h-9 w-full rounded-md border bg-background px-2 text-sm focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none";
 const CHECKBOX = "mt-0.5 data-[state=checked]:border-primary data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground";
 
 const toPayload = (v: SettingsFormValues) => ({ ...v, googleNewsQueries: v.googleNewsQueries.length ? v.googleNewsQueries : null });
@@ -304,6 +311,33 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
         </Field>
         <Field id="topicMasteryPct" label="Topic quiz score for Mastered (%)" hint="50–100" error={err("topicMasteryPct")}>
           <Input id="topicMasteryPct" type="number" inputMode="numeric" min={50} max={100} value={v.topicMasteryPct} onChange={num("topicMasteryPct")} {...aria("topicMasteryPct")} />
+        </Field>
+      </Section>
+
+      <Section
+        id="mocks"
+        icon={Timer}
+        title="Weekly mocks"
+        description="The days your weekly DSA and System Design mocks are scheduled. They show on the dashboard and calendar and never affect the streak."
+        contentClassName="grid gap-4 sm:grid-cols-2"
+      >
+        <Field id="mockDsaWeekday" label="DSA mock day">
+          <select id="mockDsaWeekday" className={SELECT} value={v.mockDsaWeekday} onChange={(e) => set("mockDsaWeekday", Number(e.target.value))}>
+            {WEEKDAY_OPTIONS.map((d) => (
+              <option key={d.value} value={d.value}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field id="mockHldWeekday" label="System design mock day">
+          <select id="mockHldWeekday" className={SELECT} value={v.mockHldWeekday} onChange={(e) => set("mockHldWeekday", Number(e.target.value))}>
+            {WEEKDAY_OPTIONS.map((d) => (
+              <option key={d.value} value={d.value}>
+                {d.label}
+              </option>
+            ))}
+          </select>
         </Field>
       </Section>
 

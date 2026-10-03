@@ -1,11 +1,13 @@
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 
-/** Saved JS Playground code. */
+/** Saved Playground code. */
 const snippetSchema = new Schema(
   {
     title: { type: String, required: true, maxlength: 120 },
     code: { type: String, required: true, maxlength: 20_000 },
     tag: { type: String, maxlength: 120, default: "" },
+    /** Absent on snippets saved before Python and TypeScript runs existed: read it as JavaScript. */
+    language: { type: String, enum: ["javascript", "typescript", "python"] },
   },
   { timestamps: true },
 );

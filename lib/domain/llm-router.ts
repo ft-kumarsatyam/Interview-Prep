@@ -11,7 +11,7 @@ export type ProviderId = (typeof PROVIDER_IDS)[number];
 /** The only provider that costs money. Always tried last and only with a visible confirmation. */
 export const PAID_PROVIDER: ProviderId = "meta";
 
-export const AI_FEATURES = ["background", "practice", "hint", "explain", "code-review", "answer-feedback", "generate-questions", "test"] as const;
+export const AI_FEATURES = ["background", "practice", "hint", "explain", "code-review", "answer-feedback", "generate-questions", "mock-grade", "test"] as const;
 export type AiFeature = (typeof AI_FEATURES)[number];
 
 export type ErrorKind = "rate" | "quota-day" | "auth" | "server" | "timeout" | "network" | "bad-request" | "invalid-output";
@@ -91,6 +91,7 @@ export const FEATURE_POLICY: Record<AiFeature, FeaturePolicy> = {
   explain: { prefer: ["groq", "gemini"], paid: "confirm" },
   "code-review": { prefer: ["gemini"], paid: "confirm" },
   "answer-feedback": { prefer: ["gemini"], paid: "confirm" },
+  "mock-grade": { prefer: ["gemini"], paid: "never" },
   test: { prefer: [], paid: "never" },
 };
 

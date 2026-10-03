@@ -23,7 +23,7 @@ export async function saveSettingsAction(input: unknown): Promise<ActionResult<{
 export async function testNotificationAction(): Promise<ActionResult<{ sent: string[]; failed: string[] }>> {
   await requireSession();
   const res = await pushToChannels("PrepOS test", "Notifications are working. You'll get the evening reminder here when a day is unfinished.");
-  if (res.sent.length === 0 && res.failed.length === 0) return { ok: false, error: "No channel configured. Set the Telegram or Resend env vars first" };
+  if (res.sent.length === 0 && res.failed.length === 0) return { ok: false, error: "No channel configured. Set the Telegram, Brevo or Resend env vars first" };
   return { ok: true, ...res };
 }
 

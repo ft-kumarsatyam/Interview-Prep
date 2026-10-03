@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getLeetCodeProblem } from "@/lib/services/lc-problems";
 
 /** Loads lazily on first view and is then cached, so a slow or blocked LeetCode never delays the page. */
-export async function ProblemStatement({ slug, url }: { slug: string; url: string }) {
+export async function ProblemStatement({ slug, url, plain, hideHints }: { slug: string; url: string; plain?: boolean; hideHints?: boolean }) {
   const p = await getLeetCodeProblem(slug);
 
   if (p.status !== "ok" || !p.contentMd) {
@@ -30,6 +30,31 @@ export async function ProblemStatement({ slug, url }: { slug: string; url: strin
           </Button>
         </CardContent>
       </Card>
+    );
+  }
+
+  if (plain) {
+    return (
+      <div className="space-y-4">
+        {p.topicTags.length > 0 && (
+          <ul className="flex flex-wrap gap-1.5" aria-label="Topics">
+            {p.topicTags.map((t) => (
+              <li key={t} className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                {t}
+              </li>
+            ))}
+          </ul>
+        )}
+        <ArticleMarkdown markdown={p.contentMd} />
+        {!hideHints && p.hints.map((h, i) => (
+          <details key={i} className="rounded-lg border px-3 py-2 text-sm">
+            <summary className="cursor-pointer text-muted-foreground">LeetCode hint {i + 1}</summary>
+            <div className="pt-2">
+              <ArticleMarkdown markdown={h} />
+            </div>
+          </details>
+        ))}
+      </div>
     );
   }
 

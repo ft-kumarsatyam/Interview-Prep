@@ -5,10 +5,12 @@ import {
   computeDsaTarget,
   computeTheory,
   dayKind,
+  projectDays,
   revisionStart,
   type ProblemState,
   type SubtopicState,
 } from "@/lib/domain/planner";
+import { addDays } from "@/lib/domain/dates";
 
 const MON_W1 = "2026-10-05";
 const SAT_W1 = "2026-10-10";
@@ -125,5 +127,41 @@ describe("buildDailyPlan", () => {
     expect(plan.dsaReview).toHaveLength(3);
     expect(plan.jsProblem).toBeNull();
     expect(plan.theoryTarget).toBe(0);
+  });
+});
+
+describe("projectDays", () => {
+  const pool: ProblemState[] = Array.from({ length: 40 }, (_, i) => ({ slug: `p${i}`, track: "main", order: i, solved: false }));
+  const theory: SubtopicState[] = Array.from({ length: 12 }, (_, i) => ({ id: `t:${i}`, week: 1, position: i, done: false }));
+
+  it("never plans the same problem or subtopic twice", () => {
+    const days = projectDays({ from: MON_W1, to: SUN_W1, settings: S, problems: pool, reviews: [], subtopics: theory });
+    expect(days.map((d) => d.date)).toEqual(["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11"]);
+    const slugs = days.flatMap((d) => d.dsaNew);
+    const ids = days.flatMap((d) => d.theory);
+    expect(new Set(slugs).size).toBe(slugs.length);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(slugs[0]).toBe("p0");
+  });
+
+  it("matches buildDailyPlan for the first day and continues where it left off", () => {
+    const [first, second] = projectDays({ from: MON_W1, to: addDays(MON_W1, 1), settings: S, problems: pool, reviews: [], subtopics: theory });
+    expect(first).toEqual(buildDailyPlan({ date: MON_W1, settings: S, problems: pool, reviews: [], subtopics: theory }));
+    expect(second.dsaNew[0]).toBe(`p${first.dsaNew.length}`);
+  });
+
+  it("treats the seed plan as done and clears planned reviews", () => {
+    const [day] = projectDays({
+      from: MON_W1,
+      to: MON_W1,
+      settings: S,
+      problems: pool,
+      reviews: [{ slug: "r1", nextReviewAt: "2026-10-01" }],
+      subtopics: theory,
+      seed: { dsaNew: ["p0", "p1"], dsaReview: ["r1"], jsProblem: null, sqlProblem: null, theory: ["t:0"] },
+    });
+    expect(day.dsaNew[0]).toBe("p2");
+    expect(day.dsaReview).toEqual([]);
+    expect(day.theory[0]).toBe("t:1");
   });
 });

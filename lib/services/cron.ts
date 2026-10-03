@@ -3,6 +3,7 @@ import { eveningReminder, morningPlanMessage } from "@/lib/domain/reminders";
 import type { Extractor } from "@/lib/news/extract";
 import type { FeedFetcher } from "@/lib/news/fetch";
 import type { NotifyChannel } from "@/lib/notify";
+import { buildMorningDigest } from "./digest";
 import { syncLeetCode } from "./leetcode-sync";
 import { prefetchArticleContent, refreshNews } from "./news";
 import { notify } from "./notifications";
@@ -21,7 +22,8 @@ async function step(fn: () => Promise<unknown>): Promise<StepResult> {
 
 /**
  * 05:30 IST: refresh news, settle yesterday and freeze today's plan, pull
- * LeetCode solves, then post the plan. Each step is independent.
+ * LeetCode solves, then post the plan (the full digest goes to email/Telegram).
+ * Each step is independent.
  */
 export async function runMorning(
   now = new Date(),
@@ -34,12 +36,19 @@ export async function runMorning(
   const plan = await step(async () => {
     const state = await ensureToday(now);
     today = state.today;
-    const msg = morningPlanMessage(
-      state.day,
-      state.plan.theory.flatMap((id) => subtopicById.get(id)?.title ?? []),
-    );
+    const msg =
+      state.plan.kind === "rest"
+        ? { title: "Day off", body: "Nothing is due today. The plan has been spread over the coming days." }
+        : morningPlanMessage(
+            state.day,
+            state.plan.theory.flatMap((id) => subtopicById.get(id)?.title ?? []),
+          );
     if (!msg) return { kind: state.plan.kind, notified: false };
-    const res = await notify({ kind: "plan", ...msg, dedupeKey: `plan:${state.today}` }, { push: true, channels });
+    const digest = await buildMorningDigest(state);
+    const res = await notify(
+      { kind: "plan", ...msg, dedupeKey: `plan:${state.today}` },
+      { push: true, channels, ...(digest ? { pushContent: { title: digest.title, body: digest.text, html: digest.html } } : {}) },
+    );
     return { kind: state.plan.kind, notified: res.created, pushed: res.pushed };
   });
   const leetcode = await step(() => syncLeetCode({ force: true, now }));

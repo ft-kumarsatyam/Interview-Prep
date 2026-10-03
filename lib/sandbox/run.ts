@@ -21,6 +21,8 @@ export interface RunCasesResult {
   ms: number;
   /** A top-level error (bad syntax, missing function) stops the harness before any case ran. */
   crashed?: string;
+  /** Console output your code printed while the cases ran. */
+  logs: LogLine[];
 }
 
 let workerUrl: string | undefined;
@@ -67,23 +69,27 @@ export function runCode(code: string, timeoutMs = 3000, onLog?: (line: LogLine) 
 export function runWithCases(code: string, functionName: string, cases: HarnessCase[], timeoutMs = 3000, shape: HarnessShape = {}): Promise<RunCasesResult> {
   const worker = new Worker(getWorkerUrl());
   const results: CaseResult[] = [];
+  const logs: LogLine[] = [];
   const started = performance.now();
 
   return new Promise((resolve) => {
     const finish = (timedOut: boolean, crashed?: string) => {
       clearTimeout(timer);
       worker.terminate();
-      resolve({ cases: results, timedOut, ms: Math.round(performance.now() - started), crashed });
+      resolve({ cases: results, timedOut, ms: Math.round(performance.now() - started), crashed, logs });
     };
     const timer = setTimeout(() => finish(true), timeoutMs);
     worker.onmessage = (
       e: MessageEvent<
-        { type: "case"; index: number; pass: boolean; actual: string; hidden: boolean } | { type: "log"; level: LogLevel; text: string } | { type: "done" }
+        | { type: "case"; index: number; pass: boolean; actual: string; hidden: boolean }
+        | { type: "log"; level: LogLevel; text: string; crash?: boolean }
+        | { type: "done" }
       >,
     ) => {
       if (e.data.type === "done") finish(false);
       else if (e.data.type === "case") results.push({ index: e.data.index, pass: e.data.pass, actual: e.data.actual, hidden: e.data.hidden });
-      else if (e.data.type === "log" && e.data.level === "error") finish(false, e.data.text);
+      else if (e.data.crash) finish(false, e.data.text);
+      else if (logs.length < 500) logs.push({ level: e.data.level, text: e.data.text });
     };
     worker.onerror = (e) => {
       e.preventDefault();

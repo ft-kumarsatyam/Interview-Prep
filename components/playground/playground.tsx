@@ -10,8 +10,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { LANGUAGES, isLanguage, type Language } from "@/lib/domain/starters";
 import type { Drill } from "@/lib/playground/drills";
-import { runCode, type LogLine, type RunResult } from "@/lib/playground/runner";
+import type { LogLine, RunResult } from "@/lib/playground/runner";
+import { runFreeIn } from "@/lib/sandbox/languages";
 import type { SnippetSummary } from "@/lib/services/snippets";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./code-editor";
@@ -33,6 +35,13 @@ const debounce = (fn, ms) => {
 const log = debounce((x) => console.log("fired", x), 50);
 log(1); log(2); log(3);
 console.log("scheduled");`;
+
+const PY_STARTER = `# Ctrl/Cmd + Enter to run. Python 3 in your browser (Pyodide); the first run downloads it.
+from collections import Counter
+
+words = "the quick brown fox jumps over the lazy dog the end".split()
+print(Counter(words).most_common(3))
+`;
 
 type Pane = "code" | "console";
 interface Current {
@@ -59,7 +68,7 @@ export function Playground({ snippets, initialCode }: { snippets: SnippetSummary
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [pending, startTransition] = useTransition();
-  const [tsMode, setTsMode] = useState(false);
+  const [language, setLanguage] = useState<Language>("javascript");
 
   const dirty = code !== baseline;
   const errorCount = result?.logs.filter((l) => l.level === "error").length ?? 0;
@@ -74,18 +83,8 @@ export function Playground({ snippets, initialCode }: { snippets: SnippetSummary
     setLiveLogs([]);
     setPane("console");
     try {
-      let js = code;
-      if (tsMode) {
-        // typescript is only downloaded the first time TS mode runs.
-        const { transpileTs } = await import("@/lib/playground/ts-check");
-        const out = await transpileTs(code);
-        if (out.errors.length > 0) {
-          setResult({ logs: out.errors.map((text) => ({ level: "error" as const, text })), timedOut: false, ms: 0 });
-          return;
-        }
-        js = out.js;
-      }
-      setResult(await runCode(js, 3000, (line) => setLiveLogs((cur) => [...cur, line])));
+      // TypeScript and Python are only downloaded the first time you run them.
+      setResult(await runFreeIn(language, code, (line) => setLiveLogs((cur) => [...cur, line])));
     } catch (err) {
       setResult({ logs: [{ level: "error", text: err instanceof Error ? err.message : "Could not run" }], timedOut: false, ms: 0 });
     } finally {
@@ -96,7 +95,7 @@ export function Playground({ snippets, initialCode }: { snippets: SnippetSummary
   function persist(details: Current) {
     startTransition(async () => {
       const title = details.title.trim() || "Untitled";
-      const res = await saveSnippetAction({ id: details.id, title, tag: details.tag, code });
+      const res = await saveSnippetAction({ id: details.id, title, tag: details.tag, code, language });
       if (!res.ok) toast.error(`${res.error}.`);
       else {
         setCurrent({ id: res.id, title, tag: details.tag });
@@ -121,6 +120,7 @@ export function Playground({ snippets, initialCode }: { snippets: SnippetSummary
   function openSnippet(s: SnippetSummary) {
     if (s.id !== current.id && !confirmDiscard()) return;
     setCurrent({ id: s.id, title: s.title, tag: s.tag });
+    setLanguage(s.language);
     setCode(s.code);
     setBaseline(s.code);
     setResult(null);
@@ -166,7 +166,7 @@ export function Playground({ snippets, initialCode }: { snippets: SnippetSummary
   const status = current.id ? (dirty ? "Unsaved changes" : "Saved") : dirty ? "Scratch · not saved" : "Scratch";
 
   return (
-    <Tabs value={view} onValueChange={(v) => setView(v === "drills" ? "drills" : "editor")}>
+    <Tabs data-ide value={view} onValueChange={(v) => setView(v === "drills" ? "drills" : "editor")}>
       <TabsList className="h-10! w-full sm:w-fit">
         <TabsTrigger value="editor" className="px-4">
           <Code2 /> Editor
@@ -201,15 +201,28 @@ export function Playground({ snippets, initialCode }: { snippets: SnippetSummary
                 {status}
               </span>
             </button>
-            <Button
-              variant={tsMode ? "secondary" : "ghost"}
-              aria-pressed={tsMode}
-              onClick={() => setTsMode((v) => !v)}
-              className="h-9 shrink-0 px-2.5 font-mono text-xs"
-              title="Run TypeScript: types are stripped, syntax errors are reported (no type checking)"
+            <select
+              value={language}
+              aria-label="Language"
+              title="TypeScript: types are stripped and syntax errors reported (no type checking). Python: Pyodide, downloaded on first run."
+              onChange={(e) => {
+                const next = e.target.value;
+                if (!isLanguage(next)) return;
+                const starter = next === "python" ? PY_STARTER : STARTER;
+                if (code === STARTER || code === PY_STARTER || !code.trim()) {
+                  setCode(starter);
+                  setBaseline(starter);
+                }
+                setLanguage(next);
+              }}
+              className="h-9 shrink-0 rounded-md border bg-background px-2 font-mono text-xs focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
             >
-              {tsMode ? "TS" : "JS"}
-            </Button>
+              {LANGUAGES.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.short}
+                </option>
+              ))}
+            </select>
             <Button variant="outline" onClick={save} disabled={pending} className="h-9 shrink-0" aria-label={current.id ? "Update snippet" : "Save snippet"}>
               {pending ? <Loader2 className="animate-spin" /> : <Save />}
               <span className="hidden sm:inline">{current.id ? "Update" : "Save"}</span>
@@ -222,7 +235,7 @@ export function Playground({ snippets, initialCode }: { snippets: SnippetSummary
 
           <div className="grid gap-3 xl:grid-cols-2">
             <div className={cn("min-w-0 space-y-1.5", pane !== "code" && "hidden lg:block")}>
-              <CodeEditor value={code} onChange={setCode} onRun={run} onSave={save} minHeight="360px" />
+              <CodeEditor value={code} onChange={setCode} onRun={run} onSave={save} language={language} minHeight="min(60dvh, 640px)" />
               <p className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
                 <Kbd>{modKey}</Kbd>
                 <Kbd>Enter</Kbd> run

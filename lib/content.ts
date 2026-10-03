@@ -11,6 +11,7 @@ import systemDesignJson from "@/data/system-design.json";
 import type { DesignSectionId } from "./domain/design";
 import { normaliseHints, type ArgType, type CompareMode, type HintLevel, type ReturnKind, type TestCase } from "./domain/dsa-runner";
 import type { PracticeKind } from "./domain/practice-cases";
+import type { Language } from "./domain/starters";
 import type { ProblemTrack } from "./domain/planner";
 
 export type Difficulty = "Easy" | "Medium" | "Hard";
@@ -142,6 +143,8 @@ export interface ProblemTestcaseEntry {
   version?: 2;
   signature: { functionName: string; params: string[]; returnType: string };
   starter: string;
+  /** Hand-written starters; otherwise TS/Python stubs are derived from the JSDoc (lib/domain/starters.ts). */
+  starters?: Partial<Record<Language, string>>;
   argTypes?: ArgType[];
   returns?: ReturnKind;
   compare?: CompareMode;

@@ -33,7 +33,7 @@ PrepOS is a private, single-user web app for a 24-week, zero-to-interview-ready 
 | Validation | **zod 4** (env, Server Action input, LLM output) |
 | Tests | **Vitest 4**: `tests/domain` (pure) and `tests/services` (real Mongo via **mongodb-memory-server**, dev-only) |
 | Scripts | **tsx** (`seed`, `hash`, `quiz-bank`, `icons`), **sharp** (icons, dev-only) |
-| Features | `rss-parser` (news), `@mozilla/readability` + `linkedom` + `turndown` (in-app article reader), plain `fetch` adapters for the LLM, LeetCode GraphQL, Telegram and Resend (no SDKs), Recharts 3 (stats), CodeMirror 6 (playground), react-markdown (notes, articles), mermaid (system design diagrams, loaded on demand) |
+| Features | `rss-parser` (news), `@mozilla/readability` + `linkedom` + `turndown` (in-app article reader), plain `fetch` adapters for the LLM, LeetCode GraphQL, Telegram, Brevo and Resend (no SDKs), Recharts 3 (stats), CodeMirror 6 (playground), react-markdown (notes, articles), mermaid (system design diagrams, loaded on demand) |
 
 > Next 16 differences agents must respect (see `node_modules/next/dist/docs/`): `middleware.ts` is now **`proxy.ts`**; `cookies()`, `headers()`, `params` and `searchParams` are **async only**; `next lint` is gone (use `npx eslint .`); `revalidateTag` needs a second argument; route types `PageProps<'/x'>` and `LayoutProps` come from `next typegen`.
 >
@@ -85,7 +85,7 @@ Static content is versioned in git under `data/`, seeded into Mongo, and also im
 
 | File | Contents |
 |---|---|
-| `data/dsa-problems.json` | 669 problems: `{slug, title, leetcodeId, difficulty, pattern, track: main\|js\|sql, tier: core\|extended, url, order}`. `order` is per track. An optional `step` re-slots a problem into the `/dsa` sheet view ("Basics & Complexity", "Sorting Algorithms") without changing its `pattern`, which the planner and quiz bank still key off (`lib/domain/dsa-sheet.ts` holds the canonical step order). In `main`, all 151 `core` problems come first (pass 1), then `extended` (pass 2), each in pattern order, easy → hard |
+| `data/dsa-problems.json` | 671 problems (606 main, 35 JS, 30 SQL): `{slug, title, leetcodeId, difficulty, pattern, track: main\|js\|sql, tier: core\|extended, url, order}`. `order` is per track. An optional `step` re-slots a problem into the `/dsa` sheet view ("Basics & Complexity", "Sorting Algorithms") without changing its `pattern`, which the planner and quiz bank still key off (`lib/domain/dsa-sheet.ts` holds the canonical step order). In `main`, all 151 `core` problems come first (pass 1), then `extended` (pass 2), each in pattern order, easy → hard |
 | `data/syllabus.json` | 10 tracks, 70 topics, 410 subtopics: `{id, track, week, level 1–4, title, subtopics[], resources[]}` |
 | `data/news-sources.json` | 54 RSS feeds in 8 categories (incl. System Design and Tech News), 5 default Google News keyword queries (URL template), browse-only links |
 | `data/system-design.json` | the 45-minute framework (6 steps, latency and capacity numbers, a 10-item rubric), 12 building blocks, and 25 case studies in six categories (Core & Scaling, Social & Feed, Media & Realtime, Storage & Data, Payments & Commerce, Specialized / Vol 2), each with requirements, estimates, API, data model, a mermaid diagram, deep dives, trade-offs, interviewer probes and real write-ups. Every case links to an HLD syllabus topic and a `practiceRef` subtopic |
@@ -111,15 +111,18 @@ Every `YYYY-MM-DD` value is a **local date in `APP_TIMEZONE`** (default `Asia/Ko
 | `data/dsa-testcases.json` | per-problem function signature, starter code, visible/hidden test cases and hints for the in-app runner. Entries are v2 (older v1 string hints still read): `argTypes`/`returns` (`value`, `ListNode`, `TreeNode`, `arg0` for in-place) and `compare` (`exact` or `unordered`) describe how the Worker builds arguments and judges results; cases carry an optional `edge` id (`lib/domain/edge-cases.ts`) and a `note`; hints are a three-step ladder (nudge, approach, pseudocode). Authored as specs in `scripts/dsa-testcases/specs/*.ts` and built by `scripts/generate-dsa-testcases.ts`: `expected` is only ever the output of the spec's reference solution in `node:vm`, must agree with an independent brute force on every case and 200 seeded random inputs, and the spec must pass the quality lint (>=2 visible examples, >=3 edge cases, >=40% hidden, no duplicate inputs, a starter that doesn't pass, short language-neutral pseudocode). A Vitest suite regenerates every entry and fails if the committed JSON drifted, and a third, blind solution per problem (`scripts/dsa-verify/`, written without seeing the stored answers) must agree too. 83 problems today (arrays, strings, pointers, windows, stacks, search, DP, greedy, bits, linked lists, trees); the rest fall back to LeetCode |
 | `snippets` | title, code, tag (comma or space separated tags) | Playground saves |
 | `practiceanswers` | (kind os\|dbms, slug) ⓤ, sections{definition, example, tradeoffs, realSystems, followups}, rubric[], minutesSpent | your OS/DBMS mock answers |
-| `settings` | _id `"settings"`, plan dates, clamps, quizPassPct, topicMasteryPct, restDays[], freezeTokens, settledThrough, googleNewsQueries (null = defaults), leetcodeUsername, leetcodeLastSyncAt, leetcodeLastError, leetcodeSeenIds[] (cap 200), newsLastFetchAt, newsLastFailed[], lastMorningRunAt, lastEveningRunAt, lastExportAt | singleton; the last five feed `/setup` |
+| `settings` | _id `"settings"`, plan dates, clamps, quizPassPct, topicMasteryPct, restDays[], freezeTokens, settledThrough, googleNewsQueries (null = defaults), leetcodeUsername, leetcodeLastSyncAt, leetcodeLastError, leetcodeSeenIds[] (cap 200), newsLastFetchAt, newsLastFailed[], lastMorningRunAt, lastEveningRunAt, lastExportAt, hoursByDow[], mockDsaWeekday, mockHldWeekday (0 = Sunday; defaults Saturday and Sunday) | singleton; lastMorningRunAt through lastExportAt feed `/setup` |
 | `articles` | urlHash ⓤ, url, title, titleKey, sourceId, sourceName, category, publishedAt?, fetchedAt, snippet, aiSummary, read, readOn, bookmarked, **content** (markdown, ≤ 80k chars), contentStatus full\|extracted\|failed\|headline\|null, contentError, readingMinutes, leadImage, tags[] | TTL 30 days on `fetchedAt`; bookmarking unsets `fetchedAt` so saved articles never expire. Indexes on `tags` and `{contentStatus, category}` |
 | `designs` | slug ⓤ, sections{requirements, estimates, api, dataModel, architecture, deepDives} (≤ 20k chars each), rubric[] (checked ids), minutesSpent | your System Design mock answers, one per case |
 | `notifications` | kind plan\|reminder\|streak\|milestone\|sync, title, body, read, dedupeKey ⓤ (sparse) | |
+| `customproblems` | slug ⓤ, title, source ai\|pasted, difficulty, topic, statementMd, functionName, params[{name,type}], returnType, compare, cases[{input[], expected, hidden}], hints[], solution?, attempts, solvedOn | problems from outside the sheet, same runner shape as `data/dsa-testcases.json`. Saved only after the browser has run the reference solution on every case (cases it disagrees with are dropped); never read by the planner or streak |
+| `customsolves` | slug, date, language javascript\|typescript\|python, ms | accepted submissions of custom problems; kept apart from `problemprogresses` so they never count toward the plan |
+| `mocksessions` | type (9 kinds), date, startedAt, durationMin, **deadlineAt**, submittedAt, status in_progress\|submitted\|graded, rounds[] (question set frozen at start), answers{qid → code/language/passed/total/accepted/msSpent/hintsUsed/choice/sections/scores[]/gradedBy/summary}, totalScore, roundScores[], autoSubmitted | timed mock interviews (§7.1). The deadline is server-authoritative; never read by the planner or streak |
 | `loginattempts` | ip, at | TTL 15 min |
 
 ## 7. Domain rules (`lib/domain/*`), *implemented and tested*
 
-Modules: `dates`, `plan-config`, `planner`, `streak`, `srs`, `quiz`, `progress`, `pace`, `heatmap`, `leetcode`, `mastery`, `sampling` (seeded RNG, weighted sampling), `news`, `article` (reading time, tags, SSRF URL checks, source diversity), `reminders`, `stats`, `settings`, `session-policy`, `setup` (checklist), `design` (rubric score, case status, related-article ranking).
+Modules: `dates`, `plan-config`, `planner`, `streak`, `srs`, `quiz`, `progress`, `pace`, `heatmap`, `leetcode`, `mastery`, `sampling` (seeded RNG, weighted sampling), `news`, `article` (reading time, tags, SSRF URL checks, source diversity), `reminders`, `stats`, `settings`, `session-policy`, `setup` (checklist), `design` (rubric score, case status, related-article ranking), `ide` (test-case drafts), `starters` (per-language starter code), `custom-problem` (validation, case-line parsing, prompts), `problem-topics`, `mock` and `mock-bank` (§7.1).
 
 **Day kinds** (`planner.dayKind`):
 - `outside` (before start or after end)
@@ -155,6 +158,16 @@ Modules: `dates`, `plan-config`, `planner`, `streak`, `srs`, `quiz`, `progress`,
 
 **Quiz** (`quiz.ts`): unanswered counts as wrong. Pass = `pct ≥ quizPassPct` (60).
 
+**Calendar projection** (`planner.projectDays`): future days are simulated with `buildDailyPlan`, starting from today's frozen plan and assuming every planned item gets done (new problems solved, theory ticked, reviews cleared). `/calendar` labels these days as a projection; the real plan is still frozen on the morning of the day.
+
+### 7.1 Mock interviews (`mock.ts`, `mock-bank.ts`)
+- **Nine types:** DSA (60 min, 2 coding), JavaScript (40, 4 output MCQs + 2 written), Node.js (50, 3 written), System design HLD (60, 1 case), LLD (50, 1), SQL (40, 3), Project deep dive (40, 4), Behavioral (30, 3 STAR) and a Full loop (120: coding 45, JS 25, HLD 40, behavioral 10).
+- **Question sources:** coding problems come from the 83 runnable sheet problems plus your custom problems (the first is Easy or Medium, later ones Medium or harder, and problems from your last 8 mocks are skipped). JS MCQs are the bank's verified output questions; HLD uses a `data/system-design.json` case with the six framework steps scaled to the round and the 10-item rubric. Written prompts come from `mock-bank.ts` (in `lib/`, so `data/*.json` stays untouched), or from the free AI for Node.js, LLD, project and behavioral when you ask for fresh questions; the bank tops up anything the AI doesn't return. The whole set is frozen into the session at start.
+- **Timer:** `deadlineAt = startedAt + duration` is stored on the server. The client counts down against a server-time offset and auto-submits at zero; the server accepts saves up to 60 s past the deadline and closes any expired session the next time mocks are read, so closing the tab can't extend the time.
+- **Scoring (0–100 per question):** coding = 80 × passed/total + 20 if accepted within the round's per-problem budget (10 if over) − 5 per hint; MCQ = 100 or 0; written = mean rubric score (0–4 per criterion) × 25, blank = 0, ungraded = pending. Rounds average their questions; the total weights rounds by minutes and is withheld while anything is pending.
+- **Grading:** written answers go to the free AI chain (`mock-grade`, never the paid provider), wrapped in tags with injected tags stripped, zod-validated, required to score every criterion, and cached 30 days. With no AI, or when it fails, the report shows a 0–4 self-review form per criterion; an AI grade can also be overridden.
+- **Weekly mocks:** a DSA slot and a System design slot on weekdays set in Settings. A slot counts as done once a matching mock (a Full mock counts for both) is finished in the same Monday-start week. Shown on the dashboard, `/mock` and `/calendar`. **Mocks never touch the daily plan or the streak.**
+
 ## 8. Quizzes: three layers
 
 All quiz questions share one shape (`lib/quiz/question.ts`): a prompt, optional `code`, exactly 4 options, `answerIndex`, an explanation, a `source {kind, ref}` and a `style`. The client only ever receives the public view without the answer; scoring happens on the server.
@@ -175,6 +188,8 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 // only from LeetCode hosts) and cached in `lcproblemcaches` (60 days; premium and not-found 30 days; a failure 1 hour). It is third-party content,
 // so it is never written to data/*.json or git and is excluded from the backup export. "Copy code + open LeetCode" then polls the public
 // recent-accepted list (30 s floor, 5 min window, no cookie) to detect the Accepted submission and import it as a normal synced solve.
+// Custom problems (`generate-questions`) and mock prompts use the free chain only; mock grading has its own `mock-grade` feature, also free only.
+// With no key, "Generate" falls back to an unsolved runnable sheet problem and mocks use the built-in prompt bank plus self-review.
 ```
 
 1. **Context:** today's solved problems (title, pattern, your one-line approach), the subtopics checked today, and the articles read today. When nothing is logged yet, the plan's items are used instead.
@@ -249,17 +264,21 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 - Each step runs independently (one failing step doesn't skip the others), and the JSON response reports every step's outcome. `maxDuration = 60`. Each run stamps `lastMorningRunAt` / `lastEveningRunAt`, which `/setup` uses to show whether the crons are actually firing.
 - Hobby crons run once a day and fire somewhere within the scheduled hour. **Correctness never depends on them:** the dashboard calls `ensureToday()`, which settles past days, creates today's plan if missing and syncs LeetCode.
 - Free fallback: cron-job.org or a GitHub Actions `schedule` hitting the same URLs with the bearer secret.
-- **Notifications** (`services/notifications.ts`) are always stored for the in-app bell. They're pushed to every configured channel in `lib/notify` (Telegram `sendMessage`, Resend email) only for plan and reminder kinds. Push failures are logged and never fail the job.
+- **Notifications** (`services/notifications.ts`) are always stored for the in-app bell. They're pushed to every configured channel in `lib/notify` (Telegram `sendMessage`, and one email channel: Brevo's REST API when configured, else Resend) only for plan and reminder kinds. The morning plan push carries the full digest (`domain/reminders.ts` `morningDigest`: targets, reviews, theory, unread reading, pace; HTML-escaped, built from DB and seed data only) while the in-app bell keeps a one-line summary. Push failures are logged and never fail the job.
 
 ## 12. Routes
 
 | Route | What |
 |---|---|
 | `/login` | single-user sign-in with throttling |
-| `/dashboard` | progress ring, streak, pace, heatmap, today's problems, side-tracks, review, theory, "Fill in details" inbox, news strip, "Finish setup" card while required setup items are open |
+| `/dashboard` | progress ring, streak, pace, heatmap (each day links to `/calendar/[date]`), today's problems, side-tracks, review, theory, this week's mocks, "Fill in details" inbox, news strip, "Finish setup" card while required setup items are open |
+| `/calendar` | month grid (`?m=YYYY-MM`, bounded by the plan window): past days show frozen targets and completion, future days a projection; weekly mock badges |
+| `/calendar/[date]` | one day: new DSA, theory, reviews, JS/SQL and bonus items with done ticks for past days, the scheduled weekly mock, and a projection banner for future days |
 | `/setup` | setup checklist: database seeded, secrets, LeetCode (last sync and error), crons firing, news feeds (failed ones), notifications, LLM, backup age, session (Remember me), each with a fix button or link |
-| `/dsa`, `/dsa/[slug]` | progress per pattern or per **step** (a Pattern \| Sheet toggle: a teaching-order, tick-mark sheet with a per-step progress bar), filters; problem page with solve form, notes, history, Open on LeetCode, and, for problems in `data/dsa-testcases.json`, a **Code** tab: in-browser JS editor, Run (visible cases) and Submit (all cases), a hint ladder, and an **Edge cases** tab (each named edge case with why it matters, run one or all). After a failed Submit the first failing hidden case is revealed once (`ProblemProgress.revealedCases`) and stays visible; other hidden cases remain pass/fail only. A passing Submit opens the normal solve form (`recordSolve`); a failed one marks the problem "attempted" |
+| `/dsa`, `/dsa/[slug]` | progress per pattern or per **step** (a Pattern \| Sheet toggle: a teaching-order, tick-mark sheet with a per-step progress bar), filters; problem page with solve form, notes, history, Open on LeetCode, and, for problems in `data/dsa-testcases.json`, a **Code** tab: the IDE shell (resizable statement and editor panes with a full-screen mode, tabs on mobile) with a JavaScript, TypeScript or Python editor (Python runs on Pyodide in its own Web Worker, loaded from the jsDelivr CDN on first use), editable and addable test cases, Run (visible cases) and Submit (all cases), per-language drafts, a hint ladder, and an **Edge cases** tab (each named edge case with why it matters, run one or all). After a failed Submit the first failing hidden case is revealed once (`ProblemProgress.revealedCases`) and stays visible; other hidden cases remain pass/fail only. A passing Submit opens the normal solve form (`recordSolve`); a failed one marks the problem "attempted" |
 | `/review` | due spaced-repetition queue |
+| `/problems`, `/problems/new`, `/problems/[slug]` | questions from anywhere: generate one with the free AI (topic, difficulty, optional company style) or paste a statement (cases as `[args] => expected` lines, optional "Fill the rest with AI"); each runs in the same IDE shell. Solves are recorded separately and never affect the plan |
+| `/mock`, `/mock/[id]`, `/mock/[id]/report` | mock interviews (§7.1): type picker, this week's slots, history with a score trend; the session runner (sticky countdown, question stepper, autosave, the IDE for coding, MCQ and sectioned written answers); the report (round and total scores, strengths, gaps, practise-next links, per-question detail, AI or self grading) |
 | `/learn` | Continue card, track chips with %, compact topic rows, search across every track; old `?track=x#topic-<id>` links redirect to the topic page |
 | `/learn/[topicId]` | one topic: checklist (next subtopic highlighted), per-subtopic Practice and notes, topic quiz (locked until every subtopic is ticked), resources, related cases, prev/next in the track |
 | `/learn/practice?ref=` | subtopic practice and topic quiz runner |
@@ -272,7 +291,7 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 | `/news` | category pills, topic chips, system design picks rail, filters (`?cat=&src=&tag=&f=`, `f=full` for readable articles) |
 | `/news/[id]` | in-app reader (§10.1): full text, reading time, tags, bookmark, open original, next unread; marks the article read |
 | `/stats` | solves per day, cumulative vs ideal, difficulty by week, quiz trend, track coverage, LeetCode card, JS mastery radar |
-| `/settings` | plan, quiz and mastery thresholds, rest days, news keywords, LeetCode username, notifications test, export, re-seed |
+| `/settings` | plan, quiz and mastery thresholds, rest days, study hours, weekly mock days, news keywords, LeetCode username, notifications test, export, re-seed |
 | `/api/palette` | ⌘K search index (session) |
 | `/api/export` | JSON backup download (session) |
 | `/api/cron/morning`, `/api/cron/evening` | scheduled jobs (`Bearer CRON_SECRET`) |
@@ -286,25 +305,25 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 ├── app/
 │   ├── (auth)/login/                 sign-in page, form, Server Action
 │   ├── (app)/layout.tsx  loading.tsx sidebar, top bar, bell, mobile tabs + badges, requireSession, skeleton
-│   ├── (app)/<page>/page.tsx         dashboard, dsa, review, learn, design, playground, quiz, news, stats, settings, setup
+│   ├── (app)/<page>/page.tsx         dashboard, calendar, dsa, problems, mock, review, learn, design, playground, quiz, news, stats, settings, setup
 │   ├── (app)/<page>/actions.ts       Server Actions (zod + requireSession + refresh())
 │   ├── api/{cron/*,export,palette}/  route handlers
 │   ├── offline/                      offline fallback page (cached by public/sw.js)
 │   ├── manifest.ts  apple-icon.png  icon.svg  layout.tsx  globals.css
-├── components/        ui (shadcn) · layout · dashboard · dsa · learn · design · progress · quiz · playground · news · stats · settings · setup · leetcode · shared
+├── components/        ui (shadcn) · layout · dashboard · calendar · ide · dsa · problems · mock · learn · design · progress · quiz · playground · news · stats · settings · setup · leetcode · shared
 ├── lib/
 │   ├── domain/        pure logic (see §7)
 │   ├── services/      plan, day, progress, problems, learn, practice, mastery, quiz, leetcode-sync,
 │   │                  news, notifications, cron, stats, nav, settings, seed, export, snippets, dashboard,
-│   │                  setup, designs
+│   │                  setup, designs, calendar, custom-problems, mock
 │   ├── leetcode/      GraphQL client (adapter)
 │   ├── llm/           provider interface, adapters, provider chain (failover, cooldowns, paid last resort), JSON provider
 │   ├── news/          feed fetcher, article extractor (adapters), HTML → markdown
-│   ├── notify/        Telegram / Resend channels (adapter)
+│   ├── notify/        Telegram / Brevo / Resend channels (adapter)
 │   ├── quiz/          question schema, bank loader, LLM prompts
 │   ├── playground/    drills, share links, snippet tags, lazy TS transpile
-│   ├── sandbox/       Web Worker source, runner, test-case harness, deepEqual (shared by /playground and /dsa)
-│   ├── models/        content, progress, day, learning, system (Mongoose)
+│   ├── sandbox/       JS/TS and Pyodide Web Worker sources, runners, test-case harness, deepEqual (shared by /playground, /dsa, /problems, /mock)
+│   ├── models/        content, progress, day, learning, system, mock (Mongoose)
 │   ├── auth/          session (jose), dal (requireSession), credentials (bcrypt + throttle), cron
 │   ├── content.ts  plan-clock.ts  db.ts  env.ts  utils.ts
 ├── data/              dsa-problems, syllabus, news-sources, system-design, quiz-bank (generated)
@@ -324,7 +343,7 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 - **Optional:**
   - LLM: `GEMINI_API_KEY`/`GEMINI_MODEL`, `GROQ_API_KEY`/`GROQ_MODEL`, `LLM_CHAIN`, the paid `META_LLAMA_API_KEY`/`META_LLAMA_BASE_URL`/`META_LLAMA_MODEL`, the older `LLM_PROVIDER`/`LLM_API_KEY`/`LLM_MODEL`/`LLM_BASE_URL`, plus `LLM_DELAY_MS` (bank generator only).
   - LeetCode: `LEETCODE_USERNAME`.
-  - Notifications: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `RESEND_API_KEY`, `NOTIFY_EMAIL`.
+  - Notifications: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NOTIFY_EMAIL`, `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `RESEND_API_KEY`, `APP_URL` (links in emails).
 
 `lib/env.ts` validates them lazily, so `next build` works without secrets. Empty strings count as unset.
 
@@ -332,7 +351,7 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
 
 - **Serverless Mongo:** the connection is cached on `globalThis` (pool size 5). Atlas Network Access must allow `0.0.0.0/0`, because Vercel has no fixed IPs, so use a long database password. Functions are pinned to `bom1` (Mumbai), next to the cluster.
 - **Seed is idempotent:** it upserts by key, removes content rows no longer in the JSON, and never touches progress or an existing settings document. It's available as `npm run seed` and as *Re-seed content* in Settings (`lib/services/seed.ts`).
-- **Backups:** M0 has no automated backups. `/api/export` downloads every user collection as JSON (`version: 1`): settings, progress, plans, day logs, quizzes, masteries, practice attempts, snippets, notifications, System Design answers, and read or bookmarked articles (without their body text). Each export stamps `lastExportAt`, and `/setup` nags when the last one is over 7 days old.
+- **Backups:** M0 has no automated backups. `/api/export` downloads every user collection as JSON (`version: 1`): settings, progress, plans, day logs, quizzes, masteries, practice attempts, snippets, notifications, System Design answers, custom problems and their solves, mock sessions, and read or bookmarked articles (without their body text). Each export stamps `lastExportAt`, and `/setup` nags when the last one is over 7 days old.
 - **PWA / iPhone app:** `app/manifest.ts` (standalone, start `/dashboard`, maskable icon, shortcuts), the Apple touch icon, `apple-mobile-web-app-*` metadata, iOS splash screens for current iPhone sizes (`public/splash/`), `viewport-fit=cover` with safe-area padding on the top bar and bottom tabs, and an "Add to Home Screen" hint for iOS Safari.
   - `public/sw.js` caches only build assets and icons (cache-first) plus the `/offline` page. Navigations always go to the network and fall back to `/offline`. Signed-in HTML and data are never cached, so nothing personal sits on the device and there's no stale-data problem.
   - The worker is served with `no-cache` and a strict CSP. A version bump in the file clears old caches.
@@ -347,4 +366,4 @@ interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Pro
   - Mermaid runs with `securityLevel: "strict"` and only renders diagrams from `data/system-design.json`; a content test rejects `click` directives and script URLs.
 - **Accessibility:** a skip link to `#main`, visible focus rings, `aria-live` regions for quiz results and toasts, labelled nav badges, and charts that are backed by text tiles. Lighthouse on mobile `/login`: performance 94, accessibility 95, best practices 100. The one finding is that white text on the dark-theme `--primary` (#7C5CFF) measures 4.34:1, just under the 4.5:1 AA minimum.
 - **Study hours:** `Settings.hoursByDow` (Sunday first, default 4 / 3.5 x5 / 6) scales the count-based targets (`lib/domain/time-budget.ts`). A 3.5 h weekday and a 7 h Saturday are exactly the old counts, so the pace is still deadline-driven; more or fewer hours scale it, then a deterministic fit pass trims (SQL, JS, news, reviews, theory, DSA; never the quiz) or tops up toward the budget using per-item minute costs (Easy/Medium/Hard 20/35/55, re-solve 15, theory 25, ...), which shrink toward the median of your own recent first-solve times. Sunday keeps its weekly-quiz-only completion rule and lists spare-hour work as optional bonus items.
-- **Testing:** 642 Vitest tests. Domain tests cover planner, streak, SRS, quiz, LeetCode `planSync` (including midnight IST), mastery, news merge, article tags and SSRF checks, HTML → markdown, session policy, setup checklist, design scoring, the integrity of `data/system-design.json` and `data/os-dbms-cases.json` (topics, subtopic refs, blocks, diagram syntax, URLs), `data/dsa-testcases.json`, a frozen per-topic hash that fails if an existing syllabus subtopic is reordered, edited or deleted, answer encoding for the quiz formats, and the real Web Worker script run in a Node `vm` (console helpers, output caps, test harness, every Playground drill). Service tests run on an in-memory MongoDB and cover `ensureToday`, `recordSolve`, sync idempotency, quiz pass flows, practice and mastery, news refresh, full-text ingest, on-demand extraction and prefetch limits, cron auth and dedupe, design answers and overview, export, and re-seeding keeping settings. Every phase was also click-tested in the browser on desktop and mobile widths.
+- **Testing:** 1,428 Vitest tests. Domain tests cover planner, streak, SRS, quiz, LeetCode `planSync` (including midnight IST), mastery, news merge, article tags and SSRF checks, HTML → markdown, session policy, setup checklist, design scoring, the integrity of `data/system-design.json` and `data/os-dbms-cases.json` (topics, subtopic refs, blocks, diagram syntax, URLs), `data/dsa-testcases.json`, a frozen per-topic hash that fails if an existing syllabus subtopic is reordered, edited or deleted, answer encoding for the quiz formats, and the real Web Worker script run in a Node `vm` (console helpers, output caps, test harness, every Playground drill). Service tests run on an in-memory MongoDB and cover `ensureToday`, `recordSolve`, sync idempotency, quiz pass flows, practice and mastery, news refresh, full-text ingest, on-demand extraction and prefetch limits, cron auth and dedupe, design answers and overview, export, and re-seeding keeping settings. Every phase was also click-tested in the browser on desktop and mobile widths.
