@@ -26,7 +26,14 @@ const schema = z.object({
   TELEGRAM_CHAT_ID: z.string().optional(),
   LEETCODE_USERNAME: z.string().regex(/^[\w-]{1,40}$/).optional(),
   RESEND_API_KEY: z.string().optional(),
+  /** Sender on a domain verified in Resend, e.g. prepos@satyam-dev.in. Without it Resend's test sender only mails the account owner. */
+  RESEND_FROM_EMAIL: z.email().optional(),
   NOTIFY_EMAIL: z.string().optional(),
+  /** Whapi.Cloud channel token for WhatsApp messages. */
+  WHAPI_TOKEN: z.string().optional(),
+  WHAPI_API_URL: z.url().default("https://gate.whapi.cloud"),
+  /** Recipient in international format without + or spaces, e.g. 919891142251. */
+  WHATSAPP_TO: z.string().regex(/^\d{8,15}$/, "digits only with country code, e.g. 919891142251").optional(),
   /** Brevo v3 key (`xkeysib-…`) or the base64 MCP form `{"api_key":"xkeysib-…"}`. */
   BREVO_API_KEY: z.string().optional(),
   /** Must be a verified sender in Brevo. */

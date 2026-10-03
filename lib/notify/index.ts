@@ -1,7 +1,7 @@
 import { env } from "@/lib/env";
 
 export interface NotifyChannel {
-  name: "telegram" | "email";
+  name: "telegram" | "email" | "whatsapp";
   /** `html` is an optional richer body for email; channels that can't render it use `body`. */
   send(title: string, body: string, html?: string): Promise<void>;
 }
@@ -24,19 +24,34 @@ export function telegramChannel(token: string, chatId: string): NotifyChannel {
   };
 }
 
-export function emailChannel(apiKey: string, to: string): NotifyChannel {
+const RESEND_TEST_SENDER = "onboarding@resend.dev";
+const WHATSAPP_MAX_CHARS = 4096;
+
+export function emailChannel(apiKey: string, to: string, from: string = RESEND_TEST_SENDER): NotifyChannel {
   return {
     name: "email",
     send: (title, body, html) =>
       post("https://api.resend.com/emails", {
         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
-          from: "PrepOS <onboarding@resend.dev>",
+          from: `PrepOS <${from}>`,
           to: [to],
           subject: title,
           text: body,
           ...(html ? { html } : {}),
         }),
+      }),
+  };
+}
+
+/** WhatsApp through Whapi.Cloud; `to` is the number with country code, digits only. */
+export function whatsappChannel(token: string, to: string, baseUrl: string): NotifyChannel {
+  return {
+    name: "whatsapp",
+    send: (title, body) =>
+      post(`${baseUrl.replace(/\/+$/, "")}/messages/text`, {
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ to, body: `*${title}*\n${body}`.slice(0, WHATSAPP_MAX_CHARS) }),
       }),
   };
 }
@@ -81,8 +96,9 @@ export function configuredChannels(): NotifyChannel[] {
   if (e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_CHAT_ID) channels.push(telegramChannel(e.TELEGRAM_BOT_TOKEN, e.TELEGRAM_CHAT_ID));
   if (e.NOTIFY_EMAIL) {
     if (e.BREVO_API_KEY && e.BREVO_SENDER_EMAIL) channels.push(brevoChannel(e.BREVO_API_KEY, e.BREVO_SENDER_EMAIL, e.NOTIFY_EMAIL));
-    else if (e.RESEND_API_KEY) channels.push(emailChannel(e.RESEND_API_KEY, e.NOTIFY_EMAIL));
+    else if (e.RESEND_API_KEY) channels.push(emailChannel(e.RESEND_API_KEY, e.NOTIFY_EMAIL, e.RESEND_FROM_EMAIL));
   }
+  if (e.WHAPI_TOKEN && e.WHATSAPP_TO) channels.push(whatsappChannel(e.WHAPI_TOKEN, e.WHATSAPP_TO, e.WHAPI_API_URL));
   return channels;
 }
 

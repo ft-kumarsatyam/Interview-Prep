@@ -23,10 +23,15 @@ const TESTS: Array<{ kind: Kind; label: string; icon: typeof Send }> = [
 ];
 
 /** Plain-language next step for the common provider errors. */
-function hintFor(error: string): string {
+function hintFor(channel: string, error: string): string {
+  if (channel === "whatsapp") {
+    if (/401|403|unauthori[sz]ed|token/i.test(error)) return "Whapi rejected the token. Copy WHAPI_TOKEN again from the Whapi dashboard and redeploy.";
+    if (/402|limit|trial|plan/i.test(error)) return "The Whapi plan limit or trial ran out. Check the channel in the Whapi dashboard.";
+    return "Check that the Whapi channel is authorized (scan the QR again if needed) and WHATSAPP_TO is digits with country code.";
+  }
   if (/401|unauthori[sz]ed|invalid.*key|key.*invalid/i.test(error)) return "The API key was rejected. Copy it again into the env var and redeploy.";
   if (/sender|not.*verified|domain/i.test(error)) return "The sender address isn't verified with the provider. Verify BREVO_SENDER_EMAIL in Brevo.";
-  if (/403/i.test(error)) return "The provider refused it. Resend's test sender only mails the address you signed up with.";
+  if (/403/i.test(error)) return "The provider refused it. Without RESEND_FROM_EMAIL, Resend's test sender only mails the address you signed up with.";
   if (/timeout|abort/i.test(error)) return "The provider didn't answer in 10 s. Try again in a minute.";
   if (/chat not found|400/i.test(error)) return "Telegram couldn't find the chat. Send /start to your bot, then check TELEGRAM_CHAT_ID.";
   return "Check the env vars for this channel, then try again.";
@@ -80,7 +85,7 @@ export function NotificationCard({
         <CardTitle className="flex items-center gap-2">
           <Bell className="size-4 text-muted-foreground" aria-hidden /> Notification channels
         </CardTitle>
-        <CardDescription>Morning plan at 08:00 and evening recap at 23:59. In-app notifications always work; email and Telegram are set with env vars.</CardDescription>
+        <CardDescription>Morning plan at 08:00 and evening recap at 23:59. In-app notifications always work; email, Telegram and WhatsApp are set with env vars.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <ul className="space-y-2 text-sm">
@@ -182,7 +187,7 @@ function TestResult({ result }: { result: Result }) {
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
           <div className="min-w-0">
             <p className="font-medium capitalize">{channel} failed</p>
-            <p className="text-xs text-muted-foreground">{hintFor(result.errors[channel] ?? "")}</p>
+            <p className="text-xs text-muted-foreground">{hintFor(channel, result.errors[channel] ?? "")}</p>
             <p className="mt-1 font-mono text-[11px] break-words text-muted-foreground/80">{result.errors[channel]}</p>
           </div>
         </div>

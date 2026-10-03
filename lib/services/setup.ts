@@ -42,7 +42,10 @@ export async function getSetupChecklist(opts: SetupOptions): Promise<SetupCheckl
     leetcode: { username: s.leetcodeUsername, lastSyncAt: s.leetcodeLastSyncAt, lastError: s.leetcodeLastError, profileFound, solved },
     jobs: { lastMorningAt: s.lastMorningRunAt, lastEveningAt: s.lastEveningRunAt },
     news: { lastFetchAt: s.newsLastFetchAt, failed: s.newsLastFailed.length, feeds: newsSources(s.googleNewsQueries).length },
-    notify: { telegram: !!(e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_CHAT_ID), email: !!(e.NOTIFY_EMAIL && ((e.BREVO_API_KEY && e.BREVO_SENDER_EMAIL) || e.RESEND_API_KEY)) },
+    notify: {
+      telegram: !!(e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_CHAT_ID), email: !!(e.NOTIFY_EMAIL && ((e.BREVO_API_KEY && e.BREVO_SENDER_EMAIL) || e.RESEND_API_KEY)),
+      whatsapp: !!(e.WHAPI_TOKEN && e.WHATSAPP_TO),
+    },
     llm: llmStatus(e),
     backup: { lastExportAt: s.lastExportAt },
     session: { remember: opts.remember },

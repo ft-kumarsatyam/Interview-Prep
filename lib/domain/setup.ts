@@ -32,7 +32,7 @@ export interface SetupInput {
   };
   jobs: { lastMorningAt: Date | null; lastEveningAt: Date | null };
   news: { lastFetchAt: Date | null; failed: number; feeds: number };
-  notify: { telegram: boolean; email: boolean };
+  notify: { telegram: boolean; email: boolean; whatsapp: boolean };
   llm: {
     configured: boolean;
     provider: string | null;
@@ -168,14 +168,14 @@ function newsItem({ news, now }: SetupInput): SetupItem {
 }
 
 function notifyItem({ notify }: SetupInput): SetupItem {
-  const channels = [notify.telegram && "Telegram", notify.email && "email"].filter(Boolean) as string[];
+  const channels = [notify.telegram && "Telegram", notify.email && "email", notify.whatsapp && "WhatsApp"].filter(Boolean) as string[];
   return {
     id: "notify",
     title: "Reminders outside the app",
     status: channels.length ? "ok" : "warn",
     detail: channels.length
-      ? `Morning plan and evening reminder are pushed to ${channels.join(" and ")}.`
-      : "Optional. Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID or NOTIFY_EMAIL + BREVO_API_KEY + BREVO_SENDER_EMAIL (or RESEND_API_KEY) to get reminders and the morning digest on your phone. iPhone home-screen apps can't receive push here.",
+      ? `Morning plan and evening reminder are pushed to ${channels.join(", ").replace(/, ([^,]*)$/, " and $1")}.`
+      : "Optional. Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID or NOTIFY_EMAIL + BREVO_API_KEY + BREVO_SENDER_EMAIL (or RESEND_API_KEY + RESEND_FROM_EMAIL), or WHAPI_TOKEN + WHATSAPP_TO for WhatsApp, to get reminders and the morning digest on your phone. iPhone home-screen apps can't receive push here.",
     required: false,
     actions: channels.length ? [{ kind: "button", id: "test-notify", label: "Send test" }] : [],
   };

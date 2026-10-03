@@ -70,7 +70,12 @@ export default async function SettingsPage() {
                 configured: !!(e.BREVO_API_KEY && e.BREVO_SENDER_EMAIL && e.NOTIFY_EMAIL),
                 envVars: "BREVO_API_KEY, BREVO_SENDER_EMAIL, NOTIFY_EMAIL",
               },
-              { name: "Email (Resend, fallback)", configured: !!(e.RESEND_API_KEY && e.NOTIFY_EMAIL), envVars: "RESEND_API_KEY, NOTIFY_EMAIL" },
+              {
+                name: "Email (Resend, fallback)",
+                configured: !!(e.RESEND_API_KEY && e.NOTIFY_EMAIL),
+                envVars: "RESEND_API_KEY, RESEND_FROM_EMAIL, NOTIFY_EMAIL",
+              },
+              { name: "WhatsApp (Whapi)", configured: !!(e.WHAPI_TOKEN && e.WHATSAPP_TO), envVars: "WHAPI_TOKEN, WHATSAPP_TO" },
             ]}
             roastMode={s.roastMode}
             emailTo={e.NOTIFY_EMAIL ?? null}

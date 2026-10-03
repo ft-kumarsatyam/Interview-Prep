@@ -145,7 +145,8 @@ Pick an idea from the bottom of `docs/BUILD_PLAN.md`, check it works, commit.
    | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional | push reminders to Telegram |
    | `NOTIFY_EMAIL` | optional | where email reminders and the morning digest go |
    | `BREVO_API_KEY`, `BREVO_SENDER_EMAIL` | optional | email via Brevo's REST API (free, 300/day). Preferred over Resend when set. Verify the sender in Brevo and turn off API-key IP blocking (*Security → Authorised IPs*), since Vercel has no fixed IPs |
-   | `RESEND_API_KEY` | optional | email via Resend, used when Brevo isn't set |
+   | `RESEND_API_KEY`, `RESEND_FROM_EMAIL` | optional | email via Resend, used when Brevo isn't set. `RESEND_FROM_EMAIL` is a sender on a domain verified in Resend (e.g. `prepos@satyam-dev.in`); without it Resend only mails the account owner |
+   | `WHAPI_TOKEN`, `WHATSAPP_TO` | optional | WhatsApp messages via [Whapi.Cloud](https://whapi.cloud). `WHATSAPP_TO` is digits with country code (e.g. `919891142251`). The free Sandbox plan caps messages; messages to the channel's own number land in "Message yourself" without a notification sound |
    | `APP_URL` | optional | public URL (e.g. `https://satyam-dev.in`) for links in the morning email |
 
    Shortcut from your laptop (needs `npm i -g vercel@latest`, `vercel login` and `vercel link`): `./scripts/sync-vercel-env.sh interview-prep` copies every non-empty key from `.env.local`. `.vercelignore` keeps `.env*` files out of CLI uploads.

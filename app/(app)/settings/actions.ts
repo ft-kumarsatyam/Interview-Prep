@@ -31,7 +31,7 @@ export async function testNotificationAction(
   if (!parsed.success) return { ok: false, error: "Unknown test type" };
   try {
     const res = await sendTestMail(parsed.data);
-    if (!res) return { ok: false, error: "No channel configured. Set the Telegram, Brevo or Resend env vars first" };
+    if (!res) return { ok: false, error: "No channel configured. Set the Telegram, WhatsApp, Brevo or Resend env vars first" };
     return { ok: true, ...res };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Sending failed" };

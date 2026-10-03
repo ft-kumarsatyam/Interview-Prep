@@ -370,7 +370,7 @@ Feeds with `kind: "sitemap"` (Scale Engineer, its hw.glich.co newsletter and Des
 - **Optional:**
   - LLM: `GEMINI_API_KEY`/`GEMINI_MODEL`, `GROQ_API_KEY`/`GROQ_MODEL`, `LLM_CHAIN`, the paid `META_LLAMA_API_KEY`/`META_LLAMA_BASE_URL`/`META_LLAMA_MODEL`, the older `LLM_PROVIDER`/`LLM_API_KEY`/`LLM_MODEL`/`LLM_BASE_URL`, plus `LLM_DELAY_MS` (bank generator only).
   - LeetCode: `LEETCODE_USERNAME`.
-  - Notifications: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NOTIFY_EMAIL`, `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `RESEND_API_KEY`, `APP_URL` (links in emails).
+  - Notifications: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NOTIFY_EMAIL`, `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `WHAPI_TOKEN`, `WHATSAPP_TO` (WhatsApp via Whapi.Cloud), `APP_URL` (links in emails).
 
 `lib/env.ts` validates them lazily, so `next build` works without secrets. Empty strings count as unset.
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { brevoApiKey, brevoChannel, configuredChannels } from "@/lib/notify";
+import { brevoApiKey, brevoChannel, configuredChannels, emailChannel, whatsappChannel } from "@/lib/notify";
 import { resetEnvForTests } from "@/lib/env";
 
 const KEY = "xkeysib-abc123-def";
@@ -42,6 +42,37 @@ describe("brevoChannel", () => {
   });
 });
 
+describe("emailChannel", () => {
+  it("sends from the verified sender when given, else Resend's test sender", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await emailChannel("re_1", "me@x.co", "prepos@satyam-dev.in").send("S", "B");
+    await emailChannel("re_1", "me@x.co").send("S", "B");
+    const froms = fetchMock.mock.calls.map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)).from);
+    expect(froms).toEqual(["PrepOS <prepos@satyam-dev.in>", "PrepOS <onboarding@resend.dev>"]);
+  });
+});
+
+describe("whatsappChannel", () => {
+  it("posts a bold title and body to Whapi's text endpoint", async () => {
+    const fetchMock = vi.fn(async () => new Response('{"sent":true}', { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await whatsappChannel("tok", "919891142251", "https://gate.whapi.cloud/").send("Morning plan", "3 problems today");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://gate.whapi.cloud/messages/text");
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok");
+    expect(JSON.parse(String(init.body))).toEqual({ to: "919891142251", body: "*Morning plan*\n3 problems today" });
+  });
+
+  it("caps the message at WhatsApp's length limit", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await whatsappChannel("tok", "919891142251", "https://gate.whapi.cloud").send("T", "x".repeat(5000));
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)).body).toHaveLength(4096);
+  });
+});
+
 describe("configuredChannels", () => {
   const base = {
     MONGODB_URI: "mongodb://localhost/x",
@@ -70,6 +101,13 @@ describe("configuredChannels", () => {
     stub({ NOTIFY_EMAIL: "me@x.co", BREVO_API_KEY: "", BREVO_SENDER_EMAIL: "", RESEND_API_KEY: "re_1" });
     expect(configuredChannels().map((c) => c.name)).toEqual(["email"]);
     stub({ NOTIFY_EMAIL: "", BREVO_API_KEY: KEY, BREVO_SENDER_EMAIL: "me@x.co", RESEND_API_KEY: "" });
+    expect(configuredChannels()).toEqual([]);
+  });
+
+  it("adds WhatsApp only when both the token and recipient are set", () => {
+    stub({ NOTIFY_EMAIL: "", WHAPI_TOKEN: "tok", WHATSAPP_TO: "919891142251" });
+    expect(configuredChannels().map((c) => c.name)).toEqual(["whatsapp"]);
+    stub({ NOTIFY_EMAIL: "", WHAPI_TOKEN: "tok", WHATSAPP_TO: "" });
     expect(configuredChannels()).toEqual([]);
   });
 });

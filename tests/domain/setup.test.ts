@@ -11,7 +11,7 @@ const healthy: SetupInput = {
   leetcode: { username: "imksatyam", lastSyncAt: hoursAgo(1), lastError: null, profileFound: true, solved: 11 },
   jobs: { lastMorningAt: hoursAgo(8), lastEveningAt: hoursAgo(18) },
   news: { lastFetchAt: hoursAgo(8), failed: 2, feeds: 51 },
-  notify: { telegram: true, email: false },
+  notify: { telegram: true, email: false, whatsapp: false },
   llm: { configured: false, provider: null },
   backup: { lastExportAt: hoursAgo(48) },
   session: { remember: true },
