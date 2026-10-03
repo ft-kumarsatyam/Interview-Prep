@@ -16,6 +16,8 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
   appleWebApp: { capable: true, title: "PrepOS", statusBarStyle: "black-translucent", startupImage: startupImages() },
   formatDetection: { telephone: false },
+  // Marker the PrepOS Chrome extension looks for before it activates (extension/content-app.js).
+  other: { "prepos-app": "1" },
 };
 
 export const viewport: Viewport = {

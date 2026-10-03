@@ -1,0 +1,765 @@
+{
+ "net-basics:0": {
+  "body": "## The problem layering solves\nTwo programs on different machines need to exchange bytes across Wi-Fi, fibre, routers and switches built by different vendors. Nobody can design that as one monolith, so networking is split into layers. Each layer offers a narrow service to the layer above and hides how it is done. You can swap Wi-Fi for Ethernet without touching HTTP, and swap HTTP for gRPC without touching IP.\n\n## The two models\n**OSI** has seven layers and is a teaching vocabulary. **TCP/IP** has four (sometimes five) layers and is what the internet actually runs.\n\n- L7 Application (OSI 5-7): HTTP, DNS, SMTP, TLS is usually placed here or between 4 and 7\n- L4 Transport: TCP, UDP. Ports, reliability, ordering, flow and congestion control. Unit: segment (TCP) or datagram (UDP)\n- L3 Network: IP, ICMP, routing. Host-to-host delivery across networks. Unit: packet\n- L2 Data link: Ethernet, Wi-Fi, ARP. Delivery within one local network using MAC addresses. Unit: frame\n- L1 Physical: bits on copper, fibre, radio\n\nTCP/IP collapses OSI 5-7 into \"Application\" and L1+L2 into \"Link\". Interviewers mostly care that you can place things correctly and use the L4 / L7 vocabulary.\n\n## Encapsulation: the key mechanism\nSending data down the stack, each layer wraps the payload with its own header.\n\n```\nHTTP request bytes\n + TCP header (src/dst port, seq, ack, flags)      -> segment\n + IP header (src/dst IP, TTL, protocol)           -> packet\n + Ethernet header/trailer (src/dst MAC, FCS)      -> frame\n```\n\nAt each router hop the L2 frame is stripped and rebuilt with new MAC addresses for the next link, while the IP packet stays intact (apart from TTL decrement). That is the crucial distinction: **MAC addresses change every hop, IP addresses end to end stay the same** (ignoring NAT).\n\n## Worked example\nYour laptop requests https://example.com. The browser hands bytes to TLS, TLS to TCP port 443, TCP segments go in IP packets addressed to the server, and the packet is put in an Ethernet frame addressed to your default gateway's MAC (found via ARP). The router reads the IP header, picks the next hop and re-frames. The server reverses the process, and each layer reads only its own header.\n\n## Where devices live\n- Switch: L2 (reads MAC)\n- Router: L3 (reads IP)\n- L4 load balancer: reads IP and port\n- L7 load balancer / reverse proxy / CDN: reads HTTP host, path, headers\n- Firewall: L3/L4 stateful, or L7 (WAF)\n\n## Interview pitfalls\n- \"Which layer is TLS?\" Honest answer: it sits between transport and application; it does not fit OSI cleanly. Say so.\n- Do not claim OSI is what the internet implements.\n- Layers are not perfectly clean: NAT rewrites L4 ports at L3 devices, and QUIC implements transport inside UDP in user space.",
+  "keyPoints": [
+   "Each layer wraps the payload with its own header (encapsulation); the receiver unwraps in reverse",
+   "MAC addresses change at every hop; IP addresses stay end to end (except NAT)",
+   "Place protocols: HTTP/DNS L7, TCP/UDP L4, IP L3, Ethernet/ARP L2",
+   "TCP/IP is what runs the internet; OSI is a teaching vocabulary",
+   "Switch = L2, router = L3, L4 LB = IP+port, L7 LB = HTTP-aware"
+  ],
+  "diagram": "flowchart TD\nA[\"Application: HTTP, DNS\"] --> B[\"Transport: TCP / UDP\"]\nB --> C[\"Network: IP\"]\nC --> D[\"Link: Ethernet, Wi-Fi\"]\nD --> E[\"Physical: bits\"]",
+  "sources": [
+   {
+    "title": "ByteByteGo blog",
+    "url": "https://blog.bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:1": {
+  "body": "## Why two transport protocols\nIP is best effort: packets can be lost, duplicated, reordered. Transport protocols add ports (so many apps share one IP) and, optionally, reliability.\n\n## UDP\nA tiny 8-byte header: source port, destination port, length, checksum. No connection, no retransmission, no ordering, no congestion control. Each datagram is independent and message boundaries are preserved.\n\nUse it when latency beats completeness or when you build your own reliability: DNS queries, VoIP/video calls, games, telemetry, and QUIC (HTTP/3) which implements reliability on top of UDP.\n\n## TCP\nConnection-oriented, reliable, ordered byte stream. Header is at least 20 bytes. It provides:\n- Sequence numbers and ACKs, with retransmission on timeout or duplicate ACKs\n- Ordered delivery and duplicate removal\n- Flow control (receiver window) and congestion control\n- Checksums\n\nThere are no message boundaries: two writes of 100 bytes can arrive as one read of 200 bytes. Applications need framing (length prefix, delimiter).\n\n## The 3-way handshake\n```\nClient                     Server\n  | --- SYN, seq=x ----------> |   (client picks random ISN x)\n  | <-- SYN+ACK, seq=y, ack=x+1 |   (server picks ISN y)\n  | --- ACK, ack=y+1 --------> |   connection established\n```\n\nWhy three? Both sides must pick and confirm initial sequence numbers; each direction needs a SYN and an ACK, and the middle two fold into one packet. Random ISNs also guard against old packets from earlier connections and make blind spoofing harder. Cost: 1 RTT before the first byte of data (the client can send data with its ACK, the server cannot until it receives it).\n\n## Teardown\nEach direction closes independently: FIN, ACK, FIN, ACK (4 packets). The side that closes first enters **TIME_WAIT** for 2x MSL (commonly 60 s on Linux) so late packets expire and a lost final ACK can be re-sent. Many TIME_WAIT sockets on a busy client or proxy can exhaust ephemeral ports (~28k by default on Linux, range 32768-60999); fix with connection reuse, not by disabling the protection.\n\n## SYN flood\nAttacker sends SYNs and never completes. The server keeps half-open state. Mitigation: SYN cookies (encode state in the ISN, allocate nothing until the final ACK), backlog tuning, and upstream filtering.\n\n## Trade-offs and follow-ups\n- TCP head-of-line blocking: one lost segment stalls everything after it, even independent data. This motivates QUIC.\n- TCP Fast Open and TLS 1.3 0-RTT shave round trips but have replay caveats.\n- \"Is UDP unreliable?\" It makes no promise; apps can add acks, retries and FEC.\n- Nagle's algorithm and delayed ACK interplay can add ~40 ms latency; latency-sensitive apps set TCP_NODELAY.",
+  "keyPoints": [
+   "UDP: 8-byte header, no connection, no retransmit, preserves message boundaries",
+   "TCP: reliable ordered byte stream with flow and congestion control; no message boundaries",
+   "Handshake SYN, SYN+ACK, ACK exchanges initial sequence numbers; costs 1 RTT",
+   "TIME_WAIT lasts 2xMSL and can exhaust ephemeral ports; SYN cookies defend against SYN floods",
+   "TCP head-of-line blocking is why QUIC runs over UDP"
+  ],
+  "diagram": "flowchart LR\nC[\"Client\"] -->|\"SYN seq=x\"| S[\"Server\"]\nS -->|\"SYN+ACK seq=y ack=x+1\"| C\nC -->|\"ACK ack=y+1\"| S",
+  "sources": [
+   {
+    "title": "RFC 9293: Transmission Control Protocol",
+    "url": "https://www.rfc-editor.org/rfc/rfc9293",
+    "kind": "reference"
+   },
+   {
+    "title": "Cloudflare Learning: What is TCP/UDP",
+    "url": "https://www.cloudflare.com/learning/ddos/glossary/tcp-ip/",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:2": {
+  "body": "## The problem\nHumans use names; IP needs addresses. DNS is a globally distributed, hierarchical, heavily cached database mapping names to records. It must survive billions of queries per day with no single point of failure, so caching with TTLs is the central idea.\n\n## The hierarchy\n- **Root servers**: 13 logical addresses (a.root-servers.net ... m), served by hundreds of anycast instances. They know who runs each TLD.\n- **TLD servers**: .com, .org, .io ... know which authoritative servers handle each domain.\n- **Authoritative servers**: hold the actual records for example.com (Route 53, Cloudflare, etc.).\n\n## Resolution step by step\nYour app calls the OS stub resolver, which asks a **recursive resolver** (ISP, 8.8.8.8, 1.1.1.1, or your VPC resolver). If it has no cached answer:\n```\n1. resolver -> root:          \"www.example.com?\"   -> referral to .com TLD servers\n2. resolver -> .com TLD:      \"www.example.com?\"   -> referral to ns1.example.com\n3. resolver -> authoritative: \"www.example.com?\"   -> A 93.184.216.34, TTL 300\n4. resolver caches, returns to client\n```\nCaching happens at the browser, the OS, and the recursive resolver, and the resolver also caches the NS referrals, so root and TLD are rarely hit. A warm lookup is ~0 ms locally; a cold full recursion costs a few round trips, tens to a few hundred ms.\n\n## Record types\n- A / AAAA: IPv4 / IPv6\n- CNAME: alias to another name (cannot coexist with other records at the same name, so not at the zone apex; providers offer ALIAS/ANAME)\n- NS: delegation; MX: mail; TXT: SPF, verification; SRV: service host+port; PTR: reverse lookup\n- SOA: zone metadata, including negative-caching TTL\n\n## Transport\nClassic DNS is UDP port 53, falling back to TCP for large responses (and zone transfers). DoT (port 853) and DoH encrypt the query to the resolver.\n\n## DNS in system design\n- **DNS load balancing / GeoDNS**: return different IPs by client location or health. Coarse because clients and resolvers cache for the TTL.\n- **Failover**: lower the TTL (e.g. 60 s) before a planned migration. Some clients ignore TTL.\n- **Anycast**: same IP announced from many sites, used by root servers and CDNs.\n- Many outages are DNS: expired domain, bad record, TTL too high to roll back. \"It's always DNS\" is a joke with data behind it.\n\n## Pitfalls\n- Recursive vs iterative: the client asks recursively; the resolver walks iteratively.\n- Negative caching: NXDOMAIN is cached too.\n- DNS is unauthenticated by default; cache poisoning is mitigated by random source ports and IDs, and fully by DNSSEC.",
+  "keyPoints": [
+   "Resolution walks root, TLD, authoritative; the recursive resolver does the walking and caches",
+   "TTL caching at browser, OS and resolver makes DNS scale; lower TTL before migrations",
+   "CNAME cannot live at the zone apex; A/AAAA/NS/MX/TXT/SRV/PTR are the core record types",
+   "DNS uses UDP/53 with TCP fallback; DoH/DoT encrypt the hop to the resolver",
+   "GeoDNS and anycast give coarse global routing, bounded by cache staleness"
+  ],
+  "diagram": "flowchart LR\nC[\"Client stub resolver\"] --> R[\"Recursive resolver (cached)\"]\nR --> Root[\"Root servers\"]\nR --> TLD[\".com TLD servers\"]\nR --> Auth[\"Authoritative NS for example.com\"]\nAuth --> R\nR --> C",
+  "sources": [
+   {
+    "title": "Cloudflare Learning: What is DNS",
+    "url": "https://www.cloudflare.com/learning/dns/what-is-dns/",
+    "kind": "reference"
+   },
+   {
+    "title": "ByteByteGo blog",
+    "url": "https://blog.bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:3": {
+  "body": "## HTTP/1.1: what hurts\nOne request in flight per TCP connection (pipelining existed but was broken in practice). Browsers open ~6 connections per host to parallelise, each paying a TCP+TLS handshake. Headers are plain text and repeated (cookies can be kilobytes per request). Workarounds like domain sharding and sprite sheets are artefacts of this.\nKeep-alive (default in 1.1) reuses the connection but requests are still serial: **application-layer head-of-line blocking**.\n\n## HTTP/2 (2015)\nSame semantics (methods, status codes, headers), new framing over a single TCP connection:\n- **Binary framing and multiplexing**: many concurrent streams interleaved on one connection, so no HTTP-level HOL blocking\n- **HPACK header compression** with a shared dynamic table\n- Stream prioritisation (little used) and flow control per stream\n- Server push: largely abandoned, Chrome removed it\n\nBut all streams share one TCP byte stream. One lost packet stalls every stream until retransmission: **transport-layer head-of-line blocking**. On lossy mobile networks HTTP/2 can be worse than several HTTP/1.1 connections.\n\n## HTTP/3 (2022)\nRuns over **QUIC**, built on UDP.\n- Reliability, congestion control and ordering are implemented per stream in user space, so loss on one stream does not block the others\n- TLS 1.3 is built in: transport and crypto handshake together, **1 RTT** for a new connection and **0-RTT** for resumption (replayable, only for idempotent requests)\n- **Connection migration**: a connection ID rather than the 4-tuple, so a phone switching Wi-Fi to LTE keeps the session\n- QPACK header compression\n- Always encrypted\n\nDownsides: UDP may be blocked or rate limited (clients fall back to HTTP/2, advertised via the Alt-Svc header), more CPU for user-space packet handling, and less mature tooling.\n\n## Round trips to first byte (new connection, TLS)\n- HTTP/1.1 or 2 over TCP + TLS 1.3: 1 RTT TCP + 1 RTT TLS = 2 RTT\n- HTTP/3: 1 RTT total (0 RTT on resume)\n\n## Interview framing\nEach version fixes the previous bottleneck: 1.1 fixed connection cost (keep-alive), 2 fixed request serialisation (multiplexing), 3 fixed TCP head-of-line blocking (QUIC). When asked \"should we use HTTP/2 between services\", the answer is usually yes for gRPC (it requires HTTP/2) and for many small calls; for large file downloads the difference is small.",
+  "keyPoints": [
+   "HTTP/1.1: one request per connection at a time, hence 6 parallel connections and workarounds",
+   "HTTP/2 multiplexes streams on one TCP connection and compresses headers (HPACK) but suffers TCP head-of-line blocking",
+   "HTTP/3 uses QUIC over UDP: per-stream loss recovery, 1-RTT setup, 0-RTT resume, connection migration",
+   "Browsers discover HTTP/3 via Alt-Svc and fall back to HTTP/2 if UDP is blocked",
+   "gRPC requires HTTP/2"
+  ],
+  "sources": [
+   {
+    "title": "High Performance Browser Networking (Ilya Grigorik), HTTP/2",
+    "url": "https://hpbn.co/http2/",
+    "kind": "reference"
+   },
+   {
+    "title": "RFC 9114: HTTP/3",
+    "url": "https://www.rfc-editor.org/rfc/rfc9114",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:4": {
+  "body": "## What TLS provides\nOver an untrusted network TLS gives: **confidentiality** (encryption), **integrity** (tamper detection) and **authentication** (the server is who it claims, optionally the client too, as in mTLS). It does not hide the destination IP, and SNI exposes the hostname unless ECH is used.\n\n## Core idea\nAsymmetric crypto is slow, symmetric is fast. So: use asymmetric methods and certificates to authenticate and agree on a shared secret, then encrypt traffic with a symmetric cipher (AES-GCM or ChaCha20-Poly1305).\n\n## TLS 1.3 handshake (1 RTT)\n```\nClientHello: supported ciphers, key share (ephemeral ECDHE public key), SNI, ALPN\nServerHello: chosen cipher, server key share\n   -> both derive the shared secret; everything below is already encrypted\nServer: Certificate, CertificateVerify (signature), Finished\nClient: verifies chain and signature, sends Finished\nApplication data flows\n```\nTLS 1.2 needed 2 RTT. TLS 1.3 removed weak options (RSA key exchange, CBC, SHA-1) and always uses ephemeral Diffie-Hellman, giving **forward secrecy**: stealing the server's private key later cannot decrypt recorded traffic, because session keys were never sent and are discarded.\n\n## Certificates and trust\nA certificate binds a public key to a domain name (SAN field), signed by a CA. The client validates a chain: leaf, intermediate(s), root, where the root is in the OS or browser trust store. Checks: signature chain, hostname matches SAN, validity dates, and revocation (OCSP stapling or CRLs; short-lived certs reduce reliance on revocation). Let's Encrypt issues free 90-day certificates via ACME automation.\n\n## Session resumption and 0-RTT\nResumption with a ticket skips the full handshake. 0-RTT sends data in the first flight but is replayable, so only use it for idempotent requests.\n\n## mTLS\nBoth sides present certificates. Used for service-to-service auth inside a mesh (Envoy, Istio) and zero-trust setups. The cost is certificate issuance and rotation, usually automated with a private CA or SPIFFE.\n\n## Where TLS terminates\nAt the load balancer or CDN (offload; plaintext inside the VPC), or end to end to the app (re-encrypt). Trade-off: inspection and caching vs exposure of plaintext internally.\n\n## Pitfalls\n- \"TLS certificate error\" causes: expired cert, missing intermediate, wrong hostname, clock skew.\n- Certificate pinning breaks on rotation; avoid unless you control both ends.\n- Do not say HTTPS \"uses RSA to encrypt data\". It encrypts with a negotiated symmetric key.",
+  "keyPoints": [
+   "TLS gives confidentiality, integrity and server authentication; asymmetric only sets up a symmetric session key",
+   "TLS 1.3 is 1 RTT, uses ephemeral ECDHE only, so it has forward secrecy",
+   "Client validates the chain to a trusted root, hostname vs SAN, expiry and revocation",
+   "mTLS authenticates both sides, common for service-to-service traffic",
+   "0-RTT data is replayable, restrict it to idempotent requests"
+  ],
+  "diagram": "flowchart LR\nC[\"Client\"] -->|\"ClientHello + key share\"| S[\"Server\"]\nS -->|\"ServerHello + key share, cert, Finished\"| C\nC -->|\"Finished\"| S\nC <-->|\"Encrypted application data\"| S",
+  "sources": [
+   {
+    "title": "RFC 8446: TLS 1.3",
+    "url": "https://www.rfc-editor.org/rfc/rfc8446",
+    "kind": "reference"
+   },
+   {
+    "title": "Cloudflare Learning: What happens in a TLS handshake",
+    "url": "https://www.cloudflare.com/learning/ssl/what-happens-in-a-tls-handshake/",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:5": {
+  "body": "## Why this question\nIt stitches together everything: DNS, TCP, TLS, HTTP, load balancing, caching, rendering. A good answer is ordered, quantifies each step, and notes where caching skips it.\n\n## The sequence for https://www.example.com/\n1. **Parse the URL**: scheme, host, port (443 default), path. Check HSTS list (upgrade http to https), then browser caches (service worker, HTTP cache). A fresh cache hit ends the story here.\n2. **DNS**: browser cache, OS cache, hosts file, then recursive resolver, then root/TLD/authoritative as needed. Output: an IP, often from a CDN anycast or GeoDNS answer. Cost: 0 to ~100+ ms.\n3. **TCP handshake** to IP:443. 1 RTT. (HTTP/3 skips this and uses QUIC over UDP.)\n4. **TLS handshake**: certificate validation, key agreement. 1 RTT in TLS 1.3. SNI tells the server which cert to present.\n5. **HTTP request**: GET / with Host, cookies, Accept-Encoding, etc.\n6. **Edge and backend**: CDN or L4/L7 load balancer terminates TLS, may serve from cache, otherwise forwards to a web/app server, which may hit a cache (Redis) and a database. Response: status, headers (Cache-Control, Set-Cookie), body (gzip/br compressed).\n7. **Browser rendering**: parse HTML into DOM, discover CSS/JS/images (each may repeat steps 2-6, though connections are reused under HTTP/2), build CSSOM, run JS, layout, paint, composite.\n\n## Numbers to quote\nWith a 50 ms RTT: DNS (cold, 1 RTT to resolver) 50 + TCP 50 + TLS 50 + request/response 50 = about 200 ms before the first byte of HTML arrives, plus server time. Each optimisation maps to a step: DNS prefetch, preconnect, keep-alive, TLS 1.3 and session resumption, HTTP/3, CDN placing the edge closer (smaller RTT), caching (skip the whole path).\n\n## Layers involved on your own machine\nOn the LAN: ARP to find the gateway's MAC, DHCP gave you IP and DNS earlier, NAT on the home router rewrites your private source IP and port to the public one. Then ISP routing (BGP between networks) carries packets to the destination.\n\n## Follow-ups to be ready for\n- What if the site is HTTP only? No TLS step; HSTS preload prevents downgrades.\n- Where does the load balancer sit? After DNS, before the app servers.\n- What differs for an API call from a mobile app? Same path, usually a long-lived HTTP/2 connection and no render step.\n- How do cookies fit in? Sent on every request that matches domain and path, subject to SameSite.",
+  "keyPoints": [
+   "Order: URL parse and HSTS, caches, DNS, TCP, TLS, HTTP, server side, render",
+   "Cold HTTPS over TCP costs about 3 RTT before the request (DNS, TCP, TLS 1.3) plus the request itself",
+   "Each optimisation skips a step: DNS cache, keep-alive, TLS resumption, HTTP/3, CDN, HTTP cache",
+   "LAN specifics: ARP for the gateway MAC, NAT at the router, BGP between ISPs"
+  ],
+  "diagram": "flowchart LR\nU[\"URL typed\"] --> H[\"HSTS + cache check\"]\nH --> D[\"DNS lookup\"]\nD --> T[\"TCP handshake\"]\nT --> L[\"TLS handshake\"]\nL --> Q[\"HTTP request\"]\nQ --> E[\"CDN / load balancer\"]\nE --> B[\"App + cache + DB\"]\nB --> R[\"Browser renders\"]",
+  "sources": [
+   {
+    "title": "ByteByteGo blog",
+    "url": "https://blog.bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "High Performance Browser Networking",
+    "url": "https://hpbn.co/",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:6": {
+  "body": "## The problem\nHTTP is request-response: the client asks, the server answers. For chat, notifications, live prices or collaborative editing, the server must push data when something happens. Four approaches, in increasing efficiency.\n\n## Short polling\nClient asks every N seconds. Simple, works anywhere, cache-friendly. Wasteful: most responses are empty, and latency is up to N seconds. At 1M clients polling every 5 s that is 200k requests per second mostly returning nothing.\n\n## Long polling\nClient sends a request; the server holds it open until data exists or a timeout (30-60 s), responds, and the client immediately reconnects.\n- Near real-time, works through almost every proxy\n- Each message costs a full HTTP request with headers, reconnect gaps can lose events (use an event id or cursor to resume), and many held connections need an async server\n\n## Server-Sent Events (SSE)\nOne long-lived HTTP response with Content-Type text/event-stream. The server writes lines like data: ... and the browser's EventSource parses them.\n- **One direction**: server to client only. Client uses normal requests to send.\n- Automatic reconnect with Last-Event-ID resume built in, plain HTTP so it passes proxies and works with HTTP/2 multiplexing, text only\n- Great for feeds, notifications, progress bars, LLM token streaming\n- Over HTTP/1.1, browsers limit ~6 connections per host, so many tabs can exhaust it\n\n## WebSockets\nAn HTTP request with Upgrade: websocket; after the 101 response the same TCP connection becomes a full-duplex, message-based channel with 2-14 bytes of framing per message.\n- Bidirectional, low latency, binary or text\n- Costs: stateful connections (a server holds ~tens to hundreds of thousands of sockets, limited by memory and file descriptors), no built-in reconnect, auth, backpressure or resume (you build them or use a library such as Socket.IO), trouble with some corporate proxies, and harder load balancing (sticky routing, drain on deploy)\n- Need heartbeats (ping/pong) to detect dead peers and keep NAT/LB idle timeouts from closing the link\n\n## Choosing\n- Mostly server-to-client updates: **SSE**\n- Chat, multiplayer games, collaborative editing, anything chatty both ways: **WebSocket**\n- Restrictive network or infrequent events: **long polling**\n- Low-frequency, cacheable freshness: **short polling**\n\n## Scaling the connection layer\nA fleet of gateway servers holds the sockets; a pub/sub backbone (Redis, Kafka, NATS) fans messages out. A presence/routing store maps user to gateway. On a gateway crash, clients reconnect with jittered backoff and resume from the last seen id; without jitter you get a reconnect storm.\n\n## Pitfalls\n- Do not use WebSockets just because \"real-time\"; SSE is simpler when traffic is one-way.\n- Scaling cost is connection count, not requests per second.",
+  "keyPoints": [
+   "Short polling is simple but wasteful; long polling holds a request open until data or timeout",
+   "SSE is one-way over plain HTTP with built-in reconnect and Last-Event-ID resume",
+   "WebSocket upgrades HTTP into a full-duplex stateful channel; you must build reconnect, auth and backpressure",
+   "Use heartbeats and jittered backoff to survive idle timeouts and reconnect storms",
+   "Scale with gateway servers plus a pub/sub backbone; the limit is open connections, not QPS"
+  ],
+  "diagram": "flowchart LR\nC1[\"Client A\"] <-->|\"WebSocket\"| G1[\"Gateway 1\"]\nC2[\"Client B\"] <-->|\"WebSocket\"| G2[\"Gateway 2\"]\nG1 --> P[\"Pub/sub backbone\"]\nG2 --> P\nP --> S[\"Chat / app service\"]",
+  "sources": [
+   {
+    "title": "RFC 6455: The WebSocket Protocol",
+    "url": "https://www.rfc-editor.org/rfc/rfc6455",
+    "kind": "reference"
+   },
+   {
+    "title": "MDN: Server-sent events",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview Vol. 1 (Alex Xu): Chat system",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:7": {
+  "body": "## The problem\nEvery host on an IP network needs an address, and routers need to summarise millions of addresses into a few routes. IPv4 uses 32-bit addresses (about 4.3 billion), written as four octets: 192.168.1.10.\n\n## Network and host parts\nAn address splits into a network prefix and a host part. A subnet mask (or CIDR prefix length) says where. **CIDR** notation: 10.0.0.0/24 means the first 24 bits are the network, the remaining 8 bits are hosts.\n\n- /24: 256 addresses, 254 usable (network address and broadcast are reserved)\n- /16: 65,536 addresses\n- /8: 16.7 million\n- /32: a single host; /0: everything (default route)\n- Usable hosts = 2^(32 - prefix) - 2. Cloud providers reserve a few more (AWS reserves 5 per subnet).\n\n## Worked example\nSplit 10.0.0.0/16 into /24 subnets: 2^(24-16) = 256 subnets of 256 addresses. Is 10.0.5.77 in 10.0.4.0/22? A /22 spans 4 consecutive /24s: 10.0.4.0 to 10.0.7.255. Yes. Trick: a /n block's size is 2^(32-n) and its start must be a multiple of that size.\n\n```\n10.0.4.0/22\n  third octet range: 4..7   (block size 4 in the third octet)\n  first:  10.0.4.0\n  last:   10.0.7.255\n```\n\n## Private ranges (RFC 1918)\n- 10.0.0.0/8\n- 172.16.0.0/12 (172.16.0.0 to 172.31.255.255)\n- 192.168.0.0/16\nNot routable on the public internet; reached via NAT. Also: 127.0.0.0/8 loopback, 169.254.0.0/16 link-local, 100.64.0.0/10 carrier-grade NAT.\n\n## Why CIDR instead of classes\nOld class A/B/C blocks wasted space (a class B gave 65k addresses to an org needing 500). CIDR allows any prefix length and **route aggregation**: an ISP advertises one /16 instead of 256 /24s, keeping routing tables small. Routers use **longest-prefix match**: of all routes matching a destination, the most specific wins.\n\n## Subnet design in the cloud\nA VPC such as 10.0.0.0/16 is split into per-AZ public and private subnets (e.g. /24 or /20). Plan CIDRs so VPCs that will peer or connect over VPN do not overlap, because overlapping ranges cannot be routed. Leave growth room: resizing later is painful.\n\n## IPv6\n128-bit addresses (2001:db8::1), a /64 is the standard subnet, no NAT needed, no broadcast. Adoption is partial, so dual stack is common.\n\n## Pitfalls\n- Forgetting the 2 reserved addresses in the host count.\n- Overlapping CIDRs between VPCs or with the corporate network.\n- Confusing subnet mask 255.255.255.0 (= /24) notation; be able to convert.",
+  "keyPoints": [
+   "CIDR /n gives 2^(32-n) addresses; usable hosts are that minus 2 (cloud reserves more)",
+   "Longest-prefix match picks the most specific route; aggregation keeps routing tables small",
+   "RFC 1918 private ranges: 10/8, 172.16/12, 192.168/16",
+   "Plan VPC CIDRs to avoid overlap with peers, VPNs and on-prem",
+   "IPv6 uses 128-bit addresses, /64 subnets, and removes the need for NAT"
+  ],
+  "sources": [
+   {
+    "title": "Cloudflare Learning: What is an IP address",
+    "url": "https://www.cloudflare.com/learning/dns/glossary/what-is-my-ip-address/",
+    "kind": "reference"
+   },
+   {
+    "title": "AWS VPC: subnet CIDR blocks",
+    "url": "https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:8": {
+  "body": "## Three small protocols that make a LAN work\n\n### DHCP: getting an address\nA new device has no IP. It broadcasts and a DHCP server leases one. The four steps are **DORA**:\n```\nDiscover  client broadcasts (src 0.0.0.0 -> 255.255.255.255, UDP 68 -> 67)\nOffer     server proposes an IP, mask, gateway, DNS servers, lease time\nRequest   client broadcasts which offer it accepts\nAck       server confirms; lease starts\n```\nLeases are time-limited (hours to days) and renewed at about half the lease time. In the cloud, the VPC provides DHCP-like behaviour for you. Failure mode: no DHCP gives a 169.254.x.x link-local address.\n\n### ARP: IP to MAC on the local network\nTo send to 192.168.1.1 on the same subnet the sender needs its MAC address. It broadcasts \"who has 192.168.1.1?\" (an ARP request on L2 broadcast ff:ff:ff:ff:ff:ff); the owner replies unicast with its MAC. Results are cached for minutes in the ARP table. For an off-subnet destination the host ARPs for its **default gateway**, not the destination. IPv6 replaces ARP with Neighbor Discovery.\nSecurity: ARP has no authentication, so ARP spoofing (poisoning) lets an attacker on the LAN become the man in the middle. Mitigations: dynamic ARP inspection on switches, port security, and TLS everywhere.\n\n### NAT: sharing public addresses\nIPv4 ran short, so private hosts share one public IP. A NAT router rewrites source IP and port on the way out and keeps a table to reverse it.\n```\n10.0.0.5:51000 -> 8.8.8.8:53   becomes   203.0.113.7:40001 -> 8.8.8.8:53\ntable: 203.0.113.7:40001 <-> 10.0.0.5:51000\n```\nThat is PAT/NAPT, the common form. Each entry uses a public port, so ~64k ports bounds concurrent flows to one destination per public IP.\n\n## Consequences you should know\n- **Inbound connections fail by default**: no table entry exists. Solutions: port forwarding, a NAT gateway plus load balancer in front, or NAT traversal (STUN/TURN/ICE for WebRTC, hole punching).\n- NAT breaks the end-to-end principle and complicates protocols that embed IPs (FTP active mode, SIP).\n- Idle table entries expire (often 30 s to a few minutes), so long-lived TCP connections need keepalives. This is a classic cause of mysteriously dropped idle connections.\n- In AWS, private subnets reach the internet via a **NAT Gateway** (outbound only). It is charged per hour and per GB, and heavy traffic to S3 should use a gateway VPC endpoint instead.\n- Port exhaustion on a NAT gateway shows up as intermittent connect timeouts under high fan-out.\n\n## Pitfalls\n- Saying ARP works across routers: it is single broadcast domain only.\n- Thinking NAT is a firewall. It blocks unsolicited inbound as a side effect, not as a security design.",
+  "keyPoints": [
+   "DHCP uses DORA (Discover, Offer, Request, Ack) to lease IP, mask, gateway and DNS",
+   "ARP resolves IP to MAC within one subnet via broadcast; off-subnet traffic ARPs for the gateway",
+   "NAT/PAT rewrites private source IP:port to a public one and tracks it in a table; inbound is blocked by default",
+   "Idle NAT entries expire, so long-lived connections need keepalives",
+   "NAT gateways cost money and can exhaust ports under heavy fan-out"
+  ],
+  "sources": [
+   {
+    "title": "RFC 2131: DHCP",
+    "url": "https://www.rfc-editor.org/rfc/rfc2131",
+    "kind": "reference"
+   },
+   {
+    "title": "AWS docs: NAT gateways",
+    "url": "https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat-gateway.html",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:9": {
+  "body": "## Three devices, three layers\n- **Hub** (obsolete): repeats bits to every port.\n- **Switch (L2)**: forwards **frames** by destination MAC within one LAN.\n- **Router (L3)**: forwards **packets** by destination IP between networks.\n\n## How a switch works\nIt keeps a MAC address table (CAM). **Learning**: when a frame arrives on port 3 from MAC A, record A -> port 3. **Forwarding**: look up the destination MAC; if known, send out only that port; if unknown or broadcast, **flood** to all other ports. Each port is its own collision domain; all ports in one VLAN share a broadcast domain. VLANs (802.1Q tags) split one physical switch into separate broadcast domains for isolation. Loops in switched networks would cause broadcast storms, so Spanning Tree Protocol blocks redundant links.\n\n## How a router works\nIt holds a routing table of prefix -> next hop + interface. For each packet: pick the **longest matching prefix**, decrement TTL (drop and send ICMP Time Exceeded at zero, which prevents loops and powers traceroute), rewrite the L2 header for the next hop, forward. The **default route** 0.0.0.0/0 sends everything else to the ISP.\n```\ndest 10.1.2.3 ; routes: 10.0.0.0/8 -> A, 10.1.0.0/16 -> B, 0.0.0.0/0 -> C\nmatches /8, /16, /0 -> longest wins -> B\n```\n\n## How routes are learned\n- **Static**: configured by hand; simple, no failover\n- **Interior protocols** inside one organisation (an autonomous system): OSPF (link-state, each router builds the full map and runs Dijkstra) and RIP (distance-vector, mostly legacy)\n- **BGP** between autonomous systems: path-vector, policy-driven, the glue of the internet. Slow convergence (minutes) and trust-based: a bad announcement can hijack or black-hole traffic, as in several well-known outages.\n\nLink-state vs distance-vector: link-state floods topology so everyone computes shortest paths (fast convergence, more memory). Distance-vector shares only \"distances\" with neighbours (simpler, risk of count-to-infinity).\n\n## In the cloud\nA VPC route table decides where each subnet's traffic goes: local, internet gateway (public subnet), NAT gateway (private subnet), peering or transit gateway. \"Public subnet\" simply means a route to an internet gateway.\n\n## Follow-ups\n- Switch vs router: a switch connects devices within a network, a router connects networks. A home \"router\" bundles switch, router, NAT, DHCP and Wi-Fi AP.\n- What happens on an unknown destination MAC? Flood.\n- How does a packet find its path across the internet? Each router decides only the next hop independently, using BGP-learned prefixes.",
+  "keyPoints": [
+   "Switches learn MACs per port and forward frames within a LAN; unknown or broadcast frames are flooded",
+   "Routers pick the longest-prefix match, decrement TTL and re-frame for the next hop",
+   "OSPF is link-state inside an AS; BGP is policy-based path-vector between ASes",
+   "TTL prevents loops and is what traceroute exploits",
+   "In a VPC, a public subnet is one whose route table has an internet gateway"
+  ],
+  "diagram": "flowchart LR\nH1[\"Host A\"] --> SW1[\"Switch (L2, MAC table)\"]\nSW1 --> R1[\"Router (L3, routing table)\"]\nR1 -->|\"BGP / ISP\"| R2[\"Internet routers\"]\nR2 --> R3[\"Remote router\"]\nR3 --> SW2[\"Switch\"]\nSW2 --> H2[\"Host B\"]",
+  "sources": [
+   {
+    "title": "Cloudflare Learning: What is BGP",
+    "url": "https://www.cloudflare.com/learning/security/glossary/what-is-bgp/",
+    "kind": "reference"
+   },
+   {
+    "title": "AWS VPC route tables",
+    "url": "https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Route_Tables.html",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:10": {
+  "body": "## Two different problems\n- **Flow control**: do not overwhelm the **receiver**. Point-to-point, driven by the receiver's buffer.\n- **Congestion control**: do not overwhelm the **network** (routers' queues). Global, inferred by the sender from loss or delay.\nConfusing the two is the most common mistake on this topic.\n\n## Flow control: the receive window\nEvery ACK carries **rwnd**, the free space in the receiver's buffer. The sender never has more than rwnd unacknowledged bytes in flight. If the app reads slowly, rwnd shrinks, down to zero (the sender then sends tiny **zero-window probes** until space reopens). This is a sliding window: window slides forward as ACKs arrive. Window scaling (RFC 7323) extends the 16-bit field to allow windows up to ~1 GB, necessary for high bandwidth-delay paths.\n\n**Bandwidth-delay product (BDP)** = bandwidth x RTT. For a 1 Gbps link and 100 ms RTT: 125 MB/s x 0.1 s = 12.5 MB must be in flight to fill the pipe. A 64 KB window caps throughput at 64 KB / 0.1 s = 640 KB/s regardless of link speed.\n\n## Congestion control: the congestion window\nThe sender maintains **cwnd** and sends min(cwnd, rwnd). It probes for capacity:\n- **Slow start**: cwnd starts small (initial window of 10 segments on modern Linux, about 14 KB) and doubles every RTT (+1 per ACK) until it reaches ssthresh or loss occurs. \"Slow\" is a misnomer: exponential.\n- **Congestion avoidance (AIMD)**: past ssthresh, cwnd grows by about 1 MSS per RTT (additive increase). On loss, it is cut (multiplicative decrease).\n- **Loss reaction**: timeout means severe congestion, so ssthresh = cwnd/2 and cwnd restarts at the initial window. Three duplicate ACKs trigger **fast retransmit** and **fast recovery**: halve cwnd and keep going rather than restarting.\n```\ncwnd\n |        /\\        /\\          sawtooth of AIMD\n |      /   \\     /   \\\n |   /      \\  /      \\\n | /(slow start) ...\n +----------------------------> time\n```\nAIMD gives fairness: competing flows converge toward equal shares.\n\n## Variants\n- **Reno / NewReno**: loss-based classic\n- **CUBIC**: Linux default for years, cubic growth function, better on high BDP links\n- **BBR** (Google): models bottleneck bandwidth and RTT rather than reacting to loss; strong on lossy or long-haul links, can be unfair to loss-based flows\n- **ECN**: routers mark packets instead of dropping, an early congestion signal\n\n## Why this matters in system design\n- Short-lived connections never leave slow start; with the initial window of 10 segments, a fresh connection delivers only ~14 KB in the first RTT. Hence keep-alive, connection pooling, HTTP/2, and keeping the critical page weight small.\n- Large cross-region transfers need window scaling, tuned buffers or BBR.\n- Packet loss hurts TCP throughput roughly in proportion to 1/sqrt(loss rate) (Mathis model), so a 1% loss link is far slower than the raw capacity.\n- UDP-based protocols (QUIC, WebRTC) must implement their own congestion control, otherwise they starve TCP.\n\n## Pitfalls\n- rwnd comes from the receiver, cwnd is sender-local and never sent.\n- Retransmission timeout uses an RTT estimate (SRTT/RTTVAR) with exponential backoff.",
+  "keyPoints": [
+   "Flow control (rwnd) protects the receiver; congestion control (cwnd) protects the network; sender uses min of both",
+   "Slow start doubles cwnd per RTT, then AIMD grows by 1 MSS per RTT and halves on loss",
+   "Triple duplicate ACK triggers fast retransmit/recovery; timeout resets to the initial window",
+   "Bandwidth-delay product = bandwidth x RTT; windows smaller than BDP waste the link",
+   "Short connections stay in slow start, so reuse connections; BBR/CUBIC suit high-BDP paths"
+  ],
+  "sources": [
+   {
+    "title": "High Performance Browser Networking: Building blocks of TCP",
+    "url": "https://hpbn.co/building-blocks-of-tcp/",
+    "kind": "reference"
+   },
+   {
+    "title": "RFC 5681: TCP Congestion Control",
+    "url": "https://www.rfc-editor.org/rfc/rfc5681",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:11": {
+  "body": "## HTTP caching: skip the network\nFastest request is the one never sent. Caches exist in the browser, CDN and reverse proxy.\n\n### Freshness\n- **Cache-Control: max-age=N**: reuse without asking for N seconds. s-maxage applies to shared caches (CDNs).\n- **public** vs **private** (browser only, for per-user content), **no-store** (never store, for sensitive data), **no-cache** (store but revalidate every time; the name misleads).\n- Expires is the legacy absolute-date version.\n\n### Validation\nWhen stale, the cache asks \"is it still current?\" with a conditional request.\n- **ETag** (opaque version id) pairs with If-None-Match\n- **Last-Modified** pairs with If-Modified-Since\nThe server answers **304 Not Modified** with no body (saves bandwidth, still costs one RTT) or 200 with new content.\n\n### Strategy that works\n- Fingerprinted static assets (app.3f9a1c.js): Cache-Control: public, max-age=31536000, immutable. Change the file, change the URL.\n- HTML and API responses: short max-age or no-cache with ETag.\n- stale-while-revalidate serves stale instantly while refreshing in the background.\n- **Vary** header: cache key includes named request headers (Vary: Accept-Encoding). Vary: Cookie effectively disables shared caching.\n- Purge: CDNs support purge by URL or tag; versioned URLs avoid needing it.\n\n## Cookies\nThe server sends Set-Cookie: sid=abc; the browser returns it in a Cookie header on matching requests. This is how stateless HTTP gets sessions.\nAttributes that matter:\n- **HttpOnly**: JavaScript cannot read it (limits XSS theft)\n- **Secure**: only over HTTPS\n- **SameSite=Lax|Strict|None**: controls cross-site sending; Lax is the modern default and blocks most CSRF; None requires Secure\n- Domain / Path / Expires / Max-Age scope and lifetime\n- Size limit about 4 KB each; sent on every request, so keep them small\nThird-party cookies are being restricted by browsers, which affects embedded widgets and ad tech.\n\n## CORS\nThe **same-origin policy** (scheme + host + port) stops a page on a.com from reading responses from b.com. **CORS** lets b.com opt in. It is enforced by the browser, not the server, and protects users, not your API (curl ignores it).\n- **Simple requests** (GET/POST with basic content types): sent directly; the browser checks the Access-Control-Allow-Origin response header before exposing the result.\n- **Preflight**: for other methods (PUT, DELETE), custom headers or JSON content type, the browser first sends OPTIONS with Access-Control-Request-Method/Headers; the server replies with Access-Control-Allow-Methods/Headers and Access-Control-Max-Age (cache the preflight).\n- With cookies: the client sets credentials, the server must return a specific origin (not *) and Access-Control-Allow-Credentials: true.\n\n## Pitfalls\n- Reflecting any Origin header with credentials allowed is an account-takeover bug.\n- CORS errors for a failing server (500 without CORS headers) look like CORS problems; check the network tab.\n- Caching personalised responses on a CDN leaks user data; use private or Vary correctly.\n- CORS is not CSRF protection: a simple cross-site POST is still sent.",
+  "keyPoints": [
+   "Cache-Control max-age gives freshness; ETag/If-None-Match gives cheap 304 revalidation",
+   "Fingerprint static assets and cache them for a year as immutable; keep HTML short-lived",
+   "no-cache means revalidate, no-store means never store, private excludes shared caches",
+   "Set cookies HttpOnly, Secure and SameSite=Lax or Strict; they are sent on every request",
+   "CORS is a browser-enforced relaxation of same-origin; preflight OPTIONS covers non-simple requests; it does not stop CSRF"
+  ],
+  "sources": [
+   {
+    "title": "MDN: HTTP caching",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching",
+    "kind": "reference"
+   },
+   {
+    "title": "MDN: CORS",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS",
+    "kind": "reference"
+   },
+   {
+    "title": "MDN: HTTP cookies",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:12": {
+  "body": "## The question\nA load balancer (LB) spreads traffic over servers. The layer it operates at decides what it can see and do.\n\n## Layer 4 (transport) LB\nRoutes on IP and port only; it never parses HTTP.\n- Two styles: **pass-through** (rewrites destination IP via NAT or DSR, the TCP connection runs client to backend) and **terminating** (own connection to client and another to backend).\n- Very fast, millions of connections, low latency, little CPU, works for any TCP/UDP protocol (databases, MQTT, gRPC over raw TCP, game traffic).\n- Balancing is per connection. Long-lived connections (HTTP/2, gRPC, WebSockets) can pile up unevenly on one backend, because many requests ride one connection.\n- Examples: AWS NLB, HAProxy in TCP mode, IPVS, Maglev-style (Google) and Katran (Meta), often fronted by ECMP routing and consistent hashing.\n\n## Layer 7 (application) LB / reverse proxy\nTerminates TLS, parses HTTP, and decides **per request**.\n- Content-based routing: host, path, header, cookie (/api to one pool, /static to another), canary by header or percentage\n- TLS termination, compression, HTTP/2 to clients with HTTP/1.1 to backends, caching, rate limiting, auth, WAF, retries, request-level metrics\n- Per-request balancing fixes the long-lived connection skew\n- Costs more CPU and memory, more latency (about sub-millisecond to a few ms), and the LB is a bigger attack surface\n- Examples: NGINX, Envoy, HAProxy HTTP mode, AWS ALB, Cloudflare\n\n## Algorithms\n- Round robin, weighted round robin: simple, ignores load\n- Least connections / least outstanding requests: adapts to slow backends\n- Consistent hashing on key (client IP, user id): sticky placement and cache locality, minimal reshuffle when nodes change\n- Power of two choices: pick two at random, send to the less loaded; close to optimal with no global state\n- Sticky sessions via cookie or IP hash: avoid if you can by keeping servers stateless\n\n## Health and failure\nActive health checks (probe /health), passive checks (eject on errors), connection draining on deploy, retries with budgets and timeouts. The LB itself must not be a single point of failure: pairs with VRRP/keepalived, anycast, or DNS across several LBs.\n\n## Forward vs reverse proxy\nA **forward proxy** sits in front of clients (egress filtering, anonymity, corporate caching). A **reverse proxy** sits in front of servers (LB, TLS, caching). A load balancer is a reverse proxy.\n\n## Typical architecture\nGlobal DNS or anycast, then an L4 LB tier handling raw scale and TLS passthrough or termination, then an L7 tier (Envoy/NGINX) doing routing, then services. Service meshes put an L7 proxy sidecar next to each service for per-request balancing, mTLS and retries, which is how gRPC gets balanced properly.\n\n## Pitfalls\n- Using an L4 LB for gRPC and wondering why one pod takes all traffic.\n- Losing client IP behind a proxy: use X-Forwarded-For or PROXY protocol, and only trust it from your own LB.\n- TLS termination at L7 means decrypted traffic inside your network; weigh with end-to-end or mTLS.",
+  "keyPoints": [
+   "L4 balances per connection by IP and port: fastest, protocol-agnostic, blind to HTTP",
+   "L7 terminates TLS and balances per request using host, path and headers: flexible, more CPU",
+   "Long-lived HTTP/2 or gRPC connections need L7 (or client-side) balancing to avoid skew",
+   "Least-outstanding-requests and power-of-two-choices beat plain round robin under uneven load",
+   "Preserve client IP with X-Forwarded-For or PROXY protocol and make the LB tier itself redundant"
+  ],
+  "diagram": "flowchart TD\nC[\"Clients\"] --> L4[\"L4 LB: IP + port\"]\nL4 --> L7a[\"L7 proxy 1: TLS, routing\"]\nL4 --> L7b[\"L7 proxy 2: TLS, routing\"]\nL7a --> S1[\"API pool\"]\nL7a --> S2[\"Static pool\"]\nL7b --> S1\nL7b --> S2",
+  "sources": [
+   {
+    "title": "System Design Interview Vol. 1 (Alex Xu): scaling and load balancing",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "NGINX: HTTP load balancing",
+    "url": "https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/",
+    "kind": "reference"
+   },
+   {
+    "title": "Envoy: load balancing overview",
+    "url": "https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/overview",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:13": {
+  "body": "## Why memorise ports\nInterviews and real debugging both hinge on knowing what is listening where and over which transport. Ports 0-1023 are \"well known\", 1024-49151 registered, above that ephemeral (Linux default 32768-60999).\n\n## The table to know (as bullets)\n- **22 TCP: SSH**. Encrypted remote shell, also SCP/SFTP and port forwarding. Auth by key or password; disable password login and root login in production.\n- **20/21 TCP: FTP**. Control on 21, data on 20 (active) or a negotiated port (passive). Plaintext credentials; replace with SFTP (over SSH, port 22) or FTPS.\n- **25 TCP: SMTP** server-to-server mail transfer. **587** is submission by clients with STARTTLS, **465** implicit TLS. Many clouds block outbound 25 by default to curb spam.\n- **53 UDP/TCP: DNS**. UDP for normal queries, TCP for large responses and zone transfers. DoT 853.\n- **80 TCP: HTTP**, **443 TCP/UDP: HTTPS** (UDP for HTTP/3 QUIC).\n- **110 POP3, 143 IMAP** (993 IMAPS) mail retrieval.\n- **67/68 UDP: DHCP**, **123 UDP: NTP**, **161 UDP: SNMP**.\n- **3306 MySQL, 5432 PostgreSQL, 6379 Redis, 27017 MongoDB, 9092 Kafka, 2181 ZooKeeper, 9200 Elasticsearch**: databases and middleware, should never face the public internet.\n- **3389 RDP**, **389/636 LDAP/LDAPS**.\n\n## SSH in more depth\n- Handshake negotiates ciphers and does key exchange; the server proves identity with its host key (the known_hosts \"trust on first use\" prompt).\n- User auth via public key: the private key never leaves the client; the server holds the public key in authorized_keys.\n- Tunnels: local forward (ssh -L 5433:db:5432 bastion) to reach a private database through a bastion host; dynamic SOCKS proxy with -D.\n- Prefer short-lived certificates or a session manager (AWS SSM) over long-lived keys at scale.\n\n## Protocol shape differences\n- SMTP is push-based, text commands (HELO, MAIL FROM, RCPT TO, DATA). Deliverability depends on SPF, DKIM and DMARC records in DNS.\n- FTP uses two connections, which is why it is painful through NAT and firewalls.\n- DNS is mostly UDP because a query and answer fit in a single round trip with no handshake.\n\n## Security practice\n- Open only what you need; default deny with security groups and firewalls\n- Put admin ports (22, 3389) behind a VPN or bastion, not on 0.0.0.0/0\n- Never expose data stores publicly; Redis and MongoDB exposed without auth have caused countless breaches\n- Port scanning (nmap) shows what is open; ss -tlnp or lsof -i shows what is listening locally\n\n## Follow-up questions\n- Why is DNS on UDP? Low overhead, single-packet exchange; falls back to TCP above ~512 bytes without EDNS (larger with it).\n- Why is FTP considered insecure? Plaintext and a separate data channel.\n- Can two services share a port? Not on the same IP and protocol; the OS bind fails. Reverse proxies share port 443 by routing on SNI or Host.",
+  "keyPoints": [
+   "Know the core ports: SSH 22, SMTP 25/587, DNS 53, HTTP 80, HTTPS 443, MySQL 3306, Postgres 5432, Redis 6379",
+   "DNS is UDP with TCP fallback for large responses and zone transfers",
+   "FTP uses separate control and data channels and sends plaintext; use SFTP or FTPS",
+   "Never expose admin and database ports publicly; use bastion/VPN and default-deny firewalls",
+   "SMTP deliverability relies on SPF, DKIM and DMARC DNS records"
+  ],
+  "sources": [
+   {
+    "title": "IANA service name and port registry",
+    "url": "https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml",
+    "kind": "reference"
+   },
+   {
+    "title": "OpenSSH manual pages",
+    "url": "https://www.openssh.com/manual.html",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "net-basics:14": {
+  "body": "## Approach: debug bottom-up\nAsk which layer is failing and test each. Typical order: is the link up, do I have an IP and gateway, can I reach the gateway, can I resolve names, can I connect to the port, does TLS work, does the app answer correctly.\n\n## ping: reachability and RTT\nSends ICMP echo requests. Shows loss and RTT (min/avg/max, jitter). Success means L3 works to that host. Failure does not prove the host is down: firewalls and cloud security groups commonly drop ICMP. Ping an IP first, then a name, to split network from DNS problems.\n\n## traceroute (mtr, tracert): the path\nSends packets with TTL 1, 2, 3... Each router that drops the packet at TTL 0 returns ICMP Time Exceeded, revealing the hop and RTT. (Linux traceroute uses UDP by default, Windows uses ICMP; tcp variants help when ICMP/UDP is filtered.) **mtr** runs it continuously with loss per hop.\nReading it: stars (* * *) mean no reply, which may just be rate-limited ICMP and not a real problem. Look for loss or latency that **persists to the final hop**; a bump at one middle hop that disappears later is usually ICMP deprioritisation. A sudden latency jump marks a long-haul link (for example a transatlantic hop).\n\n## curl: the application layer\n```\ncurl -v https://example.com            # headers, TLS info, redirects\ncurl -I https://example.com            # HEAD only\ncurl -w \"dns:%{time_namelookup} tcp:%{time_connect} tls:%{time_appconnect} ttfb:%{time_starttransfer} total:%{time_total}\\n\" -o /dev/null -s https://example.com\ncurl --resolve example.com:443:10.0.0.5 https://example.com   # bypass DNS, test one backend\ncurl --http2 / --http3, -H \"Host: x\", -X POST -d '{}'\n```\nThe -w timing breakdown tells you which phase is slow: DNS, TCP connect, TLS, or server wait (TTFB). --resolve is the standard way to test a specific server behind a load balancer.\n\n## DNS tools\ndig example.com +trace (walks root to authoritative), dig @8.8.8.8 example.com (pick a resolver), dig +short, nslookup. Compare answers across resolvers to spot propagation or poisoning problems; check TTL values.\n\n## tcpdump / Wireshark: ground truth\nCaptures packets. Common usage:\n```\nsudo tcpdump -i eth0 -nn 'tcp port 443 and host 10.0.0.5'\nsudo tcpdump -i any -w out.pcap port 53     # save, open in Wireshark\n```\nWhat to look for: SYNs with no SYN-ACK (firewall drop or nothing listening), RST (connection refused or reset by a middlebox), retransmissions and duplicate ACKs (loss), zero window (slow receiver), long gaps (server think time). Needs root; TLS payload is encrypted, so you see handshakes and timing, not content.\n\n## Other essentials\n- ss -tlnp: listening sockets and owning processes (replaces netstat); ss -s for socket state counts (lots of TIME_WAIT or CLOSE_WAIT)\n- ip addr, ip route, arp -a / ip neigh\n- nc -vz host 443: quick TCP port check; openssl s_client -connect host:443 -servername host: inspect certificate and chain\n- iperf3: raw throughput between two hosts\n\n## Interpreting symptoms\n- Connection refused: host reachable, nothing listening (RST)\n- Connection timed out: packets dropped (firewall, route, security group)\n- Name not resolved: DNS\n- Works by IP, not by name: DNS\n- Slow only first request: DNS or TLS setup; slow always: server or bandwidth\n- Intermittent resets: idle timeout on a NAT or LB, or an overloaded backend",
+  "keyPoints": [
+   "Debug bottom-up: link, IP, gateway, DNS, port, TLS, application",
+   "Refused means a reset from a reachable host with no listener; timed out means packets are dropped en route",
+   "traceroute uses incrementing TTL and ICMP Time Exceeded; judge loss that persists to the final hop",
+   "curl -w timing variables split DNS, TCP, TLS and TTFB; curl --resolve targets one backend",
+   "tcpdump shows SYN without SYN-ACK, RSTs, retransmissions and zero windows"
+  ],
+  "sources": [
+   {
+    "title": "curl documentation: write-out variables",
+    "url": "https://curl.se/docs/manpage.html",
+    "kind": "reference"
+   },
+   {
+    "title": "tcpdump and libpcap",
+    "url": "https://www.tcpdump.org/manpages/tcpdump.1.html",
+    "kind": "reference"
+   },
+   {
+    "title": "BenGJ10/Placement-Preparation: Computer Networks",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "api-design:0": {
+  "body": "## The problem\nMany clients (web, mobile, partners) need a predictable way to talk to your services. REST is a set of constraints for HTTP APIs: resources identified by URLs, manipulated through a uniform interface, stateless requests, cacheable responses. Most \"REST\" APIs are really \"resource-oriented JSON over HTTP\", and that is fine.\n\n## Resource modelling\nModel **nouns**, not verbs. The HTTP method is the verb.\n```\nGET    /orders              list\nPOST   /orders              create\nGET    /orders/{id}         read\nPUT    /orders/{id}         replace\nPATCH  /orders/{id}         partial update\nDELETE /orders/{id}         delete\nGET    /orders/{id}/items   sub-collection (nest one level, not five)\n```\n- Plural collection names, stable opaque ids (UUID/ULID, not auto-increment if enumeration matters)\n- Actions that do not fit CRUD: model as a sub-resource or a state change, such as POST /orders/{id}/cancel or POST /payments (create a payment), rather than /doCancelOrder\n- Filtering, sorting, field selection via query: GET /orders?status=paid&sort=-created_at\n- Return representations with links or ids to related resources; avoid leaking DB schema\n\n## Method semantics\n- **Safe** (no state change): GET, HEAD, OPTIONS\n- **Idempotent** (repeat gives same server state): GET, PUT, DELETE, plus HEAD/OPTIONS. POST and PATCH are not by default.\n- PUT replaces the whole resource, PATCH changes part of it. DELETE of an already-deleted item may return 204 or 404; pick one and document it.\n- GET must not change state, because caches, crawlers and prefetchers will call it.\n\n## Status codes that matter\n- 200 OK, 201 Created (+ Location header), 202 Accepted (async work), 204 No Content\n- 301/302/307/308 redirects, 304 Not Modified\n- 400 malformed request, 401 unauthenticated, 403 authenticated but not allowed, 404 not found, 405 wrong method, 409 conflict (version clash, duplicate), 410 gone, 412 precondition failed (ETag mismatch), 415 unsupported media type, 422 validation failed, 429 too many requests (+ Retry-After)\n- 500 server bug, 502 bad gateway, 503 unavailable (+ Retry-After), 504 gateway timeout\nRule: 4xx means the client should change something, 5xx means retrying later may work. Never return 200 with an error body.\n\n## Error format\nOne consistent shape, for example RFC 9457 problem details: type, title, status, detail, plus a machine-readable code and a request id for support. Do not leak stack traces.\n\n## Other design choices\n- Statelessness: no server-side session needed to understand a request; auth in headers. Enables horizontal scaling.\n- Optimistic concurrency: ETag + If-Match on PUT to prevent lost updates (412 on mismatch)\n- Long operations: return 202 with a status URL, poll or use a webhook\n- Rate limits and quotas communicated with headers\n- Large lists must be paginated (see next lesson)\n\n## When REST is not ideal\nChatty clients needing many resources per screen (consider GraphQL or a BFF), high-throughput internal calls (gRPC), real-time push (WebSocket/SSE), and command-style or workflow-heavy domains where RPC naming is clearer.\n\n## Pitfalls\n- Verbs in URLs and everything as POST.\n- 401 vs 403 confusion.\n- Exposing internal ids and schema directly, which freezes your database design.",
+  "keyPoints": [
+   "Model nouns as resources and let HTTP methods be the verbs; nest sub-resources one level",
+   "GET is safe; GET, PUT, DELETE are idempotent; POST and PATCH are not by default",
+   "Use accurate status codes: 201+Location, 202 async, 401 vs 403, 409 conflict, 422 validation, 429 with Retry-After",
+   "Use one error format (problem details) and never return 200 with an error body",
+   "ETag plus If-Match prevents lost updates; long jobs return 202 with a status resource"
+  ],
+  "sources": [
+   {
+    "title": "RFC 9110: HTTP Semantics",
+    "url": "https://www.rfc-editor.org/rfc/rfc9110",
+    "kind": "reference"
+   },
+   {
+    "title": "RFC 9457: Problem Details for HTTP APIs",
+    "url": "https://www.rfc-editor.org/rfc/rfc9457",
+    "kind": "reference"
+   },
+   {
+    "title": "ByteByteGo blog: REST API design",
+    "url": "https://blog.bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "api-design:1": {
+  "body": "## The problem\nReturning 10 million rows in one response is impossible. Pagination returns a page at a time. The two main designs behave very differently at scale.\n\n## Offset pagination\n```\nGET /posts?limit=20&offset=40\nSELECT * FROM posts ORDER BY created_at DESC LIMIT 20 OFFSET 40;\n```\nPros: trivial, supports jumping to page N, easy total count.\nCons:\n- **Cost grows with offset**: the database must walk and discard the first N rows. OFFSET 1,000,000 scans a million rows each time even with an index.\n- **Unstable under writes**: if a new row is inserted at the top while the user reads page 1, page 2 repeats an item; a delete causes a skipped item.\n- COUNT(*) for totals is expensive on big tables.\n\n## Cursor (keyset) pagination\nReturn an opaque cursor that encodes the last seen sort key; the next query seeks from it.\n```\nGET /posts?limit=20&cursor=eyJjIjoiMjAyNi0wMS0wMVQxMDowMDowMFoiLCJpIjo5OTl9\n\nSELECT * FROM posts\nWHERE (created_at, id) < ('2026-01-01T10:00:00Z', 999)\nORDER BY created_at DESC, id DESC\nLIMIT 20;\n```\nWith an index on (created_at, id), each page is an index seek: O(log n + limit) at any depth.\nRules:\n- Sort key must be **unique and totally ordered**; add the primary key as a tiebreaker or rows with equal timestamps get skipped or duplicated\n- Fetch limit+1 rows to know if there is a next page (has_more) cheaply\n- Make the cursor opaque (base64 of the key, ideally signed) so clients cannot depend on its contents and you can change it\n- Stable under inserts: new rows appear before the cursor, not inside already-seen pages\n\nCons: no random jump to page 500, no easy \"total pages\", only forward/back navigation, and sorting by a non-indexed column is harder.\n\n## Response shape\n```\n{ \"data\": [...], \"next_cursor\": \"...\", \"has_more\": true }\n```\nAlternatively Link headers (rel=\"next\"). Cap limit server-side (for example max 100).\n\n## Choosing\n- Feeds, timelines, logs, infinite scroll, large tables, APIs with concurrent writes: **cursor**\n- Admin tables with page numbers, small bounded datasets, need for total counts: **offset** (fine under a few thousand rows or with a capped depth)\n- Search engines often cap depth (Elasticsearch from+size limited to 10,000, with search_after for deep pages)\n\n## Pitfalls\n- Cursor on a mutable sort column (like updated_at): items can move between pages. Prefer immutable keys such as creation time or id.\n- Sharded stores: offset needs every shard to return offset+limit rows and merge, which gets very expensive; cursors do much better.\n- Exposing raw ids as cursors without a tiebreaker.",
+  "keyPoints": [
+   "Offset is simple but costs O(offset) per page and shifts under concurrent inserts and deletes",
+   "Keyset cursors seek via an index and stay O(log n + limit) at any depth",
+   "Cursor sort key must be unique and immutable; add the primary key as tiebreaker",
+   "Fetch limit+1 to compute has_more; keep cursors opaque and cap page size",
+   "Pick offset only for small datasets that need page numbers or totals"
+  ],
+  "sources": [
+   {
+    "title": "Use The Index, Luke: paging through results",
+    "url": "https://use-the-index-luke.com/sql/partial-results/fetch-next-page",
+    "kind": "reference"
+   },
+   {
+    "title": "Stripe API: pagination",
+    "url": "https://docs.stripe.com/api/pagination",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview Vol. 2 (Alex Xu)",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "api-design:2": {
+  "body": "## The problem\nNetworks fail ambiguously. A client sends POST /payments and the connection times out. Did the charge happen? Retrying might charge twice; not retrying might lose the payment. Retries are essential for reliability, so the server must make them **safe**.\n\n## Idempotency\nAn operation is idempotent if applying it many times has the same effect as once. GET, PUT, DELETE already are. POST (create, charge, send email) is not. An **idempotency key** makes it so.\n\n## The mechanism\nClient generates a unique key (UUIDv4) per logical operation and sends it on the first try and every retry:\n```\nPOST /payments\nIdempotency-Key: 7c1e...-b2\n{ \"amount\": 5000, \"currency\": \"usd\" }\n```\nServer:\n1. Look up the key (scoped to the user/account) in a store.\n2. **Not seen**: atomically record key with status in_progress plus a hash of the request, execute, save the response (status code and body), mark complete.\n3. **Seen and complete**: return the saved response without re-executing.\n4. **Seen and in_progress**: return 409 (or wait), since a concurrent duplicate is racing.\n5. **Seen but different request body**: return 422/400, since key reuse with different params is a client bug.\nKeys expire after a window (Stripe: 24 hours).\n\n## The hard part: atomicity\nThe check-then-execute must be race-free. Use a unique constraint on (account, key) in the same database and transaction as the business write, or a conditional insert.\n```\nBEGIN;\nINSERT INTO idempotency(key, account, request_hash, status) VALUES (...);   -- unique violation => duplicate\nINSERT INTO payments(...);\nUPDATE idempotency SET status='done', response=... WHERE key=...;\nCOMMIT;\n```\nIf the work touches an external system (a card network), a crash between \"charge succeeded\" and \"record saved\" leaves ambiguity. Fix by passing the same key downstream (so the provider dedupes), recording intent first, and reconciling in the background. This is why Stripe-style APIs propagate keys.\n\n## Alternatives and related ideas\n- **Natural idempotency**: PUT /orders/{id} with a client-chosen id, or conditional updates (set status=paid where status=pending).\n- **Deduplication on consumers**: message queues give at-least-once delivery, so consumers store processed message ids. \"Exactly-once\" in practice is at-least-once plus idempotent processing.\n- **Version/ETag preconditions** (If-Match) to stop duplicate updates.\n\n## Client rules\nGenerate the key once per operation (not per attempt), persist it before sending (for mobile apps surviving restarts), retry with exponential backoff plus jitter on timeouts and 5xx, and never retry 4xx validation errors.\n\n## Pitfalls\n- Storing keys in a cache with eviction only: an evicted key allows a duplicate. Use durable storage for money.\n- Not hashing the request body, so a reused key silently returns an unrelated result.\n- Making the key global instead of per account.\n- Forgetting that returning the cached response must include the original error too (cache failures that are deterministic, not transient ones).",
+  "keyPoints": [
+   "Idempotency keys let clients retry unsafe POSTs without duplicating effects",
+   "Server stores key, request hash and final response; replays the response on duplicates",
+   "Atomic uniqueness (DB unique constraint in the same transaction) prevents race duplicates",
+   "Propagate the key to downstream providers; reconcile when a crash falls between side effect and record",
+   "Exactly-once in practice means at-least-once delivery plus idempotent processing"
+  ],
+  "diagram": "flowchart TD\nR[\"POST with Idempotency-Key\"] --> L{\"Key seen?\"}\nL -->|\"No\"| E[\"Record in_progress, execute, save response\"]\nL -->|\"Yes, complete\"| P[\"Return saved response\"]\nL -->|\"Yes, in progress\"| C[\"409 conflict / wait\"]\nL -->|\"Same key, different body\"| X[\"422 error\"]",
+  "sources": [
+   {
+    "title": "Stripe: Designing robust and predictable APIs with idempotency",
+    "url": "https://stripe.com/blog/idempotency",
+    "kind": "reference"
+   },
+   {
+    "title": "Stripe API: idempotent requests",
+    "url": "https://docs.stripe.com/api/idempotent_requests",
+    "kind": "reference"
+   },
+   {
+    "title": "AWS Builders' Library: Making retries safe with idempotent APIs",
+    "url": "https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "api-design:3": {
+  "body": "## The problem\nClients you do not control (mobile apps on old versions, partners) depend on your API shape. You must evolve it without breaking them. The goal of versioning is not \"v2 someday\" but **managing breaking changes**.\n\n## What counts as breaking\n- Removing or renaming a field, endpoint or enum value\n- Changing a field type or meaning, making an optional input required\n- Tightening validation, changing error formats or status codes\n- Changing default behaviour or ordering/pagination semantics\n## Non-breaking (additive)\nAdding optional request fields, adding response fields, adding endpoints, adding enum values (only safe if clients are told to tolerate unknown values; document \"be liberal in what you accept\").\n\n## Versioning strategies\n- **URI path**: /v1/orders. Obvious, easy to route, cache and log, easy to test in a browser. Downsides: the URL is not really the resource identity; version is coarse (whole API).\n- **Header / media type**: Accept: application/vnd.acme.v2+json. Cleaner URLs, more RESTful, but harder to discover, test and cache (needs Vary: Accept).\n- **Query parameter**: /orders?version=2. Easy but muddles caching and routing.\n- **Date-based**: Stripe pins each account to the API version of its first request (2024-06-20) and offers per-request override via header; changes are applied by version-transforming modules. Great for fine-grained, long-lived compatibility, costly to build.\n- **No versions, evolve compatibly**: GraphQL and protobuf-style schemas rely on additive changes and deprecation. Protobuf rule: never reuse or renumber field tags; mark old ones reserved.\n\n## Practical process\n1. Prefer additive changes; design fields to be extensible (objects instead of bare scalars, so you can add attributes later).\n2. When breaking is unavoidable, introduce the new version while the old keeps working.\n3. **Deprecate** with notice: Deprecation and Sunset headers (RFC 8594), changelog, emails, usage dashboards per version and per client.\n4. Remove only when telemetry shows traffic gone (or after a contracted date).\n5. Keep the number of live versions small; each one multiplies testing and support.\n\n## Implementation patterns\nKeep one core domain model and translate at the edge: version-specific request/response mappers (adapter or transform chain) around shared business logic, rather than copying whole controllers. Contract tests per version guard against accidental breaks.\n\n## Internal services\nBetween your own services, prefer backward- and forward-compatible schema evolution (protobuf, Avro with a registry) with expand/contract rollouts: deploy readers that accept both shapes first, then writers, then drop the old shape. Mobile apps cannot be force-updated quickly, so the server supports old clients for a long window.\n\n## Pitfalls\n- Version proliferation (v1..v7 all alive).\n- Changing behaviour silently under the same version.\n- Treating enum additions as safe when clients use exhaustive switches.",
+  "keyPoints": [
+   "Prefer additive, backward-compatible change; version only for unavoidable breaking change",
+   "URI versioning is simplest and most common; header or date-based versioning gives cleaner URLs or finer control at higher cost",
+   "Never reuse protobuf field numbers; reserve removed ones",
+   "Deprecate with notice: Sunset/Deprecation headers, per-client usage telemetry, then remove",
+   "Translate versions at the edge around one core model, and use expand/contract for internal schema changes"
+  ],
+  "sources": [
+   {
+    "title": "Stripe: APIs as infrastructure, future-proofing with versioning",
+    "url": "https://stripe.com/blog/api-versioning",
+    "kind": "reference"
+   },
+   {
+    "title": "RFC 8594: The Sunset HTTP Header Field",
+    "url": "https://www.rfc-editor.org/rfc/rfc8594",
+    "kind": "reference"
+   },
+   {
+    "title": "Protocol Buffers: updating a message type",
+    "url": "https://protobuf.dev/programming-guides/proto3/#updating",
+    "kind": "reference"
+   }
+  ]
+ },
+ "api-design:4": {
+  "body": "## The problem\nJSON over HTTP/1.1 is human friendly but verbose, loosely typed and slow to parse. For many internal service-to-service calls you want a strict contract, compact encoding, streaming and generated clients. That is gRPC.\n\n## Protobuf: the schema and wire format\n```\nsyntax = \"proto3\";\nservice OrderService {\n  rpc GetOrder (GetOrderRequest) returns (Order);\n  rpc WatchOrders (WatchRequest) returns (stream Order);\n}\nmessage GetOrderRequest { string id = 1; }\nmessage Order { string id = 1; int64 total_cents = 2; repeated string items = 3; }\n```\n- Fields are identified by **numbers**, not names, in a compact binary encoding using varints and tag/length/value. Typically 3-10x smaller and several times faster to serialise than JSON.\n- Evolution rules: add new fields with new numbers (old readers skip unknown fields); never change a field's type or reuse a number; mark removed ones reserved. Missing scalars take defaults, so you cannot distinguish \"0\" from \"unset\" without optional or wrapper types.\n- The .proto file is the contract; protoc generates typed client and server stubs in many languages.\n\n## gRPC on top\nRuns over **HTTP/2**: one multiplexed connection with many concurrent streams, header compression, flow control. Four call types:\n- **Unary**: request, response\n- **Server streaming**: one request, many responses (feeds, progress)\n- **Client streaming**: many requests, one response (uploads)\n- **Bidirectional streaming**: both sides stream independently (chat, telemetry)\nBuilt-in features: deadlines (a timeout propagated through the call chain), cancellation, metadata (headers), interceptors (auth, logging, tracing), status codes (OK, NOT_FOUND, DEADLINE_EXCEEDED, UNAVAILABLE...), retry policies, health checking, TLS/mTLS.\n\n## Trade-offs\nPros: strong typing and codegen, performance, streaming, polyglot, deadline propagation.\nCons:\n- Not human readable; debugging needs tools (grpcurl, Postman, reflection)\n- Browsers cannot speak native gRPC (no control over HTTP/2 framing/trailers); use **gRPC-Web** with a proxy (Envoy) or a REST gateway (grpc-gateway)\n- Needs L7 or client-side load balancing, since long-lived HTTP/2 connections pin to one backend under an L4 LB\n- Less cacheable and less friendly for public third-party APIs\n- Schema tooling and breaking-change discipline required\n\n## When to choose\n- **gRPC**: internal microservice calls, low latency, high throughput, streaming, polyglot teams, mobile clients to your own backend\n- **REST/JSON**: public APIs, browser clients, simple CRUD, wide ecosystem and caching\n- Many systems expose REST at the edge and gRPC inside\n\n## Example numbers\nA small message of a few fields is typically tens of bytes in protobuf versus a few hundred in JSON. At 50,000 internal calls per second, that saving is real bandwidth and CPU, but for 50 QPS it is irrelevant. Do not choose it for performance alone.\n\n## Pitfalls\n- Forgetting deadlines: a missing deadline lets slow calls pile up and cascade. Set one at the entry and propagate it.\n- Retrying non-idempotent calls blindly.\n- Huge messages: default max message size is 4 MB; stream instead.",
+  "keyPoints": [
+   "Protobuf is a compact, schema-first binary format identified by field numbers; never reuse or retype a number",
+   "gRPC uses HTTP/2 multiplexing and supports unary, server, client and bidirectional streaming",
+   "Deadlines propagate through call chains; always set them to avoid cascading slowness",
+   "Browsers need gRPC-Web or a REST gateway; gRPC needs L7 or client-side load balancing",
+   "Choose gRPC for internal low-latency polyglot calls, REST for public and browser-facing APIs"
+  ],
+  "sources": [
+   {
+    "title": "gRPC: core concepts",
+    "url": "https://grpc.io/docs/what-is-grpc/core-concepts/",
+    "kind": "reference"
+   },
+   {
+    "title": "Protocol Buffers: encoding",
+    "url": "https://protobuf.dev/programming-guides/encoding/",
+    "kind": "reference"
+   },
+   {
+    "title": "ByteByteGo blog: REST vs gRPC",
+    "url": "https://blog.bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "api-design:5": {
+  "body": "## The problem GraphQL solves\nWith REST, a mobile screen showing a user, their last 5 orders and each order's items may need 3-11 round trips (**under-fetching**), or one fat endpoint returning fields it does not need (**over-fetching**). GraphQL lets the client describe exactly the data shape in one request against a typed schema.\n\n## Core ideas\n```\ntype Query { user(id: ID!): User }\ntype User  { id: ID!  name: String  orders(first: Int): [Order!]! }\ntype Order { id: ID!  total: Int  items: [Item!]! }\n\nquery { user(id: \"42\") { name orders(first: 5) { total items { name } } } }\n```\n- One endpoint (POST /graphql), a strongly typed schema, introspection\n- Queries (read), mutations (write), subscriptions (push, usually over WebSocket)\n- Execution is done by **resolvers**: a function per field that fetches its data. The engine walks the query tree calling resolvers.\n\n## The N+1 problem\nA resolver for orders runs 1 query to get the user's orders, then the items resolver runs **once per order**:\n```\n1 query:  SELECT * FROM orders WHERE user_id = 42      -> 5 orders\n5 queries: SELECT * FROM items WHERE order_id = ?      -> once per order\ntotal 6 queries; for a list of 100 orders it is 101\n```\nEach level of nesting multiplies it. The code looks innocent because every resolver is correct in isolation.\n\n## Fixes\n- **DataLoader** (batching + per-request caching): resolvers call loader.load(orderId); the loader collects all keys requested in the same tick and issues one query: SELECT * FROM items WHERE order_id IN (...), then maps rows back to callers. 101 queries become 2. Create loaders per request so the cache does not leak across users.\n- Join-aware resolvers or ORM eager loading, look-ahead on the selection set\n- Persisted data views or denormalised read models for hot paths\nSame N+1 shape appears in REST with ORMs (lazy loading), so it is worth knowing generally. Detect with query logs or tracing (count queries per request).\n\n## Other production concerns\n- **Query cost control**: clients can send deeply nested or huge queries. Apply depth limits, complexity/cost analysis, pagination limits (use cursor connections), timeouts, and persisted/allow-listed queries for public APIs.\n- **Caching**: no URL-per-resource, mostly POST, so HTTP/CDN caching is hard; use persisted queries with GET, response caching by field or client caches (normalised cache in Apollo/Relay).\n- **Authorization** belongs in resolvers or the business layer per field, not only at the endpoint.\n- **Errors**: HTTP 200 with an errors array can hide failures from simple monitoring; track them explicitly.\n- **Schema evolution**: add fields freely, deprecate with @deprecated, avoid versions.\n- **Federation** (Apollo Federation, schema stitching) combines subgraphs owned by different teams under one graph.\n- File upload and rate limiting need extra thought, as limiting by request count is meaningless when queries vary in cost.\n\n## When to use\nGood: many client types with different data needs, complex nested data, rapid frontend iteration, BFF layers. Poor: simple CRUD, public APIs that need CDN caching, file-heavy or streaming workloads, small teams without capacity to run it well.",
+  "keyPoints": [
+   "GraphQL lets clients request exactly the nested data they need in one round trip, backed by a typed schema",
+   "Resolvers run per field, so a list of N parents causes N child queries: the N+1 problem",
+   "DataLoader batches keys within a tick into one IN query and caches per request",
+   "Protect the server with depth and cost limits, pagination, timeouts and persisted queries",
+   "HTTP caching is harder and errors come back as 200; authorize per field in the business layer"
+  ],
+  "diagram": "flowchart LR\nC[\"Client query\"] --> E[\"GraphQL engine\"]\nE --> R1[\"orders resolver\"]\nE --> R2[\"items resolver x N\"]\nR2 --> DL[\"DataLoader batches keys\"]\nDL --> DB[\"SELECT ... WHERE order_id IN (...)\"]\nR1 --> DB2[\"SELECT orders\"]",
+  "sources": [
+   {
+    "title": "GraphQL: learn and best practices",
+    "url": "https://graphql.org/learn/best-practices/",
+    "kind": "reference"
+   },
+   {
+    "title": "graphql/dataloader",
+    "url": "https://github.com/graphql/dataloader",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design 101 (ByteByteGo)",
+    "url": "https://github.com/ByteByteGoHq/system-design-101",
+    "kind": "reference"
+   }
+  ]
+ },
+ "api-design:6": {
+  "body": "## The problem\nAn API is a contract between teams. Without a machine-readable description, docs drift from code, clients hand-write models that break, and integration bugs appear late. **OpenAPI** (formerly Swagger) is the standard format to describe HTTP/REST APIs in YAML or JSON.\n\n## What an OpenAPI document contains\n```\nopenapi: 3.1.0\ninfo: { title: Orders API, version: 1.4.0 }\npaths:\n  /orders/{id}:\n    get:\n      operationId: getOrder\n      parameters:\n        - { name: id, in: path, required: true, schema: { type: string } }\n      responses:\n        \"200\": { description: OK, content: { application/json: { schema: { $ref: \"#/components/schemas/Order\" } } } }\n        \"404\": { $ref: \"#/components/responses/NotFound\" }\ncomponents:\n  schemas:\n    Order: { type: object, required: [id, total], properties: { id: {type: string}, total: {type: integer} } }\n  securitySchemes:\n    bearer: { type: http, scheme: bearer }\n```\nParts: servers, paths and operations, parameters, request bodies, responses, reusable **components** (schemas, responses, parameters), security schemes, tags. Schemas use JSON Schema (3.1 is aligned with it).\n\n## What you get from it\n- **Interactive docs** (Swagger UI, Redoc) and a try-it console\n- **Client SDK and server stub generation** (openapi-generator, Orval, oapi-codegen)\n- **Request/response validation** at the gateway or in middleware, rejecting bad input early\n- **Mock servers** so frontend can start before the backend exists (Prism)\n- **Contract tests** and fuzzing (Schemathesis) comparing real behaviour with the spec\n- **Breaking-change detection in CI** (oasdiff): diff the spec between branches and fail on removed fields or tightened types\n- Gateway configuration, API catalogues and linting (Spectral) to enforce naming and error conventions\n\n## Design-first vs code-first\n- **Design-first**: write the spec, review it with consumers, then implement; best for public or cross-team APIs, parallel frontend/backend work.\n- **Code-first**: generate the spec from annotations or types (FastAPI, NestJS, Springdoc). Fast and always in sync with code, but the contract is shaped by implementation and reviews happen late.\nWhichever you pick, the spec in version control and checked in CI is the point.\n\n## Related contract formats\n- **Protobuf / gRPC**: IDL is the contract\n- **GraphQL SDL**: schema is the contract\n- **AsyncAPI**: the OpenAPI equivalent for events and message brokers\n- **Consumer-driven contracts (Pact)**: consumers state what they use; providers verify, which catches breaks that the spec alone allows\n\n## Pitfalls\n- A spec that is not enforced rots; add validation or contract tests.\n- Overly loose schemas (additionalProperties everywhere, everything optional) give no safety.\n- Generated clients make breaking changes painful, so use the diff check.\n- Do not confuse documenting with designing: a spec of a poor API is still a poor API.",
+  "keyPoints": [
+   "OpenAPI is a machine-readable contract for HTTP APIs: paths, operations, schemas, responses, security",
+   "From one spec you get docs, SDKs, server stubs, validation, mocks and contract tests",
+   "Run breaking-change diffs and linting in CI so the spec stays enforced",
+   "Design-first suits cross-team and public APIs; code-first stays in sync but is shaped by implementation",
+   "AsyncAPI covers events, protobuf and GraphQL carry their own schemas, Pact covers consumer-driven contracts"
+  ],
+  "sources": [
+   {
+    "title": "OpenAPI Specification",
+    "url": "https://spec.openapis.org/oas/latest.html",
+    "kind": "reference"
+   },
+   {
+    "title": "OpenAPI Initiative: learn",
+    "url": "https://learn.openapis.org/",
+    "kind": "reference"
+   },
+   {
+    "title": "Pact: consumer-driven contract testing",
+    "url": "https://docs.pact.io/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "security:0": {
+  "body": "## Two different questions\n- **Authentication (AuthN)**: who are you? Verify identity (password, passkey, MFA, certificate, token).\n- **Authorization (AuthZ)**: what may you do? Decide whether this identity can perform this action on this resource.\nAuthN happens first and yields an identity; AuthZ runs on every request using that identity. HTTP codes: 401 means unauthenticated, 403 means authenticated but forbidden. Mixing up the two is the classic interview slip, and the most common real vulnerability is broken authorization (OWASP A01).\n\n## Authentication factors\nSomething you know (password), have (phone, hardware key), are (biometrics). MFA combines different categories. Prefer phishing-resistant methods (WebAuthn/passkeys, FIDO2 keys) over SMS codes (SIM swap) and TOTP (phishable).\n\n## Authorization models\n\n### ACL\nEach resource lists who can do what. Simple, hard to manage at scale (Unix file permissions, S3 bucket ACLs).\n\n### RBAC (role-based)\nPermissions attach to **roles**, users get roles: admin, editor, viewer.\n- Pros: simple, auditable, easy to explain, maps to org charts\n- Cons: **role explosion** when you need distinctions like \"editor of project A only\" or \"approve payments under 10k\"; roles are coarse and static; no context\n```\nuser alice -> role editor -> permissions {doc:read, doc:write}\n```\n\n### ABAC (attribute-based)\nDecisions are policies over **attributes** of the subject, resource, action and environment.\n```\nallow if user.department == resource.department\n      and action == \"read\"\n      and resource.classification <= user.clearance\n      and time.hour in 8..18\n```\n- Pros: fine-grained, contextual, few policies cover many cases, supports ownership (\"users edit their own posts\")\n- Cons: harder to reason about and audit (\"who can access X?\" needs evaluation), performance and attribute freshness, policy debugging, need a policy engine (OPA/Rego, Cedar, XACML)\n\n### ReBAC (relationship-based)\nAccess follows a graph of relationships: a user can view a document if they are an editor of the folder that contains it (Google Zanzibar, SpiceDB, OpenFGA). Fits sharing models like Drive or GitHub.\n\n## Practical architecture\n- Check authorization **server-side, on every request, close to the data**, never just in the UI or the gateway. Hiding a button is not security.\n- Centralise the decision (policy-as-code library or service: OPA, Cedar, OpenFGA) but enforce at each service (policy decision point vs policy enforcement point).\n- Default deny; least privilege; separate admin paths; log decisions.\n- Object-level checks matter: GET /orders/123 must verify that order 123 belongs to the caller, otherwise it is an IDOR (insecure direct object reference). Unguessable ids help but are not authorization.\n- Common hybrid: RBAC for coarse capabilities plus ABAC/ownership conditions for fine ones.\n- Cache decisions briefly, and make revocation propagate (token claims go stale: a role removed still appears in a JWT until it expires).\n\n## When to pick which\nSmall internal app: RBAC. Multi-tenant SaaS with ownership and sharing: RBAC + ownership checks, or ReBAC. Regulated, contextual rules: ABAC with a policy engine.",
+  "keyPoints": [
+   "AuthN proves identity; AuthZ decides permissions; 401 is unauthenticated and 403 is forbidden",
+   "RBAC is simple but suffers role explosion; ABAC uses attribute policies for fine-grained, contextual rules",
+   "ReBAC (Zanzibar-style) models sharing as a relationship graph",
+   "Enforce authorization server-side on every request including object-level checks to prevent IDOR",
+   "Default deny, least privilege, and plan for permission changes propagating past token lifetimes"
+  ],
+  "sources": [
+   {
+    "title": "OWASP Authorization Cheat Sheet",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Google Zanzibar paper",
+    "url": "https://research.google/pubs/zanzibar-googles-consistent-global-authorization-system/",
+    "kind": "reference"
+   },
+   {
+    "title": "Open Policy Agent docs",
+    "url": "https://www.openpolicyagent.org/docs/latest/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "security:1": {
+  "body": "## The problem\nHTTP is stateless. After login, how does the server recognise the user on the next request? Two main answers.\n\n## Server-side sessions\nOn login the server creates a random, unguessable session id (128+ bits), stores session data (user id, roles, expiry) in a server store (Redis, DB), and sends the id in a cookie. Each request: read cookie, look up the session.\n- Pros: **instant revocation** (delete the row), data stays on the server, small cookie, easy to rotate or force logout, easy \"log out everywhere\"\n- Cons: a lookup on every request (Redis ~sub-millisecond, but it is a shared dependency and scaling point), session store must be highly available and replicated, cross-domain and non-browser clients are a bit clumsier\nCookie flags: HttpOnly, Secure, SameSite=Lax/Strict; rotate the id on login (prevents session fixation); idle and absolute timeouts.\n\n## JWT (JSON Web Token)\nA signed, self-contained token: header.payload.signature (base64url). Payload has claims: sub, exp, iat, iss, aud, roles. The server verifies the signature (HMAC HS256 with a shared secret, or RS256/ES256 with a key pair) and trusts the claims **without any lookup**.\n- Pros: stateless verification, scales horizontally, services verify with a public key and no shared store, works across domains, good for service-to-service and mobile\n- Cons: **hard to revoke before expiry**, claims go stale (a removed role persists), bigger than a session id (sent on every request), and easy to get wrong\n- JWT is **signed, not encrypted** (unless JWE): never put secrets or sensitive PII in it.\n\n## Revocation strategies for JWT\n- **Short-lived access tokens** (5-15 min) plus long-lived **refresh tokens** stored server-side. Revoking the refresh token stops renewal; damage window is the access token's remaining life.\n- Refresh token **rotation** with reuse detection: each refresh issues a new refresh token; presenting an old one signals theft, so revoke the whole family.\n- **Denylist** of revoked token ids (jti) in Redis until natural expiry: reintroduces a lookup but a small, fast one.\n- Per-user \"token version\" or \"valid since\" timestamp checked on sensitive operations.\n- Rotate signing keys with kid in the header and a JWKS endpoint.\n\n## Common JWT vulnerabilities\n- Accepting alg: none or letting the token choose the algorithm (algorithm confusion, RS256 key used as HS256 secret): pin allowed algorithms on the server\n- Not validating exp, iss, aud\n- Storing tokens in localStorage: readable by any XSS. Prefer HttpOnly Secure SameSite cookies; if the token is in a cookie you need CSRF protection\n- Weak HMAC secrets\n\n## Choosing\n- Classic web app, one backend, need logout and instant control: **sessions**. Simple and safest default.\n- Many services, mobile/API clients, third-party delegation: **JWT access tokens + refresh tokens**, usually issued via OAuth/OIDC.\n- Often both: a session at the edge, short-lived JWTs minted internally for service-to-service calls.\n\"JWTs are better\" is a common myth; stateless verification is traded against revocation.",
+  "keyPoints": [
+   "Sessions store state server-side: instant revocation, one lookup per request, opaque id in an HttpOnly cookie",
+   "JWTs are signed self-contained tokens verified without lookup, but are hard to revoke and are not encrypted",
+   "Revoke JWTs with short expiry plus rotating refresh tokens, a jti denylist, or token versions",
+   "Pin accepted algorithms, validate exp/iss/aud, and avoid localStorage for tokens",
+   "Rotate the session id at login to prevent fixation; use idle and absolute timeouts"
+  ],
+  "diagram": "flowchart LR\nsubgraph S[\"Session\"]\nC1[\"Client cookie: session id\"] --> A1[\"Server\"] --> R1[(\"Session store\")]\nend\nsubgraph J[\"JWT\"]\nC2[\"Client: access token\"] --> A2[\"Server verifies signature\"]\nC2 -.->|\"expired\"| RT[\"Refresh token endpoint\"]\nend",
+  "sources": [
+   {
+    "title": "OWASP Session Management Cheat Sheet",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html",
+    "kind": "reference"
+   },
+   {
+    "title": "RFC 7519: JSON Web Token",
+    "url": "https://www.rfc-editor.org/rfc/rfc7519",
+    "kind": "reference"
+   }
+  ]
+ },
+ "security:2": {
+  "body": "## The problem\nYou want a third-party app (a calendar) to read your Google contacts without giving it your Google password. **OAuth 2.0** is a delegated **authorization** framework: the user grants an app limited, revocable access via tokens. **OpenID Connect (OIDC)** layers **authentication** on top: it tells the app who the user is.\n\n## Roles\n- Resource owner (user), Client (the app), Authorization server (issues tokens, e.g. Google, Okta), Resource server (the API)\n- Scopes limit access (contacts.readonly). Access token = key to the API; refresh token = renew access; ID token (OIDC) = JWT proving the user's identity.\n\n## Authorization Code flow with PKCE (the one to know)\nUsed by web apps, SPAs and mobile apps. Current best practice (OAuth 2.1 direction) for all public clients.\n```\n1. Client creates code_verifier (random) and code_challenge = BASE64URL(SHA256(verifier)), plus a random state\n2. Redirect user to /authorize?response_type=code&client_id&redirect_uri&scope&state&code_challenge&code_challenge_method=S256\n3. User logs in and consents at the authorization server\n4. Redirect back to redirect_uri?code=abc&state=...   (check state matches)\n5. Client POSTs to /token: code, redirect_uri, code_verifier (+ client secret for confidential clients)\n6. Server checks SHA256(verifier) == challenge, returns access_token (+ refresh_token, id_token)\n7. Client calls the API with Authorization: Bearer <access_token>\n```\nWhy a code, not a token, in the redirect? Tokens in the URL leak via history and referrers. The code is useless without the verifier (PKCE), which defeats interception by malicious apps. **state** prevents CSRF on the callback.\n\n## Other flows\n- **Client Credentials**: machine-to-machine, no user; client authenticates with secret or mTLS to get a token\n- **Device Code**: TVs and CLIs; show a code the user enters on another device\n- **Refresh Token**: swap for a new access token; rotate on use\n- **Implicit** and **Resource Owner Password**: deprecated, do not use\n\n## OIDC\nAdds the openid scope and an **ID token** (JWT with sub, iss, aud, exp, nonce, name/email claims), a /userinfo endpoint and a discovery document (/.well-known/openid-configuration) with the JWKS URL. \"Sign in with Google\" is OIDC. The client must validate the ID token: signature, iss, aud equals its client_id, exp, and nonce.\nKey distinction: an access token is for the API (the client should treat it as opaque); the ID token is for the client, to learn who logged in. Do not use an access token as proof of login.\n\n## Security checklist\n- Exact-match redirect_uri allow-listing (open redirects leak codes)\n- Always PKCE, always check state and nonce\n- Short access token lifetimes, rotating refresh tokens, store refresh tokens carefully (BFF pattern: keep tokens on the server and give the SPA a session cookie)\n- Request minimal scopes; allow users to revoke\n- Opaque tokens with introspection (RFC 7662) vs self-contained JWT access tokens: same revocation trade-off as sessions vs JWT\n\n## Pitfalls\n- Saying OAuth is authentication.\n- Putting tokens in localStorage in SPAs without considering XSS.\n- Skipping audience validation, so a token for service A works on service B.",
+  "keyPoints": [
+   "OAuth 2.0 delegates access with scoped tokens; OIDC adds an ID token for authentication",
+   "Authorization Code + PKCE is the standard flow for web, SPA and mobile; the code is exchanged server-side with the verifier",
+   "state defends the callback against CSRF, nonce binds the ID token to the request, redirect URIs must match exactly",
+   "Client Credentials is for machine-to-machine; Implicit and password flows are deprecated",
+   "Access token is for the API, ID token is for the client; validate iss, aud, exp and signature"
+  ],
+  "diagram": "flowchart TD\nU[\"User + browser\"] -->|\"1 authorize + code_challenge\"| AS[\"Authorization server\"]\nAS -->|\"2 login + consent, redirect with code\"| U\nU -->|\"3 code\"| C[\"Client app\"]\nC -->|\"4 code + code_verifier\"| AS\nAS -->|\"5 access + ID + refresh tokens\"| C\nC -->|\"6 Bearer access token\"| API[\"Resource server\"]",
+  "sources": [
+   {
+    "title": "RFC 6749: OAuth 2.0",
+    "url": "https://www.rfc-editor.org/rfc/rfc6749",
+    "kind": "reference"
+   },
+   {
+    "title": "RFC 7636: PKCE",
+    "url": "https://www.rfc-editor.org/rfc/rfc7636",
+    "kind": "reference"
+   },
+   {
+    "title": "OpenID Connect Core 1.0",
+    "url": "https://openid.net/specs/openid-connect-core-1_0.html",
+    "kind": "reference"
+   }
+  ]
+ },
+ "security:3": {
+  "body": "## The problem\nWhen a database leaks (and eventually one does), stored passwords must not be recoverable or crackable in bulk. Never store plaintext, never encrypt reversibly, never use a fast hash.\n\n## Why not SHA-256 / MD5\nGeneral hashes are designed to be **fast**. A modern GPU computes billions of SHA-256 hashes per second, so most human passwords fall in minutes. Rainbow tables precompute hash lookups, and identical passwords produce identical hashes, revealing duplicates.\n\n## What password hashing adds\n- **Salt**: a unique random value (16+ bytes) per password, stored beside the hash. Defeats rainbow tables and makes equal passwords hash differently. It is not secret.\n- **Work factor (slowness)**: deliberately expensive, tunable computation, so each guess costs the attacker real time. Aim for roughly 100-500 ms per hash on your server, and raise it over time as hardware improves.\n- **Memory hardness**: requiring lots of RAM per hash cripples GPU/ASIC parallelism.\n- **Pepper** (optional): a secret key mixed in (HMAC) and held outside the database, such as in a KMS/HSM, so a database-only leak is insufficient.\n\n## The algorithms\n- **bcrypt**: 1999, Blowfish-based, cost parameter (2^cost rounds), 22-char salt built in, silently truncates input at 72 bytes. Still acceptable, widely supported, only slightly GPU-resistant, little memory use. Cost 12 or more today.\n- **scrypt**: adds memory hardness.\n- **Argon2id**: winner of the Password Hashing Competition (2015), currently the recommended choice. Parameters: memory, iterations, parallelism. OWASP minimum example: 19 MiB memory, 2 iterations, 1 degree of parallelism (or stronger variants such as 46 MiB, 1 iteration). Argon2id blends resistance to side-channel and GPU attacks.\n- **PBKDF2**: FIPS-approved, iterations only (hundreds of thousands, OWASP suggests 600,000 for HMAC-SHA256), not memory hard; use when compliance demands it.\n\n## Login flow\n```\nregister: salt = random(16); hash = argon2id(password, salt, params); store \"$argon2id$v=19$m=19456,t=2,p=1$salt$hash\"\nlogin:    parse stored params and salt; recompute; constant-time compare; on success, rehash if params are outdated\n```\nThe encoded string stores algorithm, parameters and salt, so you can raise parameters later and upgrade hashes transparently at the next successful login.\n\n## Operational considerations\n- Hashing is CPU/memory intensive: it is a **DoS vector**, so rate-limit login attempts per account and IP, add progressive delays or CAPTCHA, and run hashing off the event loop in Node (use the async API or a worker pool).\n- Use **constant-time comparison** to avoid timing leaks.\n- Enforce length (minimum 8-12, allow up to 64+ characters), allow passphrases and password managers, check against breached-password lists (Have I Been Pwned k-anonymity API), avoid composition rules and forced periodic rotation (NIST 800-63B).\n- Add MFA; offer passkeys to remove passwords entirely.\n- Avoid the bcrypt 72-byte truncation trap: pre-hash long inputs carefully or use Argon2.\n- Do not use the same code to hash API tokens: random 256-bit tokens can be stored as a plain SHA-256 since they have high entropy.\n- Reset links: random single-use, short-lived tokens, stored hashed.\n\n## Interview answer in one line\nHash with Argon2id (or bcrypt cost 12+) using a unique per-user salt and a tuned work factor, compare in constant time, rate-limit attempts, and upgrade parameters over time.",
+  "keyPoints": [
+   "Use a slow, salted, memory-hard password hash (Argon2id preferred, bcrypt cost 12+ acceptable), never plain SHA or MD5",
+   "Salt is unique per password and not secret; it defeats rainbow tables and hides duplicates",
+   "Tune the work factor to roughly 100-500 ms and upgrade hashes at login when parameters change",
+   "Rate-limit logins since hashing is a DoS vector; compare in constant time",
+   "bcrypt truncates at 72 bytes; high-entropy API tokens can use a fast hash instead"
+  ],
+  "sources": [
+   {
+    "title": "OWASP Password Storage Cheat Sheet",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html",
+    "kind": "reference"
+   },
+   {
+    "title": "RFC 9106: Argon2",
+    "url": "https://www.rfc-editor.org/rfc/rfc9106",
+    "kind": "reference"
+   },
+   {
+    "title": "NIST SP 800-63B: Digital Identity Guidelines",
+    "url": "https://pages.nist.gov/800-63-3/sp800-63b.html",
+    "kind": "reference"
+   }
+  ]
+ },
+ "security:4": {
+  "body": "## Why these four\nThey are the classic ways attackers turn untrusted input or ambient browser trust into code execution, data theft or internal access. Injection and broken access control feature in the OWASP Top 10 (2021: A01 Broken Access Control, A03 Injection, A10 SSRF; XSS now sits under Injection).\n\n## Injection (SQL, NoSQL, OS command)\nUntrusted data is concatenated into an interpreter's command, so data becomes code.\n```\nquery = \"SELECT * FROM users WHERE name = '\" + name + \"'\"\nname = x' OR '1'='1      ->  returns every user\nname = x'; DROP TABLE users; --\n```\nDefence:\n- **Parameterised queries / prepared statements**: the query structure and data travel separately, so data can never alter the structure. This is the primary fix; escaping by hand is fragile.\n- ORMs are safe unless you build raw strings with them; allow-list dynamic parts like ORDER BY columns\n- NoSQL: reject objects where strings are expected ({ \"$ne\": null } in Mongo)\n- OS commands: avoid shells; pass argv arrays, validate against an allow-list\n- Least-privilege DB accounts, input validation as defence in depth\n\n## XSS (cross-site scripting)\nAttacker's script runs in a victim's browser in your origin, so it can read the DOM, steal tokens, and act as the user.\n- **Stored**: payload saved (a comment) and served to others. **Reflected**: payload in a URL echoed back. **DOM-based**: client JS writes untrusted data into the page (innerHTML).\nDefence:\n- **Context-aware output encoding** (HTML body, attribute, JS, URL contexts differ). Frameworks like React escape by default; the danger is dangerouslySetInnerHTML, v-html, innerHTML.\n- Sanitise rich text with a vetted library (DOMPurify), never regexes\n- **Content-Security-Policy** limiting script sources (nonce-based, no unsafe-inline) as a second line\n- HttpOnly cookies so scripts cannot read session cookies, Trusted Types\n\n## CSRF (cross-site request forgery)\nA malicious site makes the victim's browser send a request to your site, and the browser attaches the victim's cookies automatically.\n```\n<form action=\"https://bank.com/transfer\" method=\"POST\"> auto-submitted from evil.com\n```\nDefence:\n- **SameSite cookies** (Lax by default in modern browsers; Strict for sensitive)\n- **CSRF tokens**: unpredictable per-session value in a header or hidden field that the attacker's page cannot read (synchroniser or double-submit pattern)\n- Check Origin / Referer headers, require custom headers for APIs (triggers CORS preflight)\n- Never change state on GET; re-authenticate for sensitive actions\n- APIs using Authorization: Bearer headers (not cookies) are not CSRF-prone, though they carry XSS/storage risks.\nXSS beats CSRF defences, since an XSS script can read tokens, so fix XSS first.\n\n## SSRF (server-side request forgery)\nThe server fetches a URL supplied by the user (webhooks, image fetch, PDF render, URL preview), and the attacker aims it at internal targets.\n```\nurl=http://169.254.169.254/latest/meta-data/iam/security-credentials/   -> cloud credentials\nurl=http://localhost:6379/                                              -> internal Redis\n```\nThe 2019 Capital One breach involved SSRF against the AWS metadata service.\nDefence:\n- Allow-list destination hosts/schemes where possible; otherwise resolve DNS and **block private, loopback, link-local (169.254.0.0/16) and metadata ranges**, re-check after redirects, and defend against DNS rebinding by connecting to the resolved IP\n- Disable unneeded schemes (file://, gopher://) and redirects\n- Use IMDSv2 (session-token based) on AWS; network egress controls; run fetchers in an isolated network segment with no credentials\n\n## Interview pattern\nFor each: what is the trust failure, a payload, the root fix, and the defence in depth. Root fixes are parameterisation, output encoding, SameSite plus tokens, and destination allow-listing.",
+  "keyPoints": [
+   "Injection: separate code from data with parameterised queries; avoid shells and raw string building",
+   "XSS: encode output by context, avoid innerHTML-style sinks, sanitise rich text, add CSP and HttpOnly cookies",
+   "CSRF abuses automatic cookies: use SameSite, anti-CSRF tokens, Origin checks, and no state change on GET",
+   "SSRF: allow-list or block private, loopback and metadata IPs, re-check redirects and DNS, use IMDSv2",
+   "Always name the root cause and the primary fix, then defence in depth"
+  ],
+  "sources": [
+   {
+    "title": "OWASP Top 10 (2021)",
+    "url": "https://owasp.org/Top10/",
+    "kind": "reference"
+   },
+   {
+    "title": "OWASP SQL Injection Prevention Cheat Sheet",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html",
+    "kind": "reference"
+   },
+   {
+    "title": "OWASP SSRF Prevention Cheat Sheet",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html",
+    "kind": "reference"
+   },
+   {
+    "title": "OWASP CSRF Prevention Cheat Sheet",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html",
+    "kind": "reference"
+   }
+  ]
+ },
+ "security:5": {
+  "body": "## The problem\nApplications need credentials (DB passwords, API keys, signing keys), and data needs protecting both where it sits and while it moves. Leaked secrets in git history and unencrypted backups are among the most common real breaches.\n\n## Secrets management\nRules:\n- **Never** commit secrets to git, bake them into images, or log them. Scanning tools (gitleaks, trufflehog, GitHub secret scanning) catch accidents; if one leaks, **rotate it**, since deleting the commit is not enough.\n- Separate secrets from config; inject at runtime\n- Least privilege and per-service identities, so one leak does not expose everything\nOptions, from basic to strong:\n- Environment variables: simple, but visible to child processes, crash dumps and sometimes /proc; acceptable for small apps\n- Platform stores: AWS Secrets Manager / SSM Parameter Store, GCP Secret Manager, Azure Key Vault, Kubernetes Secrets (base64 only; enable encryption at rest in etcd, or use external-secrets/CSI drivers)\n- **HashiCorp Vault**: central store, fine-grained policies, audit log, **dynamic secrets** (short-lived DB credentials generated per client and auto-revoked), transit encryption as a service\n- Prefer **workload identity** (IAM roles, OIDC federation, SPIFFE) so there is no long-lived secret at all\nOperational: automated rotation (for example 30-90 days or shorter), versioning with rollback, audit trails on access, break-glass procedure, separate secrets per environment.\n\n## Encryption at rest\nProtects against stolen disks, snapshots and backups, but not against a compromised application with valid access.\n- Symmetric AES-256 (GCM)\n- **Envelope encryption**: data encrypted with a unique data key (DEK); the DEK is encrypted with a master key (KEK) held in a KMS/HSM. Only small keys go to the KMS, the master key never leaves it, rotating the KEK means re-wrapping DEKs, not re-encrypting all data.\n```\nplaintext --AES-GCM(DEK)--> ciphertext ;  DEK --KMS(KEK)--> wrapped DEK (stored beside ciphertext)\n```\n- Levels: full-disk, database TDE, per-object or per-field/column (application-level) encryption for especially sensitive data (the DB admin cannot read it), client-side encryption\n- Key management is the real problem: who can call decrypt, key rotation, backup, audit. Encrypting data with a key stored next to it adds nothing.\n\n## Encryption in transit\n- **TLS 1.2+ (prefer 1.3)** everywhere, including internal service traffic; **mTLS** between services for mutual identity (service meshes automate rotation)\n- HSTS to prevent downgrade, valid certificates with automated renewal, disable old protocols and weak ciphers\n- Database and cache connections should also use TLS; VPN or private links for cross-site traffic\n- Do not rely on \"it is inside the VPC\" as the sole control\n\n## End-to-end encryption\nOnly endpoints hold keys (Signal, WhatsApp), so the server cannot read content. Trade-off: server-side search, moderation and recovery become hard.\n\n## Hashing vs encryption vs encoding\nHash: one-way (passwords, integrity). Encryption: reversible with a key (confidentiality). Encoding (base64): neither, just format. Signing (HMAC or digital signatures): integrity and authenticity.\n\n## Pitfalls\n- Base64 or XOR called \"encryption\", rolling your own crypto, ECB mode, hard-coded keys, reused IVs/nonces with GCM.\n- Rotating a secret without a dual-valid overlap window, causing outages.\n- Secrets in CI logs, client-side bundles (NEXT_PUBLIC_ variables are public) and error messages.",
+  "keyPoints": [
+   "Keep secrets out of git and logs, inject at runtime from a secret store, rotate on any leak, prefer workload identity",
+   "Vault-style dynamic secrets give short-lived, per-client credentials with audit trails",
+   "Envelope encryption: data key encrypts data, KMS-held master key wraps the data key; rotate by re-wrapping",
+   "Encrypt in transit with TLS 1.2+/1.3 and mTLS internally; do not trust the internal network",
+   "Hash, encrypt, encode and sign are different tools; never roll your own crypto or reuse GCM nonces"
+  ],
+  "diagram": "flowchart LR\nD[\"Plaintext data\"] -->|\"AES-GCM with DEK\"| C[\"Ciphertext\"]\nK[\"KMS / HSM master key (KEK)\"] -->|\"wraps\"| W[\"Wrapped DEK\"]\nC --- W\nW -->|\"unwrap via KMS call\"| DEK[\"DEK in memory\"]\nDEK --> D",
+  "sources": [
+   {
+    "title": "OWASP Secrets Management Cheat Sheet",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html",
+    "kind": "reference"
+   },
+   {
+    "title": "AWS KMS: envelope encryption concepts",
+    "url": "https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html#enveloping",
+    "kind": "reference"
+   },
+   {
+    "title": "HashiCorp Vault documentation",
+    "url": "https://developer.hashicorp.com/vault/docs",
+    "kind": "reference"
+   }
+  ]
+ }
+}

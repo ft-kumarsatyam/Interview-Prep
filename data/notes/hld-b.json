@@ -1,0 +1,894 @@
+{
+ "hld-messaging:0": {
+  "body": "## The problem\nTwo services need to talk without being online at the same time, or at the same speed. Putting a broker in the middle gives you buffering and decoupling. But \"message broker\" covers two quite different designs, and picking the wrong one is a classic interview mistake.\n\n## Queue (the classic broker model)\nA queue (SQS, RabbitMQ, ActiveMQ) holds messages until a consumer takes one. Once a consumer acknowledges it, the message is deleted.\n- Each message goes to exactly one consumer in a competing-consumers pool, so adding workers scales throughput.\n- Per-message state: visible, in flight (hidden for a visibility timeout), or deleted. If the worker crashes, the message reappears and another worker takes it.\n- No replay. Once acked, it is gone.\n- Ordering is weak unless you use FIFO queues or message groups, which cap throughput. SQS FIFO is limited per message group.\n- Good for task distribution: send email, resize image, charge card.\n\n## Log / stream (Kafka, Kinesis, Pulsar)\nA log is an append-only, partitioned, durable sequence of records. Consumers do not remove anything. Each consumer group just tracks an offset (its position).\n- Retention is by time or size (for example 7 days), not by consumption, so many independent consumer groups read the same data.\n- Replay is free: reset the offset and reprocess, for a bug fix or a new downstream system.\n- Ordering is guaranteed within a partition only. The partition key decides which records stay ordered together.\n- Throughput is high because writes are sequential disk appends and reads are sequential too. A modest cluster handles hundreds of thousands to millions of records per second.\n- Good for event streams, audit trails, CDC, analytics pipelines, and fan-out to many consumers.\n\n## Choosing\n- Need per-message retry/delay, priorities, or simple work distribution with a small number of consumers: queue.\n- Need replay, multiple independent readers, ordered per-key processing, or very high throughput: log.\n- Queue consumers scale by adding workers, with no partition limit. Log consumers within one group are capped by partition count, since one partition goes to one consumer in the group.\n\n## Pitfalls and follow-ups\n- A log has no per-message ack or delay. Retry of a single poison record needs a separate retry topic or DLQ pattern.\n- Head-of-line blocking: one slow record stalls its partition.\n- \"Can Kafka act as a queue?\" Yes, with one consumer group and enough partitions, but you lose per-message visibility timeouts.",
+  "keyPoints": [
+   "Queues delete on ack and give competing consumers; logs retain records and consumers just track offsets.",
+   "Logs give replay and multiple independent consumer groups; queues give per-message retry and delay.",
+   "Kafka ordering is per partition only; parallelism per group is capped by partition count.",
+   "Pick a queue for task distribution, a log for event streams, CDC and fan-out."
+  ],
+  "diagram": "flowchart LR\nP[\"Producer\"] --> Q[\"Queue\"]\nQ --> W1[\"Worker 1\"]\nQ --> W2[\"Worker 2\"]\nP2[\"Producer\"] --> L[\"Log: partitions with offsets\"]\nL --> G1[\"Group A offset 120\"]\nL --> G2[\"Group B offset 45\"]",
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Apache Kafka documentation",
+    "url": "https://kafka.apache.org/documentation/",
+    "kind": "reference"
+   },
+   {
+    "title": "Competing Consumers pattern (Azure Architecture Center)",
+    "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/competing-consumers",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-messaging:1": {
+  "body": "## Model\nA Kafka topic is split into partitions. Each partition is an ordered, append-only log stored on disk, and each record in it has a monotonically increasing offset. Producers pick the partition (by hash of the key, or round-robin when there is no key). Consumers pull.\n\n## Partitions\n- Ordering exists only inside a partition. For \"all events of user 42 in order\", use user id as the key.\n- Partitions are the unit of parallelism and of distribution across brokers. More partitions mean more throughput, but also more open files, more leader elections on failure, and longer recovery. Thousands per broker is a practical concern.\n- Changing partition count later changes key-to-partition mapping, which breaks per-key ordering for existing keys. Plan capacity up front.\n- Hot keys cause hot partitions. Salting a key restores spread but loses strict per-key order.\n\n## Consumer groups\n- Consumers sharing a group.id split the partitions: each partition is owned by exactly one consumer in the group at a time.\n- Consumers beyond the partition count sit idle. 12 partitions means at most 12 useful consumers in a group.\n- Different groups are independent and each sees every record (publish-subscribe behaviour).\n- When members join or leave, a rebalance reassigns partitions. Classic rebalance pauses the whole group. Cooperative rebalancing and static membership reduce that pain.\n\n## Offsets\n- The group stores its committed offset per partition (in the internal topic __consumer_offsets).\n- Commit after processing gives at-least-once. Commit before processing gives at-most-once.\n- Reset to earliest/latest/timestamp to reprocess.\n- Lag (log end offset minus committed offset) is the key health metric for consumers.\n\n## Replication\n- Each partition has a replication factor (commonly 3): one leader, followers in the ISR (in-sync replica set).\n- Producers and consumers talk to the leader. Followers fetch from it.\n- acks=all with min.insync.replicas=2 means a write is acknowledged only when at least two replicas have it, so losing one broker loses nothing.\n- If the leader dies, a new leader is elected from the ISR. Allowing a non-ISR replica to become leader (unclean election) trades durability for availability.\n- Metadata coordination now runs on KRaft (Kafka's own Raft quorum) rather than ZooKeeper in current versions.\n\n## Worked example\nTopic orders, 12 partitions, RF 3, key = orderId. 12 consumers in group \"billing\" each own one partition. Group \"analytics\" reads the same topic independently and may lag without affecting billing.\n\n## Interview follow-ups\n- Why is Kafka fast? Sequential I/O, page cache, batching, zero-copy sendfile, compression.\n- How do you guarantee order across a topic? You cannot cheaply: use one partition, or accept per-key order.",
+  "keyPoints": [
+   "Order is per partition; choose the partition key to match the ordering you need.",
+   "In a consumer group each partition has one owner, so consumers beyond partition count are idle.",
+   "Commit offsets after processing for at-least-once; watch consumer lag.",
+   "Durability: replication factor 3, acks=all, min.insync.replicas=2; unclean leader election trades safety for availability.",
+   "Increasing partitions later remaps keys and breaks per-key ordering."
+  ],
+  "sources": [
+   {
+    "title": "Apache Kafka documentation",
+    "url": "https://kafka.apache.org/documentation/",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Kafka: The Definitive Guide (O'Reilly, free from Confluent)",
+    "url": "https://www.confluent.io/resources/kafka-the-definitive-guide-v2/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-messaging:2": {
+  "body": "## The three guarantees\nWhen a producer sends and a consumer processes, failures can happen at every hop: send fails, ack is lost, consumer crashes after processing but before acking.\n- At-most-once: never retry. A message may be lost, never duplicated. Fine for metrics sampling or best-effort telemetry.\n- At-least-once: retry until acked. Never lost, but may be duplicated. The default for most systems.\n- Exactly-once: each message's effect happens once. Truly achieving this across independent systems is impossible without cooperation, so in practice it means at-least-once delivery plus idempotent or transactional processing.\n\n## Where duplicates come from\n- Producer sends, the broker writes, the ack is lost, the producer retries: duplicate in the log.\n- Consumer processes a message, crashes before committing the offset: reprocessed after restart.\n- Rebalance moves a partition while a message is mid-processing.\n\n## Making effects happen once\n- Idempotent consumer: give every message a unique id (or use a natural business key). Before applying, check a dedup table or use a unique constraint. Example: INSERT INTO payments (payment_id, ...) with payment_id unique, and ignore the conflict.\n- Idempotent operations by nature: \"set balance to X\" and \"put object\" are safe to repeat. \"Add 10 to balance\" is not.\n- Kafka idempotent producer: producer id plus per-partition sequence numbers let the broker discard retried duplicates within a partition.\n- Kafka transactions: atomically write output records and commit consumed offsets in one transaction, so a read-process-write pipeline entirely inside Kafka is exactly-once. Downstream consumers must use read_committed isolation. This does not extend to side effects outside Kafka, like calling a payment API or sending an email.\n- Store the offset in the same database transaction as the result. On restart, resume from the stored offset. This gives exactly-once effect into that database.\n\n## Trade-offs\n- Dedup tables need retention, perhaps the maximum redelivery window (days). Cost: extra read/write per message.\n- Transactions add latency and complexity. Use them where the pipeline is Kafka to Kafka.\n\n## Interview line\n\"Exactly-once delivery doesn't exist; I build at-least-once delivery with idempotent handlers so the effect is exactly-once.\" Then show the dedup key and where it is stored.",
+  "keyPoints": [
+   "At-most-once can lose, at-least-once can duplicate; exactly-once means at-least-once plus idempotence.",
+   "Duplicates come from lost acks, crash before offset commit, and rebalances.",
+   "Use a unique message id with a unique constraint, or naturally idempotent operations.",
+   "Kafka idempotent producer and transactions give exactly-once only inside Kafka; external side effects still need idempotency."
+  ],
+  "sources": [
+   {
+    "title": "Exactly-once Semantics are Possible: Here's How Kafka Does it (Confluent)",
+    "url": "https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/",
+    "kind": "reference"
+   },
+   {
+    "title": "Apache Kafka documentation",
+    "url": "https://kafka.apache.org/documentation/",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-messaging:3": {
+  "body": "## Why this exists\nSome messages fail every time: malformed payload, a bug, a missing row. Some fail temporarily: downstream timeout, rate limit, deploy in progress. Treating both the same either loses data or blocks the queue forever.\n\n## Retries with backoff\n- Retry transient failures only. Classify errors: 5xx, timeouts and throttling are retryable. Validation errors and 4xx are not.\n- Exponential backoff: delay = base * 2^attempt, capped (for example 1s, 2s, 4s ... up to 5 min).\n- Add jitter (randomise the delay) so thousands of failed messages do not all retry at the same instant and hammer the recovering dependency.\n- Cap the attempt count (for example 5 to 10) or total age.\n\n## Retry topologies\n- In-place retry: consumer sleeps and retries. Simple but blocks the partition or worker (head-of-line blocking).\n- Delay queues: SQS supports per-message delay and visibility timeout extension. SQS also gives you maxReceiveCount that moves the message to a DLQ automatically.\n- Retry topics (Kafka): publish the failed record to topic retry-1m, then retry-10m, each consumed after its delay, then to the DLQ. Main topic keeps flowing, at the cost of losing strict ordering for that key.\n\n## Dead-letter queue\nA DLQ is a separate queue/topic that receives messages that exhausted retries. It exists to keep the main flow healthy and preserve the evidence.\n- Store the original payload plus metadata: error, stack, attempt count, source topic/offset, timestamp.\n- Alert on DLQ depth, since a growing DLQ is an incident.\n- Provide a redrive tool: after fixing the bug, replay DLQ messages to the main queue. This requires idempotent consumers.\n- Set DLQ retention longer than the source queue, because messages keep their original enqueue timestamp in some systems (SQS), so they can expire early.\n\n## Pitfalls\n- Retry storms: retries multiply load by the attempt count. Combine with a retry budget or circuit breaker.\n- Poison message blocking a partition in Kafka if you retry in place forever.\n- Ordering: retries and DLQs break ordering. If order matters, park the key and block only that key.\n\n## Example\nPayment webhook handler: attempt 1 fails with a 503. Retry at 1s, 2s, 4s (with jitter). After 5 attempts, send to DLQ with the HTTP response body, page on-call if depth > 0 for 15 minutes.",
+  "keyPoints": [
+   "Retry only transient errors; use capped exponential backoff with jitter.",
+   "A DLQ isolates poison messages, keeps the main flow moving, and preserves payload plus error context.",
+   "Alert on DLQ depth and build a redrive path, which needs idempotent consumers.",
+   "In Kafka use retry topics instead of blocking the partition; accept weaker ordering."
+  ],
+  "sources": [
+   {
+    "title": "Amazon SQS dead-letter queues",
+    "url": "https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Timeouts, retries and backoff with jitter (AWS Builders' Library)",
+    "url": "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-messaging:4": {
+  "body": "## The dual-write problem\nAn order service must save the order in its database and publish \"OrderCreated\" to Kafka. Two separate systems cannot be updated atomically:\n- Write DB, then publish: if the process crashes in between, the event is lost.\n- Publish, then write DB: if the DB write fails, you published an event for something that never happened.\n- Distributed transactions (2PC) across a DB and a broker are rarely available and are brittle.\n\n## Transactional outbox\nMake the event part of the same local database transaction.\n```\nBEGIN;\n  INSERT INTO orders (...) VALUES (...);\n  INSERT INTO outbox (id, aggregate_id, type, payload, created_at) VALUES (...);\nCOMMIT;\n```\nA separate relay publishes outbox rows to the broker and marks or deletes them afterward. The business write and the intent to publish now commit or fail together.\n\n## Two relay options\n- Polling publisher: a job queries unsent rows (ordered by id) every few hundred ms and publishes. Simple, works anywhere, but adds latency and read load, and needs care with multiple relay instances (use SELECT ... FOR UPDATE SKIP LOCKED).\n- CDC (change data capture): a tool such as Debezium tails the database transaction log (MySQL binlog, Postgres WAL) and emits each outbox insert as an event. Low latency, no polling load, preserves commit order. Cost: operating a connector, and schema/log retention concerns.\n\n## Delivery semantics\nThe relay can crash after publishing but before marking the row as sent, so it will publish again. The outbox gives at-least-once delivery. Consumers must be idempotent, and the event id from the outbox row is the natural dedup key.\n\n## Other CDC uses\nBeyond outbox, CDC feeds search indexes, caches, and data warehouses from the source-of-truth database without dual writes. This also keeps cache invalidation reliable.\n\n## Pitfalls\n- Outbox table growth: delete or archive sent rows (partition by time).\n- Ordering across aggregates is not guaranteed, only per key if you key by aggregate id.\n- Payload schema evolution: version event types.\n\n## Interview follow-up\n\"Why not just publish inside the transaction?\" Because the broker is not part of the DB transaction: the commit could fail after publish, or publish could succeed with the commit lost.",
+  "keyPoints": [
+   "Dual write to DB and broker cannot be atomic; the outbox writes the event in the same local transaction.",
+   "A relay (polling or CDC like Debezium reading the WAL/binlog) publishes outbox rows, giving at-least-once.",
+   "Consumers dedup by event id since relay crashes cause repeats.",
+   "Clean up the outbox table and key events by aggregate id to keep per-entity order."
+  ],
+  "diagram": "flowchart LR\nS[\"Order service\"] --> DB[(\"DB: orders + outbox\")]\nDB --> R[\"Relay or Debezium CDC\"]\nR --> K[\"Kafka topic\"]\nK --> C1[\"Consumer: idempotent\"]\nK --> C2[\"Search indexer\"]",
+  "sources": [
+   {
+    "title": "Pattern: Transactional outbox (microservices.io)",
+    "url": "https://microservices.io/patterns/data/transactional-outbox.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Debezium documentation",
+    "url": "https://debezium.io/documentation/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-messaging:5": {
+  "body": "## The problem\nIf producers are faster than consumers, something grows without bound: queue depth, memory, latency, then eventually the process or broker falls over. Back-pressure is the set of mechanisms that push the slowness back toward the source, or shed work deliberately, so the system degrades instead of collapsing.\n\n## Where it shows up\n- In-process: bounded in-memory queues. A full queue blocks the producer thread or rejects the item.\n- Between services (synchronous): a server returns 429 or 503 with Retry-After. Clients back off.\n- Streaming protocols: TCP window, HTTP/2 flow control, reactive streams request(n) where the consumer tells the producer how many items it can take.\n- Brokers: pull-based consumers (Kafka) are naturally back-pressured, since a slow consumer simply polls less and lag grows in the broker's disk-backed log. Push-based (RabbitMQ) uses prefetch limits to cap unacked messages per consumer.\n\n## Strategies\n- Buffer: absorbs short bursts. A queue between services is load leveling, but a buffer that is never drained is only delayed failure.\n- Throttle or rate limit at the edge (token bucket per client).\n- Drop: shed low-priority or stale work (drop oldest, drop newest, sample). Fine for telemetry, not for payments.\n- Scale consumers: autoscale on queue depth or lag, up to the partition limit in Kafka.\n- Slow the producer: bounded queues, credit-based flow control.\n\n## Metrics to watch\nQueue depth, age of oldest message, consumer lag, processing time p99. Age matters more than depth: 1M messages that clear in 10 seconds is fine, 1000 messages that are 3 hours old is not.\n\n## Example\nIngest API receives 20k events/s but the database can write 5k/s. Put Kafka in between (absorb the burst, retention 3 days), run consumers that write batches of 500, autoscale on lag. If lag exceeds an SLO threshold, return 429 to non-critical clients.\n\n## Pitfalls\n- Unbounded queues hide the problem until memory is exhausted.\n- Retries from clients amplify overload. Use backoff and retry budgets.\n- Back-pressure through a synchronous chain propagates all the way to the user, so decide where to cut.",
+  "keyPoints": [
+   "Back-pressure makes slow consumers slow or limit producers instead of letting queues grow unbounded.",
+   "Options: bounded buffers, rate limiting, shedding, autoscaling consumers, credit-based flow control.",
+   "Pull-based brokers like Kafka naturally absorb it as lag; push brokers need prefetch limits.",
+   "Monitor age of oldest message and lag, not only depth."
+  ],
+  "sources": [
+   {
+    "title": "Queue-Based Load Leveling pattern (Azure)",
+    "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/queue-based-load-leveling",
+    "kind": "reference"
+   },
+   {
+    "title": "Using load shedding to avoid overload (AWS Builders' Library)",
+    "url": "https://aws.amazon.com/builders-library/using-load-shedding-to-avoid-overload/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-messaging:6": {
+  "body": "## Point-to-point\nA message is consumed by exactly one receiver. The sender addresses a queue, and a pool of workers competes for messages. Use for commands: \"ResizeImage\", \"SendInvoice\". The sender knows something should happen.\n\n## Publish/subscribe\nA message is published to a topic and delivered to every subscriber. The publisher does not know who listens. Use for events: \"OrderPlaced\", where billing, inventory, email and analytics each react. Adding a subscriber requires no change to the publisher.\n\n## Fan-out topologies\n- Topic with consumer groups (Kafka): each group gets all records, workers inside a group share them. This combines pub/sub across groups with point-to-point inside a group.\n- SNS plus SQS: publish once to an SNS topic, which fans out to several SQS queues, one per subscriber. Each subscriber gets its own queue with its own retries, DLQ and speed. This is the standard AWS pattern.\n- RabbitMQ exchanges: fanout exchange (copy to all bound queues), direct (routing key match), topic (pattern match), headers.\n- Content-based filtering: subscribers declare filters so they only receive relevant events, reducing wasted work. SNS filter policies and Kafka Streams filters are examples.\n\n## Trade-offs\n- Commands vs events: commands are imperative and targeted, events are facts with unknown consumers. Mixing them leads to hidden coupling.\n- Fan-out multiplies load: one event to 10 subscribers means 10x downstream work. Slow subscribers need isolation, which is why one queue per subscriber is better than a shared one.\n- Ordering and replay differ per system. Pure pub/sub without durability loses messages for subscribers that were offline (Redis pub/sub is fire-and-forget; Redis Streams and Kafka persist).\n- Schema contracts: every subscriber depends on the event shape, so version and keep backward compatible.\n\n## Example\nPhoto upload triggers an event. Subscribers: thumbnailer (queue, 20 workers), moderation (queue with a slower ML model), search indexer (Kafka group), notification service. A slow moderation model never delays thumbnails because each has its own queue.\n\n## Follow-up\n\"Why not have the upload service call each of them?\" It couples the uploader to every downstream, makes its latency the sum of theirs, and needs code changes for each new consumer.",
+  "keyPoints": [
+   "Point-to-point delivers each message to one worker; pub/sub delivers to every subscriber.",
+   "Kafka consumer groups mix both: all groups see all records, members of a group share them.",
+   "SNS to per-subscriber SQS queues isolates slow consumers and gives each its own retries and DLQ.",
+   "Fan-out multiplies downstream load; plain pub/sub without persistence loses messages for offline subscribers."
+  ],
+  "diagram": "flowchart LR\nU[\"Upload service\"] --> T[\"Topic: PhotoUploaded\"]\nT --> Q1[\"Queue: thumbnails\"]\nT --> Q2[\"Queue: moderation\"]\nT --> Q3[\"Queue: search index\"]\nQ1 --> W1[\"Workers\"]\nQ2 --> W2[\"ML workers\"]\nQ3 --> W3[\"Indexer\"]",
+  "sources": [
+   {
+    "title": "Amazon SNS fanout to SQS",
+    "url": "https://docs.aws.amazon.com/sns/latest/dg/sns-sqs-as-subscriber.html",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-messaging:7": {
+  "body": "## Event-driven architecture\nServices communicate by emitting facts (\"OrderPlaced\", \"PaymentCaptured\") that others react to, instead of calling each other synchronously. Benefits: loose coupling, independent scaling, easy to add consumers. Costs: harder to trace the end-to-end flow, eventual consistency, and failure handling is your problem.\n\n## Choreography\nThere is no central coordinator. Each service listens for events and emits its own.\n- Order service emits OrderPlaced. Inventory reserves stock and emits StockReserved. Payment charges and emits PaymentCaptured. Shipping starts.\n- Pros: decentralised, no single point of control, easy to add a new listener.\n- Cons: the business flow lives implicitly across many services. Hard to see \"what state is order 123 in?\" Cyclic dependencies sneak in. Changes to the flow touch many teams.\n\n## Orchestration\nA coordinator (orchestrator, workflow engine) tells each service what to do and tracks state.\n- The order saga orchestrator sends ReserveStock, waits for the result, sends ChargePayment, and so on.\n- Pros: the flow is explicit in one place, easy to monitor, timeout and retry, easier compensation logic.\n- Cons: the orchestrator is a logic hub and can become a god service. It needs to be highly available and persist state. Tools: Temporal, AWS Step Functions, Camunda.\n\n## Sagas and compensation\nA saga is a sequence of local transactions across services, with a compensating action per step for rollback: if payment fails after stock was reserved, run ReleaseStock. Compensations must be idempotent and may themselves be retried. Neither style gives isolation, so intermediate states are visible (for example \"reserved but not paid\") and must be designed for.\n\n## When to pick which\n- Few services, simple linear flow, strong team autonomy: choreography.\n- Many steps, branching, timeouts, human steps, need for audit and visibility: orchestration.\n- Many real systems mix them: orchestrate within a bounded context, choreograph events between contexts.\n\n## Pitfalls\n- Event soup: nobody can explain the whole flow. Mitigate with correlation ids, tracing, and flow documentation.\n- Lost events: use the outbox pattern for reliable emission.\n- Duplicate events: idempotent handlers.\n- Event naming: events are facts in the past tense, commands are imperative.",
+  "keyPoints": [
+   "Choreography: services react to each other's events with no coordinator; flexible but the flow is implicit and hard to trace.",
+   "Orchestration: a central workflow engine drives steps, timeouts and compensations; explicit but a potential logic hub.",
+   "Sagas replace distributed transactions with local transactions plus idempotent compensations; intermediate states are visible.",
+   "Use outbox for reliable event emission and correlation ids for tracing."
+  ],
+  "diagram": "flowchart LR\nO[\"Order placed\"] --> I[\"Inventory: reserve\"]\nI --> P[\"Payment: charge\"]\nP --> S[\"Shipping\"]\nP -.->|fails| R[\"Compensate: release stock\"]",
+  "sources": [
+   {
+    "title": "Pattern: Saga (microservices.io)",
+    "url": "https://microservices.io/patterns/data/saga.html",
+    "kind": "reference"
+   },
+   {
+    "title": "What do you mean by Event-Driven? (Martin Fowler)",
+    "url": "https://martinfowler.com/articles/201701-event-driven.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Choreography pattern (Azure)",
+    "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/choreography",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-microservices:0": {
+  "body": "## Three shapes\n- Monolith: one deployable unit, one process, usually one database. Modules call each other as function calls.\n- Modular monolith: still one deployable, but with strict internal module boundaries. Each module owns its tables and exposes an interface; others may not reach into its internals. Enforce with package visibility, architecture tests, or separate schemas.\n- Microservices: many independently deployable services, each owning its data, communicating over the network.\n\n## What microservices buy you\n- Independent deploys and scaling per service. The search service can run 50 pods while billing runs 3.\n- Team autonomy. Conway's law: structure follows the org. Roughly one team per service works well.\n- Fault isolation and technology freedom (with the cost of sprawl).\n- Smaller blast radius for a bad deploy.\n\n## What they cost\n- Network calls replace function calls: latency (sub-microsecond vs around 1 ms or more), partial failure, timeouts, retries.\n- No cross-service ACID transactions. You need sagas and eventual consistency.\n- Operational load: service discovery, CI/CD per service, observability, versioning, on-call.\n- Distributed debugging needs tracing. Testing end to end is harder.\n- A \"distributed monolith\" is the worst outcome: services that must deploy together, share a database, or call each other in long synchronous chains.\n\n## Decision heuristics\n- Start with a monolith or modular monolith (\"monolith first\"). Boundaries are hard to guess before you know the domain.\n- Split when you feel specific pain: team contention on one codebase, a component with very different scaling or availability needs, different release cadence, or a security boundary.\n- Extract along business capabilities (bounded contexts from domain-driven design), not technical layers (a \"database service\" is a smell).\n- Use the strangler fig approach for migration: put a routing layer in front, move one capability at a time.\n\n## Interview tips\nA small team with 10k users picking 30 microservices is a red flag. Good answer: \"Modular monolith now, with clean module APIs and per-module schemas, so any module can be extracted later.\" Mention what would trigger the split (team size, scaling hotspot).",
+  "keyPoints": [
+   "Modular monolith gives clear boundaries with one deploy; microservices add independent deploys at the cost of network failure modes and ops overhead.",
+   "Split along business capabilities (bounded contexts), never technical layers.",
+   "Avoid the distributed monolith: shared DB, lockstep deploys, long synchronous call chains.",
+   "Default to monolith-first; extract when team, scaling or release-cadence pain is concrete."
+  ],
+  "sources": [
+   {
+    "title": "MonolithFirst (Martin Fowler)",
+    "url": "https://martinfowler.com/bliki/MonolithFirst.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Microservices (Martin Fowler and James Lewis)",
+    "url": "https://martinfowler.com/articles/microservices.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Microservice architecture (microservices.io)",
+    "url": "https://microservices.io/patterns/microservices.html",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-microservices:1": {
+  "body": "## API gateway\nClients (web, mobile, partners) should not know about 40 internal services. An API gateway is a single entry point that routes requests to backends and handles cross-cutting concerns.\n\nTypical responsibilities:\n- Routing and path/host mapping to services.\n- Authentication and token validation (JWT verification), coarse authorization.\n- Rate limiting and quotas per client or API key.\n- TLS termination, request/response transformation, CORS.\n- Caching of public responses, request logging, metrics, tracing header injection.\n- Aggregation: combine several backend calls into one response to cut client round trips.\n\nExamples: Kong, NGINX, Envoy-based gateways, AWS API Gateway, Apigee.\n\n## Pitfalls\n- It sits on every request path, so it must be stateless, horizontally scaled and highly available. Otherwise it is a single point of failure.\n- Business logic creeping into the gateway turns it into a bottleneck owned by nobody. Keep it thin.\n- Extra hop adds latency, typically a few ms.\n\n## Backend for Frontend (BFF)\nOne generic API fits no client well. A mobile app wants small payloads and fewer calls; a web dashboard wants rich data; a partner API wants stability and versioning. A BFF is a dedicated backend per client type, owned by the client team.\n- It shapes data for that experience: aggregates, trims fields, handles pagination style.\n- Mobile team can ship API changes without negotiating with the web team.\n- GraphQL gateways serve a similar purpose by letting each client ask for exactly its fields.\n\n## Gateway vs BFF\n- Gateway: cross-cutting infrastructure, shared by everyone, generic.\n- BFF: per-client product logic, thin orchestration over services.\nThey compose: gateway in front, then BFFs, then domain services.\n\n## Trade-offs and follow-ups\n- Duplicate logic across BFFs. Push shared rules into domain services.\n- Fan-out inside a BFF means one slow service slows the screen: use timeouts, parallel calls and partial responses.\n- Where to put auth: validate at the gateway, but services should still verify identity and authorize actions (defence in depth).",
+  "keyPoints": [
+   "An API gateway is one stateless, highly available entry point for routing, auth, rate limiting, TLS and observability.",
+   "Keep business logic out of the gateway or it becomes a bottleneck and single point of failure.",
+   "A BFF is a per-client backend that aggregates and shapes data for that client's needs.",
+   "Gateway handles cross-cutting concerns; BFFs handle client-specific composition; services still verify auth."
+  ],
+  "diagram": "flowchart LR\nW[\"Web app\"] --> G[\"API gateway\"]\nM[\"Mobile app\"] --> G\nG --> BW[\"Web BFF\"]\nG --> BM[\"Mobile BFF\"]\nBW --> S1[\"Orders\"]\nBW --> S2[\"Catalog\"]\nBM --> S1\nBM --> S3[\"Users\"]",
+  "sources": [
+   {
+    "title": "Pattern: API Gateway (microservices.io)",
+    "url": "https://microservices.io/patterns/apigateway.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Backends for Frontends pattern (Azure)",
+    "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/backends-for-frontends",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-microservices:2": {
+  "body": "## The problem\nIn a cloud environment, instances come and go: autoscaling, deploys, crashes. IP addresses change constantly. Service A needs the current healthy addresses of service B without hard-coded config.\n\n## Registry\nA service registry stores name to list of healthy instances. Instances register on start and deregister on stop. Examples: Consul, etcd, ZooKeeper, Eureka. Kubernetes uses its API server (Services and EndpointSlices) as the registry and CoreDNS to expose it.\n\nKeeping it accurate:\n- Heartbeats or TTLs: the instance renews its lease every few seconds. Miss it and the registry removes it.\n- Health checks: the registry or load balancer actively probes an endpoint and removes failing instances.\n- Registry itself must be highly available (consensus-based, such as Raft). A stale registry is better than none, so clients usually cache.\n\n## Client-side discovery\nThe client queries the registry, gets the list, and picks an instance itself (round-robin, least-loaded, zone-aware).\n- Pros: no extra network hop, smart load balancing per client.\n- Cons: every language/client needs the discovery logic (the reason for libraries like Ribbon or gRPC's resolver). Clients can hold stale data.\n\n## Server-side discovery\nThe client calls a stable address (a load balancer or proxy), which looks up the registry and forwards.\n- Pros: clients stay simple. Central place for policy.\n- Cons: extra hop, and the load balancer must be highly available. Kubernetes Service (kube-proxy, virtual IP) and AWS ELB are examples.\n\n## DNS-based discovery\nSimple and universal: service.internal resolves to multiple A records. Drawbacks: caching ignores TTLs in some clients, so removals propagate slowly, and plain DNS cannot do health-aware weighted routing without extras.\n\n## Service mesh\nA sidecar proxy (Envoy) does discovery and load balancing for the app, getting endpoints from a control plane. This moves the logic out of application code.\n\n## Interview follow-ups\n- Registry failure: clients keep using cached endpoints. Prefer availability (AP) over strict consistency here.\n- Zombie instances: healthy per heartbeat but broken: add real health checks and outlier detection.",
+  "keyPoints": [
+   "A registry maps service names to healthy instances using registration plus heartbeat/TTL and health checks.",
+   "Client-side discovery avoids a hop but puts logic in every client; server-side discovery keeps clients simple with an extra hop.",
+   "Kubernetes provides discovery via Services, EndpointSlices and CoreDNS.",
+   "The registry must be highly available and clients should cache; stale beats unavailable."
+  ],
+  "sources": [
+   {
+    "title": "Server-side discovery (microservices.io)",
+    "url": "https://microservices.io/patterns/server-side-discovery.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Client-side discovery (microservices.io)",
+    "url": "https://microservices.io/patterns/client-side-discovery.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Kubernetes: Service",
+    "url": "https://kubernetes.io/docs/concepts/services-networking/service/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-microservices:3": {
+  "body": "## The failure model\nIn a call chain A to B to C, if C becomes slow, B's threads pile up waiting, then A's. One slow dependency can take out the whole system (cascading failure). These four tools are the standard defence.\n\n## Timeouts\nEvery network call needs one. Without it a hung dependency holds a thread forever.\n- Set from the dependency's observed latency, for example a bit above its p99.9, not a round default of 30 s.\n- Use deadline propagation: pass the remaining time budget downstream so deeper calls do not work on a request the caller already abandoned (gRPC deadlines).\n- Separate connect timeout from read timeout.\n\n## Retries\nRetry only idempotent operations on transient errors, with exponential backoff and jitter, capped attempts.\n- Retries multiply load. With 3 layers each retrying 3 times, one request can become 27 on the bottom service. Retry at one layer, or use a retry budget (for example retries at most 10 percent of requests).\n- Non-idempotent calls (charge card) need an idempotency key before retrying.\n\n## Circuit breaker\nWraps calls and tracks failures. States:\n- Closed: calls pass; failures counted over a window.\n- Open: failure rate exceeds a threshold (for example 50 percent over 20 calls); calls fail fast without touching the dependency, giving it room to recover.\n- Half-open: after a cool-down, allow a few trial calls. Success closes it; failure reopens it.\nIt converts slow failures into fast ones and saves resources. Pair with a fallback (cached value, default, degraded response).\n\n## Bulkhead\nPartition resources so one failing dependency cannot consume everything, like ship compartments.\n- Separate thread pools or connection pools per dependency, or semaphores limiting concurrent calls.\n- Separate pools for critical and non-critical traffic, or per tenant.\n- Cost: lower resource efficiency, since reserved capacity may sit idle.\n\n## Putting it together\nPer call: timeout, then bounded retry with backoff, wrapped in a circuit breaker, inside a bulkhead, with a fallback. Libraries: Resilience4j, Polly, Envoy/Istio policies.\n\n## Follow-up\n\"Breaker is open and the fallback is stale data. Is that OK?\" It depends on the business: stale recommendations yes, stale account balance no (fail clearly instead).",
+  "keyPoints": [
+   "Always set timeouts, tuned to the dependency's latency, and propagate deadlines downstream.",
+   "Retry only idempotent operations with capped backoff and jitter; nested retries multiply load, so use budgets.",
+   "Circuit breaker: closed, open (fail fast), half-open (probe) to protect a struggling dependency.",
+   "Bulkheads isolate pools per dependency or tenant so one failure cannot exhaust shared resources."
+  ],
+  "diagram": "flowchart LR\nC[\"Client call\"] --> B{\"Breaker state\"}\nB -->|closed| D[\"Call dependency with timeout\"]\nB -->|open| F[\"Fallback or fast fail\"]\nD -->|errors over threshold| O[\"Open\"]\nO -->|cool-down| H[\"Half-open probe\"]\nH -->|success| B\nH -->|failure| O",
+  "sources": [
+   {
+    "title": "CircuitBreaker (Martin Fowler)",
+    "url": "https://martinfowler.com/bliki/CircuitBreaker.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Bulkhead pattern (Azure)",
+    "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead",
+    "kind": "reference"
+   },
+   {
+    "title": "Timeouts, retries and backoff with jitter (AWS Builders' Library)",
+    "url": "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-microservices:4": {
+  "body": "## The rule\nEach service owns its data and is the only one that reads or writes it directly. Others go through its API or consume its events. This is database-per-service (or at least schema-per-service with enforced access).\n\n## Why\n- Shared database means shared schema: a column change in one team's table breaks another's service. Services cannot deploy independently.\n- Coupling through the DB is invisible: no API contract, no versioning.\n- You cannot scale or choose storage per service (orders in Postgres, catalog search in Elasticsearch, sessions in Redis).\n\n## Consequences you must handle\n- No joins across services. Options: API composition (a gateway or BFF calls both and merges in memory), or CQRS/materialised views (a service keeps a read-optimised local copy built from events).\n- No distributed ACID transactions. Use sagas with compensating actions and accept eventual consistency.\n- Referential integrity across services is eventual. Store foreign ids but tolerate dangling references.\n- Reporting and analytics: stream events or CDC into a warehouse instead of querying production DBs.\n\n## Duplicating data is fine, if ownership is clear\nOrder service may store a copy of the product name and price at order time. That is a snapshot (and usually required for correctness), not a second source of truth. The catalog service remains the owner of current price. Update copies via events (ProductRenamed) when needed.\n\n## Migration path\nFrom a monolith with a shared DB: first separate schemas per module, ban cross-module SQL, replace cross-module joins with calls, then split physical databases last.\n\n## Pitfalls\n- \"Shared database for convenience\" turns services into a distributed monolith.\n- Chatty API composition: N+1 calls across services. Batch endpoints or local read models fix this.\n- Sync between copies via dual writes loses data. Use outbox or CDC.\n\n## Interview angle\nWhen asked \"how do I get orders with product details?\" answer with composition for low volume, or a denormalised read model (order view with product fields, updated by events) when latency or load matters.",
+  "keyPoints": [
+   "Each service owns its data; others access it only via API or events, never its tables.",
+   "Without cross-service joins and transactions you use API composition, CQRS read models, and sagas.",
+   "Copies of data are fine when ownership is clear and updates flow through events.",
+   "Shared databases create hidden coupling and block independent deploys."
+  ],
+  "sources": [
+   {
+    "title": "Pattern: Database per service (microservices.io)",
+    "url": "https://microservices.io/patterns/data/database-per-service.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Pattern: Saga (microservices.io)",
+    "url": "https://microservices.io/patterns/data/saga.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Pattern: CQRS (microservices.io)",
+    "url": "https://microservices.io/patterns/data/cqrs.html",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-microservices:5": {
+  "body": "## What a service mesh is\nA dedicated infrastructure layer that handles service-to-service communication so application code does not have to. It has two parts:\n- Data plane: a proxy (usually Envoy) deployed next to each service instance, the sidecar. All inbound and outbound traffic passes through it.\n- Control plane: configures the proxies (Istio's istiod, Linkerd's control plane): service discovery, certificates, routing rules, policies.\n\n## What it gives you\n- mTLS between services with automatic certificate issue and rotation, giving encryption and workload identity without app changes.\n- Traffic management: load balancing, retries, timeouts, circuit breaking and outlier detection configured centrally.\n- Traffic shaping: canary releases by weight (95 percent v1, 5 percent v2), header-based routing, mirroring traffic to a new version.\n- Authorization policy: service A may call service B only on certain paths.\n- Observability: uniform request metrics (rate, errors, latency), access logs and trace spans for all services regardless of language.\n\n## Costs\n- Latency: each hop passes through two proxies, typically about a millisecond or less each, but it adds up on long chains.\n- Resources: a sidecar per pod consumes CPU and memory. Ambient or sidecarless modes (Istio ambient, Cilium) aim to reduce this.\n- Operational complexity: another system to upgrade, debug and secure. Misconfigured retries in the mesh stack with app retries.\n- Learning curve. For a handful of services it is often overkill.\n\n## Mesh vs gateway vs library\n- API gateway: north-south traffic (clients into the cluster).\n- Service mesh: east-west traffic (service to service).\n- Libraries (Resilience4j, gRPC interceptors): in-process, per language, but no central control.\n\n## When to adopt\nMany services, multiple languages, requirements for mTLS everywhere and consistent policy, and a platform team to run it. Skip it for small deployments, where a library plus Kubernetes network policies is enough.\n\n## Interview follow-up\n\"Where do retries live?\" Pick one layer. Mesh retries without app coordination can amplify load, so set a retry budget.",
+  "keyPoints": [
+   "A mesh pairs sidecar proxies (data plane, e.g. Envoy) with a control plane that pushes config and certificates.",
+   "It provides mTLS, retries, timeouts, traffic splitting and uniform telemetry without changing app code.",
+   "Costs: extra hops and latency, sidecar resource use, operational complexity.",
+   "Gateway handles north-south traffic; the mesh handles east-west; avoid stacking retries at several layers."
+  ],
+  "diagram": "flowchart LR\nCP[\"Control plane\"] -.-> PA[\"Sidecar proxy A\"]\nCP -.-> PB[\"Sidecar proxy B\"]\nA[\"Service A\"] --> PA\nPA -->|mTLS| PB\nPB --> B[\"Service B\"]",
+  "sources": [
+   {
+    "title": "What is a service mesh (Istio)",
+    "url": "https://istio.io/latest/about/service-mesh/",
+    "kind": "reference"
+   },
+   {
+    "title": "What is Envoy",
+    "url": "https://www.envoyproxy.io/docs/envoy/latest/intro/what_is_envoy",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-notification:0": {
+  "body": "## Problem\nA notification system sends messages over several channels (email, SMS, mobile push, in-app, maybe webhooks) for many triggers (order shipped, password reset, marketing). Volumes are spiky: a marketing blast can mean tens of millions of messages, while an OTP must arrive in seconds.\n\n## Architecture\n```\nProducers (services) -> Notification API -> validate, dedup, prefs check\n   -> per-channel queue (email / sms / push)\n   -> channel workers -> third-party provider (SES, Twilio, FCM, APNs)\n   -> delivery status callbacks -> status store + analytics\n```\n- Triggering services call one internal API or publish an event. They should not know about providers.\n- A routing layer decides channels per user preference and notification type, then enqueues one task per channel.\n- Separate queues per channel so a slow SMS provider cannot block email. Often also separate priority queues: transactional (OTP, password reset) versus bulk (marketing), so a blast never delays an OTP.\n- Workers are stateless and autoscale on queue depth.\n\n## Providers\n- Email: SES, SendGrid. SMS: Twilio and carriers. Push: APNs for iOS, FCM for Android and web. Each has rate limits, different payload limits (push payloads are a few KB), and different error semantics (invalid device token, bounced address).\n- Use more than one provider per channel with failover, for availability.\n- Handle feedback: remove invalid push tokens, suppress hard-bounced emails and complaint addresses, honour SMS STOP replies.\n\n## Scale example\n10M-user campaign to be sent in one hour is around 2800 messages per second. Fan out from a campaign job that reads recipient segments in pages and enqueues in batches. Throttle workers to the provider's rate limit, and spread over time if the deadline allows.\n\n## Delivery tracking\nProviders send webhooks (delivered, bounced, opened). Store state per notification id: queued, sent, delivered, failed. Used for retries, support lookups, and analytics.\n\n## Pitfalls\n- Marketing and transactional sharing one pipeline or sender reputation: separate them (even separate email domains).\n- Synchronous calls to providers from the request path: always queue.\n- Treating a provider 200 as delivered. It usually means accepted, not delivered.",
+  "keyPoints": [
+   "Producers publish to a notification service, which checks preferences and enqueues per channel; workers call providers.",
+   "Use separate queues per channel and per priority so bulk campaigns never delay OTPs.",
+   "Handle provider feedback: invalid tokens, bounces, complaints and STOP opt-outs; use multiple providers for failover.",
+   "Provider acceptance is not delivery; track state via webhooks."
+  ],
+  "diagram": "flowchart LR\nS[\"Services\"] --> N[\"Notification API\"]\nN --> P[\"Preferences and dedup\"]\nP --> QE[\"Email queue\"]\nP --> QS[\"SMS queue\"]\nP --> QP[\"Push queue\"]\nQE --> WE[\"Email workers\"] --> SES[\"Email provider\"]\nQS --> WS[\"SMS workers\"] --> TW[\"SMS provider\"]\nQP --> WP[\"Push workers\"] --> FCM[\"APNs and FCM\"]",
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Amazon SES developer guide",
+    "url": "https://docs.aws.amazon.com/ses/latest/dg/Welcome.html",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-notification:1": {
+  "body": "## Why preferences matter\nUsers must control what they receive, by channel and by category. Legal rules (CAN-SPAM, GDPR, TCPA for SMS) require opt-out and consent, and ignoring preferences destroys sender reputation and trust.\n\n## Preference model\nStore per user: channel enabled (email, SMS, push), per category opt-in (marketing, product updates, security), quiet hours with time zone, frequency choice (instant, daily digest), and locale.\n```\nuser_prefs(user_id, category, channel, enabled, updated_at)\n```\n- Security and legal notices (password reset, receipts) are transactional and bypass marketing opt-out, but should respect channel validity.\n- Check preferences at send time, not at enqueue time, so an opt-out made a minute ago is honoured.\n- Cache preferences (Redis) with short TTL or invalidate on change, as this check happens on every message.\n- Record consent and opt-out history for audit.\n\n## Rate limiting and frequency capping\nTwo different goals:\n- Protect users: cap notifications per user per window (for example at most 3 marketing pushes per day, 1 SMS per minute per number). Implement with a token bucket or sliding counter in Redis keyed by user and category: INCR with EXPIRE. When over limit, drop low priority, delay, or batch into a digest.\n- Protect providers: global and per-provider rate limits so you do not get throttled or blocked. Workers use a shared limiter or a fixed worker count.\n\n## Priority\nRank by type: security alerts and OTP are never throttled by frequency caps. Promotions are first to be dropped or delayed.\n\n## Quiet hours\nDelay non-urgent messages until the user's local morning. Store a delayed task with a scheduled timestamp (delay queue, scheduler, or sorted set by send time).\n\n## Digests and batching\nCollapse many events (10 likes) into one message (\"10 people liked your post\"), cutting noise and cost. Needs a windowing store and a flush timer.\n\n## Pitfalls\n- Per-device vs per-user limits: a user with 3 devices.\n- Time zone and daylight saving errors.\n- Race between opt-out and in-flight messages. Accept small windows but check again in the worker.",
+  "keyPoints": [
+   "Store preferences per user, category and channel, and check them at send time with a cached lookup.",
+   "Transactional and security messages bypass marketing opt-out but never legal rules; keep consent audit history.",
+   "Rate limit per user (frequency caps via Redis counters or token bucket) and per provider separately.",
+   "Use quiet hours with delayed delivery and digests to batch noisy events."
+  ],
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-notification:2": {
+  "body": "## Retries\nProvider calls fail: timeouts, 429 throttling, 5xx, device offline. A queue-based worker pipeline makes retries straightforward.\n- Classify errors. Retry: network errors, 5xx, 429 (honour Retry-After). Do not retry: invalid push token, hard-bounced email, malformed payload. These go to suppression handling.\n- Exponential backoff with jitter, capped attempts, then a dead-letter queue and alert.\n- Time-to-live matters: an OTP retried after 10 minutes is useless, and \"your driver is arriving\" is stale after a few minutes. Attach an expiry to each message and drop expired ones.\n- Fallback channel: push failed, so try SMS for critical alerts, or switch provider after repeated failures.\n\n## At-least-once leads to duplicates\nQueue redelivery and worker retries will sometimes send twice, for example the provider accepted the request but the response timed out. Duplicate notifications annoy users, and duplicate SMS cost real money.\n\n## Deduplication\n- Assign a notification id deterministically from the business event, such as hash(user_id, event_type, event_id, channel). This is the idempotency key.\n- Before sending, do an atomic claim: Redis SET key NX EX ttl, or an insert into a table with a unique constraint. If the claim exists, skip.\n- Order of operations matters. Claim before send avoids duplicates but can lose a message if the worker crashes after claiming and before sending. Send before recording risks duplicates. Pick based on harm: for OTP prefer a possible duplicate, for marketing prefer possibly losing one. Better: claim with a state (pending) plus a lease timeout so a crashed claim is retried later.\n- Pass the provider's idempotency key if supported (some APIs accept a client token), so provider-side retries do not double send.\n- Dedup window: keep keys for as long as redelivery or upstream duplicates may occur, for example 24 hours.\n\n## Collapse and throttle duplicates from upstream\nUpstream services might emit the same event several times. Dedup at ingestion too, using event id.\n\n## Pitfalls\n- Keys too coarse (suppress legitimate repeat notifications) or too fine (miss duplicates).\n- Unbounded dedup storage: always set TTLs.\n- Exactly-once is not achievable end to end with third-party providers. Aim for at-least-once and dedup, and state the residual risk.",
+  "keyPoints": [
+   "Retry transient provider errors with backoff and jitter, never invalid-token or hard-bounce errors, and respect message TTLs.",
+   "At-least-once delivery means duplicates; dedup with a deterministic notification id and an atomic claim (Redis SET NX or unique constraint).",
+   "Choose claim-before-send or send-before-record based on the harm of loss versus duplicate.",
+   "Use fallback channels or providers and a DLQ for exhausted retries."
+  ],
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Timeouts, retries and backoff with jitter (AWS Builders' Library)",
+    "url": "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-notification:3": {
+  "body": "## Problem\nHard-coded message strings in code do not scale: marketing wants to edit copy without a deploy, you need many languages, and each channel has its own format (HTML email, 160-character SMS, short push title and body, in-app card).\n\n## Template model\nStore templates outside code, keyed by template id, channel and locale, with versions.\n```\ntemplate(id, channel, locale, version, subject, body, status)\nrender(template, variables) -> final message\n```\nExample body: \"Hi {{first_name}}, your order {{order_id}} ships on {{date}}.\"\n- The triggering service sends only the template id and variables (data), not rendered text. This keeps producers simple and lets content change independently.\n- Rendering happens in the notification service or at the worker, right before sending, using a safe template engine (Handlebars, Jinja-like, Mustache).\n\n## Localisation\n- Pick the locale from user preference, falling back to a default (for example en-US).\n- Format dates, numbers and currencies per locale, and handle pluralisation rules (\"1 item\" versus \"2 items\") with ICU MessageFormat or similar.\n- Right-to-left languages and longer German strings may break email layouts, so test them.\n\n## Channel specifics\n- Email: HTML plus a plain-text alternative, subject lines, unsubscribe link and header, inline CSS, responsive layout. Build blocks from a shared layout.\n- SMS: length matters, 160 GSM-7 characters per segment, and about 70 per segment with Unicode characters. Long messages split into multiple billable segments. Include opt-out wording where required.\n- Push: small title and body, deep link, optional image, badge count.\n\n## Safety\n- Escape variables by default to prevent HTML or script injection into emails. Treat user-supplied values (names) as untrusted.\n- Validate that all required variables are provided before sending. Missing variable renders \"Hi ,\" or worse. Fail the send or use a default.\n- Do not allow template authors to run arbitrary code: a logic-less engine limits risk.\n- Never put secrets (full tokens) in logs of rendered text.\n\n## Operational points\n- Versioning with draft and published states, preview and test-send, and rollback.\n- Cache compiled templates in memory.\n- Store the template version used per notification, so support can see exactly what was sent.\n- A/B testing through variants of a template with weights.\n\n## Pitfall\nSending links built from untrusted input, or per-user tracking links without signing, which can be tampered with. Sign them.",
+  "keyPoints": [
+   "Producers send template id plus variables; the notification service renders per channel and locale.",
+   "Version templates with draft/publish and rollback, and record which version each notification used.",
+   "Handle locale fallback, pluralisation and channel limits such as SMS segment length.",
+   "Escape variables, validate required variables, and use a logic-less engine for safety."
+  ],
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "ICU MessageFormat",
+    "url": "https://icu.unicode.org/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-storage-observability:0": {
+  "body": "## Object storage\nObject stores (S3, GCS, Azure Blob) hold immutable blobs, addressed by bucket plus key, with metadata. There is no real directory tree (prefixes only), no in-place partial update, and no POSIX semantics. You PUT a whole object and GET it back (range reads are supported).\n- Scales essentially without limit, very cheap per GB, designed for very high durability (S3 advertises eleven nines) through replication or erasure coding across availability zones.\n- Latency is tens of milliseconds per request, so it suits large files, not small hot records. Throughput is high when parallelised.\n- Consistency: S3 now offers strong read-after-write consistency for objects.\n- Storage classes trade price for access speed (hot, infrequent access, archive). Lifecycle rules move or expire data automatically.\n- Versioning protects against accidental overwrite and delete. Multipart upload splits big files (for example above 100 MB) into parts uploaded in parallel and retried individually.\n\n## Typical design: upload and serve media\nDo not stream big files through your app servers. They would be the bandwidth and CPU bottleneck.\n1. Client asks the API for permission to upload.\n2. API authenticates the user, then returns a presigned URL.\n3. Client PUTs the file directly to the object store.\n4. The store emits an event (S3 notification to a queue). A worker validates, scans, creates thumbnails or transcodes.\n5. Metadata (owner, key, size, status) lives in a database. Serve files through a CDN in front of the bucket.\n\n## Presigned URLs\nA presigned URL is a normal object URL with a signature and expiry in the query string, computed by your server with its credentials. Anyone holding it can perform that exact operation (GET or PUT on that key) until it expires, without owning credentials.\n- Keep expiry short (minutes) for uploads and sensitive downloads.\n- Constrain the upload: fixed key (server-chosen, never trust a client filename), content type, and maximum size with a presigned POST policy.\n- Anyone who gets the link can use it, so do not log them and use HTTPS. Revocation before expiry is not possible except by changing credentials or the object.\n- For public static content use CDN with signed cookies or signed URLs.\n\n## Pitfalls\n- Small-object overhead and request costs. Millions of tiny files cost more in requests than bytes.\n- Hot prefixes were once a concern, now largely handled, but design keys with spread (hash prefix) if you hit extreme request rates.\n- Listing is slow and eventually expensive. Keep your own index in a database.",
+  "keyPoints": [
+   "Object stores give cheap, durable, immutable blobs addressed by key; no in-place edits and no filesystem semantics.",
+   "Let clients upload directly with a presigned URL instead of proxying bytes through app servers.",
+   "Presigned URLs are time-limited bearer links: short expiry, server-chosen key, size and type constraints.",
+   "Use multipart upload for large files, lifecycle rules for cost, and a CDN plus metadata DB for serving and lookup."
+  ],
+  "diagram": "flowchart LR\nC[\"Client\"] -->|1 request upload| A[\"API server\"]\nA -->|2 presigned URL| C\nC -->|3 PUT file| S[(\"Object store\")]\nS -->|4 event| Q[\"Queue\"]\nQ --> W[\"Worker: scan and thumbnail\"]\nW --> D[(\"Metadata DB\")]",
+  "sources": [
+   {
+    "title": "Using presigned URLs (AWS S3 docs)",
+    "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Amazon S3 User Guide",
+    "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-storage-observability:1": {
+  "body": "## What Elasticsearch is for\nFull-text search, filtering and aggregations over large document sets, near real time. It is a distributed search engine built on Apache Lucene. It is usually a secondary store fed from the primary database, not the system of record.\n\n## Inverted index\nA normal (forward) index maps document to words. An inverted index maps each term to the list of documents containing it (the postings list), with positions and frequencies.\n```\ndoc1: \"red fast car\"      doc2: \"red bike\"\nred  -> [doc1, doc2]\nfast -> [doc1]\ncar  -> [doc1]\nbike -> [doc2]\n```\nA query \"red car\" looks up both terms and intersects the postings lists, then scores. This is far faster than scanning documents.\n- Analysis pipeline at index and query time: tokenise, lowercase, remove stop words, stem (\"running\" to \"run\"), synonyms. Mismatched analysers are a common cause of \"why doesn't it match\".\n- Scoring: BM25 (a refinement of TF-IDF) ranks documents by term frequency in the doc versus rarity across the corpus.\n- Doc values (columnar structure) power sorting and aggregations.\n\n## Segments and near real time\nLucene writes immutable segments. New documents buffer in memory and become searchable after a refresh (default every 1 s), which is why it is near real time rather than instant. Segments are merged in the background. Deletes are marks and are cleaned up on merge. Updates are delete plus reindex. A translog gives durability between flushes.\n\n## Shards and replicas\n- An index is split into primary shards; each is a full Lucene index. Documents route to a shard by hash of the routing key (the doc id by default): shard = hash(id) mod number_of_primary_shards. That is why primary shard count is fixed at creation (changing it requires reindex or split).\n- Each primary has replica copies on other nodes: for fault tolerance and to serve reads.\n- A search is a scatter-gather: the coordinating node sends the query to one copy of every shard, each returns its top hits, and the coordinator merges them. Latency is bounded by the slowest shard.\n- Sizing guidance: shards of roughly tens of GB are typical. Too many small shards waste heap and slow things down, too few limit parallelism.\n- Time-series data uses rolling indices (daily or by size) with lifecycle management (hot, warm, cold, delete).\n\n## Trade-offs\n- Not a transactional database: no multi-document ACID transactions, eventual visibility, and split-brain risks if misconfigured. Keep the source of truth elsewhere and index via CDC or events.\n- Deep pagination (from + size) is costly: use search_after.\n- Mapping explosions from dynamic fields. Define explicit mappings.\n\n## Follow-up\nHow to keep search in sync? Outbox or CDC from the primary DB into a queue, then an indexer. Reindex into a new index and swap an alias for zero-downtime schema changes.",
+  "keyPoints": [
+   "An inverted index maps terms to postings lists, so queries intersect lists instead of scanning documents.",
+   "Analysis (tokenise, stem, lowercase) must match at index and query time; BM25 scores relevance.",
+   "Lucene segments are immutable; refresh makes documents searchable in about 1 s (near real time).",
+   "Primary shard count is fixed because routing is hash(id) mod shards; searches scatter-gather across shards, latency set by the slowest.",
+   "Use it as a secondary index fed by CDC; it is not a transactional system of record."
+  ],
+  "sources": [
+   {
+    "title": "Elasticsearch reference: how it works",
+    "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/index.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Apache Lucene",
+    "url": "https://lucene.apache.org/core/",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-storage-observability:2": {
+  "body": "## Two workloads\n- OLTP (online transaction processing): many small, fast, concurrent operations on current data: place order, update balance, fetch user. Row-oriented databases (Postgres, MySQL), strong ACID guarantees, indexes for point lookups, milliseconds latency, thousands to hundreds of thousands of operations per second.\n- OLAP (online analytical processing): few queries that scan large volumes: revenue by region by month over billions of rows. Mostly reads, aggregates over a few columns, seconds to minutes.\n\n## Why one database cannot do both well\n- Row stores keep a row's columns together. Great to fetch one whole record, wasteful when summing one column across a billion rows, as you read every other column too.\n- Heavy analytical scans compete for IO and CPU with latency-sensitive transactions, hurting user-facing response times.\n- Normalised schemas suit writes (no duplication). Analysts prefer denormalised, joined-up shapes.\n\n## Column stores and warehouses\nWarehouses (BigQuery, Snowflake, Redshift, ClickHouse) store data by column.\n- Reading only the needed columns cuts IO massively.\n- Similar values sit together, so compression is high (often several times), and vectorised execution is fast.\n- Massively parallel processing: data is partitioned across nodes, each scans its part, results are merged.\n- Partition by date and cluster or sort by common filters to prune data.\n- Weak at single-row updates and high-rate small writes. Data loads in batches or micro-batches.\n- Many separate compute from storage (data on object storage, elastic compute).\n\n## Getting data from OLTP to OLAP\n- ETL (transform before load) or ELT (load raw, transform in the warehouse with SQL tools).\n- Batch exports nightly, or streaming via CDC and Kafka for fresher data.\n- Modelling: star schema, with a central fact table (orders) and dimension tables (customer, product, date). Data lake (raw files on object storage in Parquet) plus warehouse is the common combination, sometimes called a lakehouse.\n\n## HTAP\nSome systems (TiDB, SingleStore) try to serve both in one product, with row and column replicas. Useful for modest analytics on fresh data, but dedicated warehouses still win at scale.\n\n## Example\nAn e-commerce app runs on Postgres. A dashboard that sums revenue across 2 years would scan hundreds of millions of rows and slow checkouts. Stream changes through CDC to the warehouse and point dashboards at it. Data is minutes old, which is acceptable.\n\n## Pitfalls\nRunning analytics on the primary; read replicas help but have the same row layout. Mixing real-time needs with a batch-only warehouse.",
+  "keyPoints": [
+   "OLTP serves many small ACID row operations; OLAP scans huge datasets for aggregates.",
+   "Columnar storage reads only needed columns, compresses well and parallelises scans across nodes.",
+   "Keep analytics off the primary: move data via ETL/ELT or CDC into a warehouse with a star schema.",
+   "Warehouses are weak at single-row updates and small frequent writes."
+  ],
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Designing Data-Intensive Applications (Martin Kleppmann), chapter 3",
+    "url": "https://dataintensive.net/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-storage-observability:3": {
+  "body": "## Why probabilistic structures\nExact answers for membership, distinct counts and frequencies over huge streams need memory proportional to the data. These structures trade a small, bounded error for tiny, fixed memory.\n\n## Bloom filter: \"have I seen this?\"\nA bit array of m bits and k hash functions. To add an item, set the k bits its hashes point to. To query, check those k bits: any zero means definitely not present. All ones means probably present.\n- No false negatives, but false positives happen. Items cannot be removed (a counting Bloom filter or cuckoo filter supports deletes).\n- False-positive rate is about (1 - e^(-kn/m))^k. Rule of thumb: about 10 bits per element and 7 hash functions gives roughly 1 percent false positives. 100 million items needs about 120 MB.\n- Uses: LSM-tree databases (Cassandra, RocksDB, HBase) check a Bloom filter before reading an SSTable from disk. Avoid cache-penetration queries for keys that do not exist. Web crawler \"URL seen\" checks. Checking whether a username or email might be taken.\n- Size it up front. Once the load exceeds the planned element count, the false-positive rate climbs.\n\n## HyperLogLog: \"how many distinct?\"\nEstimates cardinality (count distinct) in a few KB, with a standard error around 0.8 percent (Redis uses 12 KB for 16384 registers).\n- Idea: hash each item to bits. The longest run of leading zeros seen hints at how many distinct items there were (seeing 10 leading zeros suggests about 2^10 items). Many registers are averaged to cut variance.\n- Operations: add item, estimate count, and merge (union) of two sketches, so counts can be computed per shard or per day and then combined.\n- Cannot list members or delete. Intersections are only approximate.\n- Uses: unique visitors per page per day, distinct queries, Redis PFADD and PFCOUNT, BigQuery APPROX_COUNT_DISTINCT.\n\n## Count-Min Sketch: \"how often?\"\nA small 2D array (d rows, w columns) with d hash functions. Increment one counter per row on each event. The estimate for an item is the minimum of its d counters.\n- Collisions only inflate counters, so it never underestimates. Overestimates are bounded by roughly epsilon times the total count with high probability.\n- Uses: heavy hitters and top-K trending (pair with a small heap of candidates), rate limiting by key, frequency in streams where exact counters for millions of keys would not fit.\n- Works best for skewed distributions where the top items are large.\n\n## Choosing\n- Membership: Bloom (or cuckoo).\n- Distinct count: HyperLogLog.\n- Frequency or top-K: Count-Min Sketch plus heap.\n\n## Interview tips\nAlways state the error type: Bloom has false positives only; count-min overcounts only; HyperLogLog is two-sided but small. Mention when exact is mandatory (billing, security decisions) and do not use sketches there.",
+  "keyPoints": [
+   "Bloom filter: no false negatives, tunable false positives, no deletes; about 10 bits per item gives roughly 1 percent error.",
+   "HyperLogLog estimates distinct counts in KBs with under about 1 percent error, and sketches merge by union.",
+   "Count-Min Sketch estimates frequencies, only ever overestimates; combine with a heap for top-K.",
+   "Do not use approximate structures where exactness is required, such as billing or security."
+  ],
+  "sources": [
+   {
+    "title": "Bloom filter (Wikipedia)",
+    "url": "https://en.wikipedia.org/wiki/Bloom_filter",
+    "kind": "reference"
+   },
+   {
+    "title": "HyperLogLog (Wikipedia)",
+    "url": "https://en.wikipedia.org/wiki/HyperLogLog",
+    "kind": "reference"
+   },
+   {
+    "title": "Count-min sketch (Wikipedia)",
+    "url": "https://en.wikipedia.org/wiki/Count%E2%80%93min_sketch",
+    "kind": "reference"
+   },
+   {
+    "title": "Redis HyperLogLog docs",
+    "url": "https://redis.io/docs/latest/develop/data-types/probabilistic/hyperloglogs/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-storage-observability:4": {
+  "body": "## Three signals\n- Logs: discrete timestamped events with detail (\"payment 123 failed: card declined\"). Best for debugging a specific incident. Expensive at volume. Use structured logs (JSON) with fields: timestamp, level, service, trace_id, request id. Avoid logging secrets and personal data.\n- Metrics: numeric time series aggregated over time (request rate, error rate, latency percentiles, CPU). Cheap, good for dashboards and alerts. Beware high-cardinality labels (user id as a label explodes the number of series). Tools: Prometheus, Datadog.\n- Traces: the path of one request across services as a tree of spans, each with a start time and duration. Shows where latency is spent and which dependency failed. A trace id is propagated in headers (W3C traceparent). Sampling is needed at scale (head-based, or tail-based to keep slow and error traces).\n\nHow they work together: alert fires from a metric (\"p99 latency above 800 ms\"), a trace shows which downstream call is slow, logs of that span explain why. Correlate by trace id.\n\n## OpenTelemetry\nA vendor-neutral standard and set of SDKs for generating and exporting these signals: APIs and SDKs per language, auto-instrumentation, a wire protocol (OTLP), and the Collector, a process that receives, batches, filters and exports telemetry to any backend (Jaeger, Tempo, Prometheus, commercial vendors). It avoids lock-in: instrument once, switch backends.\n\n## What to measure: golden signals and RED\n- Google's four golden signals: latency, traffic, errors, saturation.\n- RED for services: rate, errors, duration. USE for resources: utilisation, saturation, errors.\n- Use percentiles (p50, p95, p99), never only averages, because tail latency hides in the mean.\n\n## SLI, SLO, SLA\n- SLI (indicator): a measured quantity, for example the fraction of requests that succeed in under 300 ms.\n- SLO (objective): the internal target for an SLI, for example 99.9 percent over 30 days.\n- SLA (agreement): a contract with customers that includes consequences (credits) if missed. SLA is typically looser than the SLO.\n- Error budget = 1 minus SLO. 99.9 percent over 30 days allows about 43 minutes of downtime. If the budget is spent, slow feature releases and prioritise reliability. If plenty is left, ship faster.\n- Availability numbers: 99.9 percent is about 8.8 hours per year, 99.99 about 53 minutes, 99.999 about 5 minutes.\n\n## Alerting\nAlert on symptoms users feel (SLO burn rate) rather than on every cause (CPU 80 percent). Multi-window burn-rate alerts catch both fast and slow budget loss. Every page should be actionable.\n\n## Pitfalls\nLogging everything at debug in production, unbounded metric labels, no trace propagation across async queues (propagate context in message headers).",
+  "keyPoints": [
+   "Logs give detail, metrics give cheap aggregates and alerts, traces show request paths and latency per span; correlate with trace id.",
+   "OpenTelemetry is the vendor-neutral standard (SDKs, OTLP, Collector) for emitting all three.",
+   "Track latency percentiles, traffic, errors and saturation; avoid high-cardinality metric labels.",
+   "SLI is the measurement, SLO the internal target, SLA the contractual promise; error budget = 1 - SLO (99.9 percent is about 43 min per 30 days).",
+   "Alert on SLO burn rate and user-visible symptoms, not every resource spike."
+  ],
+  "sources": [
+   {
+    "title": "OpenTelemetry signals",
+    "url": "https://opentelemetry.io/docs/concepts/signals/",
+    "kind": "reference"
+   },
+   {
+    "title": "Google SRE book: Service Level Objectives",
+    "url": "https://sre.google/sre-book/service-level-objectives/",
+    "kind": "reference"
+   },
+   {
+    "title": "Google SRE book: Monitoring Distributed Systems",
+    "url": "https://sre.google/sre-book/monitoring-distributed-systems/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-storage-observability:5": {
+  "body": "## Deployment strategies\nThe goal is shipping changes with minimal risk and fast rollback.\n\n### Rolling\nReplace instances gradually (a few at a time). Simple and the Kubernetes default. During the rollout two versions run together, so changes must be backward compatible. Rollback is another rolling update.\n\n### Blue-green\nTwo identical environments: blue serves production, green gets the new version and is tested. Flip the router or load balancer to green. Rollback is flipping back, which is instant.\n- Pros: near-zero downtime, instant rollback, full pre-switch testing.\n- Cons: double the infrastructure during the switch. Databases are the hard part: schema changes must work with both versions (expand and contract migrations), and in-flight sessions or jobs must be handled.\n\n### Canary\nSend a small slice of traffic (1 percent, then 5, 25, 100) to the new version and watch metrics (errors, latency, business KPIs). Automatically roll back on regression. Limits blast radius to a few users, and needs good observability and traffic splitting (load balancer, service mesh, Argo Rollouts, Flagger). A bug that only affects a few users can hide in a small slice, so compare against the baseline statistically.\n\n### Feature flags\nDecouple deploy from release. Code ships dark behind a flag, then is switched on for staff, a percentage of users, or a segment, and can be turned off instantly without redeploying. Uses: gradual rollout, A/B tests, kill switches, trunk-based development.\n- Costs: flag debt (remove old flags), combinatorial test paths, flag service dependency (default to a safe value if it is down), and evaluation consistency per user (hash the user id so they stay in the same bucket).\n\n## Docker and Kubernetes basics\n- Container: a process isolated using Linux namespaces and cgroups, packaged with its dependencies as an image (layers). Lighter than a VM because it shares the host kernel. A Dockerfile defines the build. Images are immutable and pushed to a registry.\n- Kubernetes orchestrates containers across a cluster of nodes. Pod: smallest unit, one or more containers sharing network and storage. Deployment: declares the desired replica count and rollout strategy, and manages ReplicaSets. Service: stable virtual IP and DNS for a set of pods. Ingress: HTTP routing into the cluster. ConfigMap and Secret: configuration. HorizontalPodAutoscaler: scale on CPU or custom metrics.\n- Probes: readiness (receive traffic?), liveness (restart?), startup. Wrong probes cause outages or restart loops.\n- Reconciliation loop: you declare desired state and controllers continuously converge actual state toward it, which gives self-healing.\n- Set resource requests and limits so the scheduler places pods sensibly.\n\n## Interview angle\nPair strategy with risk: stateless service with good metrics, canary. Database migration: expand, migrate, contract, using feature flags. Always state the rollback plan and the signal that triggers it.",
+  "keyPoints": [
+   "Rolling is the default; blue-green gives instant rollback at double cost; canary exposes a small traffic slice and rolls back on metrics.",
+   "Database changes must be backward compatible (expand and contract) so two versions can coexist.",
+   "Feature flags separate deploy from release; manage flag debt and define safe defaults.",
+   "Kubernetes: Pods run containers, Deployments keep desired replicas, Services give stable addressing, readiness probes gate traffic."
+  ],
+  "diagram": "flowchart LR\nU[\"Users\"] --> LB[\"Load balancer\"]\nLB -->|95 percent| V1[\"v1 pods\"]\nLB -->|5 percent| V2[\"v2 canary pods\"]\nV2 --> M[\"Metrics: errors and latency\"]\nM -->|healthy| P[\"Promote to 100 percent\"]\nM -->|regression| R[\"Roll back\"]",
+  "sources": [
+   {
+    "title": "BlueGreenDeployment (Martin Fowler)",
+    "url": "https://martinfowler.com/bliki/BlueGreenDeployment.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Feature Toggles (Martin Fowler)",
+    "url": "https://martinfowler.com/articles/feature-toggles.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Kubernetes overview",
+    "url": "https://kubernetes.io/docs/concepts/overview/",
+    "kind": "reference"
+   },
+   {
+    "title": "CanaryRelease (Martin Fowler)",
+    "url": "https://martinfowler.com/bliki/CanaryRelease.html",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-storage-observability:6": {
+  "body": "## Start from access patterns, not from brands\nPick a database from what you read, how you write, consistency needs, scale, and query shapes. Most systems use more than one store (polyglot persistence).\n\n## Relational (Postgres, MySQL)\n- Strengths: ACID transactions, joins, constraints, flexible ad-hoc queries, mature tooling. Handles a lot: a well-tuned single node serves thousands of QPS, with read replicas for more.\n- Limits: horizontal write scaling needs sharding, which is operationally hard and loses cross-shard joins and transactions.\n- Default choice unless a requirement rules it out.\n\n## Key-value (Redis, DynamoDB, Memcached)\n- Access by primary key only, very low latency (sub-millisecond for in-memory), trivial horizontal scaling.\n- Use: sessions, caches, counters, rate limits, leaderboards (Redis sorted sets), shopping carts.\n- Limits: no ad-hoc queries or joins. DynamoDB adds sort keys and secondary indexes but you must design tables around known queries.\n\n## Document (MongoDB, Firestore, DocumentDB)\n- Store nested JSON-like documents with flexible schema. Related data embedded in one document means one read.\n- Use: catalogs, content, user profiles, evolving schemas.\n- Limits: weak at many-to-many relations and multi-document joins. Transactions exist but are costlier. Unbounded document growth is a trap.\n\n## Wide-column (Cassandra, HBase, Bigtable, ScyllaDB)\n- Partition key spreads rows across nodes, clustering columns order rows inside a partition. Writes are very fast (LSM tree), scale linearly, multi-datacenter replication, tunable consistency.\n- Use: time series, messaging history, event logs, write-heavy workloads at huge scale.\n- Limits: query-first modelling (one table per query), no joins, limited secondary indexes, tombstone and compaction behaviour to manage.\n\n## Graph (Neo4j, Neptune)\n- Nodes and edges stored so traversals are cheap, with no join cost per hop.\n- Use: social graphs, recommendations, fraud rings, knowledge graphs, \"friends of friends\".\n- Limits: harder to shard, smaller ecosystem. A relational database with proper indexes is often enough for one or two hops.\n\n## Others worth naming\nSearch engine (Elasticsearch), time-series (InfluxDB, TimescaleDB), columnar warehouse (BigQuery), object store (S3), NewSQL (Spanner, CockroachDB: relational semantics with horizontal scale, higher write latency).\n\n## Decision sketch\n- Need transactions across entities (payments, inventory): relational.\n- Massive writes by key with simple reads: wide-column or DynamoDB.\n- Flexible nested entities read as a unit: document.\n- Hot lookups and counters: key-value cache.\n- Relationship traversals: graph.\n\n## Interview tip\nJustify with numbers: \"100k writes per second of sensor events with reads by device and time range suggests Cassandra, partitioned by device and day.\" Also mention CAP and PACELC trade-offs only where they change the choice.",
+  "keyPoints": [
+   "Choose by access pattern, consistency and scale; polyglot persistence is normal.",
+   "Relational is the default for transactions and joins; shard only when single-node limits are real.",
+   "Key-value for hot lookups, document for nested entities, wide-column for massive write-heavy keyed data, graph for traversals.",
+   "Wide-column and DynamoDB need query-first data modelling; ad-hoc queries are poor.",
+   "Justify with throughput numbers and query shapes."
+  ],
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Designing Data-Intensive Applications (Martin Kleppmann)",
+    "url": "https://dataintensive.net/",
+    "kind": "reference"
+   },
+   {
+    "title": "DynamoDB: best practices for designing and architecting",
+    "url": "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/best-practices.html",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-storage-observability:7": {
+  "body": "## Why go multi-region\n- Latency: put data close to users (cross-continent round trips are around 100 to 200 ms).\n- Availability: survive a whole region outage.\n- Compliance: data residency laws.\nThe difficulty is the speed of light: replication between regions takes tens to hundreds of milliseconds, so you must choose between consistency and latency.\n\n## Active-passive (primary/standby)\nOne region takes all writes (and perhaps reads). The standby replicates asynchronously (or synchronously) and takes over on failure.\n- Simple to reason about: single writer means no write conflicts.\n- Failover: detect, promote the standby, repoint traffic (DNS or global load balancer). Takes seconds to minutes.\n- With asynchronous replication, failover can lose the last few seconds of writes (RPO above zero). Synchronous replication across regions gives RPO near zero but makes every write pay the cross-region latency.\n- The standby can serve read-only traffic (warm standby) or sit idle (cold), trading cost against recovery time.\n- Must rehearse failover, and have a failback plan after the primary recovers.\n\n## Active-active\nMultiple regions accept writes at the same time.\n- Pros: users hit the nearest region, no failover event (traffic just shifts), better capacity use.\n- Cons: write conflicts when the same record is updated in two regions concurrently. Resolution options:\n  - Last-write-wins by timestamp (simple, can lose updates, clock issues).\n  - Partition ownership: each record has a home region (user's home region), and others forward writes there. Avoids conflicts for most data.\n  - CRDTs or app-level merge for counters, sets, carts and collaborative edits.\n  - Consensus-based global databases (Spanner, CockroachDB) give strong consistency but writes pay cross-region quorum latency.\n- Systems: DynamoDB global tables (last-writer-wins), Cassandra multi-DC, Cosmos DB with configurable consistency.\n- Also harder: unique constraints, inventory and money (need a single owner or consensus), and debugging.\n\n## Choosing\n- Business tolerates minutes of downtime and small data loss: active-passive.\n- Need very high availability and low global latency, and data can be partitioned by user or merged: active-active.\n- Money and inventory: single-writer per entity, or consensus database.\n\n## Related concerns\n- Traffic steering: geo DNS, anycast, global load balancer, health-based failover.\n- Replication lag monitoring and read-your-writes: after a write, route that user's reads to the writing region for a short time.\n- Split brain: two regions both think they are primary. Prevent with fencing tokens or a quorum arbiter in a third location.\n- Cost of inter-region data transfer.\n\n## Interview follow-up\n\"Region fails during async replication\" means you lose unreplicated writes, so say what RPO and RTO the business accepts, then choose accordingly.",
+  "keyPoints": [
+   "Active-passive has a single writer, simple semantics and failover time, with potential data loss under async replication.",
+   "Active-active gives low latency and no failover event but needs conflict handling: LWW, home-region ownership, CRDTs, or consensus.",
+   "Cross-region replication costs tens to hundreds of ms; synchronous cross-region writes pay it on every write.",
+   "Prevent split brain with fencing or a third-site arbiter; tie the choice to RPO and RTO."
+  ],
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "AWS: Disaster recovery options in the cloud",
+    "url": "https://docs.aws.amazon.com/whitepapers/latest/disaster-recovery-workloads-on-aws/disaster-recovery-options-in-the-cloud.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Designing Data-Intensive Applications (Martin Kleppmann)",
+    "url": "https://dataintensive.net/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-feed-chat:0": {
+  "body": "## The question\nWhen user A posts, how does the post reach the home timelines of A's followers? Two strategies, and one famous edge case.\n\n## Fan-out on write (push)\nAt post time, look up the author's followers and insert the post id into each follower's precomputed timeline (a list in Redis or similar, capped at say 800 to 1000 entries).\n- Read is cheap: fetch the list, hydrate posts, return. Typically a single cache read.\n- Write is expensive: a user with 500 followers causes 500 inserts. Do it asynchronously through a queue and workers, so the post call returns fast.\n- Wastes work on inactive followers who may never open the app. Only fan out to recently active users.\n- Good when reads vastly outnumber writes, which is true for feeds.\n\n## Fan-out on read (pull)\nStore posts only under the author. When a user opens the feed, fetch the recent posts of everyone they follow and merge by time (or rank).\n- Write is cheap: one insert.\n- Read is expensive: if you follow 500 accounts, that is 500 lookups plus a merge, on the latency-critical path. Mitigate with caching of each author's recent posts.\n- Always up to date, no wasted work for inactive users, and deletes and edits are easy.\n\n## Celebrity problem\nAn account with 50 million followers posting once triggers 50 million timeline writes: huge spike, delayed delivery, wasted cost. Followers also see the post at different times.\n\n## Hybrid approach (what large systems do)\n- Normal users: fan-out on write.\n- High-follower accounts (above a threshold like 100k, or a flag): do not fan out. Store their posts in their own timeline.\n- On read, fetch the user's precomputed timeline (pushed content) and merge in recent posts from the few celebrities they follow (pulled content), then rank.\n- Threshold can be dynamic, and the number of celebrities followed per user is small, so the pull cost stays bounded.\nTwitter described this design publicly in its timeline talks.\n\n## Numbers\nA 300M-user service with 5M posts per day (about 60 per second average) and an average of 200 followers means about 12k timeline inserts per second average, with big peaks. Reads of the timeline are 100x or more that, which is why precomputing helps.\n\n## Pitfalls and follow-ups\n- Ordering and ranking: precomputed lists are time ordered, ranking is applied on read.\n- Follow and unfollow: backfill a few recent posts on follow, drop on unfollow.\n- Deletes: remove the post at hydration time (tombstone check), as removing from millions of lists is costly.\n- Storage: only post ids in timelines, with post content stored once.",
+  "keyPoints": [
+   "Fan-out on write precomputes follower timelines: fast reads, expensive writes, wasted on inactive users.",
+   "Fan-out on read merges followed accounts' posts at request time: cheap writes, slow reads.",
+   "Celebrity accounts make write fan-out explode, so large systems use hybrid: push for normal users, pull and merge for celebrities.",
+   "Store only post ids in timelines, fan out asynchronously via queues, only to active users."
+  ],
+  "diagram": "flowchart LR\nP[\"New post\"] --> Q[\"Fan-out queue\"]\nQ -->|normal author| TL[(\"Follower timeline caches\")]\nP -->|celebrity author| CP[(\"Celebrity posts store\")]\nR[\"Read feed\"] --> TL\nR --> CP\nTL --> M[\"Merge and rank\"]\nCP --> M",
+  "sources": [
+   {
+    "title": "Timelines at Scale (Raffi Krikorian, InfoQ)",
+    "url": "https://www.infoq.com/presentations/Twitter-Timeline-Scalability/",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design 101 (ByteByteGo)",
+    "url": "https://github.com/ByteByteGoHq/system-design-101",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-feed-chat:1": {
+  "body": "## What the timeline cache holds\nFor each active user, a list of post ids (and maybe a small score or author id) in reverse chronological order, kept in memory, such as a Redis list or sorted set keyed by user id.\n```\ntimeline:{userId} -> [postId, postId, ...]   (capped, e.g. 800)\n```\n- Storing ids only keeps memory small: 800 ids at 8 bytes is about 6.4 KB per user. For 100M active users that is on the order of 640 GB before overhead, spread across a sharded cache cluster, which is feasible.\n- Hydration: a read gets the ids, then multi-gets post bodies from a post cache, author profiles from a user cache, and counters (likes) from a counter store. Each is a separate cache with its own hit-rate target.\n- Cache misses: for users not in cache (inactive), rebuild by pulling from followed accounts, then store.\n- TTL or LRU eviction keeps only active users resident.\n- Pagination uses a cursor (last post id or score) rather than offset, so newly inserted posts do not shift pages.\n\n## Keeping it consistent\n- New post: fan-out workers LPUSH then LTRIM to the cap.\n- Delete: filter at read time against a deleted-posts check. Lazy cleanup avoids touching millions of lists.\n- Follow or unfollow: backfill or filter lazily.\n- Eventual consistency is acceptable: a post appearing a few seconds late is fine.\n\n## Ranking\nPure chronological order is simple, but engagement ranking increases usefulness.\n- Candidate generation: take the timeline entries plus pulled celebrity posts plus recommendations, a few hundred candidates.\n- Features: post age, author affinity (how often the viewer interacts with the author), post engagement (likes, comments, shares), media type, and negative signals (hidden, muted).\n- Scoring: a lightweight model (logistic regression or gradient-boosted trees, then neural models at scale) predicts the probability of engagement. Sort by predicted score.\n- Keep a latency budget of tens to a few hundred ms for the whole request, so heavy models run on a shortlist, in stages (cheap first-pass, expensive re-rank).\n- Post-processing: diversify (not ten posts from one author), dedupe, apply policy and safety filters, insert ads at slots.\n- Features are precomputed and stored in a feature store, with offline training and online serving.\n\n## Trade-offs\n- Ranking makes cached order unstable: refreshing a feed can reorder. Often the ranked page is snapshotted for the session, so scrolling is stable.\n- Cold-start users and new posts need exploration slots.\n- Measure with online experiments (A/B), as offline metrics can mislead.\n\n## Follow-up\nHow do you serve 1M reads per second? Shard cache by user id, replicate hot shards, add local in-process caches for hot posts, and use a CDN for media.",
+  "keyPoints": [
+   "Timeline cache stores capped lists of post ids per active user; content is hydrated from separate post, user and counter caches.",
+   "Use cursor pagination, lazy handling of deletes and eventual consistency for follow and unfollow.",
+   "Ranking is staged: candidate generation, feature fetch, cheap then heavy scoring, then diversity and policy filters within a tight latency budget.",
+   "Evict inactive users and rebuild their timelines on demand by pull."
+  ],
+  "sources": [
+   {
+    "title": "Timelines at Scale (Raffi Krikorian, InfoQ)",
+    "url": "https://www.infoq.com/presentations/Twitter-Timeline-Scalability/",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Instagram engineering blog",
+    "url": "https://medium.com/instagram-engineering",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-feed-chat:2": {
+  "body": "## Why WebSockets\nHTTP request/response is client-initiated. Chat, live updates and presence need the server to push. A WebSocket (RFC 6455) starts as an HTTP request that upgrades to a persistent, full-duplex TCP connection. After the handshake, either side can send small frames with very low overhead. Alternatives: long polling (simple, more overhead), Server-Sent Events (server to client only, auto-reconnect), and for mobile, platform push as a fallback when the app is closed.\n\n## The stateful gateway problem\nA WebSocket lives on one specific server for its lifetime. A single server can hold a large number of mostly idle connections: tens to a few hundred thousand with tuning (file descriptors, kernel buffers, memory per connection of a few KB to tens of KB). So 10M concurrent users needs on the order of 50 to 200 gateway servers.\n- Connection servers are stateful, unlike ordinary web servers. Put them behind a layer-4 or layer-7 load balancer that supports WebSocket upgrades. Use least-connections balancing.\n- Keep gateways dumb: they authenticate, hold the socket, and relay. Business logic lives in stateless backend services.\n- Deploys and scale-in drain connections gradually. Clients reconnect with exponential backoff and jitter. A deploy or crash that drops 100k connections at once causes a reconnect storm, so jitter matters.\n- Heartbeats (ping/pong every 20 to 30 s) detect dead connections and keep NAT and proxy idle timeouts from closing them.\n\n## Connection registry\nTo send user B a message, the backend must know which gateway holds B's socket.\n```\nconn:{userId} -> {gatewayId, connectionId, lastSeen}   (Redis, with TTL)\n```\n- On connect, the gateway writes the mapping (a user can have several devices, so store a set per user). On disconnect or heartbeat timeout, it removes it. A TTL refreshed by heartbeats cleans up crashed gateways.\n- Sending: the chat service looks up the registry, then sends to that gateway (via internal RPC) or publishes to a channel the gateway subscribes to (Redis pub/sub, Kafka, NATS) like gw:{gatewayId}. The gateway writes to the socket.\n- If the user is offline (no registry entry), persist the message and fire a mobile push notification.\n- Group chat: the message service resolves members, and fans out to each member's gateway. Large groups and channels might use per-channel pub/sub with gateways subscribing on behalf of connected members.\n\n## Pitfalls\n- Registry staleness: the message goes to a gateway that no longer has the socket. Treat delivery as unreliable and rely on acks and sync on reconnect, not on the registry being perfect.\n- Sticky routing is unnecessary for the gateway layer if the registry is used.\n- Auth: validate tokens at connect and on a refresh schedule.\n- Backpressure: a slow client must not make the gateway buffer unlimited data. Use bounded send queues and drop or disconnect.",
+  "keyPoints": [
+   "WebSockets give a persistent full-duplex channel; gateways are stateful and hold hundreds of thousands of idle connections each.",
+   "A connection registry (user to gateway id, with TTL refreshed by heartbeats) lets backend services route a message to the right gateway.",
+   "Handle reconnect storms with backoff and jitter, graceful draining on deploys, and heartbeats for dead connections.",
+   "If the user is offline, store the message and send a push notification; do not trust the registry as the delivery guarantee."
+  ],
+  "diagram": "flowchart LR\nA[\"User A\"] --> G1[\"Gateway 1\"]\nG1 --> CS[\"Chat service\"]\nCS --> R[(\"Registry: user to gateway\")]\nCS --> BUS[\"Pub/sub bus\"]\nBUS --> G2[\"Gateway 2\"]\nG2 --> B[\"User B\"]\nCS --> DB[(\"Message store\")]",
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "RFC 6455: The WebSocket Protocol",
+    "url": "https://www.rfc-editor.org/rfc/rfc6455",
+    "kind": "reference"
+   },
+   {
+    "title": "WebSockets API (MDN)",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-feed-chat:3": {
+  "body": "## Ordering\nMessages in a conversation must appear in the same order for everyone. Clocks on clients and servers disagree, so wall-clock timestamps are not enough.\n- Per-conversation sequence number: the server assigns a monotonically increasing number per conversation (or per user inbox) when it accepts the message. Clients sort by it. Generate with a per-conversation counter (an atomic increment in Redis or a database row), or partition the message log by conversation id so a single partition leader orders messages (Kafka with key = conversationId).\n- Time-sortable ids (Snowflake style: timestamp bits, machine id, sequence) work for per-shard ordering, but cross-machine order is only approximate.\n- Client-generated ids: the client attaches a unique message id (UUID) so retries are idempotent (the server dedups) and the UI can show the message optimistically before it is confirmed.\n- Ordering is only needed within a conversation, which makes sharding by conversation id natural and keeps the counter off the global path.\n\n## Delivery and read receipts\nStates: sent (server stored it), delivered (reached the recipient device), read (recipient viewed it).\n- Sender gets an ack from the server once the message is persisted (the single tick).\n- When the recipient device receives it, it sends a delivery ack back, and the server updates the state and notifies the sender (double tick).\n- When the recipient opens the chat, the client sends a read receipt, usually as \"read up to sequence N\", not one per message, which cuts traffic.\n- Receipts are small events that travel the same route in reverse. In large groups, receipts are often aggregated or dropped, since per-member receipts for a 10k group are too much.\n- Delivery is at-least-once: the sender retries until acked, and the server dedups by message id.\n\n## Offline sync\nA device that was offline must catch up on reconnect without gaps or duplicates.\n- Messages are stored durably per conversation (and a per-user inbox or sync log). Persist before acking the sender.\n- The client remembers the last sequence it has per conversation (or one global sync cursor). On reconnect it asks \"give me everything after cursor X\" and the server returns the missing range, paged.\n- Detect gaps: if the live stream delivers sequence 12 when the client has 10, it fetches 11 from the server instead of showing a hole.\n- Push notifications (APNs and FCM) wake the app when it is closed, carrying minimal data. The app then syncs.\n- Multiple devices: each device keeps its own cursor. The server stores the log once, per user.\n- Retention and local storage: the client stores history in a local database (SQLite) so it displays instantly, then syncs the delta. Older history loads on scroll.\n- End-to-end encrypted systems keep messages queued on the server until delivered, and deliver ciphertext only.\n\n## Pitfalls\n- Using timestamps for ordering (clock skew).\n- Treating the push channel as reliable. It is a hint only, and the sync API is the source of truth.\n- Sequence counter becoming a hotspot for huge group chats: shard channels, or accept fan-in on one partition since message rates per conversation are modest.",
+  "keyPoints": [
+   "Order messages with a server-assigned per-conversation sequence number, not client or wall-clock timestamps.",
+   "Client-generated message ids make retries idempotent and allow optimistic UI.",
+   "Receipts progress sent, delivered, read; read receipts use read-up-to-N and are aggregated in large groups.",
+   "Offline sync: durable log, client cursor, fetch everything after the cursor, detect gaps; push notifications are only wake-up hints."
+  ],
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Discord engineering blog",
+    "url": "https://discord.com/category/engineering",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-feed-chat:4": {
+  "body": "## What presence is\nShowing whether a user is online, offline or away (and \"last seen\"). It looks small but has a large fan-out: every status change must reach everyone watching that user, and status changes are frequent.\n\n## Detecting online status\n- Heartbeats: while the client holds a WebSocket, it sends a ping every 5 to 30 s. The server records last_seen in a store with a TTL of a few heartbeats, for example Redis: SET presence:{userId} online EX 30. If the key expires, the user is offline.\n- Connection events alone are not reliable: network drops often do not close the TCP connection cleanly, so heartbeat timeout is the real detector.\n- Flapping: a user going through a tunnel or switching networks disconnects and reconnects. Apply a grace period (wait 10 to 30 s before announcing offline) to avoid spamming status changes.\n- Multiple devices: online if any device is connected. Track per device and aggregate.\n- Away or idle: derived from client activity reports.\n\n## Publishing changes: fan-out\nAlice's status should reach her friends who are currently online and looking.\n- Pub/sub per user: friends' gateways subscribe to channel presence:{aliceId} for the users visible on the friend's screen. On a change, publish once and subscribers receive it.\n- For small friend lists (hundreds), push to online friends directly. For huge audiences (celebrities, big channels), do not push at all. Instead, fetch presence on demand when the viewer opens the profile or visible list, or poll at low frequency, since pushing is too expensive.\n- Fetch on demand, then subscribe only to what is visible on screen (the contact list page, the open chat) and unsubscribe on leaving.\n- Batch and rate limit updates (coalesce within a second).\n\n## Numbers\n100M online users, each changing state perhaps a few times a day, plus heartbeats. Heartbeats at 1 per 20 s from 100M users are 5M writes per second, which is large. Reduce by writing to the store less often than clients ping: gateways keep a local view and refresh the Redis TTL every minute, or refresh only when the TTL is nearly gone.\n\n## Storage\n- Redis for current presence (ephemeral, a loss only briefly shows wrong status). Last-seen timestamp in a durable store if the product shows it, written on disconnect rather than every heartbeat.\n- Shard by user id.\n\n## Trade-offs and privacy\n- Accuracy versus cost: seconds of staleness is acceptable.\n- Privacy controls: hide last seen, appear offline. Enforce on the server, not just the client.\n\n## Pitfall\nNaive design, where every status change fans out to all friends, makes load proportional to friends count times changes, which blows up for users with large friend lists.",
+  "keyPoints": [
+   "Detect presence by heartbeats with TTL in Redis, not by connection close events; use a grace period for flapping.",
+   "A user is online if any device is connected; aggregate per device state.",
+   "Fan out status only to interested online viewers via per-user pub/sub; for huge audiences fetch on demand instead of pushing.",
+   "Cut heartbeat write load by refreshing the store less often than clients ping, and subscribe only to visible contacts."
+  ],
+  "sources": [
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Presence on Slack (Slack engineering)",
+    "url": "https://slack.engineering/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-reliability:0": {
+  "body": "## Timeouts\nA call without a timeout can hang forever and tie up a thread, connection and memory in the caller, so the caller fails because the callee is slow. Rules:\n- Every remote call has a timeout: connect, request and overall deadline.\n- Choose from data: set it near the callee's high percentile (for example a bit above p99.9) so you cut off the long tail without causing spurious failures. The AWS Builders' Library suggests picking an acceptable false-timeout rate and reading the latency at that percentile.\n- Propagate deadlines: if the user-facing budget is 500 ms and 200 ms is spent, pass 300 ms downstream. Downstream stops working on abandoned requests.\n- Timeouts must shrink as you go deeper, not grow, or the caller gives up before the callee finishes.\n\n## Retries\nRetries fix transient failures (a dropped packet, a restarting node), but they are dangerous when the failure is overload.\n- Retry only idempotent operations, or ones protected by an idempotency key. A retried \"charge card\" without a key can double charge.\n- Retry only retryable errors: timeouts, connection resets, 503, 429. Not 400s.\n- Limit attempts (2 or 3) and total time.\n- Retry amplification: with retries at each of 3 layers and 3 attempts each, the bottom service sees up to 27 times the load at the worst moment, exactly when it is struggling (a retry storm that prevents recovery). Retry at one layer only, and use a retry budget (for example retries allowed at most 10 percent of the request volume) or token bucket that stops retrying when the failure rate is high. gRPC and Envoy both support budgets or limits.\n- Combine with a circuit breaker so retries stop when the dependency is clearly down.\n\n## Exponential backoff\nWait longer after each failure: delay = min(cap, base * 2^attempt). For example 100 ms, 200 ms, 400 ms, 800 ms, capped at 20 s. This gives the dependency room to recover, and spreads load over time.\n\n## Jitter\nWithout randomness, clients that failed together retry together, creating synchronised waves (thundering herd). Jitter spreads them.\n- Full jitter: sleep = random(0, min(cap, base * 2^attempt)). The AWS Architecture Blog showed this reduces total calls and completion time compared with no jitter.\n- Equal jitter: half fixed, half random. Decorrelated jitter: sleep = min(cap, random(base, previous_sleep * 3)).\n```\nfor attempt in 0..max:\n    try call(timeout=remaining_deadline); return\n    sleep(random(0, min(cap, base * 2**attempt)))\n```\nAdd jitter to periodic jobs and cache expiry (TTL plus random) too, to avoid synchronised spikes.\n\n## Interview points\nTie them together: deadline budget, bounded retries on one layer, backoff with full jitter, idempotency keys for writes, a circuit breaker, and metrics on retry rate.",
+  "keyPoints": [
+   "Every call needs a timeout derived from observed latency percentiles, with deadlines propagated and shrinking downstream.",
+   "Retry only idempotent operations on transient errors, bounded, at a single layer; use retry budgets to prevent amplification.",
+   "Exponential backoff spaces retries; jitter (full jitter is a good default) breaks synchronised thundering herds.",
+   "Nested retries multiply load (3 layers x 3 attempts = 27x), so combine with circuit breakers."
+  ],
+  "sources": [
+   {
+    "title": "Timeouts, retries and backoff with jitter (AWS Builders' Library)",
+    "url": "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/",
+    "kind": "reference"
+   },
+   {
+    "title": "Exponential Backoff And Jitter (AWS Architecture Blog)",
+    "url": "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/",
+    "kind": "reference"
+   },
+   {
+    "title": "Google SRE book: Addressing Cascading Failures",
+    "url": "https://sre.google/sre-book/addressing-cascading-failures/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-reliability:1": {
+  "body": "## Hedged requests (tail latency)\nAt scale, the slowest of many parallel calls dominates user latency. If a request fans out to 100 backends and each has a 1 percent chance of being slow, about 63 percent of user requests hit at least one slow call. Slowness is often random (garbage collection, noisy neighbour, a disk hiccup), not a systematic property of a request.\n\nHedging: send the request to one replica, and if no response arrives within a short delay, send a duplicate to another replica. Use whichever answers first and cancel the other.\n- Set the hedge delay near the p95 latency of the service, so only about 5 percent of requests are duplicated. Google's \"The Tail at Scale\" paper reported large p99.9 reductions for a small increase in load with this approach.\n- Only for idempotent, read-like operations, since the work may run twice.\n- Tied requests: send to two replicas at once and each tells the other when it starts, so the loser cancels, reducing wasted work.\n- Do not hedge when the system is overloaded: it adds load. Combine with a budget, and disable under high load.\n- Needs spare capacity and independent replicas (different failure domains).\n\n## Load shedding\nWhen demand exceeds capacity, accepting everything makes every request slow, queues grow, latency exceeds client timeouts, and useful throughput (goodput) collapses, since work is done for clients who already gave up. Load shedding deliberately rejects excess work early so the accepted work succeeds.\n- Fail fast: return 503 or 429 quickly, cheaply, with Retry-After. Do the check at the edge before expensive work.\n- Triggers: concurrency limit exceeded, queue wait above a threshold, CPU saturation, or request age (drop requests already older than the client's deadline).\n- Prioritise: shed by criticality. Keep health checks, logins and payments. Drop prefetching, analytics and batch work first. Per-tenant quotas stop one client from consuming all capacity.\n- Adaptive concurrency limits (AIMD, as in Netflix's concurrency-limits library) find a safe limit automatically.\n- Bounded queues, preferably LIFO under overload so the freshest request, most likely to still be useful, is served first.\n- Tune clients to not retry instantly on 503, or shedding turns into a retry storm.\n\n## Example\nA search service sized for 10k QPS receives 15k. Without shedding every request takes 5 s and times out. With a concurrency limit it serves 10k within normal latency, and rejects 5k immediately. Rejected clients back off, and autoscaling adds capacity.\n\n## Pitfalls\nShedding based on CPU alone is laggy. Hedging plus retries plus overload becomes a self-inflicted outage. Measure the hedge rate and shed rate as metrics.",
+  "keyPoints": [
+   "Hedged requests duplicate slow idempotent calls after about p95 latency to cut tail latency at the cost of a few percent extra load.",
+   "Never hedge or retry blindly during overload: budget it and disable under high load.",
+   "Load shedding rejects excess work early with 503 or 429 so accepted requests meet latency, protecting goodput.",
+   "Shed by priority and tenant, drop requests already past the client's deadline, and prefer LIFO queues under overload."
+  ],
+  "sources": [
+   {
+    "title": "The Tail at Scale (Dean and Barroso, Google)",
+    "url": "https://research.google/pubs/the-tail-at-scale/",
+    "kind": "reference"
+   },
+   {
+    "title": "Using load shedding to avoid overload (AWS Builders' Library)",
+    "url": "https://aws.amazon.com/builders-library/using-load-shedding-to-avoid-overload/",
+    "kind": "reference"
+   },
+   {
+    "title": "Google SRE book: Handling Overload",
+    "url": "https://sre.google/sre-book/handling-overload/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-reliability:2": {
+  "body": "## Graceful degradation\nWhen a dependency fails or load spikes, serve a reduced but useful experience instead of an error page. Decide in advance which features are essential (checkout) and which are optional (recommendations, reviews, personalisation).\n\nTechniques:\n- Fallback to a default: if the recommendation service times out, show popular items from a cache or a static list.\n- Serve stale: return cached data past its TTL when the origin is down (stale-if-error). A slightly old product price list is better than an outage, but be careful with data that must be exact, such as balances and stock at purchase time.\n- Disable non-critical features: feature flags or automatic switches turn off heavy functionality (search suggestions, live counters) when under stress.\n- Reduce quality: lower image resolution, skip personalisation, return fewer results, shorten page size.\n- Read-only mode: if the primary database is down, allow browsing while rejecting writes, with a clear message.\n- Queue and defer: accept the write into a durable queue and process later (\"we got your order, confirmation by email\").\n- Partial responses: a page assembled from many services renders what it can and hides failed widgets, each fetch with its own timeout.\n- Be careful with fallbacks: they are rarely exercised, and can fail in surprising ways or create a second bug under load. The AWS Builders' Library warns against fallback code paths that only run during failures. Prefer fail-fast with static stability, or test fallbacks regularly.\n\n## Bulkheads\nIsolate resources so a failure in one area cannot drain shared resources, like watertight ship compartments.\n- Separate thread pools, connection pools or semaphores per downstream dependency. If the reviews service hangs, only its pool is exhausted.\n- Separate instance groups or clusters for critical and non-critical traffic (checkout versus catalog browse), or for large customers versus small.\n- Per-tenant quotas and rate limits, plus shuffle sharding: assign each customer to a small random subset of cells, so a poison customer only affects the few others that share exactly the same subset.\n- Cell-based architecture: the system is split into independent cells, each serving a slice of users, so a failure or bad deploy is bounded to one cell.\n- Cost: lower utilisation efficiency, since reserved capacity may idle, and more config to manage.\n\n## Example\nProduct page calls catalog, price, reviews and recommendations. Each call has its own timeout (200 ms, 500 ms for optional ones) and its own pool. Reviews outage leads to an empty reviews section. Recommendations fall back to a cached bestseller list. Checkout is unaffected because it runs in its own service group.\n\n## Interview tip\nName the failure, name the degraded behaviour, and say how you would detect and recover automatically. Classify features as critical or optional ahead of time.",
+  "keyPoints": [
+   "Decide in advance which features are critical and which can degrade: defaults, stale cache, disabled features, read-only mode, deferred writes.",
+   "Fallback paths are rarely exercised, so test them or prefer simple fail-fast designs.",
+   "Bulkheads isolate pools, instances or cells per dependency, tenant or criticality so one failure cannot exhaust shared resources.",
+   "Shuffle sharding and cells bound the blast radius of a bad tenant or deploy."
+  ],
+  "sources": [
+   {
+    "title": "Bulkhead pattern (Azure)",
+    "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead",
+    "kind": "reference"
+   },
+   {
+    "title": "Avoiding fallback in distributed systems (AWS Builders' Library)",
+    "url": "https://aws.amazon.com/builders-library/avoiding-fallback-in-distributed-systems/",
+    "kind": "reference"
+   },
+   {
+    "title": "Workload isolation using shuffle-sharding (AWS Builders' Library)",
+    "url": "https://aws.amazon.com/builders-library/workload-isolation-using-shuffle-sharding/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-reliability:3": {
+  "body": "## Definitions\n- RPO (recovery point objective): how much data you can afford to lose, measured as time. RPO of 5 minutes means you must be able to restore to a state at most 5 minutes old.\n- RTO (recovery time objective): how long the service can be down before you must be back. RTO of 1 hour means recovery must complete within an hour.\nBoth are business decisions. Tighter targets cost more. Ask: what does an hour of downtime cost?\n\n## Backups\n- Types: full, incremental (changes since the last backup), differential. Continuous archiving of the write-ahead log supports point-in-time recovery (PITR), letting you restore to just before a bad delete.\n- Follow the 3-2-1 rule: 3 copies, 2 media types, 1 offsite (different region or account).\n- Protect against ransomware and operator error: immutable (write-once) backups, separate credentials and account, and delete protection.\n- A backup that has never been restored is not a backup. Test restores regularly and measure the restore time, because it determines the real RTO. Restoring multi-TB can take hours.\n- Backups guard against corruption and human error. Replication does not: a bad delete replicates instantly.\n\n## DR strategies (AWS names, increasing cost and decreasing RTO and RPO)\n- Backup and restore: RPO hours, RTO hours or more. Cheapest.\n- Pilot light: core data replicated continuously, minimal servers off or tiny. Scale up on disaster. RTO tens of minutes to hours.\n- Warm standby: a scaled-down but running copy of the full stack. RTO minutes.\n- Multi-site active-active: full capacity in several regions. RTO near zero, RPO near zero or small, highest cost and complexity.\n\n## Failover\n- Detect: health checks from outside the failing region, with enough evidence to avoid false triggers (flapping).\n- Decide: automatic for fast RTO, or human-approved for risky actions such as promoting a database, where false failover and split brain are costly.\n- Promote the replica, redirect traffic (DNS with low TTL, global load balancer, anycast), warm caches, and scale up capacity.\n- Avoid split brain with fencing: ensure the old primary can no longer accept writes.\n- Failback: return to the primary after repair, often as hard as failover. Plan it.\n- Asynchronous replication means the replica lags, so promotion can lose the tail of writes (RPO above zero). Synchronous replication reduces data loss at the cost of write latency.\n- Dependencies: DNS, identity provider, secrets, CI/CD, and third-party services must also survive. Many DR plans fail because of a forgotten dependency, or because the control plane is in the failed region.\n\n## Practice\nRunbooks, regular DR drills in production-like environments, infrastructure as code to rebuild quickly, and documented ownership. Keep capacity quotas in the DR region.\n\n## Example\nOrder database, RPO 1 minute, RTO 15 minutes. Use cross-region async replica (lag under seconds) plus PITR backups. Warm standby app tier at 30 percent capacity with autoscaling. Runbook: promote replica, flip traffic, scale up. Quarterly drill measuring the actual figures.",
+  "keyPoints": [
+   "RPO is acceptable data loss; RTO is acceptable downtime; both are business decisions that drive cost.",
+   "Backups protect against corruption and human error (replication does not); test restores and keep immutable offsite copies.",
+   "DR options in order of cost: backup and restore, pilot light, warm standby, multi-site active-active.",
+   "Failover needs detection, fencing against split brain, traffic redirection, and a tested failback; drill regularly."
+  ],
+  "sources": [
+   {
+    "title": "AWS: Disaster recovery options in the cloud",
+    "url": "https://docs.aws.amazon.com/whitepapers/latest/disaster-recovery-workloads-on-aws/disaster-recovery-options-in-the-cloud.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Google SRE book: Embracing Risk",
+    "url": "https://sre.google/sre-book/embracing-risk/",
+    "kind": "reference"
+   },
+   {
+    "title": "System Design Interview (Alex Xu), ByteByteGo",
+    "url": "https://bytebytego.com/",
+    "kind": "reference"
+   }
+  ]
+ },
+ "hld-reliability:4": {
+  "body": "## What it is\nChaos engineering is the discipline of experimenting on a system in production-like conditions to build confidence in its ability to withstand turbulent conditions. It started at Netflix (Chaos Monkey, which terminates random instances) and is codified in the Principles of Chaos Engineering.\n\nIt is not random breakage. It is the scientific method applied to reliability.\n\n## The experiment loop\n1. Define steady state with a measurable business or SLI metric (orders per minute, stream starts per second, p99 latency). Not CPU.\n2. Hypothesise: \"if one availability zone's cache goes down, steady state holds, with latency up by less than 20 percent.\"\n3. Inject realistic failures: kill instances or pods, add network latency or packet loss, block a dependency, exhaust disk or CPU, fail a zone, expire certificates, skew clocks, throttle a database.\n4. Observe and compare against the control group or baseline.\n5. Fix the weaknesses found, then repeat and automate.\n\n## Safety rules\n- Start small with a limited blast radius: one instance, a small percentage of traffic, one non-critical service, staging first, then production.\n- Have an abort condition and a kill switch: stop automatically if the SLI drops below a threshold.\n- Run in business hours with the team watching, and notify stakeholders.\n- Ensure observability is good before starting, or you cannot learn anything.\n- Do not run chaos on a system known to be broken. Fix the known problem first.\n\n## Game days\nA scheduled exercise where the team rehearses a failure scenario together, such as \"primary database fails\" or \"region evacuated\".\n- Participants play their roles on-call, using real runbooks, dashboards and communication channels. A facilitator injects the failure, and scribes record the timeline.\n- Goals: validate runbooks, alerts and dashboards, find gaps in knowledge and access (can on-call actually promote the replica?), train new people, and measure real detection and recovery times against RTO and RPO.\n- Follow with a blameless review and tracked action items.\nTypes: tabletop (talk through), staging, and production game days.\n\n## Tools\nChaos Monkey, Gremlin, AWS Fault Injection Service, Chaos Mesh and Litmus for Kubernetes, Toxiproxy for network faults.\n\n## What it finds\nMissing timeouts, retry storms, a fallback that does not work, hidden single points of failure, alerts that never fire, autoscaling that is too slow, stale runbooks, and cross-service coupling.\n\n## Interview tips\nConnect it to the other reliability patterns: chaos experiments verify that your timeouts, circuit breakers, bulkheads and failover really work. State the steady-state metric, hypothesis, blast radius and abort criteria. It complements, not replaces, testing and load tests.",
+  "keyPoints": [
+   "Chaos engineering tests hypotheses about steady state (a business or SLI metric) by injecting real failures, not random breakage.",
+   "Limit blast radius, define abort conditions, and ensure observability before running experiments, ideally in production gradually.",
+   "Game days rehearse incident scenarios with real runbooks to validate alerts, access, procedures and recovery time versus RTO and RPO.",
+   "It verifies resilience patterns such as timeouts, breakers, bulkheads and failover actually work; follow with blameless reviews."
+  ],
+  "sources": [
+   {
+    "title": "Principles of Chaos Engineering",
+    "url": "https://principlesofchaos.org/",
+    "kind": "reference"
+   },
+   {
+    "title": "Netflix TechBlog",
+    "url": "https://netflixtechblog.com/",
+    "kind": "reference"
+   },
+   {
+    "title": "Google SRE book: Testing for Reliability",
+    "url": "https://sre.google/sre-book/testing-reliability/",
+    "kind": "reference"
+   }
+  ]
+ }
+}

@@ -1,5 +1,6 @@
 "use client";
 
+import { ExtensionStatus } from "@/components/settings/extension-status";
 import { useEffect, useState, useTransition } from "react";
 import { CalendarDays, CalendarOff, Clock, Code2, Gauge, Lock, Newspaper, Plus, RotateCcw, Save, Sparkles, Timer, Wallet, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -469,6 +470,7 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
         }
         contentClassName="grid gap-4 sm:grid-cols-2"
       >
+        <ExtensionStatus />
         {ASK_SUBJECTS.map((s) => (
           <Field key={s.id} id={`gemini-${s.id}`} label={s.label} error={err(`geminiLinks.${s.id}`)}>
             <Input

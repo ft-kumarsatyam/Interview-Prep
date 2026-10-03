@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { javascript } from "@codemirror/lang-javascript";
 import { python } from "@codemirror/lang-python";
+import { sql, SQLite } from "@codemirror/lang-sql";
 import { indentUnit } from "@codemirror/language";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -12,8 +13,15 @@ import { useTheme } from "next-themes";
 import type { Language } from "@/lib/domain/starters";
 import { cn } from "@/lib/utils";
 
-const languageExtension = (lang: Language): Extension =>
-  lang === "python" ? [python(), indentUnit.of("    ")] : [javascript({ typescript: lang === "typescript" }), indentUnit.of("  ")];
+/** The runnable languages plus SQL, which the DB Lab uses (it isn't a DSA language). */
+export type EditorLanguage = Language | "sql";
+
+const languageExtension = (lang: EditorLanguage): Extension =>
+  lang === "python"
+    ? [python(), indentUnit.of("    ")]
+    : lang === "sql"
+      ? [sql({ dialect: SQLite }), indentUnit.of("  ")]
+      : [javascript({ typescript: lang === "typescript" }), indentUnit.of("  ")];
 
 const sizing = (fontSize: number, minHeight: string, fill: boolean) =>
   EditorView.theme({
@@ -40,7 +48,7 @@ export function CodeEditor({
   /** Mod-Shift-Enter. */
   onSubmit?: () => void;
   onSave?: () => void;
-  language?: Language;
+  language?: EditorLanguage;
   fontSize?: number;
   minHeight?: string;
   /** Fill the parent's height and scroll inside, instead of growing with the content. */

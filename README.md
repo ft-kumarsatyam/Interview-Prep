@@ -19,8 +19,8 @@ Frontend and backend live in **one Next.js 16 repo**, deployed on Vercel with Mo
 | Content | Details |
 |---|---|
 | 671 LeetCode problems (free, links checked) | 606 DSA (151 core first, then extended) · 35 JavaScript (*30 Days of JS*) · 30 SQL; 83 runnable in the in-app IDE |
-| 70 topics, 410 subtopics | 10 tracks: JS & TS · Node · DSA concepts · DBMS & SQL · OOP · LLD · HLD · CS · AI · Behavioral |
-| 5,584 bank quiz questions | about 11 hand-written per subtopic (single, multi-select, true/false, JS output; tagged easy/medium/hard) plus DSA patterns. JS output-prediction answers are verified by actually running the code. Practice rotates toward unseen and missed questions, and a Mistakes review re-asks what you got wrong |
+| 79 topics, 502 subtopics, 250 written lessons | 10 tracks: JS & TS · Node · DSA concepts · DBMS & SQL · OOP · LLD · HLD · CS · AI · Behavioral |
+| 5,656 bank quiz questions | about 11 hand-written per subtopic (single, multi-select, true/false, JS output; tagged easy/medium/hard) plus DSA patterns. JS output-prediction answers are verified by actually running the code. Practice rotates toward unseen and missed questions, and a Mistakes review re-asks what you got wrong |
 | 54 news feeds + Google News keyword feeds | AI labs, AI news, JS/Node, databases, system design (ByteByteGo, System Design One, AlgoMaster…), big-tech engineering, tech news, career |
 | 25 system design case studies | URL shortener, KV store, rate limiter, ID generator, notifications, news feed, chat, video streaming, ride hailing, payments, ticket booking, collaborative docs, autocomplete, web crawler, file sync, ad click aggregator, leaderboard and more |
 
@@ -85,7 +85,7 @@ npm run hash -- 'a-long-password-you-will-remember'   # paste output as ADMIN_PA
 openssl rand -base64 32                               # paste as AUTH_SECRET
 openssl rand -hex 32                                  # paste as CRON_SECRET
 # fill MONGODB_URI, ADMIN_EMAIL, ADMIN_NAME (and optionally LEETCODE_USERNAME) in .env.local
-npm run seed        # loads 671 problems, 70 topics and settings (safe to re-run)
+npm run seed        # loads 671 problems, 79 topics and settings (safe to re-run)
 npm run dev         # http://localhost:3000 → sign in → open /setup to see what's left
 ```
 
@@ -101,6 +101,10 @@ Other scripts:
 | `npm run quiz-bank -- --llm` | Same, plus LLM-written questions per subtopic (needs `LLM_API_KEY`; `LLM_DELAY_MS` paces free-tier rate limits) |
 | `npm run icons` | Regenerates the PWA icons in `public/` and `app/apple-icon.png` from the logo |
 | `curl -H "Authorization: Bearer $CRON_SECRET" localhost:3000/api/cron/morning` | Runs the morning job locally (news, article text prefetch, plan, LeetCode sync). `/setup` has a button for it too |
+
+### Optional: Ask Gemini browser extension
+
+Load the `extension/` folder (Chrome/Edge/Brave: `chrome://extensions` → Developer mode → Load unpacked) and "Ask Gemini" will type the question into your open Gemini tab. Details in `extension/README.md`. The app works the same without it.
 
 ## 3. Keep building with Claude Code or Cursor
 

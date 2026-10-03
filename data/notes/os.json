@@ -1,0 +1,883 @@
+{
+ "os-concurrency:0": {
+  "body": "## The problem\nYou want to do many things at once: serve 10,000 clients, keep a UI responsive, use 8 cores. The OS and runtimes offer three units of concurrency with very different costs and isolation.\n\n## Process\n- Own virtual address space, file-descriptor table, page tables. Isolation is enforced by the MMU, so one crash does not corrupt another.\n- Creation is heavy (fork copies or copy-on-write maps page tables); a context switch between processes swaps the address space (TLB effects).\n- Communication needs IPC: pipes, sockets, shared memory, message queues.\n\n## Thread (kernel thread)\n- Shares address space, heap, globals and fds with sibling threads; has its own stack (default 8 MB virtual on Linux, only touched pages cost RAM), registers and program counter.\n- Cheap to create (tens of microseconds) and to switch (no address-space change), but one bug (wild pointer, data race) can corrupt the whole process, and shared state needs locks.\n\n## Coroutine / async task\n- A user-space unit of work scheduled by a runtime, not the kernel. A coroutine suspends at an explicit point (await, yield) and the runtime resumes another. Switch cost is a function call, roughly tens of nanoseconds, and each task costs hundreds of bytes to a few KB instead of a stack of many KB.\n- Cooperative: a task that never yields (a CPU-bound loop) blocks everything else on that thread.\n- Go goroutines and Erlang processes are M:N green threads that are preemptible by the runtime; JS async functions and Python asyncio are single-threaded cooperative.\n\n## Worked comparison\nServing 10,000 idle connections:\n- Process per connection: 10,000 address spaces, GBs of memory, heavy switching.\n- Thread per connection: ~10,000 stacks; works on modern Linux but memory and scheduler overhead hurt (the old C10K problem).\n- Async tasks on an event loop: 10,000 small closures, a few MB total.\n\n## When to use what\n- Isolation, fault containment, security boundaries (browser tabs, Postgres backends, Chrome renderers): processes.\n- CPU-bound parallelism sharing data: threads (or processes in Python because of the GIL).\n- I/O-bound with huge fan-out: async/coroutines.\n\n## Interview follow-ups\n- What do threads share vs not? Shared: code, heap, globals, fds. Private: stack, registers, thread-local storage.\n- Why does Node use one thread plus a pool? JS is single-threaded for simplicity; libuv's thread pool handles blocking fs/DNS/crypto.",
+  "keyPoints": [
+   "Processes isolate memory; threads share it and only own a stack and registers; coroutines are scheduled in user space.",
+   "Coroutine switches cost nanoseconds but are cooperative: a CPU-bound task starves the loop.",
+   "Pick processes for isolation, threads for CPU parallelism, async for I/O fan-out.",
+   "Sharing memory is what makes threads fast and what makes data races possible."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Concurrency and Threads",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-intro.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-concurrency:1": {
+  "body": "## What a context switch is\nThe CPU runs one thread per core at a time. To give the illusion of parallelism the kernel saves the running thread's state and loads another's. State saved: general registers, program counter, stack pointer, flags, FPU/SIMD state (often lazily). It lives in the PCB / task_struct.\n\n## When it happens\n- Voluntary: the thread blocks (I/O, lock, sleep) or yields.\n- Involuntary: a timer interrupt fires at the end of the time slice (preemption), or a higher-priority thread becomes runnable.\n- Switching processes also changes the page-table base (CR3 on x86); without PCID tags this flushes the TLB, so the next accesses are slow.\n\n## The scheduler's job\nPick the next runnable task. Linux CFS (and its successor EEVDF in newer kernels) tracks virtual runtime per task and picks the one that has received the least CPU, so interactive tasks that sleep a lot get picked quickly. Real-time classes (SCHED_FIFO, SCHED_RR) override this.\n\n## Cost\n- Direct cost: roughly 1-5 microseconds for save/restore plus scheduler logic.\n- Indirect cost (often larger): cold L1/L2 caches, branch predictor and TLB state. A thread that gets rescheduled can lose tens of microseconds of useful work.\n- Rule of thumb: thousands of switches per second per core is fine; hundreds of thousands means too many runnable threads.\n\n## Worked example\nTwo CPU-bound threads on one core with a 10 ms slice and 5 microsecond switch: overhead is 5us / 10ms = 0.05%. With a 100 microsecond slice it becomes 5%, plus cache damage. This is why shorter quanta improve response time but cost throughput.\n\n## Pitfalls and follow-ups\n- Thread-per-request servers with thousands of threads spend time in the scheduler, not your code; use pools or async.\n- Process affinity (pinning) reduces cache misses from migration.\n- Interrupt vs context switch: an interrupt handler runs on the current thread's kernel stack and need not switch threads.",
+  "keyPoints": [
+   "A context switch saves registers and PC into the PCB and loads another task's; process switches also change the address space.",
+   "Direct cost is a few microseconds; the hidden cost is cold caches and TLB.",
+   "Quantum length trades response time against throughput overhead.",
+   "Preemption comes from the timer interrupt; blocking causes voluntary switches."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Limited Direct Execution",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-mechanisms.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-concurrency:2": {
+  "body": "## The problem\nTwo threads doing counter++ each read, add, write. Interleaving loses updates. A critical section must be executed by one thread at a time, and threads need to wait for conditions.\n\n## Mutex\n- Binary lock with ownership: only the thread that locked may unlock.\n- lock() blocks if held; the kernel parks the thread (on Linux a futex, which only enters the kernel under contention, so uncontended lock/unlock is ~20 ns in user space).\n- Use it to protect invariants on shared data.\n\n## Semaphore\n- An integer counter with wait (P, decrement, block if below zero) and signal (V, increment, wake one).\n- No ownership: any thread can signal. Counting semaphores model a pool of N resources (N connection slots); a binary semaphore is similar to a mutex but without ownership, so it suits signaling between threads.\n\n## Condition variable\nLets a thread wait until a predicate becomes true, atomically releasing the mutex while sleeping.\n\n```\nlock(m)\nwhile (queue.empty())      // WHILE, not IF\n    wait(cv, m)            // releases m, sleeps, re-acquires m on wake\nitem = queue.pop()\nunlock(m)\n```\n\nProducer: lock, push, signal(cv), unlock.\n\n## Why while and not if\n- Spurious wakeups are allowed by POSIX.\n- With several consumers, another thread may grab the item between the signal and your re-acquire of the mutex (Mesa semantics). Always re-check the predicate.\n\n## Trade-offs\n- Mutex: simple, but blocking costs a context switch when contended. Spinlocks burn CPU but win when the hold time is shorter than a switch (kernel code, short sections).\n- Lock granularity: coarse is safe and slow, fine is fast and deadlock-prone.\n- Signal vs broadcast: signal wakes one waiter, broadcast wakes all (use when waiters wait on different predicates).\n\n## Follow-ups\n- Mutex vs semaphore: ownership and purpose (mutual exclusion vs signaling/counting).\n- Priority inversion: a low-priority holder blocks a high-priority waiter while a medium one runs; fix with priority inheritance (the 1997 Mars Pathfinder resets).",
+  "keyPoints": [
+   "Mutexes give mutual exclusion with ownership; semaphores are counters for resource pools and signaling.",
+   "Condition variables always pair with a mutex and a predicate loop (while, not if).",
+   "Spurious wakeups and Mesa semantics make re-checking the predicate mandatory.",
+   "Priority inversion is solved with priority inheritance."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Condition Variables",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "OSTEP: Semaphores",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-sema.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-concurrency:3": {
+  "body": "## Definition\nDeadlock: a set of threads each holds a resource and waits for one held by another in the set, so none can proceed.\n\n## The four Coffman conditions (all must hold)\n- Mutual exclusion: resources are non-shareable.\n- Hold and wait: a thread holds some resources while requesting more.\n- No preemption: resources cannot be forcibly taken.\n- Circular wait: a cycle T1 -> T2 -> ... -> T1 in the wait-for graph.\n\n## Classic example\n```\nThread A: lock(L1); lock(L2); ...\nThread B: lock(L2); lock(L1); ...\n```\nIf A takes L1 and B takes L2 before either takes the second, both block forever.\n\n## Prevention: break one condition\n- Circular wait (the practical one): impose a global lock order (for example by lock address or id) and always acquire in that order. Fix above: both lock L1 then L2.\n- Hold and wait: acquire all locks at once or release everything and retry (try-lock with backoff). Risks livelock.\n- No preemption: allow timeouts or abort-and-retry; databases kill a victim transaction.\n- Mutual exclusion: use lock-free structures or immutable data where possible.\n\n## Avoidance vs prevention vs detection\n- Prevention: structurally make deadlock impossible.\n- Avoidance: grant requests only if the system stays in a safe state (Banker's algorithm); needs advance knowledge of maximum needs, rare in practice.\n- Detection and recovery: allow it, find cycles, then kill or roll back. Databases do this.\n- Ostrich: ignore it (general-purpose OSes do for user locks).\n\n## Debugging tips\n- Take a thread dump (jstack, gdb thread apply all bt) and look for threads blocked in lock acquisition forming a cycle.\n- Use timeouts on lock acquisition in production so a deadlock becomes an error, not a hang.\n\n## Follow-ups\n- Is a deadlock possible with a single lock? Yes if non-reentrant and the thread relocks it (self-deadlock).\n- Database row locks: transfer(a,b) and transfer(b,a) concurrently; fix by ordering on account id.",
+  "keyPoints": [
+   "Deadlock needs mutual exclusion, hold-and-wait, no preemption and circular wait; remove one.",
+   "Global lock ordering is the standard practical prevention.",
+   "Timeouts and try-lock turn silent hangs into recoverable errors.",
+   "Databases detect cycles and abort a victim instead of preventing them."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Common Concurrency Problems",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ],
+  "diagram": "flowchart LR\nA[\"Thread A holds L1\"] -->|waits for| L2[\"Lock L2\"]\nL2 -->|held by| B[\"Thread B\"]\nB -->|waits for| L1[\"Lock L1\"]\nL1 -->|held by| A"
+ },
+ "os-concurrency:4": {
+  "body": "## Single-threaded does not mean race-free\nJS runs one callback at a time, so there are no data races on memory, but there are logical races: any await yields to the event loop, and other callbacks may run in between and change the state you just checked.\n\n## Check-then-act across an await\n```js\nasync function withdraw(id, amount) {\n  const acct = await db.get(id);        // read balance 100\n  if (acct.balance < amount) throw new Error(\"insufficient\");\n  await db.set(id, acct.balance - amount); // write\n}\n// two concurrent withdraw(id, 80): both read 100, both pass the check, both write 20\n```\nResult: 160 withdrawn from a balance of 100. The check and the write are not atomic.\n\n## Fixes\n- Atomic DB operation: UPDATE accounts SET balance = balance - 80 WHERE id = ? AND balance >= 80, then check affected rows.\n- Optimistic concurrency: version column or ETag; write fails if the version changed, then retry.\n- Pessimistic lock: SELECT ... FOR UPDATE in a transaction.\n- In-process serialization: a per-key promise chain or a mutex (async-mutex style) so only one withdraw per account runs. Works only for a single process; with multiple instances you need the DB or a distributed lock.\n- Idempotency keys for retried requests.\n\n## Other common shapes\n- Cache stampede: many requests miss simultaneously and all recompute; fix with request coalescing (store the in-flight promise in a map).\n- Double-submit: user clicks twice; disable the button and use idempotency keys server-side.\n- Lazy init: if (!conn) conn = await connect() can create two connections; store the promise, not the result.\n\n## Interview angle\nShow that the bug exists even in a single process, then show that the in-memory lock is insufficient once you scale to N instances; the invariant must be enforced where the data lives.",
+  "keyPoints": [
+   "Every await is a point where other callbacks can interleave, so check-then-act is not atomic.",
+   "Enforce invariants in the database with conditional updates, versions or row locks.",
+   "In-process mutexes do not protect you across multiple server instances.",
+   "Cache the in-flight promise to coalesce duplicate work."
+  ],
+  "sources": [
+   {
+    "title": "Node.js event loop guide",
+    "url": "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-concurrency:5": {
+  "body": "## The problem\nA server with 10,000 sockets needs to know which are ready. select/poll take the entire fd list on every call and scan it: O(n) per call. At 10k mostly idle connections that wastes time (the C10K problem).\n\n## epoll (Linux), kqueue (BSD/macOS)\n- epoll_create creates an instance; epoll_ctl registers or removes fds once; epoll_wait returns only the ready fds. Cost is O(ready), not O(registered).\n- kqueue is similar, and also handles files, signals, timers and process events.\n- IOCP on Windows is completion-based (you start the operation, the OS tells you when it finished) as opposed to readiness-based.\n\n## Level vs edge triggered\n- Level-triggered (default): epoll_wait keeps reporting an fd while data remains. Forgiving.\n- Edge-triggered (EPOLLET): reports only on state change; you must read until EAGAIN or you will miss data. Fewer wakeups, more complexity.\n\n## Why Node scales I/O\n- One JS thread runs an event loop (libuv) that calls epoll_wait, then dispatches callbacks for the ready sockets. Sockets are non-blocking, so no thread sits idle per connection.\n- Memory per connection is a socket buffer plus a few objects (often tens of KB), versus an 8 MB (virtual) stack per thread.\n- File system, DNS (getaddrinfo) and some crypto have no portable non-blocking API, so libuv runs them in a thread pool (default 4 threads; UV_THREADPOOL_SIZE).\n\n## Limits\n- CPU-bound handlers block the loop: a 200 ms JSON.parse stalls every connection. Use worker_threads, child processes or cluster.\n- One loop uses one core; scale with cluster or multiple instances behind a load balancer.\n\n## Worked example\n10k connections, 100 active per tick: epoll_wait returns 100 events; the loop handles 100 callbacks. select would copy and scan 10,000 entries each call (and is capped at FD_SETSIZE 1024 by default).\n\n## Follow-ups\n- epoll is readiness notification, not async I/O for regular files (files are always ready). io_uring provides true async submission/completion.",
+  "keyPoints": [
+   "epoll/kqueue register fds once and return only ready ones: O(ready) versus O(n) for select/poll.",
+   "Node runs one event-loop thread over non-blocking sockets and uses a libuv thread pool for fs, DNS and crypto.",
+   "Edge-triggered mode needs reading until EAGAIN.",
+   "CPU-bound work blocks the loop; offload it to workers."
+  ],
+  "sources": [
+   {
+    "title": "epoll(7) man page",
+    "url": "https://man7.org/linux/man-pages/man7/epoll.7.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Node.js event loop guide",
+    "url": "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-concurrency:6": {
+  "body": "## Why virtual memory\nEach process sees a private, contiguous address space (e.g. 48-bit, 256 TB on x86-64) regardless of physical RAM. This gives isolation, simpler linking and loading, memory overcommit, shared libraries and lazy allocation.\n\n## Layout of a process (low to high)\n- Text (code, read-only), data/bss (globals), heap (grows up via brk/mmap), mmap region (shared libs, files), stack (grows down).\n\n## Stack vs heap\n- Stack: per-thread, LIFO frames for locals and return addresses. Allocation is a pointer bump (nanoseconds), freed automatically on return. Limited size (commonly 8 MB main thread); deep recursion gives stack overflow. Great cache locality.\n- Heap: dynamic lifetime, allocated by malloc/new or a GC. Slower (allocator bookkeeping, fragmentation, GC pauses), shared between threads, may leak.\n- Escape analysis: a JIT or compiler may keep an object on the stack if it does not escape.\n\n## Paging\n- Virtual and physical memory are divided into fixed-size pages (4 KiB typical) and frames.\n- A page table maps virtual page number (VPN) to physical frame number (PFN) plus bits: present, writable, user, accessed, dirty.\n- Address = VPN | offset. With 4 KiB pages the offset is 12 bits.\n\n## Worked example\nVirtual address 0x00403A7C, 4 KiB pages. Offset = low 12 bits = 0xA7C. VPN = 0x403. If the page table says VPN 0x403 -> frame 0x1F2, physical address = 0x1F2000 + 0xA7C = 0x1F2A7C.\n\n## Page fault\nIf the present bit is 0 the CPU traps. The OS either loads the page from disk (major fault, ~ms), maps a zero page or copy-on-write (minor fault, ~us), or kills the process with SIGSEGV for an invalid access.\n\n## Follow-ups\n- Why can fork be fast? Copy-on-write: parent and child share frames read-only until one writes.\n- Memory overcommit and the OOM killer.",
+  "keyPoints": [
+   "Virtual memory gives each process a private address space mapped to frames by page tables.",
+   "The stack is fast, per-thread and limited; the heap is flexible, shared and costlier.",
+   "Address translation splits VA into VPN and offset; the offset is unchanged.",
+   "Minor faults map memory cheaply; major faults hit disk and cost milliseconds."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Paging: Introduction",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-paging.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-process-thread:0": {
+  "body": "## Process states\nA process (or thread) moves through a small state machine managed by the kernel:\n- New: being created, PCB allocated.\n- Ready: runnable, waiting in the run queue for a CPU.\n- Running: executing on a core (at most one per core).\n- Waiting/Blocked: waiting for I/O, a lock or a timer; not eligible for the CPU.\n- Terminated: finished; becomes a zombie until the parent calls wait() to read the exit status.\n\n## Transitions\n- Ready -> Running: scheduler dispatch.\n- Running -> Ready: preempted by timer or higher priority task.\n- Running -> Waiting: issues a blocking syscall (read on an empty socket).\n- Waiting -> Ready: the event completes (interrupt), not directly to Running.\n- Running -> Terminated: exit() or fatal signal.\n- Linux also has stopped (SIGSTOP), uninterruptible sleep (D state, waiting on disk; cannot be killed until the I/O returns) and zombie (Z).\n\n## The PCB (task_struct in Linux)\nThe kernel's record for a process:\n- PID, parent PID, state, priority and scheduling info.\n- Saved CPU registers and program counter (for context switches).\n- Memory management info: page table base, memory maps.\n- Open file descriptor table, current directory, signal handlers.\n- Accounting: CPU time, credentials (uid/gid).\nThreads each have their own task_struct but point to shared mm, files and signal structures.\n\n## Worked example\nA web server thread calls read() on a socket with no data: Running -> Waiting; the scheduler picks another Ready thread. A packet arrives, the NIC interrupt wakes the thread: Waiting -> Ready; it runs once the scheduler selects it, so latency includes run-queue wait time.\n\n## Follow-ups\n- Zombie vs orphan: zombie = dead but not reaped; orphan = parent died first, adopted by init (PID 1) which reaps it. This is why containers need a proper init (tini) to reap children.\n- fork then exec: fork clones the PCB with copy-on-write memory; exec replaces the image.\n- Many D-state processes with high load average usually means a storage problem.",
+  "keyPoints": [
+   "Ready, Running, Waiting are the core states; wakeups go Waiting to Ready, never straight to Running.",
+   "The PCB stores registers, memory maps, fd table, credentials and scheduling info.",
+   "Zombies are dead processes not yet reaped by their parent; orphans get adopted by init.",
+   "D-state (uninterruptible sleep) processes cannot be killed until I/O returns."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: The Abstraction: The Process",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-intro.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-process-thread:1": {
+  "body": "## The question\nWho schedules user-level threads: the kernel or a user-space library? The mapping of user threads to kernel threads (the schedulable entities) defines the model.\n\n## 1:1 (kernel-level threads)\n- Each user thread is one kernel thread. Linux NPTL, Windows, macOS use this.\n- Pros: true parallelism on multicore; a blocking syscall blocks only that thread; simple.\n- Cons: creation and switching involve the kernel (microseconds); each thread has a kernel stack and a user stack, so tens of thousands of threads gets expensive.\n\n## N:1 (many user threads on one kernel thread)\n- A library schedules all threads on one kernel thread (early Java green threads, GNU Pth).\n- Pros: very cheap creation and switch (no syscall).\n- Cons: no multicore parallelism; one blocking syscall blocks all threads unless wrapped in non-blocking I/O. Largely obsolete.\n\n## M:N (hybrid)\n- M user threads multiplexed over N kernel threads. Go (goroutines on P/M scheduler), Erlang BEAM, Java virtual threads (Project Loom) use this.\n- Pros: millions of lightweight tasks, parallel on N cores, runtime can park a blocked goroutine and run others.\n- Cons: complex runtime; two schedulers (user and kernel) can fight; blocking syscalls and cgo need handoff logic, for example Go creates another OS thread when one is stuck in a syscall.\n\n## Worked example: Go\nGOMAXPROCS=8 gives 8 logical processors. 100,000 goroutines (2 KB starting stack, growable) run on those. When goroutine G blocks on a channel, the runtime switches to another goroutine in about 100-200 ns without entering the kernel. If G does a blocking read syscall, its thread is detached and another thread takes the P.\n\n## Follow-ups\n- Why not thread-per-request with 1:1? Fine up to a few thousand threads; beyond that memory and scheduler cost dominate, hence async or M:N.\n- Cooperative vs preemptive inside the runtime: Go preempts at safe points (async preemption since 1.14).",
+  "keyPoints": [
+   "1:1 gives parallelism and simple blocking semantics at kernel-thread cost.",
+   "N:1 is cheap but single-core and blocks wholesale on syscalls.",
+   "M:N (Go, BEAM, Loom) runs millions of tasks on a few kernel threads but needs a smart runtime.",
+   "Linux, Windows and macOS threads are 1:1."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Concurrency and Threads",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-intro.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-process-thread:2": {
+  "body": "## What are we optimizing?\nDifferent workloads care about different metrics, and they conflict.\n\n## Metrics (for a set of jobs)\n- CPU utilization: fraction of time the CPU is busy.\n- Throughput: jobs completed per unit time.\n- Turnaround time = completion time - arrival time.\n- Waiting time = turnaround - burst time (time spent in ready queue).\n- Response time = first run time - arrival time (how soon the user sees something).\n- Fairness: no job starves; roughly equal share among equals.\n- Predictability / deadlines for real-time systems.\n\n## Worked example\nThree jobs arrive at t=0 with bursts 24, 3, 3 (ms), run FCFS in that order:\n```\n|---------------- P1 (24) ----------------|P2|P3|\n0                                          24 27 30\n```\n- Turnaround: P1=24, P2=27, P3=30; average 27.\n- Waiting: 0, 24, 27; average 17.\n- Response: 0, 24, 27.\nRun the short ones first (P2, P3, P1): waiting 0, 3, 6, average 3. Same work, very different experience.\n\n## Trade-offs\n- Batch systems favor throughput and turnaround; interactive systems favor response time; servers care about tail latency (p99).\n- Shorter time slices improve response time but add context-switch overhead.\n- Favoring short jobs lowers average wait but can starve long jobs.\n- Preemptive scheduling needs a timer interrupt and protection of shared kernel data; non-preemptive (cooperative) is simpler but one bad job hogs the CPU.\n\n## Interview follow-ups\n- Convoy effect: short jobs queue behind one long job.\n- Why are turnaround and response time different? A job may finish late but start early (round robin), or the reverse.\n- Linux CFS targets fairness (proportional share) rather than minimizing average turnaround.",
+  "keyPoints": [
+   "Turnaround = completion - arrival; waiting = turnaround - burst; response = first run - arrival.",
+   "Interactive systems optimize response time, batch ones throughput and turnaround.",
+   "Minimizing average wait and avoiding starvation are in tension.",
+   "Work out averages by drawing a text Gantt chart first."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Scheduling: Introduction",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-process-thread:3": {
+  "body": "## FCFS (first come, first served)\nRun in arrival order, non-preemptive. Simple, fair in order, but suffers the convoy effect (see the 24/3/3 example: average wait 17 ms).\n\n## SJF (shortest job first)\nPick the job with the smallest next CPU burst. Provably optimal for average waiting time among non-preemptive algorithms when all jobs are known.\nExample: jobs (arrival, burst): P1(0,7), P2(2,4), P3(4,1), P4(5,4).\n\nNon-preemptive SJF:\n```\n|P1 (7)       |P3|P2 (4) |P4 (4) |\n0             7  8       12      16\n```\n- At t=7 ready are P2(4), P3(1), P4(4); pick P3, then P2 (arrived earlier), then P4.\n- Waiting: P1=0, P2=6, P3=3, P4=7; average 4.\n\nPreemptive SJF = SRTF (shortest remaining time first):\n```\n|P1|P2 |P3|P2|P4  |P1       |\n0  2   4  5  7    11        16\n```\n- t=2: P2(4) < P1 remaining 5, preempt. t=4: P3(1) < P2 remaining 2, preempt. t=5: P2 resumes (2 left), P4(4) waits. Then P4, then P1.\n- Waiting: P1=9, P2=1, P3=0, P4=2; average 3.\n\nProblems: the burst length is unknown; estimate with exponential averaging: tau_next = alpha*t_last + (1-alpha)*tau_prev (alpha often 0.5). Long jobs can starve.\n\n## Priority scheduling\nEach job has a priority; run the highest (can be preemptive or not).\n- Starvation: low priority never runs. Fix with aging: increase the priority of waiting jobs over time.\n- Priority inversion: low holds a lock that high needs; fix with priority inheritance.\n- SJF is priority scheduling where priority = 1/next burst.\n\n## When to use what\n- FCFS: batch queues, simple pipelines.\n- SJF/SRTF: theoretical benchmark; used where burst times are predictable (some job queues).\n- Priority: real-time and OS tasks (nice values in Unix), often combined with round robin among equal priorities.",
+  "keyPoints": [
+   "SJF/SRTF minimize average waiting time but need burst estimates and can starve long jobs.",
+   "FCFS is simple but has the convoy effect.",
+   "Priority scheduling needs aging against starvation and inheritance against priority inversion.",
+   "Burst prediction uses exponential averaging of previous bursts."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Scheduling: Introduction",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-process-thread:4": {
+  "body": "## Round robin (RR)\nEach ready process gets a time quantum q, then goes to the back of the queue. Preemptive; good response time and fairness.\n\nExample: P1=24, P2=3, P3=3, q=4, all arrive at t=0.\n```\n|P1 |P2|P3|P1 |P1 |P1 |P1 |P1 |\n0   4  7  10 14  18  22  26  30\n```\n- P2 finishes at 7, P3 at 10, P1 at 30.\n- Waiting: P1=6, P2=4, P3=7; average 5.67 (versus 17 with FCFS). Response: 0, 4, 7.\n\nChoosing q:\n- Too large degenerates to FCFS.\n- Too small: context-switch overhead dominates (q = 1 ms with 5 us switch is 0.5%, q = 10 us is 50%).\n- Rule of thumb: about 80% of bursts should be shorter than q (often 10-100 ms).\n- RR has worse average turnaround than SJF when jobs are similar in length: every job finishes late.\n\n## Multilevel queues\nSeparate queues by class (system, interactive, batch), each with its own algorithm; fixed priority between queues or time slices among them. Static assignment, so a CPU-bound task cannot be reclassified.\n\n## Multilevel feedback queue (MLFQ)\nLearns job behaviour without knowing burst times. Classic rules (OSTEP):\n- Rule 1: higher priority queue runs first. Rule 2: equal priority uses RR.\n- Rule 3: new jobs start at the highest priority.\n- Rule 4: a job that uses its entire allotment at a level moves down; a job that yields the CPU early (I/O) stays.\n- Rule 5: periodically boost all jobs to the top (prevents starvation and handles phase changes).\nTypical config: 3 queues with q = 8, 16, FCFS.\n\nEffect: short and interactive jobs finish at high priority with low latency; CPU hogs sink to low priority and run in big slices.\n\n## Gaming and fixes\nA job can yield just before the quantum ends to stay at high priority; fix by accounting total time used at a level, not per slice.\n\n## Follow-ups\n- Linux uses CFS/EEVDF (virtual runtime, red-black tree), not MLFQ, but the heuristic goal is the same: favor sleepers.\n- Windows and macOS use multi-level priority schemes with dynamic boosts.",
+  "keyPoints": [
+   "Round robin gives fair, low-response-time scheduling; quantum size trades overhead against responsiveness.",
+   "MLFQ infers job type: CPU hogs drop priority, I/O-bound jobs stay high.",
+   "A periodic priority boost prevents starvation in MLFQ.",
+   "Count total time at a level to stop jobs gaming the scheduler by yielding early."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Scheduling: The Multi-Level Feedback Queue",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-mlfq.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-process-thread:5": {
+  "body": "## What you pay\nA context switch is not just register copying. Costs fall into:\n- Direct: trap into kernel, save/restore registers and FPU/vector state, run the scheduler, return. Roughly 1-3 microseconds on modern x86 Linux for threads in the same process; microbenchmarks like lmbench and ping-pong tests often show a few microseconds.\n- TLB: a process switch changes the page-table root. Without tagged TLBs the TLB is flushed; with PCID/ASID entries survive. Thread switches in the same process keep the address space and the TLB.\n- Cache and predictor pollution: the new thread's working set is not in L1/L2; refill costs misses of ~4 ns (L2) to ~80-100 ns (DRAM) each. This indirect cost can reach tens of microseconds.\n- Kernel mitigations (Spectre/Meltdown, KPTI) added overhead to syscalls and sometimes switches.\n\n## Worked example\nA server does 50,000 requests/s on one core, each handled by a thread that blocks twice (two switches). That is 100,000 switches/s. At 3 us direct plus ~10 us estimated cache cost, that is about 1.3 s of CPU per second, so you are past the core's capacity; a thread-per-request design is the bottleneck, and an event loop or batching helps.\n\n## How to measure\n- vmstat 1 (cs column), pidstat -w (voluntary vs nonvoluntary switches per process), perf sched, /proc/PID/status (voluntary_ctxt_switches, nonvoluntary_ctxt_switches).\n- High voluntary switches: blocking I/O or locks. High involuntary: CPU oversubscription (too many runnable threads per core).\n\n## How to reduce\n- Fewer threads than cores for CPU-bound work (pool sized to core count).\n- Async I/O or event loops for I/O-bound fan-out.\n- Pin threads to cores (affinity) to keep caches warm.\n- Reduce lock contention (contended mutexes sleep via futex, causing switches); batch work.\n- User-space threads or coroutines switch in tens of nanoseconds.\n\n## Follow-ups\n- Thread vs process switch cost: a thread switch skips the address-space change.\n- Why not shrink the quantum to zero? Overhead rises and caches never warm up.",
+  "keyPoints": [
+   "Direct switch cost is low microseconds; cache, TLB and predictor refill often cost more.",
+   "Thread switches in one process avoid address-space changes; process switches may flush the TLB.",
+   "Check voluntary vs involuntary context switches to tell blocking from oversubscription.",
+   "Fewer threads, async I/O, affinity and less lock contention all reduce switches."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Limited Direct Execution",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-mechanisms.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-memory-management:0": {
+  "body": "## The problem\nPrograms are compiled as if memory starts at address 0 and is theirs alone. At run time they land wherever there is room, next to other programs. Something must translate the addresses the program uses into real RAM locations.\n\n## Terms\n- Logical (virtual) address: generated by the CPU for the program.\n- Physical address: the address on the memory bus.\n- MMU: hardware that translates logical to physical on every access.\n\n## When binding happens\n- Compile time: the compiler emits absolute addresses (MS-DOS .COM files). The program must always load at the same spot.\n- Load time: the loader patches addresses (relocation) when the program is loaded. Fixed once running.\n- Execution time: translation happens on every access by the MMU, so a process can move in memory or be swapped out and back to a different place. Modern OSes use this.\n\n## Base and limit (simplest MMU)\nEach process has a base register B and a limit L. Physical = B + logical, valid only if logical < L, else trap.\nExample: base = 30000, limit = 12000. Logical 500 -> physical 30500. Logical 13000 -> out of range, fault. Process relocation just updates the base.\n- Pros: trivial, fast, gives isolation.\n- Cons: each process needs one contiguous physical block; external fragmentation; no sharing; cannot grow easily. This leads to segmentation and paging.\n\n## Why virtual addresses matter today\n- Isolation: process A cannot name process B's memory.\n- Position independence: every process can load at the same virtual address (though ASLR randomizes it for security).\n- Sparse use: allocate a 1 TB virtual region without 1 TB RAM; pages materialize on demand.\n\n## Follow-ups\n- Compile-time vs link-time vs load-time vs run-time binding: static linking resolves symbols at link time, dynamic linking at load or first call (PLT/GOT).\n- Does the user ever see physical addresses? No; only the kernel and DMA-capable devices (the IOMMU also virtualizes device addresses).",
+  "keyPoints": [
+   "The MMU translates logical to physical on every access, enabling relocation, isolation and sparse address spaces.",
+   "Binding can occur at compile, load or execution time; modern OSes bind at execution time.",
+   "Base+limit is the simplest scheme but needs contiguous memory and fragments externally.",
+   "Out-of-range logical addresses trap to the OS."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Address Translation",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-mechanism.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-memory-management:1": {
+  "body": "## Idea\nSplit virtual memory into fixed-size pages and physical memory into equally sized frames (4 KiB typical; also 2 MiB and 1 GiB huge pages). Any page can go in any frame, so there is no external fragmentation; only internal fragmentation in a process's last page (average half a page).\n\n## Translation\n- Virtual address = [VPN | offset]. With 4 KiB pages: offset 12 bits, VPN the rest.\n- The page table (one per process) maps VPN -> PFN with flags: valid/present, read/write, user/supervisor, accessed, dirty, no-execute.\n- Physical address = [PFN | offset].\n\n## Worked example (32-bit address, 4 KiB pages)\n- VPN has 20 bits (2^20 pages), so a flat page table has 1 M entries; at 4 bytes each that is 4 MB per process. With 200 processes: 800 MB just for tables.\n- Address 0x0040_3A7C: VPN = 0x00403, offset = 0xA7C. If PTE[0x403] = frame 0x1F2 (valid) then physical = 0x1F2A7C.\n- If valid = 0: page fault.\n\n## The cost problem\nEvery memory access needs a page-table lookup, which itself is in memory: one access becomes two (or more with multi-level tables). Hence the TLB cache and hierarchical page tables (next lessons).\n\n## Page size trade-offs\n- Larger pages: smaller tables, fewer TLB misses, better for big sequential data (databases, ML); more internal fragmentation, more data moved on a fault, coarser copy-on-write.\n- Smaller pages: less waste, finer protection; bigger tables.\n\n## Sharing and protection\nTwo processes can map the same frame (shared libraries, shared memory, copy-on-write after fork) and permission bits are per mapping. NX bit prevents executing data pages.\n\n## Follow-ups\n- Number of page table entries for 64-bit? 48-bit VA with 4 KiB pages has 2^36 pages, so a flat table is impossible: use 4-level tables.\n- Inverted page tables index by frame instead (PowerPC, older designs), smaller but need hashing.",
+  "keyPoints": [
+   "Paging removes external fragmentation; the cost is internal fragmentation in the last page.",
+   "A flat 32-bit page table with 4 KiB pages is 4 MB per process, so real systems use hierarchical tables.",
+   "Every access needs a translation, which is why the TLB exists.",
+   "Per-page permission bits give protection and enable sharing and copy-on-write."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Paging: Introduction",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-paging.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-memory-management:2": {
+  "body": "## Idea\nDivide the address space into logical units that match how programs are organized: code, data, heap, stack, each a segment of variable size. A logical address is (segment, offset).\n\n## Translation\nA segment table holds (base, limit, permissions) per segment.\n- physical = base[seg] + offset, valid if offset < limit[seg], else trap (segmentation fault).\n\nExample segment table:\n```\nseg 0 code  base 32K limit 2K  (read, exec)\nseg 1 heap  base 34K limit 3K  (read, write)\nseg 3 stack base 28K limit 2K  (grows downward)\n```\nAddress (seg 0, offset 100) -> 32768 + 100 = 32868. Address (seg 1, offset 4000) -> 4000 > 3072, fault.\n\n## Pros\n- Matches programmer view; per-segment protection (code read-only) and sharing (several processes share one code segment).\n- Tables are tiny (a few entries).\n\n## Cons\n- Variable-size segments cause external fragmentation: free memory exists in total but not contiguously. Fix by compaction (expensive copying) or allocation policies (first-fit, best-fit, worst-fit), none of which solve it.\n- Growing a segment may require moving it.\n\n## Segmentation vs paging\n- Segments: variable size, visible to the programmer, external fragmentation.\n- Pages: fixed size, invisible, internal fragmentation, simpler allocation.\n- Segmented paging (Multics, old x86): segments made of pages, so each segment has a page table; combines logical protection with no external fragmentation.\n- Modern x86-64 mostly uses a flat model (segment bases are zero) and relies on paging; FS/GS segment bases are used for thread-local storage.\n\n## Where the word survives\n- A segmentation fault today is any invalid access, usually a missing or protection-violating page mapping (SIGSEGV).\n- Executable formats (ELF) still have segments/sections like .text, .data, .bss.\n\n## Follow-ups\n- First-fit vs best-fit: first-fit is usually as good and faster; best-fit leaves tiny unusable slivers.",
+  "keyPoints": [
+   "Segments are variable-size logical units with their own base, limit and permissions.",
+   "Variable sizes cause external fragmentation, which compaction only partly fixes.",
+   "Segmentation matches program structure; paging matches hardware allocation; segmented paging combines them.",
+   "Modern x86-64 is effectively flat; segfault now means any invalid page access."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Segmentation",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-segmentation.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-memory-management:3": {
+  "body": "## Idea\nDo not load a program's pages until they are touched. The page table marks pages not-present; the first access traps (page fault) and the OS loads the page then.\n\n## Page fault sequence\n1. CPU accesses a page with present = 0 and traps to the OS.\n2. OS checks the address is valid (in a mapped region with correct permissions). If not: SIGSEGV.\n3. Find a free frame (or evict one via page replacement).\n4. Start disk read (or zero-fill for anonymous memory, or file read for mapped files); the process blocks and others run.\n5. On completion update the page table (present, frame), mark ready.\n6. Restart the faulting instruction.\n\n## Cost: effective access time\nEAT = (1 - p) * memory_access + p * fault_service_time, p = fault rate.\nExample: memory 100 ns, fault service 8 ms (disk) = 8,000,000 ns.\n- p = 1/1000: EAT = 0.999*100 + 0.001*8,000,000 = about 8,100 ns, an 80x slowdown.\n- To keep the slowdown under 10% (EAT 110 ns): p < 10/7,999,900, about 1 fault in 800,000 accesses.\nOn SSD (~100 us) the penalty is smaller but still large. Minor faults (page already in page cache or zero page) cost about 0.1-1 us.\n\n## Benefits\n- Faster startup: only pages actually used are loaded.\n- Programs larger than RAM; more processes in memory.\n- Lazy allocation: malloc of 1 GB commits nothing until written (overcommit).\n- Copy-on-write: fork shares pages; the first write faults and copies that page.\n\n## Pre-paging and tricks\n- Read-ahead on sequential faults, prefetch for mapped files.\n- Zero pages are shared until written.\n- Huge pages reduce faults and TLB misses for big heaps but can add latency (compaction, memory bloat).\n\n## Follow-ups\n- Major vs minor fault: major needs I/O.\n- Why must the instruction be restartable? The hardware must support restarting mid-instruction after the handler maps the page.\n- Locality of reference is why demand paging works at all.",
+  "keyPoints": [
+   "Pages load on first touch; a not-present PTE traps to the OS fault handler.",
+   "Effective access time is dominated by the fault rate; 1 in 1000 faults gives roughly an 80x slowdown on disk.",
+   "Lazy allocation and copy-on-write both rely on faults.",
+   "Major faults need I/O; minor faults only fix mappings."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Beyond Physical Memory: Mechanisms",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-memory-management:4": {
+  "body": "## The problem\nRAM is full and a fault needs a frame: which page do we evict? The goal is to minimize future faults.\n\n## Reference string and setup\nUse 3 frames and reference string: 7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1 (F = fault, h = hit).\n\n## FIFO: evict the oldest loaded page\n```\n7F 0F 1F 2F 0h 3F 0F 4F 2F 3F 0F 3h 2h 1F 2F 0h 1h 7F 0F 1F\n```\n15 faults. Simple but ignores usage. Belady's anomaly: with FIFO, more frames can cause more faults (string 1 2 3 4 1 2 5 1 2 3 4 5: 9 faults with 3 frames, 10 with 4).\n\n## LRU: evict the least recently used\n```\n7F 0F 1F 2F 0h 3F 0h 4F 2F 3F 0F 3h 2h 1F 2h 0F 1h 7F 0h 1h\n```\n12 faults. Approximates OPT using the past as a predictor. Stack algorithm, so no Belady anomaly. Exact LRU is costly (timestamp or reordering a list on every access); hardware approximations use reference bits.\n\n## OPT (Belady's MIN): evict the page used farthest in the future\n```\n7F 0F 1F 2F 0h 3F 0h 4F 2h 3h 0F 3h 2h 1F 2h 0h 1h 7F 0h 1h\n```\n9 faults. Optimal but needs the future; used as a benchmark to judge others.\n\n## Clock (second chance): cheap LRU approximation\n- Frames form a circular list with a reference bit R (set by hardware on access).\n- On eviction, the hand sweeps: if R = 1, clear it and move on; if R = 0, evict that page.\n- Enhanced clock also considers the dirty bit, preferring clean pages (no write-back): order (R,M) = (0,0), (0,1), (1,0), (1,1).\n- Real kernels use variants: Linux keeps active/inactive lists with referenced flags (and MGLRU in newer kernels).\n\n## Other points\n- Global vs local replacement: global steals frames from any process (better utilization, one hog hurts others); local limits each process (isolation, can underuse).\n- LFU, MRU exist; MRU is good for sequential scans bigger than memory, where LRU is worst case (a loop over N+1 pages with N frames faults on every access).\n- Databases (buffer pools) use LRU-K, 2Q or ARC to resist scan pollution.\n\n## Follow-ups\n- Why does LRU not suffer Belady's anomaly? The set of pages in memory with n frames is always a subset of the set with n+1 frames (inclusion property).\n- Cost to implement LRU: counters or a stack; hence clock.",
+  "keyPoints": [
+   "On the classic 20-reference string with 3 frames: FIFO 15 faults, LRU 12, OPT 9.",
+   "FIFO can suffer Belady's anomaly; LRU and OPT are stack algorithms and cannot.",
+   "Clock approximates LRU with a reference bit and a sweeping hand; dirty bit makes eviction cheaper.",
+   "Sequential scans bigger than memory are LRU's worst case."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Beyond Physical Memory: Policies",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys-policy.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-memory-management:5": {
+  "body": "## What is thrashing\nWhen the combined working sets of running processes exceed RAM, pages are evicted just before they are needed again. The system spends most time servicing page faults, CPU utilization collapses, and throughput drops sharply.\n\n## The feedback loop (classic)\n1. Memory is overcommitted; fault rate rises; processes block on disk.\n2. CPU utilization drops.\n3. A naive scheduler sees low CPU use and admits more processes.\n4. Even less memory per process, more faults. Repeat.\n\n## Working set model (Denning)\n- Working set WS(t, delta) = set of pages referenced in the last delta references (or time window).\n- If the sum of working-set sizes D = sum of |WS_i| > available frames, thrashing is imminent: suspend a process (swap it out) to free its frames.\n- If D < frames, there is room for more processes.\n- Example: window 10 references; process reference trace ...2 6 1 5 7 7 7 7 5 1 gives WS = {1,2,5,6,7}, size 5. If three such processes need 5 + 8 + 12 = 25 frames but only 20 exist, suspend one.\n\n## Page-fault frequency (PFF)\nPractical alternative: monitor each process's fault rate; if above an upper threshold give it more frames, if below a lower threshold take frames away; if none are free, suspend a process.\n\n## Symptoms and remedies in practice\n- Symptoms: high swap in/out (vmstat si/so), high iowait, low CPU, sluggish system, load average high.\n- Fixes: add RAM, reduce concurrency (fewer workers or JVM heaps), fix a memory leak, set container memory limits so the OOM killer acts instead of swapping, use local replacement to confine the damage, lower swappiness for latency-sensitive services.\n- Databases: set the buffer pool to fit in RAM and disable swapping for them.\n\n## Follow-ups\n- Why does locality save us? Programs repeatedly use a small set of pages; thrashing happens when memory is smaller than that set.\n- Thrashing vs a leak: leaks grow forever; thrashing is steady-state oversubscription.",
+  "keyPoints": [
+   "Thrashing happens when the total working sets exceed physical memory and processes mostly wait on page faults.",
+   "The load-control loop (low CPU leads to more processes) makes it worse.",
+   "Working-set or page-fault-frequency control suspends processes to keep each one's working set resident.",
+   "In production watch swap activity and iowait, and cap memory per container."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Beyond Physical Memory: Policies",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys-policy.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-memory-management:6": {
+  "body": "## Two problems with plain paging\n- Speed: every access needs a page-table walk in memory.\n- Size: flat page tables are huge (4 MB per process for 32-bit; impossible for 64-bit).\n\n## TLB (translation lookaside buffer)\nA small, fast, hardware cache of recent VPN -> PFN translations (tens to a few thousand entries, often L1 around 64 entries and L2 around 1.5-2K on modern cores; fully or highly associative).\n- Hit: translation in about 1 cycle, no extra memory access.\n- Miss: hardware (x86) or software (MIPS) walks the page table, then fills the TLB.\n- Context switch: flush it, or tag entries with an ASID/PCID so they survive.\n- Works because of locality; huge pages let one entry cover 2 MiB.\n\nEffective access time: with hit ratio h, memory 100 ns, TLB 1 ns, one-level table:\nEAT = h*(1+100) + (1-h)*(1+100+100). For h = 98%: 0.98*101 + 0.02*201 = 103 ns. For h = 80%: 0.8*101 + 0.2*201 = 121 ns.\n\n## Multi-level page tables\nPage the page table: only allocate second-level tables for regions in use. Address space is sparse (code, heap, stack are far apart), so most of the table is never allocated.\n\nWorked example, 32-bit VA, 4 KiB pages, 4-byte PTE: VPN 20 bits split into 10 + 10.\n- Top-level directory: 1024 entries (4 KiB, fits one page). Each entry points to a second-level table of 1024 PTEs (4 KiB).\n- A process using 8 MB contiguous needs 2048 pages = 2 second-level tables + 1 directory = 12 KiB instead of 4 MB.\n- Translation: top 10 bits index the directory, next 10 bits index the second table, 12 bits offset. A miss costs 2 extra memory accesses.\n\nx86-64: 4 levels (9 bits each, 512 entries of 8 bytes = 4 KiB per table) cover 48-bit VA; 5-level (57-bit) exists. A TLB miss may need 4 memory accesses (page-walk caches speed this up).\n\n## Trade-offs\n- More levels: smaller tables, slower misses.\n- Bigger pages: fewer TLB misses and levels; internal fragmentation.\n- Inverted and hashed page tables: size proportional to physical memory.\n\n## Follow-ups\n- Why a TLB shootdown? When a mapping changes on one core, other cores' TLBs must be invalidated by IPI; costly on many-core systems.\n- Why can mmap-heavy or random-access workloads be slow? TLB misses dominate.",
+  "keyPoints": [
+   "The TLB caches translations; with a 98% hit rate effective access time is close to raw memory speed.",
+   "Multi-level page tables allocate only the parts of the table that are used (12 KiB instead of 4 MB for an 8 MB process).",
+   "x86-64 uses 4 levels of 512 entries; a TLB miss costs up to 4 extra memory reads.",
+   "Tagged TLB entries (ASID/PCID) avoid flushes on context switch; huge pages extend TLB reach."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Paging: Faster Translations (TLBs)",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-tlbs.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "OSTEP: Paging: Smaller Tables",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/vm-smalltables.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-sync-deadlock:0": {
+  "body": "## Critical section problem\nCode that touches shared data is a critical section. A correct solution needs:\n- Mutual exclusion: at most one thread inside.\n- Progress: if nobody is inside, the choice of who enters next is made only among threads that want in, without indefinite postponement.\n- Bounded waiting: a limit on how many times others can enter before a waiting thread does.\n\n## Peterson's solution (two threads, software only)\n```\nshared: bool flag[2] = {false,false}; int turn;\n\n// thread i, other = 1 - i\nflag[i] = true;      // I want in\nturn = other;        // politely let the other go first\nwhile (flag[other] && turn == other) ;   // busy wait\n   /* critical section */\nflag[i] = false;\n```\n\nWhy it works:\n- If only i wants in, flag[other] is false so i enters immediately.\n- If both want in, both set flag and both write turn; the last write wins. Say the last write is turn = 1 (thread 0 wrote last, giving way to 1). Thread 1 sees turn != 0 and enters; thread 0 spins until thread 1 clears its flag. So exactly one proceeds.\n- On exit the thread clears its flag, so the other proceeds (progress). Because the leaver must set turn to the other again if it comes back, the waiter enters after at most one entry by the other (bounded waiting).\n\n## Why you do not use it as written\n- Modern CPUs and compilers reorder memory operations. The store to flag[i] can be delayed in the store buffer past the load of flag[other], so both threads can enter. You need sequentially consistent atomics or fences.\n- It is for exactly two threads; generalizations (Lamport's bakery, filter lock) are slower.\n- Busy-waiting wastes CPU.\n\n## What hardware gives you instead\n- Atomic instructions: test-and-set, compare-and-swap (CAS), fetch-and-add, load-linked/store-conditional.\n- Spinlock with CAS:\n```\nwhile (!CAS(&lock, 0, 1)) ;   // acquire\n...                           // critical section\nlock = 0;                     // release (with release semantics)\n```\n- Higher level: mutex (futex: spin briefly then sleep), semaphores.\n- Disabling interrupts works only for a single core in the kernel.\n\n## Follow-ups\n- Spinlock vs mutex: spin when the critical section is shorter than a context switch and the holder is running on another core; sleep otherwise.\n- A naive test-and-set spinlock hammers the cache line; test-and-test-and-set, ticket or MCS locks cut cache traffic.",
+  "keyPoints": [
+   "A correct critical-section protocol needs mutual exclusion, progress and bounded waiting.",
+   "Peterson uses flag[] and turn for two threads, but needs memory barriers on modern CPUs because of reordering.",
+   "Real systems use atomic instructions like CAS and test-and-set to build locks.",
+   "Spin when the hold time is shorter than a context switch; otherwise sleep."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Locks",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-locks.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-sync-deadlock:1": {
+  "body": "## Semaphore vs mutex (recap)\n- Mutex: ownership, mutual exclusion, the locker unlocks.\n- Semaphore: counter, no ownership; used for counting resources and signaling between threads.\n\n## Bounded buffer problem\nA producer puts items into a buffer of N slots, a consumer takes them. Constraints: the producer waits if the buffer is full, the consumer waits if it is empty, and the buffer itself needs mutual exclusion.\n\n## Semaphore solution\n```\nsemaphore empty = N;   // free slots\nsemaphore full  = 0;   // filled slots\nsemaphore mutex = 1;   // protects the buffer\n\nproducer:\n  item = produce()\n  wait(empty)          // wait for a free slot\n  wait(mutex)\n  buffer.put(item)\n  signal(mutex)\n  signal(full)         // announce one more item\n\nconsumer:\n  wait(full)\n  wait(mutex)\n  item = buffer.take()\n  signal(mutex)\n  signal(empty)\n  consume(item)\n```\n\n## Order matters: classic deadlock\nIf the producer does wait(mutex) before wait(empty) and the buffer is full, it holds the mutex while sleeping on empty. The consumer needs the mutex to take an item, so both stall forever. Rule: acquire the counting semaphore first, the mutex second, and release in reverse.\n\n## Trace (N = 2)\n- Start: empty=2, full=0.\n- Producer puts A: empty=1, full=1. Producer puts B: empty=0, full=2.\n- Producer tries C: wait(empty) blocks (count would go negative).\n- Consumer takes A: signal(empty) wakes the producer; full=1 after the take.\n- Producer puts C: full=2 again.\n\n## With a mutex and condition variables\n```\nlock(m)\nwhile (count == N) wait(notFull, m)\nput(item); count++\nsignal(notEmpty)\nunlock(m)\n```\nEquivalent, and what libraries (Java BlockingQueue, Go buffered channels) provide for you.\n\n## Trade-offs\n- The mutex makes multiple producers and consumers safe. With exactly one producer and one consumer, a lock-free ring buffer (SPSC) needs only atomics.\n- Buffer size trades memory and latency against smoothing bursts; an unbounded queue hides overload and eventually exhausts memory (use back-pressure).\n\n## Follow-ups\n- Why two semaphores, not one? One counts empty slots, the other counts items; each blocks a different side.\n- Can a semaphore be signaled by a thread that did not wait on it? Yes, that is the point of signaling semantics.",
+  "keyPoints": [
+   "Use empty and full counting semaphores plus a mutex for the bounded buffer.",
+   "Take the counting semaphore before the mutex, or a full buffer deadlocks the system.",
+   "The same problem solved with a mutex and two condition variables is what most libraries implement.",
+   "Bounded queues give back-pressure; unbounded ones hide overload."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Semaphores",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-sema.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-sync-deadlock:2": {
+  "body": "## Why monitors\nSemaphores are powerful but error-prone: swap two waits or forget a signal and you get deadlock or races, and nothing ties the semaphore to the data it protects. A monitor is a language-level construct: shared data plus the procedures that access it, with implicit mutual exclusion (only one thread active inside) and condition variables for waiting.\n\n## Parts\n- Entry lock: entering any method acquires the monitor's lock; leaving releases it.\n- Condition variables with wait() (release the lock and sleep) and signal()/notify() (wake a waiter).\n- Java: synchronized methods plus wait/notify/notifyAll on the object; ReentrantLock with Condition is the explicit form.\n\n## Signal semantics\n- Hoare monitors: signal hands the lock to the waiter immediately; the condition is guaranteed true on wakeup. Elegant, hard to implement.\n- Mesa monitors (Java, pthreads, Go sync.Cond): signal only marks the waiter runnable; it must re-acquire the lock later and the condition may have changed. Therefore always:\n```java\nsynchronized (this) {\n    while (!condition) wait();   // loop, not if\n    ...\n    notifyAll();                 // or notify() if safe\n}\n```\n\n## Example: bounded buffer monitor (Java)\n```java\nsynchronized void put(T x) throws InterruptedException {\n    while (count == cap) wait();\n    buf[tail] = x; tail = (tail+1)%cap; count++;\n    notifyAll();\n}\nsynchronized T take() throws InterruptedException {\n    while (count == 0) wait();\n    T x = buf[head]; head = (head+1)%cap; count--;\n    notifyAll();\n    return x;\n}\n```\n\n## Pitfalls\n- notify() with waiters on different conditions can wake the wrong thread and lose progress; prefer notifyAll or separate Condition objects (notFull, notEmpty).\n- Lost wakeup: signal before the waiter waits. A predicate loop plus holding the lock while changing the condition prevents it.\n- Nested monitors can deadlock; calling unknown code (callbacks) while holding the lock is dangerous.\n- Holding the lock during slow I/O destroys concurrency.\n\n## Follow-ups\n- wait() must be called holding the lock; otherwise IllegalMonitorStateException (Java) or undefined behavior (pthreads).\n- Monitor vs mutex plus condvar: same mechanism; a monitor enforces the structure in the language.",
+  "keyPoints": [
+   "A monitor bundles shared data, an implicit lock and condition variables.",
+   "Mesa semantics (Java, pthreads) require re-checking the condition in a while loop.",
+   "Use separate condition objects or notifyAll to avoid waking the wrong waiter.",
+   "Never call unknown code or do slow I/O while holding the monitor lock."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Condition Variables",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-sync-deadlock:3": {
+  "body": "## Detection instead of prevention\nIf deadlock is rare and prevention is too restrictive, let it happen, detect it, and recover. Databases and cluster schedulers work this way.\n\n## Single instance per resource: wait-for graph\nNodes are processes; edge Pi -> Pj means Pi waits for a resource held by Pj. A cycle means deadlock. Run cycle detection (DFS, O(V+E)).\nExample: P1 -> P2 -> P3 -> P1 is a deadlock; P1 -> P2 -> P3 is not.\n\n## Multiple instances: Banker-like detection\nMaintain Available, Allocation and Request matrices. Algorithm:\n1. Work = Available; Finish[i] = true if Allocation[i] is all zero, else false.\n2. Find i with Finish[i] false and Request[i] <= Work. If none, go to 4.\n3. Work += Allocation[i]; Finish[i] = true; go to 2.\n4. Any Finish[i] still false means that process is deadlocked.\nCost O(m * n^2) for n processes and m resource types.\n\nWorked example (one resource type, 3 instances total):\n- P0 holds 1, P1 holds 1, P2 holds 1, Available = 0.\n- Requests: P0 wants 1, P1 wants 1, P2 wants 0.\n- P2 requests nothing, so it finishes and releases 1: Work = 1.\n- P0's request (1) fits: it finishes, Work = 2. Then P1 finishes. No deadlock.\n- Change P2's request to 1: Work stays 0, nobody's request fits, so P0, P1 and P2 are all deadlocked.\n\n## When to run detection\n- On every blocked request: immediate detection, high CPU cost.\n- Periodically or when CPU utilization drops: cheaper; several cycles may have formed by then.\n\n## Recovery\n- Process termination: abort all deadlocked processes (blunt), or abort one at a time until the cycle breaks. Choose the victim by priority, work done, resources held and rollback cost.\n- Resource preemption: take a resource from one process and roll it back to a safe state (needs checkpoints). Beware of starvation if the same victim is chosen repeatedly; include the rollback count in the cost.\n- Databases: abort the transaction that closes the cycle (often the youngest or cheapest), return a deadlock error, and the application retries. PostgreSQL checks after deadlock_timeout (default 1 s); InnoDB detects immediately.\n\n## Follow-ups\n- Why do timeouts often replace graph detection in distributed systems? A global wait-for graph is hard to build; timeouts are simple but can kill innocent waiters.\n- Detection complements consistent lock ordering; it does not replace it.",
+  "keyPoints": [
+   "Single-instance resources: look for cycles in the wait-for graph.",
+   "Multi-instance resources use a Banker-like reduce-until-stuck algorithm in O(m n^2).",
+   "Recovery means aborting victims or preempting and rolling back; guard against starving the same victim.",
+   "Databases detect cycles, abort one transaction and expect the client to retry."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Common Concurrency Problems",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-sync-deadlock:4": {
+  "body": "## Idea\nDeadlock avoidance: before granting a request, check that the system stays in a safe state, meaning some order exists in which all processes can run to completion. It needs each process to declare its maximum need up front.\n\n## Data structures (n processes, m resource types)\n- Available[m]: free instances.\n- Max[n][m]: declared maximum demand.\n- Allocation[n][m]: currently held.\n- Need = Max - Allocation.\n\n## Safety algorithm\n1. Work = Available; Finish[i] = false.\n2. Find i with Finish[i] = false and Need[i] <= Work.\n3. Work += Allocation[i]; Finish[i] = true; repeat.\n4. If all Finish are true: safe, and the order found is a safe sequence.\n\n## Resource-request algorithm\nProcess Pi requests Request[i]:\n1. If Request > Need[i]: error (exceeded its claim).\n2. If Request > Available: wait.\n3. Pretend to grant: Available -= Request, Allocation[i] += Request, Need[i] -= Request.\n4. Run the safety algorithm. If safe, grant; otherwise roll back and make Pi wait.\n\n## Worked example\nResources A, B, C with totals (10, 5, 7). Five processes:\n```\n      Alloc    Max      Need\nP0    0 1 0    7 5 3    7 4 3\nP1    2 0 0    3 2 2    1 2 2\nP2    3 0 2    9 0 2    6 0 0\nP3    2 1 1    2 2 2    0 1 1\nP4    0 0 2    4 3 3    4 3 1\nAvailable = (3, 3, 2)\n```\nSafety check:\n- P1: need (1,2,2) <= (3,3,2). Run; Work = (3,3,2)+(2,0,0) = (5,3,2).\n- P3: need (0,1,1) <= (5,3,2). Work = (5,3,2)+(2,1,1) = (7,4,3).\n- P4: need (4,3,1) <= (7,4,3). Work = (7,4,5).\n- P0: need (7,4,3) <= (7,4,5). Work = (7,5,5).\n- P2: need (6,0,0) <= (7,5,5). Work = (10,5,7), equal to the totals.\nSafe sequence: <P1, P3, P4, P0, P2>.\n\nRequest 1: P1 asks (1,0,2). It is <= Need (1,2,2) and <= Available (3,3,2). Pretend: Available (2,3,0), P1 Alloc (3,0,2), Need (0,2,0). The safety check still passes (P1 can finish, then P3, P4, P0, P2), so grant.\n\nRequest 2: now P0 asks (0,2,0). Available is (2,3,0), so it fits. Pretend: Available (2,1,0), P0 Alloc (0,3,0), Need (7,2,3). Candidates: P1 needs (0,2,0) but only 1 of B is free; P3 needs (0,1,1) but C is 0; the rest need more. No process can finish: unsafe, so deny and make P0 wait.\n\n## Limits\n- Needs advance maximum claims, a fixed set of processes and resources, and processes that return resources: unrealistic for general OSes.\n- O(m n^2) per request.\n- Unsafe does not mean deadlocked, only that deadlock is possible; it can be over-conservative.\n- Used in teaching and some embedded or resource-allocation schedulers.\n\n## Follow-ups\n- Safe vs unsafe vs deadlocked: deadlocked states are a subset of unsafe ones.\n- Compare to prevention (lock ordering) and detection.",
+  "keyPoints": [
+   "A state is safe if some order lets every process finish; the Banker's algorithm grants a request only if the resulting state stays safe.",
+   "Need = Max - Allocation; the safety check repeatedly finds a process whose Need fits in Work.",
+   "With the classic 5x3 example the safe sequence is P1, P3, P4, P0, P2.",
+   "Impractical in general because it needs declared maximums and is O(m n^2)."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Common Concurrency Problems",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-sync-deadlock:5": {
+  "body": "## Three related failures\n- Deadlock: threads blocked forever, waiting on each other.\n- Livelock: threads are active (changing state, using CPU) but make no progress because they keep reacting to each other.\n- Starvation: one thread is perpetually denied a resource while others proceed; the system overall makes progress.\n\n## Livelock example\nTwo people in a corridor keep stepping aside in the same direction. In code, try-lock and back off:\n```\n// both threads\nwhile (true) {\n  lock(a);\n  if (trylock(b)) break;\n  unlock(a);          // back off and retry immediately\n}\n```\nIf they run in lockstep, each takes its first lock, fails the second, releases, and repeats forever. Fixes: randomized exponential backoff (as Ethernet does), a global lock order, or a tie-breaker based on thread id.\n\nOther livelocks: network retry storms (all clients retry at the same time; add jitter), message-queue redelivery loops (a poison message), receive livelock (interrupt handling eats all CPU so packets are never processed; fixed by polling, as in Linux NAPI).\n\n## Starvation causes and fixes\n- Priority scheduling with a steady stream of high-priority jobs: aging raises the priority of waiting jobs.\n- SJF with a stream of short jobs: long jobs starve; aging again.\n- Unfair locks: a thread that keeps barging in gets the lock first; use fair or ticket locks (at the cost of throughput).\n- Readers-writers with reader preference: writers starve.\n\n## Detection\n- Deadlock: thread dump shows blocked threads and a cycle; CPU is idle.\n- Livelock: high CPU, no throughput; threads look busy or retrying.\n- Starvation: one thread's latency or queue wait grows without bound; metrics show uneven service.\n\n## Trade-offs\nFairness costs throughput. Unfair locks are faster because the running thread can reacquire without a context switch; Java ReentrantLock defaults to unfair for this reason. Choose fairness when bounded waiting matters (real-time, tail latency).\n\n## Follow-ups\n- Is starvation possible without deadlock? Yes, and that is the difference.\n- Backoff with jitter solves both retry storms and synchronized livelock.",
+  "keyPoints": [
+   "Livelock burns CPU without progress; deadlock blocks silently; starvation affects only some threads.",
+   "Randomized backoff with jitter breaks lockstep retries.",
+   "Aging prevents starvation in priority and SJF schedulers.",
+   "Fair locks bound waiting but cost throughput."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Common Concurrency Problems",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-sync-deadlock:6": {
+  "body": "## Problem\nA shared data set is read by many threads and written by a few. Readers do not conflict with each other, so they may share access; a writer needs exclusive access.\n\n## First readers-writers (reader preference)\n```\nsemaphore rw = 1;      // exclusive access to the data\nsemaphore mutex = 1;   // protects read_count\nint read_count = 0;\n\nwriter:\n  wait(rw)\n  write()\n  signal(rw)\n\nreader:\n  wait(mutex)\n  read_count++\n  if (read_count == 1) wait(rw)    // first reader locks writers out\n  signal(mutex)\n  read()\n  wait(mutex)\n  read_count--\n  if (read_count == 0) signal(rw)  // last reader lets writers in\n  signal(mutex)\n```\n- No reader waits unless a writer is already writing.\n- Writers can starve: a continuous stream of overlapping readers keeps read_count above zero.\n\n## Second readers-writers (writer preference)\nOnce a writer is waiting, no new reader starts. Implemented with an extra semaphore or flag that readers must pass. Readers can starve under a steady stream of writers.\n\n## Fair solution\nUse a turnstile (a semaphore every arriving thread passes through): an arriving writer holds the turnstile while waiting for readers to drain, blocking new readers behind it. Order is roughly FIFO, so neither side starves.\n\n## In practice\n- pthread_rwlock, Java ReentrantReadWriteLock and StampedLock, Go sync.RWMutex (a pending Lock blocks new readers, so writers do not starve).\n- RW locks help only when reads dominate and the critical section is long enough to pay for the bookkeeping; updating the reader count is a shared write that bounces cache lines between cores, so short read sections can be slower than a plain mutex.\n- Alternatives for read-mostly data: RCU (readers lock-free, writers copy and swap pointers; used heavily in Linux), immutable snapshots, optimistic reads with validation (seqlock, StampedLock).\n- Upgrading a read lock to a write lock can deadlock if two readers try to upgrade at once; most libraries forbid it.\n\n## Worked scenario\nA config cache is read by 32 threads at 1M reads/s and updated once per minute. A reader-preference RW lock works, and a writer waits only for in-flight readers (microseconds to milliseconds). If updates were continuous, prefer writer preference or a copy-on-write snapshot.\n\n## Follow-ups\n- Why is read_count protected by a separate mutex? Increment and test are not atomic otherwise.\n- Which variant starves whom? Reader preference starves writers; writer preference starves readers.",
+  "keyPoints": [
+   "Readers can share; writers need exclusion; the semaphore solution uses rw, mutex and read_count.",
+   "Reader preference starves writers, writer preference starves readers, fair versions use a turnstile.",
+   "RW locks pay off only for read-heavy, longer critical sections; consider RCU or immutable snapshots.",
+   "Lock upgrade (read to write) can deadlock."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Semaphores",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/threads-sema.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-filesystems-io:0": {
+  "body": "## Problem\nDisks expose numbered blocks. A file system turns that into named, growable, permissioned files and directories while keeping lookup fast and space overhead small.\n\n## On-disk layout (ext-style)\n- Superblock: file-system-wide metadata (block size, counts, state).\n- Inode table and inode bitmap; data block bitmap; data blocks. Block groups repeat this so related data sits close together.\n\n## Inode\nFixed-size record (128-256 bytes) holding everything about a file except its name:\n- Type and permissions (mode), owner uid/gid, size, link count, timestamps (atime, mtime, ctime).\n- Pointers to data blocks.\nNames live in directories: a directory is a file whose contents map name -> inode number. That is why hard links work (two names, one inode, link count 2) and why rename is cheap.\n\n## Block pointers (classic ext2/ext3)\n- 12 direct pointers, 1 single indirect, 1 double indirect, 1 triple indirect.\n- With 4 KiB blocks and 4-byte pointers, an indirect block holds 1024 pointers.\n- Max size: 12*4 KiB = 48 KiB direct; + 1024*4 KiB = 4 MiB single; + 1024^2*4 KiB = 4 GiB double; + 1024^3*4 KiB = 4 TiB triple. Small files need no indirection, which suits the fact that most files are small.\n- Modern ext4/XFS/Btrfs use extents (start block + length) which describe large contiguous files compactly and reduce metadata.\n\n## Worked example: open(\"/home/a/x.txt\")\n1. Read root inode (known number, 2), read its data to find \"home\" -> inode.\n2. Read home's inode and directory data to find \"a\", then \"x.txt\".\n3. Read the file's inode, check permissions, create an open-file entry and an fd.\nThat is several block reads, which is why the dentry (name) and inode caches matter. read() then maps file offset to a block via the pointers.\n\n## Links\n- Hard link: another directory entry for the same inode; same file system only; the file is deleted when the link count and open count reach zero.\n- Symbolic link: a small file holding a path; can dangle; can cross file systems.\n\n## Allocation and free space\nContiguous (fast, fragments), linked (FAT: slow random access), indexed (inodes). Bitmaps or extent trees track free space; block groups and delayed allocation keep files contiguous.\n\n## Follow-ups\n- Why can you run out of space with free blocks left? Inodes exhausted (many tiny files); df -i shows it.\n- Deleting an open file: the name is removed but data stays until the last fd closes.\n- What does ls -l size vs du show? Sparse files and block rounding differ.",
+  "keyPoints": [
+   "An inode holds metadata and block pointers but not the name; directories map names to inode numbers.",
+   "Classic inodes use 12 direct plus single/double/triple indirect pointers; modern file systems use extents.",
+   "With 4 KiB blocks the triple-indirect scheme reaches about 4 TiB.",
+   "Hard links share an inode; a file is freed only when link and open counts are zero."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: File System Implementation",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/file-implementation.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-filesystems-io:1": {
+  "body": "## Problem\nOn a spinning disk, an I/O request costs seek time (moving the arm, ~3-10 ms), rotational latency (average half a rotation: ~4.2 ms at 7200 RPM) and transfer. Seek dominates, so the order of requests matters. (SSDs have no seek, so these algorithms matter little there; the OS often uses a simple scheduler such as none or mq-deadline.)\n\n## Worked example\nCylinders 0-199. Head at 53. Queue: 98, 183, 37, 122, 14, 124, 65, 67.\n\nFCFS (arrival order): 53 -> 98 -> 183 -> 37 -> 122 -> 14 -> 124 -> 65 -> 67\nDistances: 45+85+146+85+108+110+59+2 = 640 cylinders. Fair but lots of zig-zag.\n\nSSTF (shortest seek time first, always the nearest):\n53 -> 65 -> 67 -> 37 -> 14 -> 98 -> 122 -> 124 -> 183\nDistances: 12+2+30+23+84+24+2+59 = 236. Good throughput but can starve far-away requests and is not optimal.\n\nSCAN (elevator): sweep in one direction to the end of the disk, then reverse. Heading toward 0 first:\n53 -> 37 -> 14 -> 0 -> 65 -> 67 -> 98 -> 122 -> 124 -> 183\nDistances: 16+23+14+65+2+31+24+2+59 = 236 (heading up first would be 331, so direction matters).\nNo starvation, bounded wait (one sweep).\n\n## Variants\n- C-SCAN: sweep one direction only, then jump back and sweep again; more uniform waiting time because middle tracks are not visited twice as often.\n- LOOK / C-LOOK: reverse at the last request instead of the disk edge, saving the useless travel to cylinder 0 or 199.\n- Linux elevator history: CFQ, deadline (adds request deadlines to prevent starvation), now mq-deadline, BFQ, none (NVMe).\n\n## Trade-offs\n- Throughput vs fairness vs latency: SSTF maximizes throughput, risks starvation; SCAN family bounds waiting; deadline schedulers add latency guarantees.\n- Request merging and batching of adjacent blocks often matter more than the exact ordering.\n- Heavy write-back traffic can delay reads, so read priority is common.\n\n## Follow-ups\n- Why do SSDs not need elevator scheduling? No moving parts; random reads cost almost the same as sequential, but erase-block constraints and write amplification still reward sequential writes.\n- Which is best under heavy load? SCAN/C-SCAN, because queues are long and starvation is likely under SSTF.",
+  "keyPoints": [
+   "Disk time is seek + rotational latency + transfer; scheduling reduces seek distance.",
+   "For the classic 8-request example FCFS costs 640 cylinders, SSTF 236, SCAN 236 heading toward 0.",
+   "SSTF can starve distant requests; SCAN/C-SCAN bound waiting; LOOK variants skip the empty ends.",
+   "SSDs make seek-oriented scheduling mostly irrelevant."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Hard Disk Drives",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/file-disks.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-filesystems-io:2": {
+  "body": "## The problem\nOne logical operation, like appending a block to a file, updates several on-disk structures: the data block, the inode (size, pointer) and the block bitmap. A crash between writes leaves them inconsistent:\n- Bitmap and inode updated but data not written: the file contains garbage.\n- Inode updated but bitmap not: the block can be allocated twice later.\n- Data and bitmap written but not the inode: a leaked block.\n\n## fsck approach (old way)\nScan the entire file system after a crash and repair inconsistencies. Correct for metadata but takes minutes to hours on big disks, and cannot recover lost data.\n\n## Journaling (write-ahead logging)\nBefore updating the real locations, write the intent to a journal (log), then apply it.\n1. Journal write: write a transaction (TxBegin, the blocks to update, then TxEnd) to the journal.\n2. Journal commit: write the commit record only after the previous writes complete (a flush or barrier ensures order).\n3. Checkpoint: write the blocks to their real locations.\n4. Free: mark the journal entry reusable.\nRecovery after a crash: replay committed transactions, discard incomplete ones. Recovery time is proportional to journal size (seconds), not disk size.\n\n## Journaling modes (ext3/ext4)\n- Data journaling: both data and metadata go through the journal; safest, data written twice (slowest).\n- Ordered (default in ext4): only metadata is journaled, but data blocks are written to disk before the metadata commit, so metadata never points to garbage. Data can still be lost, but not corrupted.\n- Writeback: metadata only, no ordering guarantee for data; fastest, stale data may appear in files after a crash.\n\n## Alternatives\n- Copy-on-write file systems (ZFS, Btrfs, APFS): never overwrite in place, write new blocks and atomically switch a root pointer; no journal needed for consistency, but fragmentation and write amplification are trade-offs.\n- Soft updates, log-structured file systems (LFS, F2FS for flash).\n\n## Application-level durability\nJournaling protects file system structure, not your data semantics. For durable writes call fsync (data and metadata) or fdatasync; atomic update pattern: write temp file, fsync it, rename over the target, fsync the directory. Databases use their own WAL and also fsync it; a commit is durable only after fsync returns (and the disk obeys cache flush).\n\n## Follow-ups\n- Why a commit block written after the data? So a torn transaction can be detected and ignored.\n- Disk write caches that lie about flushes undermine all of this.",
+  "keyPoints": [
+   "Multi-block updates need atomicity; journaling logs intent first and replays committed transactions after a crash.",
+   "Ordered mode journals metadata only but writes data first, so metadata never points at garbage.",
+   "Recovery time depends on journal size, not disk size, unlike fsck.",
+   "Applications still need fsync and write-temp-then-rename for durability."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Crash Consistency: FSCK and Journaling",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/file-journaling.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-filesystems-io:3": {
+  "body": "## What it is\nThe page cache keeps recently used file data in otherwise free RAM, in page-size units, keyed by (file, offset). Reads hit it first; writes go to it and are flushed later. Linux uses almost all free memory for it; \"used\" memory in free -m counts cache separately from application memory.\n\n## Read path\n1. read(fd, buf, n): look up the pages in the cache.\n2. Hit: copy to the user buffer (microseconds or less).\n3. Miss: allocate pages, issue disk reads, block the caller, then copy.\n- Read-ahead: detects sequential access and prefetches the next window (default order of 128 KiB) so sequential reads rarely wait.\n- Numbers: RAM access ~100 ns, NVMe read ~100 us, SATA SSD ~100-200 us, HDD ~5-10 ms; a cache hit can be 1000x faster than a disk miss.\n\n## Write path (write-back)\n- write() copies into cache pages and marks them dirty, returning immediately.\n- Background flusher threads write dirty pages after about 30 s (dirty_expire) or when dirty memory exceeds thresholds (dirty_background_ratio, dirty_ratio). Above the hard threshold writers are throttled.\n- Write-through (flush on every write) is safer but slow. Write-back risks losing recent data on power loss unless fsync is called.\n- fsync(fd) forces the file's dirty data and metadata to stable storage; O_SYNC does it per write; O_DIRECT bypasses the cache (databases managing their own buffer pool, such as InnoDB, use it to avoid double caching).\n\n## Buffering layers\n- User-space buffers (stdio, BufferedWriter): reduce syscalls. fwrite of 1 byte x 1M times without buffering means 1M syscalls (each ~100s of ns to microseconds).\n- Kernel page cache and the disk's own cache.\n- Unified page cache: file I/O and mmap share the same pages.\n\n## Trade-offs and pitfalls\n- A large, sequential read of a file bigger than RAM can evict useful pages (cache pollution); use posix_fadvise or O_DIRECT.\n- Benchmarks can lie: second runs are cached; drop caches (echo 3 > /proc/sys/vm/drop_caches) for cold numbers.\n- Write stalls: bursts of dirty pages hitting the threshold cause latency spikes.\n- Cache is shared across containers; memory cgroups can charge it to a limit and reclaim it under pressure.\n\n## Follow-ups\n- Why can a process killed with unflushed data still not lose it? The data is in the kernel page cache; only a kernel crash or power loss loses it.\n- Buffer cache vs page cache: unified in modern Linux.",
+  "keyPoints": [
+   "Reads and writes go through the kernel page cache; hits cost microseconds instead of milliseconds.",
+   "Writes are write-back: data is dirty in memory until a flusher or fsync writes it.",
+   "fsync is required for durability; O_DIRECT bypasses the cache for databases with their own buffer pool.",
+   "User-space buffering cuts syscalls; large scans can pollute the cache."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Hard Disk Drives",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/file-disks.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Linux man page: fsync(2)",
+    "url": "https://man7.org/linux/man-pages/man2/fsync.2.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-filesystems-io:4": {
+  "body": "## Why RAID\nCombine several disks for performance (parallel I/O), capacity and/or redundancy. Not a backup: it does not protect against deletion, corruption copied to all disks, fire or ransomware.\n\n## Levels (n disks, each capacity C)\n- RAID 0 (striping): data is split across disks in chunks. Capacity nC, read/write throughput up to n times. No redundancy: one disk failure loses everything, and failure probability rises with n.\n- RAID 1 (mirroring): each block written to two disks. Capacity n*C/2, survives one failure per mirror, reads can be served by either disk (up to 2x), writes at single-disk speed.\n- RAID 5 (striping with distributed parity): parity = XOR of the data chunks in a stripe, rotated across disks. Capacity (n-1)C, survives one disk failure. Reconstruct a lost chunk by XORing the others.\n- RAID 6 (double parity): capacity (n-2)C, survives two failures; slower writes.\n- RAID 10 (1+0): stripe over mirrors. Capacity nC/2, good for random-write-heavy workloads such as databases, survives one failure per mirror pair.\n\n## Parity worked example (RAID 5, 4 disks)\nStripe holds data chunks D1=1010, D2=0110, D3=1100 on three disks, parity P = D1 XOR D2 XOR D3. Step by step: 1010 XOR 0110 = 1100, then 1100 XOR 1100 = 0000, so P = 0000.\nIf the disk with D2 dies: D2 = D1 XOR D3 XOR P = 1010 XOR 1100 XOR 0000 = 0110. Recovered.\n\n## The small-write problem (RAID 5)\nUpdating one chunk requires: read old data, read old parity, compute new parity = old parity XOR old data XOR new data, write new data and parity: 4 I/Os for one logical write (write penalty 4; RAID 6 is 6, RAID 1/10 is 2). Full-stripe writes avoid the penalty.\n\n## Failure and rebuild\n- Rebuild reads all surviving disks; with large disks (many TB) it takes hours to days, during which another failure (or an unrecoverable read error) loses data in RAID 5. This is why RAID 6 or mirrors are preferred for big drives.\n- Hot spares start rebuilds automatically.\n- Write hole: a crash mid-stripe-update can leave parity inconsistent; solved with a journal or battery-backed cache (or ZFS RAID-Z with copy-on-write).\n\n## Hardware vs software RAID\nController cards with battery-backed cache vs Linux md or ZFS; software RAID is flexible and fast on modern CPUs.\n\n## Follow-ups\n- Capacity of 6 x 4 TB in RAID 5 = 20 TB; RAID 6 = 16 TB; RAID 10 = 12 TB.\n- Cloud: replication or erasure coding (e.g. Reed-Solomon) in object stores generalizes RAID 5/6.",
+  "keyPoints": [
+   "RAID 0 stripes for speed with no redundancy, RAID 1 mirrors, RAID 5/6 add one or two parity chunks, RAID 10 stripes across mirrors.",
+   "Parity is XOR of the stripe, so any single lost chunk is the XOR of the rest.",
+   "RAID 5 small writes cost four I/Os; rebuilds on large disks are risky, so RAID 6 or mirrors are common.",
+   "RAID is availability, not backup."
+  ],
+  "sources": [
+   {
+    "title": "OSTEP: Redundant Arrays of Inexpensive Disks (RAIDs)",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/file-raid.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-filesystems-io:5": {
+  "body": "## Two separate questions\n1. Does the call wait? (blocking vs non-blocking)\n2. Who does the work after the call returns? (synchronous vs asynchronous)\n\n## Blocking I/O\nread() puts the thread to sleep until data arrives; simple; needs a thread per concurrent operation.\n\n## Non-blocking I/O\nSet O_NONBLOCK. If data is not ready, read() returns immediately with EAGAIN/EWOULDBLOCK. You must retry; polling in a loop wastes CPU.\n\n## I/O multiplexing (readiness notification)\nselect/poll/epoll/kqueue tell you when an fd is ready, then you call read/write (non-blocking), which copies the data synchronously. One thread handles thousands of connections. This is what Node, nginx, Redis and Netty use. The copy still happens in your thread, and regular files are always reported ready (so disk reads still block; libuv uses a thread pool).\n\n## True asynchronous I/O\nYou submit the operation, the kernel does it (including the copy) and notifies you on completion. Examples: Windows IOCP, Linux io_uring (shared submission and completion rings; supports files and sockets, batches syscalls), older Linux AIO (limited to O_DIRECT).\n\n## Comparison\n- Blocking: simplest; thread-per-connection; cost: memory and context switches.\n- Non-blocking + readiness (reactor pattern): high concurrency, callback or state-machine code; you do the I/O when notified.\n- Async completion (proactor pattern): the kernel does the I/O and delivers results; fewest syscalls, more complex ownership of buffers.\n- Do not confuse with a language async/await: that is syntax over one of the above.\n\n## Worked example\nWeb server with 10,000 mostly idle clients:\n- Blocking threads: 10,000 threads, ~10,000 stacks and scheduler entries.\n- epoll loop: one thread, epoll_wait returns the ~50 ready sockets, each handled by a non-blocking read and write.\n- io_uring: submit batches of reads and sends in one syscall and harvest completions; reduces syscall overhead at very high QPS (hundreds of thousands to millions of ops/s).\n\n## Pitfalls\n- Partial reads and writes: non-blocking write may accept fewer bytes; keep an output buffer and wait for writable.\n- Edge-triggered epoll: read until EAGAIN.\n- Blocking calls hidden in handlers (DNS, disk, a CPU-heavy loop) stall the loop.\n- Back-pressure: stop reading when the writer cannot keep up.\n\n## Follow-ups\n- Is epoll asynchronous I/O? No: it is readiness notification, synchronous I/O multiplexing.\n- POSIX terms: blocking, non-blocking, I/O multiplexing, signal-driven, asynchronous are the five models from Stevens.",
+  "keyPoints": [
+   "Blocking and non-blocking describe whether the call waits; sync and async describe who completes the transfer.",
+   "epoll/kqueue are readiness-based multiplexing (reactor); IOCP and io_uring are completion-based (proactor).",
+   "Regular files are always 'ready', so disk I/O needs a thread pool or io_uring.",
+   "Handle partial reads/writes and never block inside the event loop."
+  ],
+  "sources": [
+   {
+    "title": "io_uring(7) man page",
+    "url": "https://man7.org/linux/man-pages/man7/io_uring.7.html",
+    "kind": "reference"
+   },
+   {
+    "title": "epoll(7) man page",
+    "url": "https://man7.org/linux/man-pages/man7/epoll.7.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-filesystems-io:6": {
+  "body": "## Two ways to read a file\n- read/write: the kernel copies data from the page cache into your buffer (and back for writes). One syscall per call; two copies in total (disk to page cache by DMA, page cache to user buffer).\n- mmap: maps the file's pages into your address space. Access with ordinary loads and stores; the first touch causes a page fault that maps the cached page. No copy into a user buffer, no per-access syscall.\n\n## mmap details\n```c\nint fd = open(\"data.bin\", O_RDONLY);\nchar *p = mmap(NULL, len, PROT_READ, MAP_SHARED, fd, 0);\nx = p[offset];          // may page-fault, no read() call\nmunmap(p, len);\n```\n- MAP_SHARED: writes go to the file (via the page cache, flushed lazily, msync to force). MAP_PRIVATE: copy-on-write, changes are not written back.\n- Anonymous mmap (MAP_ANONYMOUS) is how malloc gets large blocks.\n- Shared libraries and executables are mmap'd; processes share the same physical pages.\n- Shared memory IPC: two processes map the same file or shm object.\n\n## When mmap wins\n- Random access to large read-mostly files (index files, embedded databases like LMDB), many processes sharing the same data, zero-copy-ish access, simple code with pointer arithmetic.\n\n## When read/write wins\n- Sequential streaming: read-ahead works well and avoids page-fault overhead; a large read() into a reusable buffer is often as fast or faster.\n- Small files: mmap setup and teardown (page table updates, TLB shootdowns) cost more than a single read.\n- Need for error handling: I/O errors on mmap arrive as SIGBUS rather than an error return; a truncated file under your mapping crashes you.\n- Writes needing durability ordering: with mmap you have less control over when pages hit disk (msync), and databases like PostgreSQL and (recently) others avoid mmap for their buffer pools for this reason, while LMDB embraces it.\n- 32-bit address space limits file size mapped.\n\n## Numbers\nA page fault for a cached page (minor fault) is about 0.1-1 us; a read() syscall is about 0.1-0.5 us plus copy (about 10 GB/s memcpy, so a 4 KiB copy is roughly 0.4 us). They are comparable per page; the difference shows in access patterns and concurrency (mmap adds mmap_lock contention in multithreaded processes).\n\n## Follow-ups\n- Does mmap avoid I/O? No; it avoids the copy and syscall per access. The disk is still read on a miss.\n- sendfile/splice: zero-copy from file to socket without bringing data to user space (static file servers).",
+  "keyPoints": [
+   "read/write copies data between page cache and a user buffer; mmap maps cache pages directly into the address space.",
+   "mmap suits random access to large read-mostly files and shared data; read suits sequential streaming and small files.",
+   "mmap I/O errors and truncation show up as SIGBUS, and durability timing needs msync.",
+   "sendfile and splice give zero-copy file-to-socket transfer."
+  ],
+  "sources": [
+   {
+    "title": "mmap(2) man page",
+    "url": "https://man7.org/linux/man-pages/man2/mmap.2.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-security-basics:0": {
+  "body": "## Why two modes\nIf any program could execute any instruction or touch any memory, one bug would take down the machine. CPUs provide privilege levels: user mode (ring 3 on x86) restricts instructions and memory access; kernel mode (ring 0) can do everything: program the MMU, talk to devices, disable interrupts, halt the CPU.\n\n## What user mode cannot do\n- Execute privileged instructions (load page-table base, I/O port access, HLT, change interrupt state); doing so raises a fault and the kernel kills the process.\n- Access kernel memory (page table marks it supervisor-only).\n- Access other processes' memory (separate page tables).\n\n## System calls: the controlled gate\nTo do anything privileged (read a file, send a packet, allocate pages) a program asks the kernel.\n1. User code puts the syscall number and arguments in registers (x86-64 Linux: number in rax, args in rdi, rsi, rdx, r10, r8, r9) and executes the syscall instruction. (Usually via libc wrappers like read().)\n2. The CPU switches to kernel mode and jumps to a fixed entry point set up by the kernel (not a user-chosen address).\n3. Kernel validates arguments (pointer ranges, permissions, fd validity), does the work, and puts the result in rax.\n4. sysret/iret returns to user mode.\nErrors return -errno (libc turns that into -1 plus errno).\n\n## Cost\nA syscall is much cheaper than a context switch but not free: ~100-300 ns for a trivial call, more with Spectre/Meltdown mitigations (KPTI swaps page tables). Hence batching: buffered I/O, readv/writev, io_uring, vDSO (gettimeofday and clock_gettime run in user space reading kernel-maintained data without trapping).\n\n## Other transitions into the kernel\n- Interrupts (timer, NIC, disk): asynchronous, from hardware.\n- Exceptions/faults: page fault, divide by zero, invalid opcode: synchronous, caused by the running instruction.\n- Syscalls: deliberate, via a trap.\n\n## Worked example: read(fd, buf, 4096)\nUser-mode libc wrapper -> syscall instruction -> kernel checks fd and that buf is a writable user range -> page cache lookup (copy_to_user) or block and schedule another process -> returns bytes read.\n\n## Follow-ups\n- Why must the kernel validate user pointers? A malicious pointer to kernel memory could read or overwrite it (confused deputy).\n- Library vs system call: printf is a library function that eventually calls write.\n- Microkernel vs monolithic: microkernels keep less code in ring 0 at the cost of more IPC; Linux is monolithic (modules).\n- Container processes still make syscalls to the shared host kernel; that is why seccomp filters matter.",
+  "keyPoints": [
+   "User mode is restricted; the only way to privileged services is a syscall into a kernel-defined entry point.",
+   "The kernel validates every argument and pointer from user space.",
+   "A syscall costs on the order of 100-300 ns, so batch with buffered I/O, writev or io_uring; vDSO avoids the trap for time calls.",
+   "Interrupts, exceptions and syscalls are the three ways control enters the kernel."
+  ],
+  "sources": [
+   {
+    "title": "syscalls(2) man page",
+    "url": "https://man7.org/linux/man-pages/man2/syscalls.2.html",
+    "kind": "reference"
+   },
+   {
+    "title": "OSTEP: Limited Direct Execution",
+    "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-mechanisms.pdf",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-security-basics:1": {
+  "body": "## Access control question\nWho may do what to which object (file, socket, process)? Two big families.\n\n## DAC: discretionary access control\nThe owner of an object decides who can access it. Classic Unix permissions:\n- Each file has owner, group and mode bits: rwx for user, group, others. Example 0640: owner read/write, group read, others nothing.\n- Kernel checks the process's effective uid/gid against the file's mode. uid 0 (root) bypasses most checks.\n- ACLs (setfacl) add per-user and per-group entries.\n- Weakness: the owner (or any program running with that owner's rights, including malware or an exploited process) can grant access freely, and root is all-powerful: compromise of a setuid or root daemon means total compromise.\n\n## MAC: mandatory access control\nA system-wide policy, set by an administrator and enforced by the kernel regardless of ownership; users and even root-owned processes cannot override it.\n- SELinux: every process and object gets a label (type); policy rules say which types may do which operations (httpd_t may read httpd_sys_content_t, but not user home files). Default deny. Used on RHEL/Fedora, Android.\n- AppArmor: path-based profiles per program (Ubuntu, SUSE).\n- Multi-level security (Bell-LaPadula): no read up, no write down, labels like Confidential or Secret.\n\n## Example\nA web server is exploited and the attacker has a shell as www-data.\n- DAC only: attacker can read anything www-data or world can read (including /etc/passwd, other apps' config if mode 644) and may escalate.\n- MAC (SELinux): the process runs in httpd_t; the policy denies reading ssh keys or connecting to unrelated ports even though the file modes would allow it. Damage is confined.\n\n## Related mechanisms\n- Linux capabilities split root's power into pieces (CAP_NET_BIND_SERVICE, CAP_SYS_ADMIN) so a process can bind port 80 without being root.\n- setuid binaries run with the owner's privileges: powerful and risky (passwd, sudo).\n- Role-based access control (RBAC) at application level, ABAC (attribute-based) for policies.\n\n## Trade-offs\n- DAC: simple and flexible, easy for users; weak against compromised programs.\n- MAC: strong containment; complex policy authoring, breakage when policy is too strict (permissive mode, audit2allow to tune).\n\n## Follow-ups\n- Why do containers on Docker use SELinux/AppArmor profiles by default (on supporting distributions)? To confine a breakout to the container's label.\n- Confused deputy: a privileged program tricked into using its authority for an attacker.",
+  "keyPoints": [
+   "DAC lets owners grant access (Unix mode bits, ACLs); MAC enforces an admin policy that even owners and root-owned processes cannot override.",
+   "SELinux uses type labels with default deny; AppArmor uses per-program path profiles.",
+   "MAC contains a compromised service; DAC alone does not.",
+   "Linux capabilities split root into narrower privileges."
+  ],
+  "sources": [
+   {
+    "title": "capabilities(7) man page",
+    "url": "https://man7.org/linux/man-pages/man7/capabilities.7.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-security-basics:2": {
+  "body": "## The bug\nWriting more data into a fixed-size buffer than it holds overwrites adjacent memory. On the stack, adjacent memory includes the saved frame pointer and the return address.\n\n## Stack frame (x86-64, simplified, stack grows down)\n```\nhigher addresses\n  [ caller frame ...        ]\n  [ return address          ]   <- overwritten by attacker\n  [ saved rbp               ]\n  [ char buf[64]            ]   <- strcpy writes here, upward\nlower addresses\n```\n\n```c\nvoid greet(char *name) {\n    char buf[64];\n    strcpy(buf, name);     // no length check\n}\n```\nIf name is 100 bytes, bytes 72-79 (after 64 buffer + 8 saved rbp) overwrite the return address. When greet returns, the CPU jumps to the attacker-chosen address.\n\n## Stack smashing classic\nAttacker puts shellcode in the buffer and sets the return address to the buffer's address, so execution lands in the injected code (Aleph One, \"Smashing the Stack for Fun and Profit\").\n\n## Mitigations\n- Stack canaries: a random value placed between locals and the return address; checked before return; mismatch aborts (gcc -fstack-protector). Defeated by leaks or by overwrites that skip the canary.\n- NX/DEP (W^X): stack and heap pages are non-executable, so injected shellcode will not run.\n- ASLR: randomize stack, heap, library and executable (PIE) base addresses so the attacker cannot hardcode targets.\n- Return-oriented programming (ROP) bypasses NX by chaining existing code snippets (\"gadgets\") ending in ret; CFI and shadow stacks (Intel CET) counter it.\n- Fortify source, bounds-checked functions, compiler warnings, sanitizers (ASan) in testing, fuzzing.\n- Memory-safe languages (Rust, Go, Java) eliminate most of this class; roughly two-thirds or more of severe vulnerabilities in large C/C++ codebases have been reported as memory safety issues by Microsoft and Google, which is why they are moving to safe languages.\n\n## Related bug classes\n- Heap overflow (corrupt allocator metadata or adjacent objects), use-after-free, format-string bugs (printf(user_input)), integer overflow leading to a small allocation.\n- Heartbleed (2014): a missing bounds check on a read (buffer over-read), leaking memory.\n\n## Fixes at code level\nUse length-aware APIs (strncpy with care, snprintf, strlcpy, std::string, span), validate lengths before copying, compile with hardening flags.\n\n## Follow-ups\n- Why does ASLR need an info leak to be defeated? The attacker needs one known address to compute the others.\n- Why not just make the stack non-executable? ROP and data-only attacks still work.",
+  "keyPoints": [
+   "Overflowing a stack buffer can overwrite the saved return address and redirect execution.",
+   "Defenses stack up: canaries, NX/DEP, ASLR, CFI/shadow stacks; each can be bypassed alone (leaks, ROP).",
+   "Use bounds-checked APIs or memory-safe languages and test with sanitizers and fuzzers.",
+   "Heap overflows, use-after-free and format-string bugs are siblings of the stack overflow."
+  ],
+  "sources": [
+   {
+    "title": "Smashing the Stack for Fun and Profit (Phrack 49)",
+    "url": "https://phrack.org/issues/49/14.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-security-basics:3": {
+  "body": "## Two ways to isolate workloads\nVirtual machine: a hypervisor emulates hardware; each VM runs its own full guest kernel and OS. Container: a normal process (or group) on the host kernel, isolated using kernel features.\n\n## Container isolation building blocks (Linux)\n- Namespaces: give a process its own view of PIDs, mount points, network, hostname, users (user namespace maps uid 0 inside to an unprivileged uid outside), IPC, cgroup.\n- cgroups: limit and account CPU, memory, I/O, pids; memory limit exceeded triggers the OOM killer inside the cgroup.\n- Capabilities, seccomp-bpf syscall filters (Docker's default profile blocks around 40-50 syscalls), AppArmor/SELinux profiles, read-only root filesystems.\n\n## VM isolation\n- Hypervisor (KVM, Xen, Hyper-V, ESXi) uses hardware virtualization (Intel VT-x, AMD-V, nested page tables). Guest kernels are separate; the attack surface is the hypervisor and device emulation, which is much smaller than the whole syscall interface of a shared kernel.\n- Lightweight VMs combine both: AWS Firecracker (used by Lambda and Fargate) boots a microVM in around 125 ms with a minimal device model; Kata Containers and gVisor (a user-space kernel that intercepts syscalls) add stronger isolation for containers.\n\n## Comparison\n- Startup: containers in milliseconds to a second; VMs in seconds (microVMs ~100+ ms).\n- Overhead: containers near zero memory beyond the app; a VM carries a guest OS (hundreds of MB).\n- Density: hundreds of containers per host versus tens of VMs.\n- Isolation: VMs stronger (separate kernel); a kernel vulnerability or misconfiguration (privileged container, mounting docker.sock, host PID namespace) can let a container escape to the host.\n- OS flexibility: a container shares the host kernel (Linux containers need a Linux kernel); a VM can run any OS.\n\n## When to use what\n- Trusted workloads from one team, fast scaling: containers.\n- Multi-tenant, running untrusted code (serverless, CI for strangers, SaaS sandboxes): VMs, microVMs or gVisor, ideally with containers inside.\n- Defense in depth: containers inside VMs is the usual cloud pattern; Kubernetes nodes are VMs.\n\n## Hardening checklist for containers\nRun as non-root, drop all capabilities then add only needed, read-only filesystem, default seccomp profile, no privileged mode, resource limits, patched host kernel, minimal base images.\n\n## Follow-ups\n- Is a container a VM? No: no separate kernel.\n- Why are Lambda functions in microVMs rather than plain containers? Strong tenant isolation with fast startup.",
+  "keyPoints": [
+   "Containers share the host kernel and use namespaces, cgroups, capabilities and seccomp; VMs have their own kernel behind a hypervisor.",
+   "VMs offer stronger isolation, containers offer faster starts and higher density.",
+   "Untrusted multi-tenant code warrants VMs, microVMs (Firecracker) or gVisor.",
+   "Privileged containers and exposed docker.sock defeat container isolation."
+  ],
+  "sources": [
+   {
+    "title": "namespaces(7) man page",
+    "url": "https://man7.org/linux/man-pages/man7/namespaces.7.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Docker engine security",
+    "url": "https://docs.docker.com/engine/security/",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-security-basics:4": {
+  "body": "## Principle\nEvery program, user and component should have only the minimum privileges needed to do its job, for the minimum time. When something is compromised or buggy, the damage is limited to what it could do.\n\n## At the OS level\n- Do not run services as root. Create a dedicated unprivileged user per service.\n- Capabilities instead of root: a web server needing port 80 gets CAP_NET_BIND_SERVICE only (or binds high port behind a proxy).\n- Privilege separation: OpenSSH splits into a privileged monitor and an unprivileged child that handles untrusted network input; Chrome splits the sandboxed renderer from the browser process.\n- Drop privileges after startup: bind the port as root, then setuid to an unprivileged user (nginx master vs workers).\n- seccomp filters to block syscalls the program never needs; AppArmor/SELinux policy; read-only filesystems; separate namespaces.\n- setuid binaries: keep them minimal; prefer sudoers rules naming exact commands over blanket access.\n- File permissions: 0600 for secrets, not 0644; umask defaults.\n\n## In cloud and applications\n- IAM: grant narrowly scoped policies (s3:GetObject on one bucket prefix, not s3:*), short-lived credentials (role assumption, STS tokens), separate roles per service.\n- Database accounts: the app user gets SELECT/INSERT/UPDATE on specific tables, not DDL or superuser; separate migration and read-only reporting users.\n- Kubernetes: ServiceAccounts with narrow RBAC, no cluster-admin for apps, NetworkPolicies, PodSecurity standards.\n- Secrets: scoped per service, rotated, never in images or repos.\n\n## Worked example\nA image-resizing service reads from bucket in and writes to bucket out. Policy: GetObject on in/*, PutObject on out/*. An SSRF or RCE bug in the resizer now cannot read customer database backups or delete data. With a broad s3:* policy the same bug is a data breach.\n\n## Trade-offs\n- More operational work: policy authoring, debugging denials, access request flows.\n- Too tight breaks features; start with audit or permissive mode, observe actual usage (e.g. IAM Access Analyzer, strace, audit logs), then tighten.\n- Complements, not replaces, input validation and patching: it limits blast radius.\n\n## Related ideas\nDefense in depth, separation of duties, default deny, fail-safe defaults, complete mediation (Saltzer and Schroeder, 1975).\n\n## Follow-ups\n- Why is running as root in a container risky even with namespaces? A kernel or runtime bug can map to real root on the host unless user namespaces are used.\n- Time-bound privilege: just-in-time access, expiring tokens.",
+  "keyPoints": [
+   "Grant the minimum privileges for the minimum time so that a compromise has a small blast radius.",
+   "Run services as unprivileged users, use capabilities, drop privileges after startup and separate privileged from untrusted-input code.",
+   "In cloud IAM and databases, scope policies to specific actions and resources and prefer short-lived credentials.",
+   "Tighten gradually by observing real usage; it complements patching and validation."
+  ],
+  "sources": [
+   {
+    "title": "capabilities(7) man page",
+    "url": "https://man7.org/linux/man-pages/man7/capabilities.7.html",
+    "kind": "reference"
+   },
+   {
+    "title": "seccomp(2) man page",
+    "url": "https://man7.org/linux/man-pages/man2/seccomp.2.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ },
+ "os-security-basics:5": {
+  "body": "## What TOCTOU is\nTime-of-check to time-of-use: a program checks a property of a resource, then acts on it, but the resource can change in between. The check result is stale at the time of use. It is a race condition, and the attacker's goal is to win the window.\n\n## Classic file example\n```c\nif (access(\"/tmp/report\", W_OK) == 0) {     // check as the real user\n    fd = open(\"/tmp/report\", O_WRONLY);     // use as setuid root\n    write(fd, data, n);\n}\n```\nA setuid program checks that the real user may write to /tmp/report, then opens it. In between, the attacker replaces /tmp/report with a symlink to /etc/passwd. open follows the symlink with root privileges and the attacker overwrites a protected file. Window: microseconds, but an attacker can retry thousands of times (and can widen it by slowing the target, for example by making the kernel evict path lookups or by filling CPU).\n\n## Fixes\n- Do not check; just try, and handle failure. Use the identity of the actor at the operation: drop privileges (seteuid) before open so the kernel does the check atomically with the use.\n- Operate on file descriptors, not names: open once, then fstat/fchmod/fchown on the fd (the fd refers to the same inode regardless of path changes).\n- Use atomic flags: open(path, O_CREAT | O_EXCL | O_NOFOLLOW) so creation fails if the file exists or is a symlink; mkstemp for temp files in secure directories instead of predictable names in /tmp.\n- openat with directory fds, and RESOLVE_NO_SYMLINKS (openat2) to constrain resolution; sticky bit on /tmp (protected_symlinks, protected_regular sysctls).\n- Atomic rename for updates (write temp, fsync, rename).\n\n## Not only files\n- Check-then-act on application state: if balance >= x then debit (see async races); fix with atomic conditional updates or transactions.\n- Web: coupon redeemed twice with parallel requests (limit-overrun race); fix with unique constraints or atomic decrements. Single-packet attack techniques fire dozens of requests in the same TCP packet to hit the window.\n- Kernel/user: a syscall validates a user buffer and then reads it again, while another thread changes it between (double fetch). Fix by copying once into kernel memory before validating.\n- Cloud: check an S3 object's content then process the object after it was overwritten; use versions or ETags.\n- Time-of-check in permission systems: token validated at connection start and revoked later.\n\n## Interview framing\nName the window, the attacker control (symlink swap, parallel request, other thread) and make the check and the use one atomic step (atomic syscall flags, transactions, constraints, locks on the same resource), or bind to a stable handle (fd, inode, row id).\n\n## Follow-ups\n- Why does stat-then-open fail where open-then-fstat works? The first identifies by name twice, the second identifies the object once.\n- Is locking the answer? Only if every party (including the attacker's path) honors the lock; advisory locks do not stop an attacker.",
+  "keyPoints": [
+   "TOCTOU is a race between checking a condition and using the result; the attacker changes the resource in the gap.",
+   "Classic case: access() then open() on a path swapped for a symlink; fix by acting on a file descriptor or using O_EXCL/O_NOFOLLOW and dropping privileges.",
+   "The same pattern appears as double-spend and limit-overrun races in web apps; fix with atomic DB operations or unique constraints.",
+   "Make check and use a single atomic step or bind to a stable handle."
+  ],
+  "sources": [
+   {
+    "title": "CWE-367: TOCTOU race condition",
+    "url": "https://cwe.mitre.org/data/definitions/367.html",
+    "kind": "reference"
+   },
+   {
+    "title": "Placement-Preparation (BenGJ10), OS notes",
+    "url": "https://github.com/BenGJ10/Placement-Preparation",
+    "kind": "reference"
+   }
+  ]
+ }
+}

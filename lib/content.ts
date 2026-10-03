@@ -6,11 +6,20 @@ import aptitudeBankJson from "@/data/aptitude-bank.json";
 import problemsJson from "@/data/dsa-problems.json";
 import testcasesJson from "@/data/dsa-testcases.json";
 import practiceCasesJson from "@/data/os-dbms-cases.json";
+import blogsJson from "@/data/engineering-blogs.json";
+import notesCsJson from "@/data/notes/cs.json";
+import notesHldAJson from "@/data/notes/hld-a.json";
+import notesHldBJson from "@/data/notes/hld-b.json";
+import notesHldCJson from "@/data/notes/hld-c.json";
+import notesLldJson from "@/data/notes/lld.json";
+import notesOsJson from "@/data/notes/os.json";
+import notesOopJson from "@/data/notes/oop.json";
 import newsJson from "@/data/news-sources.json";
 import syllabusJson from "@/data/syllabus.json";
 import systemDesignJson from "@/data/system-design.json";
 import type { AptitudeBank } from "./domain/aptitude";
 import type { DesignSectionId } from "./domain/design";
+import type { NotesFile, SubtopicNote } from "./domain/notes";
 import { normaliseHints, type ArgType, type CompareMode, type HintLevel, type ReturnKind, type TestCase } from "./domain/dsa-runner";
 import type { PracticeKind } from "./domain/practice-cases";
 import type { Language } from "./domain/starters";
@@ -215,4 +224,17 @@ export const subtopics: SubtopicInfo[] = orderedTopics().flatMap((t, topicPos) =
   })),
 );
 export const subtopicById = new Map(subtopics.map((s) => [s.id, s]));
+
+/** Authored lessons by subtopic id (data/notes/*.json, validated in tests/content/notes.test.ts). */
+export const noteFiles: NotesFile[] = [notesHldAJson, notesHldBJson, notesHldCJson, notesCsJson, notesOsJson, notesOopJson, notesLldJson] as NotesFile[];
+export const subtopicNotes: ReadonlyMap<string, SubtopicNote> = new Map(noteFiles.flatMap((f) => Object.entries(f)));
 export const mainProblemCount = problems.filter((p) => p.track === "main").length;
+
+export interface EngineeringBlog {
+  name: string;
+  url: string;
+  tags: string[];
+}
+
+/** Hand-picked engineering blogs for system design reading (data/engineering-blogs.json). */
+export const engineeringBlogs = blogsJson.blogs as EngineeringBlog[];

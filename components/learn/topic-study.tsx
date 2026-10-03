@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { NotebookPen, Sparkles } from "lucide-react";
+import { BookOpen, NotebookPen, Sparkles } from "lucide-react";
 import { updateSubtopicNotes } from "@/app/(app)/dashboard/actions";
+import { LessonCard } from "@/components/learn/lesson-card";
 import { SubtopicChecklist, type ChecklistItem } from "@/components/progress/subtopic-checklist";
 import { MarkdownNotes } from "@/components/shared/markdown-notes";
+import type { SubtopicNote } from "@/lib/domain/notes";
 
 const DESIGN_TEMPLATE = `## Requirements
 - Functional:
@@ -31,15 +33,19 @@ const linkClass =
 export function TopicStudy({
   items,
   notes,
+  lessons,
   nextId,
   designTemplate,
 }: {
   items: ChecklistItem[];
   notes: Record<string, string>;
+  /** Authored lessons by subtopic id; subtopics without one just show Practice. */
+  lessons: Record<string, SubtopicNote>;
   nextId: string | null;
   designTemplate: boolean;
 }) {
   const [openNotes, setOpenNotes] = useState<string | null>(null);
+  const [openLesson, setOpenLesson] = useState<string | null>(null);
 
   return (
     <SubtopicChecklist
@@ -50,6 +56,16 @@ export function TopicStudy({
           <Link href={`/learn/practice?ref=${encodeURIComponent(item.id)}`} className={`${linkClass} text-primary hover:bg-primary/10`}>
             <Sparkles className="size-3" aria-hidden /> Practice
           </Link>
+          {lessons[item.id] && (
+            <button
+              type="button"
+              onClick={() => setOpenLesson(openLesson === item.id ? null : item.id)}
+              className={`${linkClass} text-primary hover:bg-primary/10`}
+              aria-expanded={openLesson === item.id}
+            >
+              <BookOpen className="size-3" aria-hidden /> {openLesson === item.id ? "Hide lesson" : "Read lesson"}
+            </button>
+          )}
           {item.done && (
             <button
               type="button"
@@ -59,6 +75,11 @@ export function TopicStudy({
             >
               <NotebookPen className="size-3" aria-hidden /> {notes[item.id] ? "Notes" : "Add notes"}
             </button>
+          )}
+          {lessons[item.id] && openLesson === item.id && (
+            <div className="w-full pt-1">
+              <LessonCard title={item.title} note={lessons[item.id]} />
+            </div>
           )}
           {item.done && openNotes === item.id && (
             <div className="w-full pt-1">

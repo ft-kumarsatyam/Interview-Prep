@@ -8,7 +8,7 @@ import { TrackChip } from "@/components/shared/badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { practiceCases, systemDesign, topicById, topics, trackById } from "@/lib/content";
+import { practiceCases, subtopicNotes, systemDesign, topicById, topics, trackById } from "@/lib/content";
 import { casePath } from "@/lib/domain/case-quiz";
 import { neighbours, topicProgress } from "@/lib/domain/learn";
 import { planClock } from "@/lib/plan-clock";
@@ -49,6 +49,7 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
     return { id, title, done: !!progress[id], meta: m?.attempts ? `practice ${m.score}% · ${m.attempts} run${m.attempts === 1 ? "" : "s"}` : undefined };
   });
   const notes = Object.fromEntries(items.flatMap((it) => (progress[it.id]?.notes ? [[it.id, progress[it.id]!.notes]] : [])));
+  const lessons = Object.fromEntries(items.flatMap((it) => (subtopicNotes.has(it.id) ? [[it.id, subtopicNotes.get(it.id)!]] : [])));
   const cases = [
     ...systemDesign.cases.filter((c) => c.topicId === topic.id).map((c) => ({ key: `hld:${c.slug}`, title: c.title, summary: c.summary, href: casePath("hld", c.slug) })),
     ...practiceCases.filter((c) => c.topicId === topic.id).map((c) => ({ key: `${c.kind}:${c.slug}`, title: c.title, summary: c.summary, href: casePath(c.kind, c.slug) })),
@@ -103,7 +104,7 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
             <CardDescription>Tick each one once you can explain it. Practice runs a short quiz on just that subtopic.</CardDescription>
           </CardHeader>
           <CardContent>
-            <TopicStudy items={items} notes={notes} nextId={nextId} designTemplate={topic.track === "hld"} />
+            <TopicStudy items={items} notes={notes} lessons={lessons} nextId={nextId} designTemplate={topic.track === "hld"} />
           </CardContent>
         </Card>
 
