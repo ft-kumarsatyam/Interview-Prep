@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Award, Briefcase, Lock, RotateCcw, Sparkles } from "lucide-react";
+import { Award, Briefcase, Lock, RotateCcw, Sparkles } from "lucide-react";
 import { PracticeRunner, type NextStep } from "@/components/learn/practice-runner";
+import { BackLink } from "@/components/shared/back-link";
 import { TrackChip } from "@/components/shared/badges";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
@@ -57,12 +58,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/learn/p
 
   return (
     <>
-      <Link
-        href={back.href}
-        className="-ml-2 mb-3 inline-flex min-h-9 max-w-full items-center gap-1 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-      >
-        <ArrowLeft className="size-4 shrink-0" /> <span className="truncate">Back to {back.label}</span>
-      </Link>
+      <BackLink href={back.href}>Back to {back.label}</BackLink>
       <PageHeader
         icon={target.scope === "topic" ? Award : target.scope === "case" ? Briefcase : target.scope === "mistakes" ? RotateCcw : Sparkles}
         title={target.scope === "topic" ? `Topic quiz: ${target.title}` : target.scope === "case" ? `Case quiz: ${target.title}` : target.title}

@@ -23,6 +23,8 @@ export interface CalendarDay {
   estMinutes?: number;
   /** Weekly mocks scheduled on this day. Informational: they never gate the streak. */
   mocks: MockSlotStatus[];
+  /** What was actually done (today and earlier only). */
+  done: { dsa: number; theory: number; quiz: boolean } | null;
 }
 
 export interface CalendarMonth {
@@ -103,6 +105,7 @@ export async function getCalendarMonth(requested?: string): Promise<CalendarMont
     finishedMocks(first, last),
   ]);
   const frozenBy = new Map(frozen.map((p) => [p.date, p]));
+  const logBy = new Map(logs.map((l) => [l.date, l]));
   const cells = new Map(
     heatmapCells(
       first,
@@ -126,6 +129,7 @@ export async function getCalendarMonth(requested?: string): Promise<CalendarMont
       reviews: plan?.dsaReview?.length ?? 0,
       ...(plan?.estMinutes != null ? { estMinutes: plan.estMinutes } : {}),
       mocks: inWindow(date, s) ? mockSlotsOn(date, s.mockSchedule, mocks) : [],
+      done: date <= state.today ? { dsa: logBy.get(date)?.dsaSolved ?? 0, theory: logBy.get(date)?.theoryDone ?? 0, quiz: !!logBy.get(date)?.quizPassed } : null,
     };
   });
   return { month, today: state.today, startDate: s.startDate, endDate: s.endDate, days };

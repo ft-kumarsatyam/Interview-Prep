@@ -6,6 +6,7 @@ import { CheckCircle2, Pause, Play, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { addDesignMinutesAction, saveDesignRubricAction, saveDesignSectionAction } from "@/app/(app)/design/actions";
 import { addPracticeMinutesAction, savePracticeRubricAction, savePracticeSectionAction } from "@/app/(app)/design/practice-actions";
+import { ToneBadge } from "@/components/shared/tone-badge";
 import { MarkdownNotes } from "@/components/shared/markdown-notes";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -53,7 +54,7 @@ function Step({ n, title, detail, done, active }: { n: number; title: string; de
       {done ? (
         <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" aria-label="Done" />
       ) : (
-        <span className={cn("grid size-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold", active ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>
+        <span className={cn("grid size-5 shrink-0 place-items-center rounded-full text-2xs font-semibold", active ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>
           {n}
         </span>
       )}
@@ -221,9 +222,7 @@ export function DesignPractice({ slug, kind, sections, rubric, checked: initialC
               </h3>
               {current === s.id && <span className="rounded-full bg-primary/12 px-2 py-0.5 text-xs font-medium text-primary">Now</span>}
               {written[s.id] && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-success/12 px-2 py-0.5 text-xs font-medium text-success">
-                  <CheckCircle2 className="size-3" aria-hidden /> Written
-                </span>
+                <ToneBadge tone="success" icon={CheckCircle2}>Written</ToneBadge>
               )}
               <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground tabular">{s.minutes} min</span>
             </div>

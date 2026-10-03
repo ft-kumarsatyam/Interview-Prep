@@ -14,7 +14,7 @@ import { Settings, SETTINGS_ID } from "@/lib/models/system";
 import { projectThrough } from "./calendar";
 import { ensureToday, type TodayState } from "./plan";
 import { logPlanChange } from "./plan-log";
-import { getSettings, type AppSettings } from "./settings";
+import { getSettings, invalidateSettings, type AppSettings } from "./settings";
 import { minutesByDate } from "./study";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
@@ -41,6 +41,7 @@ export async function savePlanner(input: PlannerInput, now = new Date()): Promis
     },
     { upsert: true },
   );
+  invalidateSettings();
   const after = await getSettings();
   const state = (s: AppSettings) => ({ profile: s.profile, startDate: s.startDate, endDate: s.endDate, hoursByDow: s.hoursByDow ?? [], restDays: s.restDays });
   const changes = diffPlannerChanges(state(before), state(after));

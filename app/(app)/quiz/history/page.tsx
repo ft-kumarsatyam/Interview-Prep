@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft, CheckCircle2, ChevronRight, CircleDashed, History, ListChecks, XCircle } from "lucide-react";
+import { LinkCard } from "@/components/shared/link-card";
 import { prettyDate } from "@/components/quiz/format";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
@@ -73,10 +74,7 @@ function HistoryRow({ row: r }: { row: QuizHistoryRow }) {
   const status = r.passed ? "passed" : r.attempts ? "not passed" : "not attempted";
   const StatusIcon = r.passed ? CheckCircle2 : r.attempts ? XCircle : CircleDashed;
   return (
-    <Link
-      href={`/quiz/history/${r.date}?kind=${r.kind}`}
-      className="group flex items-center gap-3 rounded-xl border bg-card p-3 transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:px-4"
-    >
+    <LinkCard href={`/quiz/history/${r.date}?kind=${r.kind}`} className="min-h-0 sm:px-4">
       <StatusIcon
         className={cn("size-5 shrink-0", r.passed ? "text-success" : r.attempts ? "text-destructive" : "text-muted-foreground")}
         aria-label={status}
@@ -97,9 +95,9 @@ function HistoryRow({ row: r }: { row: QuizHistoryRow }) {
         <span className={cn("font-mono text-base font-semibold tabular-nums", r.passed ? "text-success" : r.attempts ? "text-foreground" : "text-muted-foreground")}>
           {r.attempts ? `${r.bestPct}%` : "–"}
         </span>
-        <span className="text-[11px] text-muted-foreground capitalize">{status}</span>
+        <span className="text-2xs text-muted-foreground capitalize">{status}</span>
       </div>
       <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
-    </Link>
+    </LinkCard>
   );
 }

@@ -26,13 +26,3 @@ export function EmptyState({
     </div>
   );
 }
-
-/** Placeholder for a page whose feature lands in a later build phase. */
-export function ComingInPhase({ icon, title, phase, children }: { icon: LucideIcon; title: string; phase: number; children: React.ReactNode }) {
-  return (
-    <EmptyState icon={icon} title={title}>
-      <p>{children}</p>
-      <p className="mt-3 font-mono text-xs">Built in Phase {phase} · docs/BUILD_PLAN.md</p>
-    </EmptyState>
-  );
-}

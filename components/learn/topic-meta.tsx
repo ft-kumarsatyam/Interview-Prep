@@ -21,7 +21,7 @@ export function StatusRing({ done, total, status, mastered, size = 32 }: { done:
         <circle cx="16" cy="16" r={r} fill="none" strokeWidth="3" className="stroke-muted" />
         {frac > 0 && <circle cx="16" cy="16" r={r} fill="none" strokeWidth="3" strokeLinecap="round" strokeDasharray={`${frac * c} ${c}`} className="stroke-primary" />}
       </svg>
-      <span className="tabular font-mono text-[10px] text-muted-foreground">{done}</span>
+      <span className="tabular font-mono text-2xs text-muted-foreground">{done}</span>
     </span>
   );
 }

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Settings, Wrench } from "lucide-react";
+import { ArrowRight, CheckCircle2, Wrench } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { SetupChecklistView } from "@/components/setup/setup-checklist";
 import { Button } from "@/components/ui/button";
@@ -25,13 +25,7 @@ export default async function SetupPage() {
         title="Setup"
         icon={Wrench}
         description="Everything PrepOS needs to run on its own: content, LeetCode, daily jobs, reminders, backups and your phone."
-      >
-        <Button asChild variant="outline" className="h-9">
-          <Link href="/settings">
-            <Settings aria-hidden /> Settings
-          </Link>
-        </Button>
-      </PageHeader>
+      />
 
       <div className="mb-6 rounded-xl border bg-card p-4 sm:p-5">
         <div className="flex items-center gap-4">

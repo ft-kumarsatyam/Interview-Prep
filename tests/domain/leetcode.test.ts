@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planSync, type Submission } from "@/lib/domain/leetcode";
+import { isCacheFresh, planSync, type Submission } from "@/lib/domain/leetcode";
 
 const sec = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 const base = {
@@ -48,5 +48,17 @@ describe("planSync", () => {
     });
     expect(plan.intents).toEqual([]);
     expect(plan.untracked).toEqual(["some-premium-problem"]);
+  });
+});
+
+describe("isCacheFresh", () => {
+  const at = new Date("2026-10-05T10:00:00Z");
+  it("is fresh inside the TTL and stale after", () => {
+    expect(isCacheFresh(at, at.getTime() + 14 * 60_000)).toBe(true);
+    expect(isCacheFresh(at, at.getTime() + 15 * 60_000)).toBe(false);
+  });
+  it("treats missing or future timestamps as stale", () => {
+    expect(isCacheFresh(null, 0)).toBe(false);
+    expect(isCacheFresh(at, at.getTime() - 1)).toBe(false);
   });
 });

@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { CheckCircle2, Circle, CircleDot, ExternalLink, RefreshCw } from "lucide-react";
+import { CheckCircle2, ExternalLink, RefreshCw } from "lucide-react";
 import { DifficultyBadge } from "@/components/shared/badges";
+import { SectionHeading } from "@/components/shared/section-heading";
+import { StatusIcon } from "@/components/shared/status-icon";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Progress } from "@/components/ui/progress";
 import type { ContentProblem } from "@/lib/content";
@@ -10,10 +12,10 @@ import { formatDate } from "@/lib/plan-clock";
 import type { ProgressSummary } from "@/lib/services/problems";
 import { cn } from "@/lib/utils";
 
-export function StatusIcon({ prog, className }: { prog?: ProgressSummary; className?: string }) {
-  if (prog?.status === "solved") return <CheckCircle2 role="img" aria-label="Solved" className={cn("size-4 shrink-0 text-success", className)} />;
-  if (prog?.status === "attempted") return <CircleDot role="img" aria-label="Attempted" className={cn("size-4 shrink-0 text-warning", className)} />;
-  return <Circle role="img" aria-label="Not started" className={cn("size-4 shrink-0 text-muted-foreground/60", className)} />;
+function ProblemStatusIcon({ prog }: { prog?: ProgressSummary }) {
+  if (prog?.status === "solved") return <StatusIcon kind="done" label="Solved" />;
+  if (prog?.status === "attempted") return <StatusIcon kind="partial" label="Attempted" />;
+  return <StatusIcon kind="todo" label="Not started" />;
 }
 
 export function ProblemRow({ p, prog, isNext }: { p: ContentProblem; prog?: ProgressSummary; isNext?: boolean }) {
@@ -23,7 +25,7 @@ export function ProblemRow({ p, prog, isNext }: { p: ContentProblem; prog?: Prog
         href={`/dsa/${p.slug}`}
         className="group flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
-        <StatusIcon prog={prog} />
+        <ProblemStatusIcon prog={prog} />
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium text-foreground group-hover:text-primary">{p.title}</span>
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
@@ -89,12 +91,16 @@ export function ProblemGroups({
   return (
     <section className="space-y-2">
       {title && (
-        <h2 className="flex items-baseline justify-between gap-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-          <span>{title}</span>
-          <span className="tabular font-mono font-normal normal-case">
-            {solved} / {total} solved
-          </span>
-        </h2>
+        <SectionHeading
+          eyebrow
+          className="mb-0"
+          title={title}
+          hint={
+            <span className="tabular font-mono">
+              {solved} / {total} solved
+            </span>
+          }
+        />
       )}
       <Accordion
         type="multiple"

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, CalendarClock, Check, ChevronRight, Search, SearchX, X } from "lucide-react";
+import { LinkCard } from "@/components/shared/link-card";
 import { StatusRing } from "@/components/learn/topic-meta";
 import { EmptyState } from "@/components/shared/empty-state";
 import { TrackChip } from "@/components/shared/badges";
@@ -158,7 +159,7 @@ export function LearnIndex({
             <X className="size-4" />
           </button>
         ) : (
-          <kbd className="pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded border px-1.5 font-mono text-[10px] text-muted-foreground sm:block">/</kbd>
+          <kbd className="pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded border px-1.5 font-mono text-2xs text-muted-foreground sm:block">/</kbd>
         )}
       </div>
 
@@ -218,7 +219,7 @@ export function LearnIndex({
                   )}
                 >
                   {t.name}
-                  <span className={cn("tabular font-mono text-[11px]", pct === 100 ? "text-success" : "opacity-70")}>
+                  <span className={cn("tabular font-mono text-2xs", pct === 100 ? "text-success" : "opacity-70")}>
                     {pct === 100 ? <Check className="inline size-3.5" aria-label="complete" /> : `${pct}%`}
                   </span>
                 </button>
@@ -256,7 +257,7 @@ export function LearnIndex({
                     )}
                   >
                     {f.label}
-                    <span className="tabular font-mono text-[11px] opacity-70">{counts[f.id]}</span>
+                    <span className="tabular font-mono text-2xs opacity-70">{counts[f.id]}</span>
                   </button>
                 ))}
               </div>
@@ -295,10 +296,7 @@ export function LearnIndex({
 function ContinueBanner({ row, reason, track }: { row: TopicRow; reason: ContinueCard["reason"]; track: ContentTrack | undefined }) {
   const pct = pctOf(row.done, row.total);
   return (
-    <Link
-      href={`/learn/${encodeURIComponent(row.id)}`}
-      className="group block rounded-xl border bg-card p-4 shadow-xs transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-    >
+    <LinkCard href={`/learn/${encodeURIComponent(row.id)}`} className="block p-4 shadow-xs">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <CalendarClock className="size-3.5 text-primary" aria-hidden />
         <span className="font-medium text-primary">{REASON_LABEL[reason]}</span>
@@ -320,7 +318,7 @@ function ContinueBanner({ row, reason, track }: { row: TopicRow; reason: Continu
           {row.done}/{row.total}
         </span>
       </div>
-    </Link>
+    </LinkCard>
   );
 }
 
@@ -349,11 +347,11 @@ function TopicLink({
         <span className="flex items-center gap-2">
           <span className="truncate text-sm font-medium">{row.title}</span>
           {current && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/15 px-1.5 py-0.5 text-[11px] font-medium text-primary">This week</span>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/15 px-1.5 py-0.5 text-2xs font-medium text-primary">This week</span>
           )}
         </span>
         <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-          {showTrack && track && <TrackChip color={track.color} className="px-1.5 py-0 text-[11px]">{track.name}</TrackChip>}
+          {showTrack && track && <TrackChip color={track.color} className="px-1.5 py-0 text-2xs">{track.name}</TrackChip>}
           <span className="shrink-0">Week {row.week}</span>
           {detail && (
             <>

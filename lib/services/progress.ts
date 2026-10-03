@@ -27,6 +27,21 @@ export interface SolveInput {
  * sync all come through here so DayLog counts and completion stay consistent.
  */
 export async function recordSolve(input: SolveInput) {
+  await writeSolve(input);
+  return recomputeDay(input.date);
+}
+
+/**
+ * Several solves (a LeetCode sync) in order, recounting each affected day once
+ * instead of once per solve. Writes stay sequential: two solves of one problem depend on each other.
+ */
+export async function recordSolves(inputs: readonly SolveInput[]): Promise<void> {
+  for (const input of inputs) await writeSolve(input);
+  for (const date of [...new Set(inputs.map((i) => i.date))].toSorted()) await recomputeDay(date);
+}
+
+/** The ProblemProgress write behind a solve, without recounting the day. */
+async function writeSolve(input: SolveInput): Promise<void> {
   if (!problemBySlug.has(input.slug)) throw new Error(`Unknown problem: ${input.slug}`);
   await connectDb();
   const prior = await ProblemProgress.findOne({ slug: input.slug }).lean();
@@ -37,7 +52,7 @@ export async function recordSolve(input: SolveInput) {
   const outcome = applySolve(priorSolve, input.date, confidence);
 
   // A sync never overwrites details you already gave for the same day.
-  if (imported && !outcome.isNewSolveDay) return recomputeDay(input.date);
+  if (imported && !outcome.isNewSolveDay) return;
 
   await ProblemProgress.updateOne(
     { slug: input.slug },
@@ -64,7 +79,6 @@ export async function recordSolve(input: SolveInput) {
     },
     { upsert: true },
   );
-  return recomputeDay(input.date);
 }
 
 /** Upserts a bare "attempted" row for a Run or a failed Submit. Never downgrades an already-solved problem. */

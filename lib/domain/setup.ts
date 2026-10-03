@@ -42,6 +42,8 @@ export interface SetupInput {
   };
   backup: { lastExportAt: Date | null };
   session: { remember: boolean };
+  /** Omitted when unknown; the planner step is then left out of the list. */
+  planner?: { completed: boolean };
 }
 
 export interface SetupChecklist {
@@ -229,10 +231,25 @@ function sessionItem({ session }: SetupInput): SetupItem {
   };
 }
 
+function plannerItem({ planner }: SetupInput): SetupItem | null {
+  if (!planner) return null;
+  return {
+    id: "planner",
+    title: "Plan your prep",
+    status: planner.completed ? "ok" : "todo",
+    detail: planner.completed
+      ? "Your goals, topic ratings and weekly hours are saved, so every day's plan is built around you."
+      : "Answer a few questions about your goal, what you already know and your free hours. It takes about three minutes and shapes the whole plan.",
+    required: true,
+    actions: [{ kind: "link", href: "/plan/setup", label: planner.completed ? "Edit the plan" : "Start planning" }],
+  };
+}
+
 export function buildChecklist(input: SetupInput): SetupChecklist {
   const items = [
     databaseItem(input),
     secretsItem(input),
+    plannerItem(input),
     leetcodeItem(input),
     jobsItem(input),
     newsItem(input),
@@ -240,11 +257,24 @@ export function buildChecklist(input: SetupInput): SetupChecklist {
     llmItem(input),
     backupItem(input),
     sessionItem(input),
-  ];
+  ].filter((i): i is SetupItem => i !== null);
   return {
     items,
     done: items.filter((i) => i.status === "ok").length,
     total: items.length,
     requiredLeft: items.filter((i) => i.required && i.status !== "ok").length,
   };
+}
+
+/** Shown instead of the full list when MongoDB can't be reached: nothing else can be checked until it is. */
+export function buildUnreachableChecklist(error: string): SetupChecklist {
+  const item: SetupItem = {
+    id: "database",
+    title: "Database reachable",
+    status: "todo",
+    detail: `PrepOS can't reach MongoDB (${error.slice(0, 160)}). Check MONGODB_URI, that the Atlas cluster is running, and that your IP is allowed (Network Access). Then reload this page.`,
+    required: true,
+    actions: [],
+  };
+  return { items: [item], done: 0, total: 1, requiredLeft: 1 };
 }

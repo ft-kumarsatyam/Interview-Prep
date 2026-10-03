@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { FileCode2, FilePlus2, Search, SearchX, Trash2 } from "lucide-react";
+import { Chip } from "@/components/shared/chip";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/shared/empty-state";
 import { Input } from "@/components/ui/input";
 import { filterSnippets, parseTags, tagCounts } from "@/lib/playground/tags";
 import type { SnippetSummary } from "@/lib/services/snippets";
@@ -47,11 +49,9 @@ export function SnippetList({
       </div>
 
       {snippets.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-          <FileCode2 className="size-6" aria-hidden />
-          <p className="font-medium text-foreground">No snippets yet</p>
-          <p className="text-xs">Write something worth keeping, then hit Save. Tag it by topic, e.g. js-async, closures.</p>
-        </div>
+        <EmptyState compact icon={FileCode2} title="No snippets yet">
+          Write something worth keeping, then hit Save. Tag it by topic, e.g. js-async, closures.
+        </EmptyState>
       ) : (
         <>
           <div className="relative">
@@ -63,18 +63,9 @@ export function SnippetList({
               {tags.map((t) => {
                 const on = activeTag?.toLowerCase() === t.tag.toLowerCase();
                 return (
-                  <button
-                    key={t.tag}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => setActiveTag(on ? null : t.tag)}
-                    className={cn(
-                      "inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-                      on ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted",
-                    )}
-                  >
-                    #{t.tag} <span className="tabular opacity-60">{t.count}</span>
-                  </button>
+                  <Chip key={t.tag} pressed={on} onClick={() => setActiveTag(on ? null : t.tag)} count={t.count} className="h-7 min-h-7 px-2.5 text-xs">
+                    #{t.tag}
+                  </Chip>
                 );
               })}
             </div>

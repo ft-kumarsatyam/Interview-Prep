@@ -2,7 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { topics } from "@/lib/content";
 import { PlannerIntake } from "@/lib/models/planner";
 import { Notification, Settings } from "@/lib/models/system";
-import { startDiagnostic, submitDiagnostic } from "@/lib/services/diagnostic";
+import { diagnosticCandidates, startDiagnostic, submitDiagnostic } from "@/lib/services/diagnostic";
+import { listSnapshots, resetPlanner, restoreSnapshot, takeSnapshot } from "@/lib/services/planner-snapshot";
 import { loadPersonalisation } from "@/lib/services/intake-weights";
 import { loadPlanInputs } from "@/lib/services/plan";
 import { listPlanChanges } from "@/lib/services/plan-log";
@@ -108,13 +109,75 @@ describe("diagnostic", () => {
     await saveIntakeStep({ step: "ratings", ratings: topics.slice(0, 6).map((t) => ({ topicId: t.id, rating: 4, wantToLearn: false, tier: "must" })) }, at(TUE));
     const quiz = await startDiagnostic("seed");
     expect(quiz.length).toBeGreaterThan(0);
-    expect(quiz.every((t) => t.questions.length > 0 && t.questions.length <= 3)).toBe(true);
+    expect(quiz.every((t) => t.questions.length > 0 && t.questions.length <= 4)).toBe(true);
     const answers = quiz.flatMap((t) => t.questions.map((q) => ({ id: q.id, answer: null })));
     const results = await submitDiagnostic(answers);
-    expect(results.every((r) => r.pct === 0)).toBe(true);
+    expect(results.every((r) => r.pct === 0 && r.verdict === "weaker" && r.missed.length > 0)).toBe(true);
     const saved = await getIntake();
     expect(saved.ratings.find((r) => r.topicId === results[0]!.topicId)?.diagnosticScore).toBe(0);
     await expect(submitDiagnostic([{ id: "nope", answer: 0 }])).rejects.toThrow(/Unknown question/);
+  });
+});
+
+describe("check topic choice", () => {
+  it("lists rated topics and checks only the ones picked", async () => {
+    await saveIntakeStep({ step: "ratings", ratings: topics.slice(0, 4).map((t, i) => ({ topicId: t.id, rating: 2, wantToLearn: false, tier: i === 3 ? "skip" : "must" })) }, at(TUE));
+    const { candidates, suggested } = await diagnosticCandidates();
+    expect(candidates.map((c) => c.topicId)).not.toContain(topics[3].id);
+    expect(suggested.length).toBeGreaterThan(0);
+    const one = candidates.find((c) => c.questions > 0)!;
+    const quiz = await startDiagnostic("seed", [one.topicId, topics[3].id]);
+    expect(quiz.map((t) => t.topicId)).toEqual([one.topicId]);
+  });
+});
+
+describe("reset and restore", () => {
+  async function finish(role: string) {
+    await saveIntakeStep({ ...goals, targetRole: role }, at(TUE));
+    await saveIntakeStep(ratings, at(TUE));
+    await saveIntakeStep(availability, at(TUE));
+    await completeIntake(at(TUE));
+  }
+
+  it("reset saves a copy, clears the intake and can restart the plan from today", async () => {
+    await finish("Backend");
+    await resetPlanner({ restartFromToday: true }, at(TUE));
+    const intake = await getIntake();
+    expect(intake.completedAt).toBeNull();
+    expect(intake.ratings).toEqual([]);
+    const s = await Settings.findById("settings").lean();
+    expect(s?.plannerSetupAt).toBeNull();
+    expect(s?.startDate).toBe(TUE);
+    const saved = await listSnapshots(at(TUE));
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ reason: "reset", daysLeft: 60 });
+    expect((await listPlanChanges()).some((c) => c.type === "reset")).toBe(true);
+  });
+
+  it("restore brings the old planner back and saves the current one first", async () => {
+    await finish("Backend");
+    const before = await Settings.findById("settings").lean();
+    await resetPlanner({ restartFromToday: true }, at(TUE));
+    await finish("Frontend");
+    const [{ id }] = await listSnapshots(at(TUE));
+    await restoreSnapshot(id, at(TUE));
+    const intake = await getIntake();
+    expect(intake.goals.targetRole).toBe("Backend");
+    expect(intake.completedAt).not.toBeNull();
+    expect(intake.ratings).toHaveLength(1);
+    const s = await Settings.findById("settings").lean();
+    expect(s?.startDate).toBe(before?.startDate);
+    expect(s?.targetRole).toBe("Backend");
+    const saved = await listSnapshots(at(TUE));
+    expect(saved.map((x) => x.reason)).toEqual(["restore", "reset"]);
+  });
+
+  it("hides expired copies and rejects restoring them", async () => {
+    await finish("Backend");
+    const id = await takeSnapshot("manual", at(TUE));
+    const later = new Date(at(TUE).getTime() + 61 * 86_400_000);
+    expect(await listSnapshots(later)).toEqual([]);
+    await expect(restoreSnapshot(id, later)).rejects.toThrow(/expired/);
   });
 });
 

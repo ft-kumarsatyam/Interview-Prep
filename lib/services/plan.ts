@@ -11,7 +11,7 @@ import { carryOverChange, replanChange } from "@/lib/domain/plan-changes";
 import { recomputeDay, type DayState } from "./day";
 import { loadPersonalisation, type Personalisation } from "./intake-weights";
 import { gapsOfDays, logPlanChange } from "./plan-log";
-import { getSettings, type AppSettings } from "./settings";
+import { getSettings, invalidateSettings, type AppSettings } from "./settings";
 
 export interface TodayState {
   today: DateStr;
@@ -61,6 +61,7 @@ async function settlePastDays(s: AppSettings, today: DateStr): Promise<number> {
     { _id: SETTINGS_ID, settledThrough: s.settledThrough },
     { $set: { settledThrough: to, freezeTokens: result.freezeTokens } },
   );
+  invalidateSettings();
   if (claimed.modifiedCount === 0) return (await getSettings()).freezeTokens;
 
   if (result.changed.length > 0) {

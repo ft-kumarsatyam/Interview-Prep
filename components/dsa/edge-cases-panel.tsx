@@ -1,6 +1,7 @@
-import { Play } from "lucide-react";
+import { Flag, Play } from "lucide-react";
 import type { ProblemTestCase } from "@/lib/content";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/shared/empty-state";
 import { edgeInfo } from "@/lib/domain/edge-cases";
 import type { CaseResult } from "@/lib/sandbox/run";
 import { cn } from "@/lib/utils";
@@ -24,7 +25,7 @@ export function EdgeCasesPanel({
   const shown = cases.flatMap((c, i) => (c.edge && !c.hidden ? [{ c, i }] : []));
   const hiddenCount = cases.filter((c) => c.edge && c.hidden).length;
 
-  if (shown.length === 0) return <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">No named edge cases for this problem yet.</p>;
+  if (shown.length === 0) return <EmptyState compact icon={Flag} title="No named edge cases for this problem yet." />;
 
   return (
     <div className="space-y-2">

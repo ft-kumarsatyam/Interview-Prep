@@ -1,4 +1,5 @@
 import { classifyHttp } from "@/lib/domain/llm-router";
+import { fetchWithPolicy } from "@/lib/http";
 import { LlmHttpError, redact } from "./errors";
 import type { CompleteFn, LlmConfig } from "./types";
 
@@ -11,14 +12,17 @@ const TIMEOUT_MS = 30_000;
 export const DEFAULT_GEMINI_MODEL = "gemini-flash-latest";
 export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 
-async function postJson(url: string, body: unknown, headers: Record<string, string>, secrets: string[]): Promise<unknown> {
+async function postJson(url: string, body: unknown, headers: Record<string, string>, secrets: string[], signal?: AbortSignal): Promise<unknown> {
   let res: Response;
   try {
-    res = await fetch(url, {
+    // No transport retries: the chain owns failover, and a repeated POST could be billed twice.
+    res = await fetchWithPolicy(url, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      timeoutMs: TIMEOUT_MS,
+      retries: 0,
+      ...(signal ? { signal } : {}),
       cache: "no-store",
     });
   } catch (err) {
@@ -60,6 +64,7 @@ export function gemini(cfg: LlmConfig): CompleteFn {
       },
       { "x-goog-api-key": cfg.apiKey },
       [cfg.apiKey],
+      cfg.signal,
     );
     return textOrThrow(pick(data, ["candidates", 0, "content", "parts", 0, "text"]), "gemini");
   };
@@ -74,6 +79,7 @@ export function anthropic(cfg: LlmConfig): CompleteFn {
       { model, max_tokens: cfg.maxTokens ?? 4096, messages: [{ role: "user", content: prompt }] },
       { "x-api-key": cfg.apiKey, "anthropic-version": "2023-06-01" },
       [cfg.apiKey],
+      cfg.signal,
     );
     return textOrThrow(pick(data, ["content", 0, "text"]), "anthropic");
   };
@@ -95,6 +101,7 @@ export function openaiCompatible(cfg: LlmConfig): CompleteFn {
       },
       { authorization: `Bearer ${cfg.apiKey}` },
       [cfg.apiKey],
+      cfg.signal,
     );
     return textOrThrow(pick(data, ["choices", 0, "message", "content"]), "openai-compatible");
   };

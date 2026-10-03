@@ -1,4 +1,5 @@
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
+import { sortAtOf } from "@/lib/domain/news";
 import { DEFAULT_SETTINGS } from "@/lib/domain/plan-config";
 
 const SETTINGS_ID = "settings";
@@ -51,6 +52,8 @@ const settingsSchema = new Schema(
     newsLastFailed: { type: [String], default: [] },
     /** Last LeetCode sync error, cleared on the next successful sync. */
     leetcodeLastError: { type: String, default: null },
+    /** Cached LeetCode profile totals ({ username, at, stats }); see getCachedLeetCodeStats. */
+    leetcodeStatsCache: { type: Schema.Types.Mixed, default: null },
     /** Lead morning/evening emails with a desi roast line (lib/domain/roast.ts). */
     roastMode: { type: Boolean, default: true },
     lastMorningRunAt: { type: Date, default: null },
@@ -70,6 +73,8 @@ const articleSchema = new Schema(
     sourceName: { type: String, required: true },
     category: { type: String, required: true },
     publishedAt: { type: Date },
+    /** What the list sorts by: publishedAt, or fetchedAt minus a day when undated. Set on insert and backfilled. */
+    sortAt: { type: Date },
     fetchedAt: { type: Date, default: () => new Date() },
     snippet: { type: String, maxlength: 600 },
     aiSummary: { type: String, maxlength: 400 },
@@ -83,6 +88,8 @@ const articleSchema = new Schema(
     /** null = not tried yet; see ContentStatus in lib/domain/article.ts. */
     contentStatus: { type: String, enum: ["full", "extracted", "failed", "headline", null], default: null },
     contentError: { type: String, maxlength: 300 },
+    /** When extraction last failed or was retried; rate-limits the manual Retry. */
+    contentTriedAt: { type: Date },
     readingMinutes: { type: Number },
     leadImage: { type: String },
     tags: { type: [String], default: [] },
@@ -94,6 +101,20 @@ articleSchema.index({ contentStatus: 1, category: 1 });
 articleSchema.index({ readOn: 1 });
 articleSchema.index({ fetchedAt: 1 }, { expireAfterSeconds: 30 * 24 * 3600 });
 articleSchema.index({ publishedAt: -1 });
+// The list query: filter by category (and read), newest first.
+articleSchema.index({ category: 1, read: 1, sortAt: -1 });
+articleSchema.index({ sortAt: -1 });
+articleSchema.pre("validate", function () {
+  if (!this.sortAt) this.sortAt = sortAtOf(this.publishedAt, this.fetchedAt ?? new Date());
+});
+
+/** Conditional-request validators per feed, so unchanged feeds answer 304. */
+const feedStateSchema = new Schema({
+  sourceId: { type: String, required: true, unique: true },
+  etag: { type: String },
+  lastModified: { type: String },
+  checkedAt: { type: Date },
+});
 
 const notificationSchema = new Schema(
   {
@@ -122,6 +143,7 @@ export type NotificationDoc = InferSchemaType<typeof notificationSchema>;
 
 export const Settings: Model<SettingsDoc> = models.Settings ?? model("Settings", settingsSchema);
 export const Article: Model<ArticleDoc> = models.Article ?? model("Article", articleSchema);
+export const FeedState = models.FeedState ?? model("FeedState", feedStateSchema);
 export const Notification: Model<NotificationDoc> = models.Notification ?? model("Notification", notificationSchema);
 export const LoginAttempt = models.LoginAttempt ?? model("LoginAttempt", loginAttemptSchema);
 

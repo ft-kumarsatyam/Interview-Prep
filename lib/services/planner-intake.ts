@@ -12,6 +12,7 @@ import {
   type IntakeStep,
   type IntakeStepInput,
 } from "@/lib/domain/planner-intake";
+import { validatePlannerWindow } from "@/lib/domain/planner-profile";
 import { loadPersonalisation } from "./intake-weights";
 import { logPlanChange } from "./plan-log";
 import { loadPlanInputs, todayIn } from "./plan";
@@ -63,7 +64,8 @@ export async function saveIntakeStep(raw: unknown, now = new Date()): Promise<In
 
   const set: Record<string, unknown> = { intakeVersion: INTAKE_VERSION };
   if (input.step === "goals") {
-    if (input.interviewDate <= today) throw new Error("The interview date must be in the future");
+    const problem = validatePlannerWindow({ endDate: input.interviewDate }, settings, today);
+    if (problem) throw new Error(problem);
     set.goals = { targetRole: input.targetRole, targetCompany: input.targetCompany, level: input.level, focusNotes: input.focusNotes };
     set.interviewDate = input.interviewDate;
   } else if (input.step === "ratings") {

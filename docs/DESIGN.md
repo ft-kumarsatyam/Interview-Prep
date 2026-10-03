@@ -18,37 +18,48 @@ Built with Tailwind v4 + shadcn/ui (New York style) + lucide-react icons. Light 
 | `--border` | `#232836` | `#E4E6EB` | 1px borders |
 | `--foreground` | `#E7E9EE` | `#11131A` | Text |
 | `--muted-foreground` | `#8A90A2` | `#5B6172` | Secondary text |
-| `--primary` | `#7C5CFF` (violet) | `#6A4BF0` | Primary actions, progress |
-| `--success` | `#22C55E` | `#16A34A` | Done, Easy |
-| `--warning` | `#F59E0B` | `#D97706` | Medium, due reviews |
-| `--danger` | `#EF4444` | `#DC2626` | Hard, broken streak |
-| `--streak` | `#FF7A1A` | `#EA580C` | Flame, streak counters |
+| `--primary` / `--primary-foreground` | `#8B6FFF` / `#0B0D12` | `#5B3DE0` / `#FFFFFF` | Primary actions, progress, links |
+| `--success` | `#22C55E` | `#137A38` | Done, Easy |
+| `--warning` | `#F59E0B` | `#A8490A` | Medium, due reviews |
+| `--info` | `#60A5FA` | `#1D4ED8` | Neutral highlights, tips |
+| `--destructive` | `#F87171` | `#C81E1E` | Hard, errors, broken streak |
+| `--streak` | `#FF7A1A` | `#C2410C` | Flame, streak counters |
+
+Every pair above is at least 4.5:1 for text on its own background and on a 10% tint of itself (checked by computing WCAG ratios, not by eye). **Soft tint = `bg-<tone>/10 text-<tone>`**; do not invent other alphas. Use the `Tone` type and `ToneBadge`/`StatTile` instead of typing the classes by hand.
 
 Track accents (chips, topic headers): JS/TS yellow · Node lime · DSA orange · DBMS emerald · OOP violet · LLD indigo · HLD blue · CS amber · AI pink · Behavioral slate. These are defined in `syllabus.json → tracks[].color` and mapped to static Tailwind classes in `components/shared/badges.tsx`.
 
-Difficulty badges: Easy = success, Medium = warning, Hard = danger, all as soft tinted backgrounds (10–15% alpha) with full-colour text.
+Difficulty badges: Easy = success, Medium = warning, Hard = destructive, all as soft tints (`/10`) with full-colour text. Track chips are the one place raw palette colours are allowed: ten categorical hues cannot be expressed with the semantic tokens.
 
 ### Typography
 - **Inter** for UI and **JetBrains Mono** for numbers, complexities and code, both loaded with `next/font`.
-- Scale: 12 / 14 (body) / 16 / 20 / 24 / 32 / 48 (hero numbers). Numbers use `tabular-nums`.
+- Scale: `text-2xs` (11px, badges and counters only) / `text-xs` 12 / `text-sm` 14 (body) / `text-base` 16 / `text-lg` 18 / `text-xl` 20 / `text-2xl` 24. Never use `text-[Npx]`; `text-2xs` is defined in `app/globals.css`. Numbers use `tabular-nums`.
+- Section headings: use `SectionHeading` (h2 `text-lg`, h3 `text-base`, or the `eyebrow` micro-label), not hand-typed classes.
 
 ### Spacing, shape, depth
 - 4px base grid. Card padding 20–24px. Grid gaps of 16px on mobile and 24px on desktop.
-- Radius: 12px for cards, 8px for inputs and buttons, full for chips.
-- No heavy shadows. Use a 1px border, plus a subtle inner glow (`ring-1 ring-white/5`) on dark cards. The only gradient is the hero progress ring (violet → pink).
+- Radius: `rounded-xl` for cards and panels, `rounded-lg` for inputs and buttons, `rounded-full` for chips.
+- Touch targets: on touch devices (`pointer-coarse:`) buttons, inputs and tabs grow to 40-44px automatically; do not override heights per call site.
+- No heavy shadows. Use a 1px border, plus a subtle ring (`ring-1 ring-foreground/5`, visible in both themes) on cards. The only gradient is the hero progress ring (violet → pink).
 
 ### Motion
 - 150–200 ms ease-out on hover and press. Checklist items strike through and fade when ticked.
 - Completing the day shows a **confetti burst** (canvas-confetti, once per day) and the flame icon plays a 600 ms scale-bounce.
 - Respect `prefers-reduced-motion`.
 
-## 2. Layout
+## 2. Layout and navigation
 
-- **Desktop (≥1024px):** a 240px left sidebar (logo, nav, streak mini-card at the bottom) and a top bar (page title, today's date, notification bell, theme toggle, command palette `⌘K`).
-- **Mobile:** the sidebar becomes a bottom tab bar (Dashboard · DSA · Learn · Quiz · News) and the top bar collapses. The app is installable as a PWA.
-- Content max-width 1200px, centred.
-
-Sidebar nav: Dashboard, DSA, Review (badge = due count), Learn, JS Playground, Quiz (dot when today's quiz is unlocked and not yet passed), News (badge = unread), Stats, Settings. The source of truth is `components/layout/nav-items.ts`.
+- **Five hubs, not seventeen pages.** `components/layout/nav-items.ts` is the source of truth:
+  - **Today**: Overview (`/dashboard`), Daily quiz (`/quiz`), Review (`/review`)
+  - **Practice**: DSA, Problems, Mock interviews, Aptitude, Playground, DB Lab
+  - **Learn**: Syllabus (`/learn`), System Design (`/design`), Reading (`/news`)
+  - **Plan**: Planner, Calendar, Stats
+  - **Settings**: Settings, Setup
+  Every old URL still works; only the grouping changed. `pageFor()` matches the longest prefix, so `/playground/db` is DB Lab.
+- **Desktop (≥1024px):** a 240px sidebar of the five hubs; the active hub expands to list its pages. The top bar shows the hub name, today's date, the palette (`⌘K`), notifications and the theme toggle. The page's own title is the `PageHeader` h1, never repeated in the top bar.
+- **Mobile:** a bottom bar of Today · Practice · Learn · Plan · More (Settings, Setup, sign out). Inside a hub, a scrollable tab strip (`HubTabs`) switches pages; it shows only on a hub's own pages, not on detail pages such as `/dsa/two-sum`.
+- **Today's session:** `SessionBar` (Quiz and Review pages) shows Solve → Theory → Review → Quiz with a "Next" button. The logic is `lib/domain/session.ts`; the quiz stays locked until its unlock rule is met.
+- Content max-width 1200px, centred; IDE pages go full width.
 
 ## 3. Pages
 
@@ -138,16 +149,33 @@ Category pills (All · AI Labs (Google · OpenAI · DeepMind) · AI News · Java
 Problems per day (bar, last 30 days), cumulative solved compared with plan (line, actual vs ideal), difficulty mix by week (stacked bar), quiz scores (line with a pass-line at 60%), and a track coverage radar or bars.
 
 ### 3.8b Plan setup (`/plan/setup`)
-A single-column wizard (max 3xl) with a five-step header (Goal, Strengths, Time, Check, Review; labels hide on mobile). Each step is one card and is saved before moving on, so a reload resumes. Strengths is a grouped list per track: five 36 px rating buttons (1 to 5), a Must/Nice/Skip select and a "want to learn" tick, with "Rate the rest 3" and "Clear all". Time is a seven-column hours grid plus date-range rows. Review shows the feasibility card (status colour from `success`/`warning`/`destructive`, coverage bar, work left vs time, remedies). Never hard-code colours.
+A single-column wizard (max 3xl) with a five-step header (Goal, Strengths, Time, Check, Review; labels hide on mobile). Each step is one card and is saved before moving on, so a reload resumes. Strengths is a grouped list per track: five 36 px rating buttons (1 to 5), a Must/Nice/Skip select and a "want to learn" tick, with "Rate the rest 3" and "Clear all". Time is a seven-column hours grid plus date-range rows. The Review step states the interview date and weekly hours it is about to save (through `savePlanner`, leaving other Settings alone). Review shows the feasibility card (status colour from `success`/`warning`/`destructive`, coverage bar, work left vs time, remedies). Never hard-code colours.
 
 ### 3.9 Settings
-Plan dates, timezone, quiz pass %, rest days (date picker), study hours per weekday, weekly mock days (DSA and System design weekday selects), notification channels with a test button, "Export backup (JSON)" and "Re-seed content".
+A section rail (desktop) or chip strip (mobile) over cards for plan window (start date, revision weeks) and a read-only summary of study hours and the interview date with an "Edit on the Planner" link (those, and goals, live only on `/plan` in `PlannerForm`; the server keeps the stored values if Settings sends others), daily targets, quiz and mastery, mocks, rest days, LeetCode (with a "Test username" check), news keywords, Gemini projects (with extension status), paid AI cap, AI providers, notification channels, and data/backup. **Saving is per section:** the sticky bar names the sections with unsaved changes, each is validated on its own, and a bad value in one section never blocks the others (`saveSettingsSectionsAction`, rules in `lib/domain/settings.ts`). API keys are only ever shown as configured or not.
+
+### 3.10 Setup (`/setup`)
+The first-run checklist: content seeded, secrets, **Plan your prep** (links to `/plan/setup`), LeetCode, daily jobs, news, notifications, AI, backup and sign-in persistence. Required items gate the dashboard's "Finish setup" card.
 
 ## 4. Components (shadcn-based)
 
-`Card`, `Badge`, `Button`, `Checkbox`, `Progress`, `Tabs`, `Accordion`, `Sheet`, `Dialog`, `Tooltip`, `Command` (⌘K: jump to any problem or topic), `Sonner` toasts, `Skeleton`.
-Built: `PageHeader`, `EmptyState`/`ComingInPhase`, `DifficultyBadge`, `TrackChip`, `SidebarNav`, `MobileTabBar`, `ThemeToggle`.
-To build: `ProgressRing`, `StreakCard`, `Heatmap`, `DifficultyBadge`, `TrackChip`, `ProblemRow`, `SolveSheet`, `QuizPlayer`, `NewsCard`, `CountdownCard`, `PaceIndicator`.
+`Card`, `Badge`, `Button`, `Checkbox`, `Progress`, `Tabs`, `Accordion`, `Sheet`, `Dialog`, `Tooltip`, `Command` (⌘K), `Sonner` toasts, `Skeleton`.
+
+Shared primitives in `components/shared/` (use these before writing a new card, chip or heading):
+
+| Component | Use |
+|---|---|
+| `PageHeader` | The one page title, description and actions |
+| `SectionHeading` | Section titles (h2/h3, optional eyebrow, hint and action) |
+| `StatTile` | A labelled number or panel; `tone` picks the icon colour |
+| `LinkCard` | A card that is a link: one hover, focus ring and touch height |
+| `Chip` | Toggle filters (`aria-pressed`); use `Tabs` when choices switch a whole view |
+| `ToneBadge` | Status pills in `neutral/primary/success/warning/danger/info/streak` |
+| `BackLink` | The back link on detail pages |
+| `EmptyState` | The only dashed "nothing here yet" box |
+| `DifficultyBadge`, `TrackChip` | Problem difficulty and syllabus track |
+
+Layout components: `SidebarNav`, `HubTabs`, `MobileTabBar`, `SessionBar`, `TopBarTitle`, `CommandPalette`, `ThemeToggle`.
 
 ## 5. States and copy
 
@@ -157,5 +185,5 @@ To build: `ProgressRing`, `StreakCard`, `Heatmap`, `DifficultyBadge`, `TrackChip
 
 ## 6. Accessibility
 - WCAG AA contrast in both themes. Status is never shown by colour alone (icons and text sit next to the colour).
-- Full keyboard navigation with visible focus rings (`ring-primary`).
+- Full keyboard navigation with visible focus rings (`focus-visible:ring-2 ring-ring`).
 - `aria-live` region for quiz feedback and checklist progress.

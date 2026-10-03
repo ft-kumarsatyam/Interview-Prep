@@ -5,6 +5,7 @@ import { useOptimistic, useTransition } from "react";
 import { Bookmark, Check, Clock, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { bookmarkAction, markReadAction } from "@/app/(app)/news/actions";
+import { ToneBadge } from "@/components/shared/tone-badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -94,10 +95,10 @@ export function NewsCard({ item, readingsGoal }: { item: NewsCardItem; readingsG
       <div className="mt-auto flex items-center justify-between gap-2 pt-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
           {item.readingMinutes ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-success/12 px-2 py-0.5 font-medium text-success">
-              <Clock className="size-3" aria-hidden /> {item.readingMinutes} min
+            <ToneBadge tone="success" icon={Clock}>
+              {item.readingMinutes} min
               <span className="sr-only">, full article</span>
-            </span>
+            </ToneBadge>
           ) : null}
           {item.tags?.[0] ? (
             <span className="truncate rounded-full bg-muted px-2 py-0.5 text-muted-foreground">{item.tags[0].label}</span>

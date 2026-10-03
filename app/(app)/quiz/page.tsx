@@ -4,7 +4,7 @@ import { ArrowRight, BookOpen, CalendarOff, CheckCircle2, Circle, Code2, History
 import { DailyQuizRunner } from "@/components/quiz/daily-quiz-runner";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
-import { Badge } from "@/components/ui/badge";
+import { ToneBadge } from "@/components/shared/tone-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { seedFrom } from "@/lib/domain/sampling";
@@ -30,10 +30,9 @@ export default async function QuizPage() {
         }
       >
         {state.kind && (
-          <Badge variant="outline" className={cn("h-7 px-2.5", passedToday ? "border-success/30 bg-success/10 text-success" : "text-muted-foreground")}>
-            {passedToday ? <CheckCircle2 aria-hidden /> : <Circle aria-hidden />}
+          <ToneBadge tone={passedToday ? "success" : "neutral"} icon={passedToday ? CheckCircle2 : Circle} className="h-7 px-2.5">
             {passedToday ? "Passed today" : "Not passed yet"}
-          </Badge>
+          </ToneBadge>
         )}
         <Button asChild variant="outline" size="lg" className="h-9">
           <Link href="/quiz/mistakes">

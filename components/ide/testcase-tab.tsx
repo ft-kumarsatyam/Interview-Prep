@@ -81,7 +81,7 @@ export function TestcaseTab({
               />
             </label>
           ))}
-          <p className="text-[11px] text-muted-foreground">Values are JSON. Edit them or add a case to try your own input; changed cases show your output without a verdict.</p>
+          <p className="text-2xs text-muted-foreground">Values are JSON. Edit them or add a case to try your own input; changed cases show your output without a verdict.</p>
         </div>
       )}
     </div>

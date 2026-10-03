@@ -1,4 +1,5 @@
 import { env } from "@/lib/env";
+import { fetchWithPolicy } from "@/lib/http";
 
 export interface NotifyChannel {
   name: "telegram" | "email" | "whatsapp";
@@ -9,7 +10,8 @@ export interface NotifyChannel {
 const TIMEOUT_MS = 10_000;
 
 async function post(url: string, init: RequestInit): Promise<void> {
-  const res = await fetch(url, { ...init, method: "POST", signal: AbortSignal.timeout(TIMEOUT_MS) });
+  // One attempt only: a retried POST could send the same message twice.
+  const res = await fetchWithPolicy(url, { headers: init.headers, body: init.body, method: "POST", timeoutMs: TIMEOUT_MS, retries: 0 });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 

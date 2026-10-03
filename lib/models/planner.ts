@@ -2,6 +2,7 @@ import { model, models, Schema, type InferSchemaType, type Model } from "mongoos
 
 import { PLAN_CHANGE_TYPES } from "@/lib/domain/plan-changes";
 import { INTAKE_STEPS, INTAKE_VERSION, LEVELS, TIERS } from "@/lib/domain/planner-intake";
+import { SNAPSHOT_REASONS } from "@/lib/domain/planner-snapshot";
 import { STUDY_KINDS } from "@/lib/domain/study";
 
 /** Append-only history of every decision that moved the plan, with the reason. */
@@ -80,7 +81,34 @@ const plannerIntakeSchema = new Schema(
   { timestamps: true },
 );
 
+/**
+ * A saved copy of the planner (intake answers plus the planner fields in Settings), taken before a reset or restore
+ * or on request. Progress is never part of it. The TTL index deletes it at `expiresAt` (60 days).
+ */
+const plannerSnapshotSchema = new Schema(
+  {
+    reason: { type: String, enum: SNAPSHOT_REASONS, required: true },
+    takenOn: { type: String, required: true },
+    expiresAt: { type: Date, required: true },
+    intake: { type: Schema.Types.Mixed, default: null },
+    planner: {
+      targetRole: { type: String, default: "" },
+      targetCompany: { type: String, default: "" },
+      preferredLanguage: { type: String, default: "javascript" },
+      priorities: { type: [String], default: [] },
+      startDate: { type: String, required: true },
+      endDate: { type: String, required: true },
+      hoursByDow: { type: [Number], default: [] },
+    },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+plannerSnapshotSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+plannerSnapshotSchema.index({ createdAt: -1 });
+
 export type PlanChangeDoc = InferSchemaType<typeof planChangeSchema>;
+export type PlannerSnapshotDoc = InferSchemaType<typeof plannerSnapshotSchema>;
+export const PlannerSnapshot: Model<PlannerSnapshotDoc> = models.PlannerSnapshot ?? model("PlannerSnapshot", plannerSnapshotSchema);
 export type StudySessionDoc = InferSchemaType<typeof studySessionSchema>;
 export type PlannerIntakeDoc = InferSchemaType<typeof plannerIntakeSchema>;
 

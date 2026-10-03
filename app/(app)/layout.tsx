@@ -2,11 +2,12 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { Flame, LogOut } from "lucide-react";
 import { AiProvider } from "@/components/ai/ai-context";
-import { MobileTabBar, SidebarNav, TodayMiniCard, TopBarTitle } from "@/components/layout/app-nav";
+import { HubTabs, MobileTabBar, SidebarNav, TodayMiniCard, TopBarTitle } from "@/components/layout/app-nav";
 import { CommandPalette } from "@/components/layout/command-palette";
 import { InstallHint } from "@/components/layout/install-hint";
 import { NotificationBell, type BellItem } from "@/components/layout/notification-bell";
 import { RouteProgress } from "@/components/layout/route-progress";
+import { SessionBar } from "@/components/layout/session-bar";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { requireSession } from "@/lib/auth/dal";
@@ -22,14 +23,16 @@ import { logout } from "./actions";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await requireSession();
-  const [notes, nav, settings] = await Promise.all([listNotifications(20), getNavState(), getSettings()]);
+  // If MongoDB is unreachable the shell still renders, so /setup can say what is wrong instead of an opaque error.
+  const loaded = await Promise.all([listNotifications(20), getNavState(), getSettings()]).catch(() => null);
+  const [notes, nav, settings] = loaded ?? [{ items: [], unread: 0 }, { badges: {}, today: null }, null];
   const aiAvailable = resolveProviders(env()).length > 0;
   const now = new Date();
   const bellItems: BellItem[] = notes.items.map((n) => ({ ...n, age: timeAgo(new Date(n.createdAt), now) }));
-  const todayLabel = formatDate(todayIn(settings, now), { weekday: "short", day: "numeric", month: "short" });
+  const todayLabel = settings ? formatDate(todayIn(settings, now), { weekday: "short", day: "numeric", month: "short" }) : "";
 
   return (
-    <AiProvider links={settings.geminiLinks} aiAvailable={aiAvailable}>
+    <AiProvider links={settings?.geminiLinks ?? {}} aiAvailable={aiAvailable}>
     <Suspense fallback={null}>
       <RouteProgress />
     </Suspense>
@@ -65,7 +68,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </Link>
           <div className="flex min-w-0 items-center gap-3">
             <TopBarTitle />
-            <span className="hidden text-xs text-muted-foreground md:inline">· {todayLabel}</span>
+            {todayLabel && <span className="hidden text-xs text-muted-foreground md:inline">· {todayLabel}</span>}
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-1">
             <CommandPalette />
@@ -75,6 +78,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </header>
         <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1200px] flex-1 px-4 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] outline-none sm:pt-6 lg:px-8 lg:pb-10 has-[[data-ide]]:max-w-none md:has-[[data-ide]]:pt-3 lg:has-[[data-ide]]:px-4 lg:has-[[data-ide]]:pb-3">
           <InstallHint />
+          <HubTabs badges={nav.badges} />
+          <SessionBar today={nav.today} badges={nav.badges} />
           {children}
         </main>
       </div>

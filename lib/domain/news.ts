@@ -141,3 +141,21 @@ export function mergeFeeds(
   }
   return out.toSorted((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
 }
+
+/** Undated items rank as if a day old so a feed without dates can't pin itself to the top. */
+export const UNDATED_PENALTY_MS = 86_400_000;
+
+/** The timestamp the news list sorts by (stored as `sortAt` so the sort can use an index). */
+export function sortAtOf(publishedAt: Date | null | undefined, fetchedAt: Date): Date {
+  return publishedAt ?? new Date(fetchedAt.getTime() - UNDATED_PENALTY_MS);
+}
+
+/** A failed extraction may be retried by hand at most once per article per minute. */
+export const RETRY_EXTRACT_GAP_MS = 60_000;
+
+/** Seconds until a retry is allowed; 0 means now. */
+export function retryExtractWaitSec(lastTriedAt: Date | null | undefined, nowMs: number): number {
+  if (!lastTriedAt) return 0;
+  const wait = lastTriedAt.getTime() + RETRY_EXTRACT_GAP_MS - nowMs;
+  return wait > 0 ? Math.ceil(wait / 1000) : 0;
+}

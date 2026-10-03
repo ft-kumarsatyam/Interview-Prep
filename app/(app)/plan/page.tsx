@@ -1,18 +1,27 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowLeft, ArrowRight, CalendarRange, Check, Circle, Clock, Compass, History, Target } from "lucide-react";
+import { Archive, ArrowLeft, ArrowRight, CalendarRange, Check, Circle, Clock, Compass, History, Pencil, Target } from "lucide-react";
 import { FeasibilityCard } from "@/components/planner/intake-wizard";
+import { PlanHistory, ResetPlannerButton } from "@/components/planner/plan-history";
+import { Button } from "@/components/ui/button";
+import { SNAPSHOT_RETENTION_DAYS } from "@/lib/domain/planner-snapshot";
+import { listSnapshots } from "@/lib/services/planner-snapshot";
 import { PlannerForm } from "@/components/planner/planner-form";
+import { PauseCard } from "@/components/planner/pause-card";
+import { WhyThisPlan } from "@/components/planner/why-this-plan";
+import { RemedyActions } from "@/components/planner/remedy-actions";
 import { ProposalCard } from "@/components/planner/proposal-card";
 import { StudyTimer } from "@/components/planner/study-timer";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { futureRestCount } from "@/lib/domain/pause";
 import { DEFAULT_HOURS } from "@/lib/domain/time-budget";
 import { formatDate } from "@/lib/plan-clock";
 import { topicById } from "@/lib/content";
 import { loadPersonalisation } from "@/lib/services/intake-weights";
+import { getDayExplanation } from "@/lib/services/explain-day";
 import { ensureToday } from "@/lib/services/plan";
 import { getFeasibility } from "@/lib/services/planner-intake";
 import { getIndicators, getSprintView } from "@/lib/services/planner";
@@ -32,7 +41,7 @@ const STATUS = {
   behind: ["Missed items rolled forward", "bg-warning/12 text-warning"],
 } as const;
 const KIND_LABEL = { study: "Study", sunday: "Review", rest: "Rest", revision: "Revision", outside: "Outside plan" } as const;
-const CHANGE_LABEL = { goals: "Goals", availability: "Availability", "rest-days": "Rest days", "plan-window": "Plan window", "replan-hours": "Re-plan", "carry-over": "Carried over", intake: "Intake", rebalance: "Rebalance" } as const;
+const CHANGE_LABEL = { goals: "Goals", availability: "Availability", "rest-days": "Rest days", "plan-window": "Plan window", "replan-hours": "Re-plan", "carry-over": "Carried over", intake: "Intake", rebalance: "Rebalance", reset: "Reset", restore: "Restored" } as const;
 
 export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
   const { w } = await searchParams;
@@ -43,12 +52,14 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
   const settings = state.settings;
   const personal = await loadPersonalisation();
   if (!personal.completed && !settings.plannerSetupAt) redirect("/plan/setup");
-  const [sprint, indicators, changes, feasibility, proposal] = await Promise.all([
+  const [sprint, indicators, changes, feasibility, proposal, todayReasons, snapshots] = await Promise.all([
     getSprintView(requested, undefined, state),
     getIndicators(undefined, state),
     listPlanChanges(20),
     getFeasibility(),
     personal.completed ? proposeRebalance() : Promise.resolve(null),
+    getDayExplanation(state.today),
+    listSnapshots(),
   ]);
   const strengths = [...personal.weights.values()].sort((a, b) => a.strength - b.strength).slice(0, 12);
   const todaySessions = await listStudySessions(sprint.today, sprint.today);
@@ -70,7 +81,31 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
               <CardDescription>The work left against your hours until revision starts on {formatDate(feasibility.endDate, { day: "numeric", month: "short" })}.</CardDescription>
             </CardHeader>
             <CardContent>
-              <FeasibilityCard f={feasibility} />
+              <div className="space-y-3">
+                <FeasibilityCard f={feasibility} hideRemedies />
+                <RemedyActions remedies={feasibility.remedies} />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Today</CardTitle>
+              <CardDescription>
+                {formatDate(state.today, { weekday: "long", day: "numeric", month: "short" })} · {KIND_LABEL[state.plan.kind]}
+                {state.plan.kind === "study" || state.plan.kind === "revision" ? ` · DSA ${state.plan.dsaTarget}, theory ${state.plan.theoryTarget}` : ""}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <WhyThisPlan reasons={todayReasons} />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Pause or skip days</CardTitle>
+              <CardDescription>Taking a break? Pause from tomorrow and the plan re-spreads the work over the days left.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <PauseCard pausedAhead={futureRestCount(settings.restDays, state.today)} status={feasibility.status} coveragePct={Math.round(feasibility.coverage * 100)} />
             </CardContent>
           </Card>
           <Card>
@@ -143,7 +178,7 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
                           {work && d.kind !== "sunday" ? `DSA ${d.dsaSolved}/${d.dsaTarget} · theory ${d.theoryDone}/${d.theoryTarget} · quiz ${d.quizPassed ? "passed" : "open"}` : d.kind === "sunday" ? `weekly quiz ${d.quizPassed ? "passed" : "open"}` : ""}
                         </span>
                         {d.minutes > 0 && <span className="hidden shrink-0 text-xs text-muted-foreground tabular-nums sm:inline">{d.minutes} min</span>}
-                        {d.source === "projected" && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">projected</span>}
+                        {d.source === "projected" && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">projected</span>}
                       </Link>
                     </li>
                   );
@@ -225,10 +260,30 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
               <CardTitle className="flex items-center gap-2">
                 <Compass className="size-4" aria-hidden /> Plan setup
               </CardTitle>
-              <CardDescription>{personal.completed ? "Your ratings, hours and goals drive the plan. Update them any time." : "Rate your strengths and weak spots so the plan fits you."}</CardDescription>
+              <CardDescription>
+                {personal.completed
+                  ? "Your ratings, hours and goals drive the plan. Edit any answer, or start over from scratch."
+                  : "Rate your strengths and weak spots so the plan fits you."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              <Button asChild size="sm">
+                <Link href="/plan/setup">
+                  <Pencil /> {personal.completed ? "Edit my answers" : "Start the setup"}
+                </Link>
+              </Button>
+              <ResetPlannerButton />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Archive className="size-4" aria-hidden /> Saved plans
+              </CardTitle>
+              <CardDescription>Earlier versions of your planner, kept for {SNAPSHOT_RETENTION_DAYS} days. Restoring one saves your current plan first.</CardDescription>
             </CardHeader>
             <CardContent>
-              <Link href="/plan/setup" className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted">{personal.completed ? "Review my answers" : "Start the setup"}</Link>
+              <PlanHistory rows={snapshots.map((s) => ({ ...s, takenOnLabel: formatDate(s.takenOn, { day: "numeric", month: "short", year: "numeric" }) }))} />
             </CardContent>
           </Card>
           <Card>

@@ -1,13 +1,14 @@
+import { z } from "zod";
 import { problemBySlug } from "@/lib/content";
 import { connectDb } from "@/lib/db";
 import { toLocalDate, type DateStr } from "@/lib/domain/dates";
-import { planSync } from "@/lib/domain/leetcode";
+import { isCacheFresh, planSync } from "@/lib/domain/leetcode";
 import { leetcodeClient, type LeetCodeClient, type LeetCodeStats } from "@/lib/leetcode/client";
 import { ProblemProgress } from "@/lib/models/progress";
 import { Notification, Settings, SETTINGS_ID } from "@/lib/models/system";
 import { todayIn } from "./plan";
-import { recordSolve } from "./progress";
-import { getSettings } from "./settings";
+import { recordSolves } from "./progress";
+import { getSettings, invalidateSettings } from "./settings";
 
 export const SYNC_THROTTLE_MS = 10 * 60 * 1000;
 const SEEN_CAP = 200;
@@ -34,6 +35,7 @@ export async function syncLeetCode(opts: { force?: boolean; now?: Date; client?:
 
   await connectDb();
   const claim = await Settings.updateOne({ _id: SETTINGS_ID, leetcodeLastSyncAt: last }, { $set: { leetcodeLastSyncAt: now } });
+  invalidateSettings();
   if (claim.modifiedCount === 0) return { status: "throttled", lastSyncAt: now };
 
   try {
@@ -51,11 +53,10 @@ export async function syncLeetCode(opts: { force?: boolean; now?: Date; client?:
       today: todayIn(s, now),
     });
 
-    for (const intent of plan.intents) {
-      await recordSolve({ slug: intent.slug, date: intent.date, source: "leetcode" });
-    }
+    await recordSolves(plan.intents.map((intent) => ({ slug: intent.slug, date: intent.date, source: "leetcode" as const })));
     const seen = [...new Set([...submissions.map((x) => x.id), ...s.leetcodeSeenIds])].slice(0, SEEN_CAP);
     await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { leetcodeSeenIds: seen, leetcodeLastError: null } });
+    invalidateSettings();
 
     if (plan.intents.length > 0) {
       const titles = [...new Set(plan.intents.map((i) => problemBySlug.get(i.slug)?.title ?? i.slug))];
@@ -69,6 +70,7 @@ export async function syncLeetCode(opts: { force?: boolean; now?: Date; client?:
   } catch (err) {
     const message = err instanceof Error ? err.message : "LeetCode sync failed";
     await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { leetcodeLastError: message.slice(0, 300) } });
+    invalidateSettings();
     return { status: "error", message };
   }
 }
@@ -77,10 +79,48 @@ export async function syncLeetCode(opts: { force?: boolean; now?: Date; client?:
 export async function getLeetCodeStats(client: LeetCodeClient = leetcodeClient): Promise<LeetCodeStats | null> {
   const s = await getSettings();
   if (!s.leetcodeUsername) return null;
+  return getCachedLeetCodeStats(s.leetcodeUsername, { client });
+}
+
+const cachedStatsSchema = z.object({
+  username: z.string(),
+  at: z.coerce.date(),
+  stats: z.object({
+    username: z.string(),
+    solved: z.object({ All: z.number(), Easy: z.number(), Medium: z.number(), Hard: z.number() }),
+    total: z.object({ All: z.number(), Easy: z.number(), Medium: z.number(), Hard: z.number() }),
+  }),
+});
+
+/**
+ * Profile totals, kept in Mongo for 15 minutes so the stats and setup pages don't hit LeetCode on every load.
+ * A fetch that fails falls back to the last known value (any age); null only when there is nothing at all.
+ */
+export async function getCachedLeetCodeStats(
+  username: string,
+  opts: { client?: LeetCodeClient; now?: Date; timeoutMs?: number; retries?: number } = {},
+): Promise<LeetCodeStats | null> {
+  return (await lookupLeetCodeStats(username, opts)).stats;
+}
+
+/** Like getCachedLeetCodeStats, but says whether LeetCode could be reached (false when the answer is stale or missing). */
+export async function lookupLeetCodeStats(
+  username: string,
+  opts: { client?: LeetCodeClient; now?: Date; timeoutMs?: number; retries?: number } = {},
+): Promise<{ stats: LeetCodeStats | null; reachable: boolean }> {
+  const client = opts.client ?? leetcodeClient;
+  const now = opts.now ?? new Date();
+  await connectDb();
+  const doc = await Settings.findById(SETTINGS_ID, { leetcodeStatsCache: 1 }).lean();
+  const parsed = cachedStatsSchema.safeParse(doc?.leetcodeStatsCache);
+  const cached = parsed.success && parsed.data.username === username ? parsed.data : null;
+  if (cached && isCacheFresh(cached.at, now.getTime())) return { stats: cached.stats, reachable: true };
   try {
-    return await client.stats(s.leetcodeUsername);
+    const stats = await client.stats(username, { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), ...(opts.retries !== undefined ? { retries: opts.retries } : {}) });
+    if (stats) await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { leetcodeStatsCache: { username, at: now, stats } } });
+    return { stats, reachable: true };
   } catch {
-    return null;
+    return { stats: cached?.stats ?? null, reachable: false };
   }
 }
 
@@ -114,6 +154,7 @@ export async function checkAccepted(input: { slug: string; sinceMs: number; now?
   const last = doc?.leetcodeLastCheckAt ?? null;
   if (last && now.getTime() - last.getTime() < CHECK_FLOOR_MS) return { status: "wait" };
   const claim = await Settings.updateOne({ _id: SETTINGS_ID, leetcodeLastCheckAt: last }, { $set: { leetcodeLastCheckAt: now } });
+  invalidateSettings();
   if (claim.modifiedCount === 0) return { status: "wait" };
 
   const since = Math.min(Math.max(input.sinceMs, now.getTime() - SINCE_MAX_AGE_MS), now.getTime() + SINCE_SKEW_MS);

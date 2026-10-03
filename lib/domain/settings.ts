@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ASK_SUBJECTS, checkGeminiLink, isAskSubject } from "./ask-subjects";
-import { diffDays, isDateStr, type DateStr } from "./dates";
+import { isDateStr, type DateStr } from "./dates";
+import { validatePlanSpan } from "./planner-profile";
 
 const date = z.string().refine(isDateStr, "Use YYYY-MM-DD");
 const int = (min: number, max: number) => z.coerce.number().int().min(min).max(max);
@@ -50,8 +51,11 @@ export const settingsInputSchema = z
       .refine((v) => v === "" || /^[\w-]{1,40}$/.test(v), "Letters, digits, _ and - only")
       .transform((v) => v || null),
   })
-  .refine((s) => s.startDate < s.endDate, { path: ["endDate"], message: "End date must be after the start date" })
-  .refine((s) => diffDays(s.endDate, s.startDate) <= 400, { path: ["endDate"], message: "Keep the plan under 400 days" })
+  .superRefine((s, ctx) => {
+    // The same span rule the planner uses; the "must be in the future" half lives where the date is edited (the Planner).
+    const problem = validatePlanSpan(s.startDate, s.endDate);
+    if (problem) ctx.addIssue({ code: "custom", path: ["endDate"], message: problem });
+  })
   .refine((s) => s.minDailyDsa <= s.maxDailyDsa, { path: ["minDailyDsa"], message: "Min can't exceed max" });
 
 export type SettingsInput = z.infer<typeof settingsInputSchema>;
@@ -73,4 +77,45 @@ export function normaliseQueries(queries: readonly string[] | null, defaults: re
   if (unique.length === 0) return null;
   const same = unique.length === defaults.length && unique.every((q, i) => q === defaults[i]);
   return same ? null : unique;
+}
+
+/**
+ * Settings are saved a section at a time, so one invalid field can't block unrelated changes.
+ * Cross-field rules (start < end, min <= max) only ever involve fields inside one section.
+ */
+export const SETTINGS_SECTION_KEYS = {
+  plan: ["startDate", "endDate", "revisionWeeks", "restDays", "hoursByDow"],
+  targets: ["quizPassPct", "topicMasteryPct", "minDailyDsa", "maxDailyDsa", "maxSaturdayDsa", "maxDailyTheory", "mockDsaWeekday", "mockHldWeekday"],
+  integrations: ["leetcodeUsername", "googleNewsQueries", "geminiLinks"],
+  ai: ["llmPaidEnabled", "llmPaidDailyCap", "llmPaidRequireConfirm"],
+} as const satisfies Record<string, readonly (keyof SettingsInput)[]>;
+
+export type SettingsSectionId = keyof typeof SETTINGS_SECTION_KEYS;
+export const SETTINGS_SECTION_IDS = Object.keys(SETTINGS_SECTION_KEYS) as SettingsSectionId[];
+
+export const SETTINGS_SECTION_LABEL: Record<SettingsSectionId, string> = {
+  plan: "Plan window and hours",
+  targets: "Daily targets and mocks",
+  integrations: "LeetCode, news and Gemini",
+  ai: "Paid AI fallback",
+};
+
+/** The section a validation path (e.g. "geminiLinks.dsa", "hoursByDow.3") belongs to. */
+export function sectionOfPath(path: string): SettingsSectionId | undefined {
+  const key = path.split(".")[0];
+  return SETTINGS_SECTION_IDS.find((id) => (SETTINGS_SECTION_KEYS[id] as readonly string[]).includes(key));
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Sections where at least one field differs. */
+export function changedSections(next: Readonly<Record<string, unknown>>, base: Readonly<Record<string, unknown>>): SettingsSectionId[] {
+  return SETTINGS_SECTION_IDS.filter((id) => (SETTINGS_SECTION_KEYS[id] as readonly string[]).some((k) => !same(next[k], base[k])));
+}
+
+/** `base` with only the given sections' fields replaced by `next`'s. */
+export function mergeSections<T extends Record<string, unknown>>(base: T, next: Readonly<Record<string, unknown>>, sections: readonly SettingsSectionId[]): T {
+  const out: Record<string, unknown> = { ...base };
+  for (const id of sections) for (const k of SETTINGS_SECTION_KEYS[id]) if (k in next) out[k] = next[k];
+  return out as T;
 }

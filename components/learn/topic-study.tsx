@@ -77,7 +77,7 @@ export function TopicStudy({
             </button>
           )}
           {lessons[item.id] && openLesson === item.id && (
-            <div className="w-full pt-1">
+            <div className="-ml-7 w-[calc(100%+1.75rem)] pt-1 sm:ml-0 sm:w-full">
               <LessonCard title={item.title} note={lessons[item.id]} />
             </div>
           )}

@@ -115,7 +115,7 @@ export function ResultTab({ view, params }: { view: RunView | null; params: stri
                 <Field key={ai} label={params[ai] ?? `arg ${ai + 1}`} value={show(v)} />
               ))}
               <Field label="Output" value={result.actual} tone={c.custom ? undefined : result.pass ? "good" : "bad"} />
-              {c.custom ? <p className="text-[11px] text-muted-foreground">Custom input: no expected answer to compare against.</p> : <Field label="Expected" value={show(c.expected)} />}
+              {c.custom ? <p className="text-2xs text-muted-foreground">Custom input: no expected answer to compare against.</p> : <Field label="Expected" value={show(c.expected)} />}
             </>
           )}
         </div>

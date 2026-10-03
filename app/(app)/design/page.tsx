@@ -1,26 +1,17 @@
 import type { Metadata } from "next";
 import { AlertTriangle, ChevronDown, ExternalLink, Network } from "lucide-react";
+import { LinkCard } from "@/components/shared/link-card";
 import { CaseBrowser } from "@/components/design/case-browser";
 import { CaseOverview, JumpLinks, type CaseCardData } from "@/components/design/case-overview";
 import { DesignTabs } from "@/components/design/design-tabs";
 import { OpenHashDetails } from "@/components/design/open-hash-details";
+import { SectionHeading } from "@/components/shared/section-heading";
 import { PageHeader } from "@/components/shared/page-header";
 import { DESIGN_CATEGORIES, engineeringBlogs, systemDesign } from "@/lib/content";
 import { DESIGN_SECTION_IDS } from "@/lib/domain/design";
 import { getDesignOverview } from "@/lib/services/designs";
 
 export const metadata: Metadata = { title: "System Design" };
-
-function SectionHeading({ id, title, hint }: { id: string; title: string; hint?: string }) {
-  return (
-    <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-      <h2 id={id} className="text-lg font-semibold tracking-tight">
-        {title}
-      </h2>
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  );
-}
 
 export default async function DesignPage() {
   const overview = await getDesignOverview();
@@ -167,19 +158,13 @@ export default async function DesignPage() {
         <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {engineeringBlogs.map((b) => (
             <li key={b.url}>
-              <a
-                href={b.url}
-                target="_blank"
-                rel="noreferrer"
-                className="group flex min-h-14 items-center gap-2 rounded-xl border bg-card p-3 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-              >
+              <LinkCard external href={b.url} className="gap-2 hover:bg-muted">
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{b.name}</span>
                   <span className="block truncate text-xs text-muted-foreground">{b.tags.join(" · ")}</span>
                 </span>
                 <ExternalLink className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                <span className="sr-only">(opens in a new tab)</span>
-              </a>
+              </LinkCard>
             </li>
           ))}
         </ul>

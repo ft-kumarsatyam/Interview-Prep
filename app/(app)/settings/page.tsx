@@ -1,8 +1,6 @@
 import { DEFAULT_HOURS } from "@/lib/domain/time-budget";
 import type { Metadata } from "next";
-import Link from "next/link";
-import { Settings, Wrench } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Settings } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { AiPanel } from "@/components/settings/ai-panel";
 import { SettingsForm } from "@/components/settings/settings-form";
@@ -24,13 +22,7 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" icon={Settings} description="Plan dates, daily targets, rest days, integrations, notifications and backups.">
-        <Button asChild variant="outline" className="h-9">
-          <Link href="/setup">
-            <Wrench aria-hidden /> Setup checklist
-          </Link>
-        </Button>
-      </PageHeader>
+      <PageHeader title="Settings" icon={Settings} description="Plan dates, daily targets, rest days, integrations, notifications and backups." />
       <div className="lg:grid lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-8">
         <SettingsNav />
         <div className="min-w-0 space-y-4">

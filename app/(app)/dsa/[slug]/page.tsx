@@ -3,6 +3,8 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Circle, CircleDot, ExternalLink, RefreshCw } from "lucide-react";
+import { LinkCard } from "@/components/shared/link-card";
+import { ToneBadge } from "@/components/shared/tone-badge";
 import { AskGemini } from "@/components/ai/ask-gemini";
 import { DsaIde } from "@/components/dsa/dsa-ide";
 import { ProblemStatement, ProblemStatementSkeleton } from "@/components/dsa/problem-statement";
@@ -204,22 +206,16 @@ export default async function ProblemPage({ params }: PageProps<"/dsa/[slug]">) 
 function StatusChip({ progress, lastSolved }: { progress: ProblemDetail["progress"]; lastSolved?: string }) {
   if (progress?.status === "solved") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-success/12 px-2 py-0.5 text-xs font-medium text-success">
-        <CheckCircle2 className="size-3.5" aria-hidden /> Solved{lastSolved && ` · ${formatDate(lastSolved, { day: "numeric", month: "short" })}`}
-      </span>
+      <ToneBadge tone="success" icon={CheckCircle2}>Solved{lastSolved && ` · ${formatDate(lastSolved, { day: "numeric", month: "short" })}`}</ToneBadge>
     );
   }
   if (progress?.status === "attempted") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-warning/12 px-2 py-0.5 text-xs font-medium text-warning">
-        <CircleDot className="size-3.5" aria-hidden /> Attempted
-      </span>
+      <ToneBadge tone="warning" icon={CircleDot}>Attempted</ToneBadge>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium">
-      <Circle className="size-3.5" aria-hidden /> Not started
-    </span>
+    <ToneBadge tone="neutral" icon={Circle}>Not started</ToneBadge>
   );
 }
 
@@ -247,20 +243,14 @@ function SiblingButton({ problem, direction, compact }: { problem?: ContentProbl
 function SiblingCard({ problem, direction }: { problem: ContentProblem; direction: "prev" | "next" }) {
   const isNext = direction === "next";
   return (
-    <Link
-      href={`/dsa/${problem.slug}`}
-      className={cn(
-        "group flex min-h-16 items-center gap-3 rounded-xl border bg-card p-3 transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-        isNext && "flex-row-reverse text-right sm:col-start-2",
-      )}
-    >
+    <LinkCard href={`/dsa/${problem.slug}`} className={cn("min-h-16", isNext && "flex-row-reverse text-right sm:col-start-2")}>
       {isNext ? <ChevronRight className="size-5 shrink-0 text-muted-foreground group-hover:text-primary" /> : <ChevronLeft className="size-5 shrink-0 text-muted-foreground group-hover:text-primary" />}
       <span className="min-w-0 flex-1">
         <span className="block text-xs text-muted-foreground">{isNext ? "Next in pattern" : "Previous"}</span>
         <span className="block truncate font-medium group-hover:text-primary">{problem.title}</span>
       </span>
       <DifficultyBadge difficulty={problem.difficulty} />
-    </Link>
+    </LinkCard>
   );
 }
 

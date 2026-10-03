@@ -2,7 +2,7 @@ import type { DateStr } from "./dates";
 import { type DayGap, describeGap, gapIsEmpty } from "./recap";
 import type { PlannerProfile } from "./planner-profile";
 
-export const PLAN_CHANGE_TYPES = ["goals", "availability", "rest-days", "plan-window", "replan-hours", "carry-over", "intake", "rebalance"] as const;
+export const PLAN_CHANGE_TYPES = ["goals", "availability", "rest-days", "plan-window", "replan-hours", "carry-over", "intake", "rebalance", "reset", "restore"] as const;
 export type PlanChangeType = (typeof PLAN_CHANGE_TYPES)[number];
 
 export interface PlanChangeDraft {

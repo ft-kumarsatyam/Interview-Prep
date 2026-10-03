@@ -1,4 +1,5 @@
-import Link from "next/link";
+import { LinkCard } from "@/components/shared/link-card";
+import { EmptyState } from "@/components/shared/empty-state";
 import { ExternalLink, Newspaper } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -47,19 +48,13 @@ export function ReadingList({ readings, className }: { readings: Array<{ title: 
     <ul className={cn("space-y-2", className)}>
       {readings.map((r) => (
         <li key={r.url} className="min-w-0">
-          <a
-            href={r.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="group flex min-h-11 items-start gap-2 rounded-lg border bg-card p-3 text-sm transition-colors hover:border-primary/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
+          <LinkCard external href={r.url} className="min-h-11 items-start gap-2 rounded-lg text-sm">
             <ExternalLink className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
             <span className="min-w-0">
               <span className="font-medium group-hover:text-primary">{r.title}</span>
               <span className="block truncate text-xs text-muted-foreground">{hostname(r.url)}</span>
             </span>
-            <span className="sr-only">(opens in a new tab)</span>
-          </a>
+          </LinkCard>
         </li>
       ))}
     </ul>
@@ -69,19 +64,16 @@ export function ReadingList({ readings, className }: { readings: Array<{ title: 
 export function RelatedNews({ items }: { items: Array<{ id: string; title: string; sourceName: string; readingMinutes?: number | null; read?: boolean }> }) {
   if (items.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-        No matching articles in the last 30 days. They show up here once the morning job pulls engineering posts on this topic.
-      </p>
+      <EmptyState compact icon={Newspaper} title="No matching articles in the last 30 days.">
+        They show up here once the morning job pulls engineering posts on this topic.
+      </EmptyState>
     );
   }
   return (
     <ul className="space-y-2">
       {items.map((a) => (
         <li key={a.id} className="min-w-0">
-          <Link
-            href={`/news/${a.id}`}
-            className="group flex min-h-11 items-start gap-2 rounded-lg border bg-card p-3 text-sm transition-colors hover:border-primary/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
+          <LinkCard href={`/news/${a.id}`} className="min-h-11 items-start gap-2 rounded-lg text-sm">
             <Newspaper className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
             <span className="min-w-0">
               <span className="line-clamp-2 font-medium group-hover:text-primary">{a.title}</span>
@@ -91,7 +83,7 @@ export function RelatedNews({ items }: { items: Array<{ id: string; title: strin
                 {a.read ? " · read" : ""}
               </span>
             </span>
-          </Link>
+          </LinkCard>
         </li>
       ))}
     </ul>

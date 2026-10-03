@@ -50,10 +50,13 @@ describe("SettingsForm study hours", () => {
     mockHldWeekday: 0,
   };
 
-  it("renders seven day inputs in Sunday-first order and the weekly total", () => {
+  it("shows the weekly hours read-only, Sunday first, with the weekly total and a link to the Planner", () => {
     const html = renderToStaticMarkup(createElement(SettingsForm, { initial, today: "2026-10-05", defaultQueries: [], timezone: "Asia/Kolkata" }));
-    for (const i of [0, 1, 2, 3, 4, 5, 6]) expect(html).toContain(`id="hours-${i}"`);
+    // The Planner is the one editor of hours and the interview date, so Settings has no editable hour inputs.
+    for (const i of [0, 1, 2, 3, 4, 5, 6]) expect(html).not.toContain(`id="hours-${i}"`);
     expect(html.indexOf(">Sun<")).toBeLessThan(html.indexOf(">Sat<"));
     expect(html).toContain("27 h 30 min"); // 4 + 5 * 3.5 + 6
+    expect(html).toContain("Edit on the Planner");
+    expect(html).toContain('href="/plan"');
   });
 });

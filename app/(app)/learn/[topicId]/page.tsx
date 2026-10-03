@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Award, CalendarClock, Check, ChevronLeft, ChevronRight, ExternalLink, Lock, Network, Sparkles } from "lucide-react";
+import { Award, CalendarClock, Check, ChevronLeft, ChevronRight, ExternalLink, Lock, Network, Sparkles } from "lucide-react";
+import { LinkCard } from "@/components/shared/link-card";
+import { ToneBadge } from "@/components/shared/tone-badge";
 import { LEVELS, StatusRing } from "@/components/learn/topic-meta";
 import { TopicStudy } from "@/components/learn/topic-study";
+import { BackLink } from "@/components/shared/back-link";
 import { TrackChip } from "@/components/shared/badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,12 +60,7 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
 
   return (
     <div className="pb-16 lg:pb-0">
-      <Link
-        href={`/learn?track=${encodeURIComponent(topic.track)}`}
-        className="-ml-2 mb-3 inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-      >
-        <ArrowLeft className="size-4" aria-hidden /> {track?.name ?? "Learn"}
-      </Link>
+      <BackLink href={`/learn?track=${encodeURIComponent(topic.track)}`}>{track?.name ?? "Learn"}</BackLink>
 
       <header className="mb-5 space-y-3 sm:mb-6">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -71,18 +69,12 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
           <span aria-hidden>·</span>
           <span>{LEVELS[topic.level]}</span>
           {topic.week === currentWeek && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 font-medium text-primary">
-              <CalendarClock className="size-3" aria-hidden /> This week
-            </span>
+            <ToneBadge tone="primary" icon={CalendarClock}>This week</ToneBadge>
           )}
           {p.mastered ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 font-medium text-success">
-              <Award className="size-3" aria-hidden /> Mastered
-            </span>
+            <ToneBadge tone="success" icon={Award}>Mastered</ToneBadge>
           ) : allTicked ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 font-medium text-success">
-              <Check className="size-3" aria-hidden /> Studied
-            </span>
+            <ToneBadge tone="success" icon={Check}>Studied</ToneBadge>
           ) : null}
         </div>
         <div className="flex items-center gap-3">
@@ -205,30 +197,24 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
         className="fixed inset-x-0 bottom-[calc(3.6rem+env(safe-area-inset-bottom))] z-30 grid grid-cols-2 gap-2 border-t bg-background/95 px-4 py-2 backdrop-blur lg:static lg:mt-6 lg:border-0 lg:bg-transparent lg:p-0 lg:backdrop-blur-none"
       >
         {prev ? (
-          <Link
-            href={`/learn/${encodeURIComponent(prev.id)}`}
-            className="flex min-h-11 min-w-0 items-center gap-1.5 rounded-lg border bg-card px-3 text-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
+          <LinkCard href={`/learn/${encodeURIComponent(prev.id)}`} className="min-h-11 min-w-0 gap-1.5 rounded-lg px-3 py-0 text-sm">
             <ChevronLeft className="size-4 shrink-0 text-muted-foreground" aria-hidden />
             <span className="min-w-0">
-              <span className="block text-[11px] text-muted-foreground">Previous</span>
+              <span className="block text-2xs text-muted-foreground">Previous</span>
               <span className="block truncate font-medium">{prev.title}</span>
             </span>
-          </Link>
+          </LinkCard>
         ) : (
           <span />
         )}
         {next ? (
-          <Link
-            href={`/learn/${encodeURIComponent(next.id)}`}
-            className="flex min-h-11 min-w-0 items-center justify-end gap-1.5 rounded-lg border bg-card px-3 text-right text-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
+          <LinkCard href={`/learn/${encodeURIComponent(next.id)}`} className="min-h-11 min-w-0 justify-end gap-1.5 rounded-lg px-3 py-0 text-right text-sm">
             <span className="min-w-0">
-              <span className="block text-[11px] text-muted-foreground">Next</span>
+              <span className="block text-2xs text-muted-foreground">Next</span>
               <span className="block truncate font-medium">{next.title}</span>
             </span>
             <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          </Link>
+          </LinkCard>
         ) : (
           <span />
         )}

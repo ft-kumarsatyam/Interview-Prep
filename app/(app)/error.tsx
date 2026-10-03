@@ -34,7 +34,7 @@ export default function AppError({ error, retry }: { error: Error & { digest?: s
           </Link>
         </Button>
       </div>
-      {error.digest && <p className="mt-4 font-mono text-[11px] text-muted-foreground/70">Ref {error.digest}</p>}
+      {error.digest && <p className="mt-4 font-mono text-2xs text-muted-foreground">Ref {error.digest}</p>}
     </div>
   );
 }

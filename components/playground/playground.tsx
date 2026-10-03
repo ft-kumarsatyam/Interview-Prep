@@ -51,7 +51,7 @@ interface Current {
 }
 
 function Kbd({ children }: { children: React.ReactNode }) {
-  return <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{children}</kbd>;
+  return <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">{children}</kbd>;
 }
 
 export function Playground({ snippets, initialCode }: { snippets: SnippetSummary[]; initialCode?: string }) {
@@ -278,7 +278,7 @@ export function Playground({ snippets, initialCode }: { snippets: SnippetSummary
                   <p.icon className="size-4" aria-hidden />
                   {p.label}
                   {p.id === "console" && errorCount > 0 && pane !== "console" && (
-                    <span className="rounded-full bg-destructive/15 px-1.5 text-[10px] leading-4 font-semibold text-destructive tabular">
+                    <span className="rounded-full bg-destructive/15 px-1.5 text-2xs leading-4 font-semibold text-destructive tabular">
                       {errorCount}
                       <span className="sr-only"> errors</span>
                     </span>

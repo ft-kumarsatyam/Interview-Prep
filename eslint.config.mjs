@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Plain-JS Chrome extension (uses chrome.* globals).
     "extension/**",
+    // Vendored third-party build (sql.js).
+    "public/vendor/**",
   ]),
 ]);
 

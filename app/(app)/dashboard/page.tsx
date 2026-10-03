@@ -21,11 +21,14 @@ import {
 } from "lucide-react";
 import { currentSession } from "@/lib/auth/dal";
 import { getSetupChecklist } from "@/lib/services/setup";
+import { LinkCard } from "@/components/shared/link-card";
 import { Heatmap } from "@/components/dashboard/heatmap";
 import { HoursToday } from "@/components/dashboard/hours-today";
 import { ProgressRing } from "@/components/dashboard/progress-ring";
 import { ProblemList } from "@/components/progress/problem-list";
 import { SubtopicChecklist } from "@/components/progress/subtopic-checklist";
+import { SectionHeading } from "@/components/shared/section-heading";
+import { StatTile } from "@/components/shared/stat-tile";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -210,10 +213,7 @@ export default async function DashboardPage() {
       )}
 
       {setup.requiredLeft > 0 && (
-        <Link
-          href="/setup"
-          className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-sm transition-colors hover:bg-accent/50"
-        >
+        <LinkCard href="/setup" className="min-h-0 px-4 py-3 text-sm">
           <Wrench className="size-4 shrink-0 text-primary" aria-hidden />
           <span className="min-w-0 flex-1">
             <span className="font-medium">Finish setup: {setup.done}/{setup.total}</span>{" "}
@@ -225,7 +225,7 @@ export default async function DashboardPage() {
             </span>
           </span>
           <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-        </Link>
+        </LinkCard>
       )}
 
       {data.unreadNotifications.length > 0 && (
@@ -266,7 +266,7 @@ export default async function DashboardPage() {
                             <r.icon className={cn("size-4 shrink-0", isNext ? "text-primary" : "text-muted-foreground")} aria-hidden />
                           )}
                           <span className={cn("flex-1", r.done && "text-muted-foreground line-through")}>{r.label}</span>
-                          {isNext && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">next</span>}
+                          {isNext && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-2xs font-medium text-primary">next</span>}
                           <span className="tabular font-mono text-xs">{r.value}</span>
                           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
                         </span>
@@ -286,68 +286,62 @@ export default async function DashboardPage() {
         </Card>
 
         <div className="grid grid-cols-2 content-start gap-3 sm:gap-4">
-          <Card className={cn(atRisk && "animate-pulse border-warning")}>
-            <CardContent className="space-y-1">
-              <p className="flex items-center gap-2 text-xs text-muted-foreground sm:text-sm">
-                <Flame className="size-4 text-streak" /> Streak
-              </p>
-              <p className="tabular font-mono text-2xl font-semibold sm:text-3xl">
+          <StatTile
+            icon={Flame}
+            tone="streak"
+            label="Streak"
+            className={cn(atRisk && "animate-pulse border-warning")}
+            value={
+              <>
                 {data.streak} <span className="text-sm text-muted-foreground sm:text-base">day{data.streak === 1 ? "" : "s"}</span>
-              </p>
-              <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-                best {data.best}
-                <span className="flex items-center gap-0.5" aria-label={`${data.freezeTokens} freeze tokens`}>
-                  {Array.from({ length: Math.max(data.freezeTokens, 0) }, (_, i) => (
-                    <Snowflake key={i} className="size-3.5 text-chart-5" />
-                  ))}
-                  {data.freezeTokens === 0 && "· no freezes"}
-                </span>
-              </p>
-              {atRisk && <p className="text-xs text-warning">Finish today to keep your streak</p>}
-            </CardContent>
-          </Card>
+              </>
+            }
+          >
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+              best {data.best}
+              <span className="flex items-center gap-0.5" aria-label={`${data.freezeTokens} freeze tokens`}>
+                {Array.from({ length: Math.max(data.freezeTokens, 0) }, (_, i) => (
+                  <Snowflake key={i} className="size-3.5 text-chart-5" />
+                ))}
+                {data.freezeTokens === 0 && "· no freezes"}
+              </span>
+            </p>
+            {atRisk && <p className="text-xs text-warning">Finish today to keep your streak</p>}
+          </StatTile>
 
-          <Card>
-            <CardContent className="space-y-1">
-              <p className="flex items-center gap-2 text-xs text-muted-foreground sm:text-sm">
-                <Code2 className="size-4" /> Solved
-              </p>
-              <p className="tabular font-mono text-2xl font-semibold sm:text-3xl">
+          <StatTile
+            icon={Code2}
+            label="Solved"
+            value={
+              <>
                 {data.solvedMain} <span className="text-sm text-muted-foreground sm:text-base">/ {mainProblemCount}</span>
-              </p>
-              <p className={cn("flex items-center gap-1 text-xs", data.pace.delta >= 0 ? "text-success" : "text-destructive")}>
-                {data.pace.delta >= 0 ? <TrendingUp className="size-3.5 shrink-0" /> : <TrendingDown className="size-3.5 shrink-0" />}
-                {data.pace.delta === 0
-                  ? "exactly on pace"
-                  : data.pace.delta > 0
-                    ? `${data.pace.delta} ahead of plan`
-                    : `${-data.pace.delta} behind (ideal ${data.pace.ideal})`}
-              </p>
-            </CardContent>
-          </Card>
+              </>
+            }
+          >
+            <p className={cn("flex items-center gap-1 text-xs", data.pace.delta >= 0 ? "text-success" : "text-destructive")}>
+              {data.pace.delta >= 0 ? <TrendingUp className="size-3.5 shrink-0" /> : <TrendingDown className="size-3.5 shrink-0" />}
+              {data.pace.delta === 0
+                ? "exactly on pace"
+                : data.pace.delta > 0
+                  ? `${data.pace.delta} ahead of plan`
+                  : `${-data.pace.delta} behind (ideal ${data.pace.ideal})`}
+            </p>
+          </StatTile>
 
-          <Card>
-            <CardContent className="space-y-1">
-              <p className="flex items-center gap-2 text-xs text-muted-foreground sm:text-sm">
-                <CalendarClock className="size-4" /> Countdown
-              </p>
-              <p className="tabular font-mono text-2xl font-semibold sm:text-3xl">{clock.daysLeft}d</p>
-              <p className="text-xs text-muted-foreground">to {formatDate(settings.endDate, { day: "numeric", month: "short", year: "numeric" })}</p>
-            </CardContent>
-          </Card>
+          <StatTile
+            icon={CalendarClock}
+            label="Countdown"
+            value={`${clock.daysLeft}d`}
+            hint={`to ${formatDate(settings.endDate, { day: "numeric", month: "short", year: "numeric" })}`}
+          />
 
-          <Card>
-            <CardContent className="space-y-2">
-              <p className="flex items-center gap-2 text-xs text-muted-foreground sm:text-sm">
-                <BookOpen className="size-4" /> Phase
-              </p>
-              <p className="line-clamp-2 text-sm font-medium">{clock.phase?.name ?? "Pre-start"}</p>
-              <Progress value={weekFrac * 100} className="h-1.5" aria-label="Plan progress" />
-              <p className="tabular text-xs text-muted-foreground">
-                Week {Math.max(clock.week, 1)} of {clock.totalWeeks}
-              </p>
-            </CardContent>
-          </Card>
+          <StatTile icon={BookOpen} label="Phase" className="gap-2">
+            <p className="line-clamp-2 text-sm font-medium">{clock.phase?.name ?? "Pre-start"}</p>
+            <Progress value={weekFrac * 100} className="h-1.5" aria-label="Plan progress" />
+            <p className="tabular text-xs text-muted-foreground">
+              Week {Math.max(clock.week, 1)} of {clock.totalWeeks}
+            </p>
+          </StatTile>
         </div>
       </div>
 
@@ -368,13 +362,13 @@ export default async function DashboardPage() {
             <ProblemList items={newProblems.map((p) => toItem(p))} empty="No new problems today." />
             {reviews.length > 0 && (
               <div>
-                <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Review due</h3>
+                <SectionHeading level={3} eyebrow className="mb-1" title="Review due" />
                 <ProblemList items={reviews.map((p) => toItem(p, p.confidence ?? "review"))} />
               </div>
             )}
             {sideTrack.length > 0 && (
               <div>
-                <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Side tracks</h3>
+                <SectionHeading level={3} eyebrow className="mb-1" title="Side tracks" />
                 <ProblemList items={sideTrack.map((p) => toItem(p, p.role === "js" ? "JS track" : "SQL"))} />
               </div>
             )}

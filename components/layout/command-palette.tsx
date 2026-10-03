@@ -55,7 +55,7 @@ export function CommandPalette() {
       <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="gap-2 text-muted-foreground" aria-label="Search (Command K)">
         <Search />
         <span className="hidden sm:inline">Search</span>
-        <kbd className="hidden rounded border bg-muted px-1 font-mono text-[10px] sm:inline">⌘K</kbd>
+        <kbd className="hidden rounded border bg-muted px-1 font-mono text-2xs sm:inline">⌘K</kbd>
       </Button>
       <CommandDialog open={open} onOpenChange={setOpen} title="Search PrepOS" description="Jump to a page, problem or topic">
         <Command>
@@ -64,7 +64,7 @@ export function CommandPalette() {
           <CommandEmpty>{index ? "No matches." : "Loading…"}</CommandEmpty>
           <CommandGroup heading="Pages">
             {NAV_ITEMS.map((n) => (
-              <CommandItem key={n.href} value={`page ${n.label}`} onSelect={() => go(n.href)}>
+              <CommandItem key={n.href} value={`page ${n.label} ${n.hub}`} onSelect={() => go(n.href)}>
                 <n.icon /> {n.label}
               </CommandItem>
             ))}

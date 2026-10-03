@@ -188,7 +188,7 @@ function TestResult({ result }: { result: Result }) {
           <div className="min-w-0">
             <p className="font-medium capitalize">{channel} failed</p>
             <p className="text-xs text-muted-foreground">{hintFor(channel, result.errors[channel] ?? "")}</p>
-            <p className="mt-1 font-mono text-[11px] break-words text-muted-foreground/80">{result.errors[channel]}</p>
+            <p className="mt-1 font-mono text-2xs break-words text-muted-foreground/80">{result.errors[channel]}</p>
           </div>
         </div>
       ))}

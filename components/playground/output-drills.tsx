@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { CheckCircle2, Code2, Eye, Loader2, Play, RotateCcw, XCircle } from "lucide-react";
+import { ToneBadge } from "@/components/shared/tone-badge";
+import { Chip } from "@/components/shared/chip";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { DRILLS, type Drill } from "@/lib/playground/drills";
@@ -24,7 +26,7 @@ export function OutputDrills({ onOpenInEditor, modKey }: { onOpenInEditor: (dril
         <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground" aria-label="How drills work">
           {["Predict the output", "Run it", "Compare"].map((s, i) => (
             <li key={s} className="inline-flex items-center gap-1.5">
-              <span className="grid size-5 place-items-center rounded-full bg-primary/12 text-[11px] font-semibold text-primary">{i + 1}</span>
+              <span className="grid size-5 place-items-center rounded-full bg-primary/12 text-2xs font-semibold text-primary">{i + 1}</span>
               <span className="text-foreground">{s}</span>
               {i < 2 && <span aria-hidden>→</span>}
             </li>
@@ -42,18 +44,9 @@ export function OutputDrills({ onOpenInEditor, modKey }: { onOpenInEditor: (dril
       <div className="-mx-4 overflow-x-auto px-4 scrollbar-none sm:mx-0 sm:px-0">
         <div className="flex w-max gap-2 sm:w-auto sm:flex-wrap" role="group" aria-label="Filter drills by topic">
           {[null, ...topics].map((t) => (
-            <button
-              key={t ?? "all"}
-              type="button"
-              aria-pressed={topic === t}
-              onClick={() => setTopic(t)}
-              className={cn(
-                "inline-flex h-9 shrink-0 items-center rounded-full border px-3 text-sm whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-                topic === t ? "border-primary bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
-            >
+            <Chip key={t ?? "all"} className="shrink-0" pressed={topic === t} onClick={() => setTopic(t)}>
               {t ?? "All"}
-            </button>
+            </Chip>
           ))}
         </div>
       </div>
@@ -127,7 +120,7 @@ function DrillCard({
   return (
     <article
       className={cn(
-        "flex h-full flex-col gap-3 rounded-xl border bg-card p-4 ring-1 ring-white/5",
+        "flex h-full flex-col gap-3 rounded-xl border bg-card p-4 ring-1 ring-foreground/5",
         outcome === "correct" && "border-success/40",
         outcome === "wrong" && "border-destructive/40",
       )}
@@ -138,19 +131,13 @@ function DrillCard({
           <h3 className="font-medium">{drill.title}</h3>
         </div>
         {outcome === "correct" && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-success/12 px-2 py-0.5 text-xs font-medium text-success">
-            <CheckCircle2 className="size-3" aria-hidden /> Spot on
-          </span>
+          <ToneBadge tone="success" icon={CheckCircle2}>Spot on</ToneBadge>
         )}
         {outcome === "wrong" && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-destructive/12 px-2 py-0.5 text-xs font-medium text-destructive">
-            <XCircle className="size-3" aria-hidden /> Not quite
-          </span>
+          <ToneBadge tone="danger" icon={XCircle}>Not quite</ToneBadge>
         )}
         {outcome === "revealed" && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-            <Eye className="size-3" aria-hidden /> Revealed
-          </span>
+          <ToneBadge tone="neutral" icon={Eye}>Revealed</ToneBadge>
         )}
       </header>
 

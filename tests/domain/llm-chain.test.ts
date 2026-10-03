@@ -32,7 +32,7 @@ function fake(script: Partial<Record<string, Behaviour | Behaviour[]>>, calls: s
 
 const http = (status: number, kind: LlmHttpError["kind"], retryAfterSec?: number) => new LlmHttpError(`LLM HTTP ${status}`, status, kind, retryAfterSec);
 
-function chain(opts: { feature?: AiFeature; script?: Parameters<typeof fake>[0]; store?: MemoryLlmStore; calls?: string[]; paidOnce?: boolean; at?: Date; paid?: Partial<typeof DEFAULT_PAID_SETTINGS>; defs?: ProviderDef[] } = {}) {
+function chain(opts: { feature?: AiFeature; script?: Parameters<typeof fake>[0]; store?: MemoryLlmStore; calls?: string[]; paidOnce?: boolean; at?: Date; paid?: Partial<typeof DEFAULT_PAID_SETTINGS>; defs?: ProviderDef[]; clock?: () => number; deadlineMs?: number } = {}) {
   const store = opts.store ?? new MemoryLlmStore();
   const calls = opts.calls ?? [];
   const c = createChain({
@@ -44,6 +44,8 @@ function chain(opts: { feature?: AiFeature; script?: Parameters<typeof fake>[0];
     paidOnce: opts.paidOnce,
     now: () => opts.at ?? NOW,
     make: fake(opts.script ?? {}, calls),
+    ...(opts.clock ? { clock: opts.clock } : {}),
+    ...(opts.deadlineMs ? { deadlineMs: opts.deadlineMs } : {}),
   });
   return { c, store, calls };
 }
@@ -211,5 +213,22 @@ describe("chain: paid last resort", () => {
   it("with only the paid provider configured, it still asks first", async () => {
     const err = await chain({ defs: [def("meta", true)] }).c.generateJson("p", schema).catch((e) => e);
     expect(err).toBeInstanceOf(PaidConfirmRequiredError);
+  });
+});
+
+describe("chain: request deadline", () => {
+  it("stops trying more providers once the deadline has passed", async () => {
+    const calls: string[] = [];
+    let t = 0;
+    const { c } = chain({ feature: "background", script: { gemini: http(500, "server") }, calls, clock: () => (t += 15_000), deadlineMs: 20_000 });
+    await expect(c.generateJson("p", schema)).rejects.toBeInstanceOf(AllProvidersFailedError);
+    expect(calls).toEqual(["gemini"]);
+  });
+
+  it("keeps going while inside the deadline", async () => {
+    const calls: string[] = [];
+    const { c } = chain({ feature: "background", script: { gemini: http(500, "server") }, calls, clock: () => 0 });
+    expect(await c.generateJson("p", schema)).toEqual({ ok: true });
+    expect(calls).toEqual(["gemini", "groq"]);
   });
 });

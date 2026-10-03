@@ -2,6 +2,7 @@ import "server-only";
 import { lookup } from "node:dns/promises";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
+import { fetchWithPolicy } from "@/lib/http";
 import { isPrivateAddress, isSafeUrl } from "@/lib/domain/article";
 import { firstImage, htmlToMarkdown } from "./markdown";
 
@@ -49,13 +50,14 @@ async function readCapped(res: Response): Promise<string> {
 
 /** Manual redirects so each hop goes through the SSRF check again. */
 async function fetchHtml(start: string): Promise<{ html: string; finalUrl: string }> {
-  const signal = AbortSignal.timeout(TIMEOUT_MS);
   let url = new URL(start);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     await assertPublicHost(url);
-    const res = await fetch(url, {
+    // Each hop gets its own timeout (it also covers reading that hop's body), so redirects don't eat one shared budget.
+    const res = await fetchWithPolicy(url, {
       redirect: "manual",
-      signal,
+      timeoutMs: TIMEOUT_MS,
+      retries: 0,
       headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5" },
     });
     if (res.status >= 300 && res.status < 400) {

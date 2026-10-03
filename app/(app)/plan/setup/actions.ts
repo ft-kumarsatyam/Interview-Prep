@@ -3,8 +3,15 @@
 import { refresh } from "next/cache";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/lib/auth/dal";
-import type { PublicQuestion } from "@/lib/quiz/question";
-import { startDiagnostic, submitDiagnostic, type DiagnosticResult } from "@/lib/services/diagnostic";
+import {
+  diagnosticCandidates,
+  startDiagnostic,
+  startSchema,
+  submitDiagnostic,
+  type DiagnosticCandidate,
+  type DiagnosticResult,
+  type DiagnosticTopic,
+} from "@/lib/services/diagnostic";
 import { completeIntake, getFeasibility, saveIntakeStep } from "@/lib/services/planner-intake";
 import { applyProposal, dismissProposal } from "@/lib/services/rebalance";
 
@@ -49,10 +56,21 @@ export async function feasibilityAction(draft: boolean): Promise<ActionResult<{ 
   }
 }
 
-export async function startDiagnosticAction(): Promise<ActionResult<{ topics: Array<{ topicId: string; title: string; questions: PublicQuestion[] }> }>> {
+export async function diagnosticCandidatesAction(): Promise<ActionResult<{ candidates: DiagnosticCandidate[]; suggested: string[] }>> {
   await requireSession();
   try {
-    return { ok: true, topics: await startDiagnostic() };
+    return { ok: true, ...(await diagnosticCandidates()) };
+  } catch (err) {
+    return fail(err, "Could not load your topics");
+  }
+}
+
+export async function startDiagnosticAction(topicIds: unknown): Promise<ActionResult<{ topics: DiagnosticTopic[] }>> {
+  await requireSession();
+  const parsed = startSchema.safeParse(topicIds);
+  if (!parsed.success) return { ok: false, error: "Pick up to 10 topics" };
+  try {
+    return { ok: true, topics: await startDiagnostic(undefined, parsed.data) };
   } catch (err) {
     return fail(err, "Could not build the check");
   }

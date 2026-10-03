@@ -5,6 +5,8 @@ import { useOptimistic, useState, useTransition } from "react";
 import { AlarmClock, ArrowRight, CalendarCheck, CheckCircle2, ExternalLink, Frown, Loader2, Meh, PartyPopper, Smile } from "lucide-react";
 import { toast } from "sonner";
 import { markSolved } from "@/app/(app)/dashboard/actions";
+import { SectionHeading } from "@/components/shared/section-heading";
+import { ToneBadge } from "@/components/shared/tone-badge";
 import { celebrateDayComplete } from "@/components/shared/celebrate";
 import { DifficultyBadge } from "@/components/shared/badges";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -81,7 +83,7 @@ export function ReviewQueue({ items, today }: { items: ReviewItem[]; today: Date
 
   return (
     <div className="space-y-5">
-      <section className="rounded-xl border bg-card p-4 ring-1 ring-white/5" aria-live="polite">
+      <section className="rounded-xl border bg-card p-4 ring-1 ring-foreground/5" aria-live="polite">
         <div className="flex items-baseline justify-between gap-3">
           <p className="text-sm font-medium">
             <span className="tabular font-mono text-lg">{doneCount}</span> <span className="text-muted-foreground">of {total} done today</span>
@@ -128,7 +130,7 @@ export function ReviewQueue({ items, today }: { items: ReviewItem[]; today: Date
 
       {(doneList.length > 0 || earlier.length > 0) && (
         <section className="space-y-2">
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Done today</h2>
+          <SectionHeading eyebrow className="mb-0" title="Done today" />
           <ul className="divide-y rounded-xl border bg-card">
             {doneList.map((r) => (
               <li key={r.slug} className="flex min-h-12 items-center gap-3 px-4 py-2 text-sm">
@@ -175,7 +177,7 @@ function ReviewCard({
   const overdue = diffDays(today, item.nextReviewAt);
   const ratingLabel = `rate-${item.slug}`;
   return (
-    <li className={cn("flex flex-col gap-4 rounded-xl border bg-card p-4 ring-1 ring-white/5 transition-colors", opened && "border-primary/40")}>
+    <li className={cn("flex flex-col gap-4 rounded-xl border bg-card p-4 ring-1 ring-foreground/5 transition-colors", opened && "border-primary/40")}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <Link href={`/dsa/${item.slug}`} className="line-clamp-2 font-medium hover:text-primary">
@@ -187,13 +189,9 @@ function ReviewCard({
           </p>
         </div>
         {overdue > 0 ? (
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/12 px-2 py-0.5 text-xs font-medium text-warning">
-            <AlarmClock className="size-3.5" aria-hidden /> {overdue}d overdue
-          </span>
+          <ToneBadge tone="warning" icon={AlarmClock} className="shrink-0">{overdue}d overdue</ToneBadge>
         ) : (
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-            <CalendarCheck className="size-3.5" aria-hidden /> Due today
-          </span>
+          <ToneBadge tone="neutral" icon={CalendarCheck} className="shrink-0">Due today</ToneBadge>
         )}
       </div>
 

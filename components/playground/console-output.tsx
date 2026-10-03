@@ -90,8 +90,8 @@ export function ConsoleOutput({
             <Terminal className="size-6" aria-hidden />
             <p>Run your code to see its output here.</p>
             <p className="hidden text-xs sm:block">
-              Press <kbd className="rounded border bg-background px-1.5 py-0.5 font-mono text-[11px]">{modKey}</kbd>{" "}
-              <kbd className="rounded border bg-background px-1.5 py-0.5 font-mono text-[11px]">Enter</kbd> in the editor.
+              Press <kbd className="rounded border bg-background px-1.5 py-0.5 font-mono text-2xs">{modKey}</kbd>{" "}
+              <kbd className="rounded border bg-background px-1.5 py-0.5 font-mono text-2xs">Enter</kbd> in the editor.
             </p>
           </div>
         )}

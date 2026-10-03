@@ -340,7 +340,7 @@ function McqStep({ q, choice, onChoose }: { q: McqQuestion; choice: number | und
               choice === i ? "border-primary bg-primary/10" : "hover:bg-muted/50",
             )}
           >
-            <span className={cn("mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border text-[10px] font-semibold", choice === i && "border-primary bg-primary text-primary-foreground")}>{String.fromCharCode(65 + i)}</span>
+            <span className={cn("mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border text-2xs font-semibold", choice === i && "border-primary bg-primary text-primary-foreground")}>{String.fromCharCode(65 + i)}</span>
             <span className="font-mono text-sm whitespace-pre-wrap">{opt}</span>
           </button>
         ))}

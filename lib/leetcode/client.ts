@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { fetchWithPolicy } from "@/lib/http";
 
 const ENDPOINT = "https://leetcode.com/graphql";
 const TIMEOUT_MS = 8000;
@@ -19,7 +20,8 @@ export interface LeetCodeStats {
 /** Port for LeetCode access so services can be tested with a fake. */
 export interface LeetCodeClient {
   recentAccepted(username: string, limit?: number): Promise<AcSubmission[]>;
-  stats(username: string): Promise<LeetCodeStats | null>;
+  /** `timeoutMs` bounds each attempt (default 8 s) and `retries` the extra attempts (default 1). */
+  stats(username: string, opts?: { timeoutMs?: number; retries?: number }): Promise<LeetCodeStats | null>;
 }
 
 const recentSchema = z.object({
@@ -38,12 +40,15 @@ const statsSchema = z.object({
   }),
 });
 
-export async function query(body: { query: string; variables: Record<string, unknown> }): Promise<unknown> {
-  const res = await fetch(ENDPOINT, {
+export async function query(body: { query: string; variables: Record<string, unknown> }, opts: { timeoutMs?: number; retries?: number } = {}): Promise<unknown> {
+  // A GraphQL read: safe to repeat even though it is a POST.
+  const res = await fetchWithPolicy(ENDPOINT, {
     method: "POST",
+    retryNonIdempotent: true,
+    timeoutMs: opts.timeoutMs ?? TIMEOUT_MS,
+    retries: opts.retries ?? 1,
     headers: { "Content-Type": "application/json", Referer: "https://leetcode.com", "User-Agent": "PrepOS/1.0" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`LeetCode responded ${res.status}`);
@@ -64,12 +69,12 @@ export const leetcodeClient: LeetCodeClient = {
     if (!parsed.success) throw new Error("Unexpected LeetCode response (is the username correct?)");
     return parsed.data.data.recentAcSubmissionList ?? [];
   },
-  async stats(username) {
+  async stats(username, opts) {
     const json = await query({
       query:
         "query userStats($username: String!) { matchedUser(username: $username) { username submitStatsGlobal { acSubmissionNum { difficulty count } } } allQuestionsCount { difficulty count } }",
       variables: { username },
-    });
+    }, opts);
     const parsed = statsSchema.safeParse(json);
     if (!parsed.success || !parsed.data.data.matchedUser) return null;
     const { matchedUser, allQuestionsCount } = parsed.data.data;

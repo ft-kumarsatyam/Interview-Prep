@@ -49,7 +49,7 @@ export function CaseOverview({ cases }: { cases: readonly CaseCardData[] }) {
   const pick = pickContinue(cases);
 
   return (
-    <section aria-label="Your progress" className="mb-8 grid gap-4 rounded-xl border bg-card p-4 ring-1 ring-white/5 sm:p-5 md:grid-cols-[minmax(0,1fr)_minmax(0,20rem)] md:items-center md:gap-6">
+    <section aria-label="Your progress" className="mb-8 grid gap-4 rounded-xl border bg-card p-4 ring-1 ring-foreground/5 sm:p-5 md:grid-cols-[minmax(0,1fr)_minmax(0,20rem)] md:items-center md:gap-6">
       <div className="min-w-0 space-y-3">
         <div className="flex items-baseline justify-between gap-3">
           <h2 className="text-sm font-medium text-muted-foreground">Progress</h2>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanSnippet, googleNewsFeeds, mergeFeeds, safeUrl, timeAgo, titleKey, type RawItem } from "@/lib/domain/news";
+import { cleanSnippet, googleNewsFeeds, mergeFeeds, retryExtractWaitSec, safeUrl, sortAtOf, timeAgo, titleKey, UNDATED_PENALTY_MS, type RawItem } from "@/lib/domain/news";
 import { eveningReminder, joinList, morningPlanMessage, remainingWork } from "@/lib/domain/reminders";
 import type { DayProgress } from "@/lib/domain/streak";
 
@@ -78,5 +78,27 @@ describe("reminders", () => {
   it("writes the morning plan, skipping rest days", () => {
     expect(morningPlanMessage(study(), ["Closures"])?.body).toBe("3 DSA problems and 2 theory subtopics, then the daily quiz. Theory: Closures.");
     expect(morningPlanMessage(study({ kind: "rest" }), [])).toBeNull();
+  });
+});
+
+describe("sortAtOf", () => {
+  const fetched = new Date("2026-10-05T10:00:00Z");
+  it("uses publishedAt when present", () => {
+    const published = new Date("2026-10-04T00:00:00Z");
+    expect(sortAtOf(published, fetched)).toEqual(published);
+  });
+  it("ranks undated items a day before they were fetched", () => {
+    expect(sortAtOf(null, fetched).getTime()).toBe(fetched.getTime() - UNDATED_PENALTY_MS);
+  });
+});
+
+describe("retryExtractWaitSec", () => {
+  const tried = new Date("2026-10-05T10:00:00Z");
+  it("allows a first retry and one a minute later", () => {
+    expect(retryExtractWaitSec(null, 0)).toBe(0);
+    expect(retryExtractWaitSec(tried, tried.getTime() + 60_000)).toBe(0);
+  });
+  it("makes you wait out the minute", () => {
+    expect(retryExtractWaitSec(tried, tried.getTime() + 20_500)).toBe(40);
   });
 });

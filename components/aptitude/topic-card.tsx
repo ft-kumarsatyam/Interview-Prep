@@ -1,8 +1,8 @@
-import Link from "next/link";
 import { CheckCircle2, Gauge } from "lucide-react";
 import { percent, type TopicStats } from "@/lib/domain/aptitude/progress";
 import type { AptitudeTopic } from "@/lib/domain/aptitude/topics";
 import { cn } from "@/lib/utils";
+import { LinkCard } from "@/components/shared/link-card";
 
 const STATUS_LABEL = { new: "New", practising: "Practising", mastered: "Mastered" } as const;
 const STATUS_CLASS = {
@@ -14,10 +14,7 @@ const SPEED_CLASS = { fast: "text-success", ok: "text-warning", slow: "text-dest
 
 export function TopicCard({ topic, stats }: { topic: AptitudeTopic; stats: TopicStats }) {
   return (
-    <Link
-      href={`/aptitude/${topic.id}`}
-      className="group flex h-full flex-col gap-2 rounded-xl border bg-card p-4 transition-colors outline-none hover:border-primary/50 hover:bg-primary/5 focus-visible:ring-3 focus-visible:ring-ring/50"
-    >
+    <LinkCard href={`/aptitude/${topic.id}`} className="h-full flex-col items-stretch gap-2 p-4 hover:bg-primary/5">
       <div className="flex items-start justify-between gap-2">
         <h3 className="min-w-0 text-sm leading-snug font-semibold text-balance">{topic.title}</h3>
         <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium", STATUS_CLASS[stats.status])}>
@@ -43,6 +40,6 @@ export function TopicCard({ topic, stats }: { topic: AptitudeTopic; stats: Topic
           <span>Target {topic.targetSec}s per question</span>
         )}
       </div>
-    </Link>
+    </LinkCard>
   );
 }

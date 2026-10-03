@@ -35,7 +35,7 @@ export function NotificationBell({ items, unread }: { items: BellItem[]; unread:
         <Button variant="ghost" size="icon" className="relative" aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}>
           <Bell />
           {unread > 0 && (
-            <span className="absolute top-1 right-1 grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] leading-4 font-semibold text-primary-foreground">
+            <span className="absolute top-1 right-1 grid min-w-4 place-items-center rounded-full bg-primary px-1 text-2xs leading-4 font-semibold text-primary-foreground">
               {unread > 9 ? "9+" : unread}
             </span>
           )}

@@ -1,3 +1,4 @@
+import { StatTile } from "@/components/shared/stat-tile";
 import { CalendarCheck, Target, Trophy } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import type { ContentProblem, Difficulty } from "@/lib/content";
@@ -21,15 +22,15 @@ export function DsaOverview({ problems, progress, today }: { problems: ContentPr
 
   return (
     <div className="mb-5 grid grid-cols-2 gap-3 sm:mb-6 lg:grid-cols-4 lg:gap-4">
-      <Stat icon={Target} label="DSA solved">
+      <StatTile icon={Target} label="DSA solved">
         <p className="tabular font-mono text-2xl font-semibold">
           {mainSolved} <span className="text-sm font-normal text-muted-foreground">/ {main.length}</span>
         </p>
         <Progress value={pct(mainSolved, main.length)} className="mt-2" aria-label="DSA progress" />
         <p className="mt-1.5 text-xs text-muted-foreground">{pct(mainSolved, main.length)}% of the full list</p>
-      </Stat>
+      </StatTile>
 
-      <Stat icon={Trophy} label="Core pass" accent={coreDone ? "text-success" : undefined}>
+      <StatTile icon={Trophy} label="Core pass" tone={coreDone ? "success" : "neutral"}>
         <p className="tabular font-mono text-2xl font-semibold">
           {coreSolved} <span className="text-sm font-normal text-muted-foreground">/ {core.length}</span>
         </p>
@@ -37,14 +38,14 @@ export function DsaOverview({ problems, progress, today }: { problems: ContentPr
         <p className={cn("mt-1.5 text-xs", coreDone ? "text-success" : "text-muted-foreground")}>
           {coreDone ? "Core ✅ all done" : `${core.length - coreSolved} to go`}
         </p>
-      </Stat>
+      </StatTile>
 
-      <Stat icon={CalendarCheck} label="Last 7 days">
+      <StatTile icon={CalendarCheck} label="Last 7 days">
         <p className="tabular font-mono text-2xl font-semibold">{lastWeek}</p>
         <p className="mt-1 text-xs text-muted-foreground">{lastWeek === 0 ? "Start with one today 💪" : lastWeek === 1 ? "problem solved" : "problems solved"}</p>
-      </Stat>
+      </StatTile>
 
-      <Stat label="Difficulty split">
+      <StatTile label="Difficulty split">
         <ul className="space-y-1.5 pt-0.5">
           {(["Easy", "Medium", "Hard"] as const).map((d) => {
             const list = main.filter((p) => p.difficulty === d);
@@ -62,19 +63,7 @@ export function DsaOverview({ problems, progress, today }: { problems: ContentPr
             );
           })}
         </ul>
-      </Stat>
+      </StatTile>
     </div>
-  );
-}
-
-function Stat({ icon: Icon, label, accent, children }: { icon?: React.ComponentType<{ className?: string }>; label: string; accent?: string; children: React.ReactNode }) {
-  return (
-    <section className="min-w-0 rounded-xl border bg-card p-3 ring-1 ring-white/5 sm:p-4" aria-label={label}>
-      <p className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-        {Icon && <Icon className={cn("size-3.5", accent)} />}
-        {label}
-      </p>
-      {children}
-    </section>
   );
 }

@@ -10,17 +10,14 @@ import {
   wordCount,
   type ContentStatus,
 } from "@/lib/domain/article";
-import { googleNewsFeeds, mergeFeeds, NEWS_STALE_MS, type FeedSource, type NewsItem } from "@/lib/domain/news";
-import { Article, Settings, SETTINGS_ID, type ArticleDoc } from "@/lib/models/system";
+import { googleNewsFeeds, mergeFeeds, NEWS_STALE_MS, retryExtractWaitSec, sortAtOf, UNDATED_PENALTY_MS, type FeedSource, type NewsItem } from "@/lib/domain/news";
+import { Article, FeedState, Settings, SETTINGS_ID, type ArticleDoc } from "@/lib/models/system";
 import { extractArticle, type Extractor } from "@/lib/news/extract";
-import { fetchAll, type FeedFetcher } from "@/lib/news/fetch";
+import { fetchAll, type FeedFetcher, type FeedValidators } from "@/lib/news/fetch";
 import { firstImage, htmlToMarkdown } from "@/lib/news/markdown";
 import { recomputeDay } from "./day";
 import { todayIn } from "./plan";
-import { getSettings } from "./settings";
-
-/** Undated items rank as if a day old so a feed without dates can't pin itself to the top. */
-const UNDATED_PENALTY_MS = 86_400_000;
+import { getSettings, invalidateSettings } from "./settings";
 
 const urlHash = (url: string) => createHash("sha1").update(url).digest("hex");
 
@@ -68,10 +65,29 @@ export async function refreshNews(opts: { force?: boolean; now?: Date; fetcher?:
 
   await connectDb();
   const claim = await Settings.updateOne({ _id: SETTINGS_ID, newsLastFetchAt: last }, { $set: { newsLastFetchAt: now } });
+  invalidateSettings();
   if (claim.modifiedCount === 0) return { status: "fresh", lastFetchAt: now };
 
-  const { results, failed } = await fetchAll(newsSources(s.googleNewsQueries), opts.fetcher);
+  const sources = newsSources(s.googleNewsQueries);
+  const states = await FeedState.find({ sourceId: { $in: sources.map((x) => x.id) } }).lean<Array<{ sourceId: string; etag?: string; lastModified?: string }>>();
+  const feedValidators = new Map<string, FeedValidators>(
+    states.map((st) => [st.sourceId, { ...(st.etag ? { etag: st.etag } : {}), ...(st.lastModified ? { lastModified: st.lastModified } : {}) }]),
+  );
+  const { results, failed, validators } = await fetchAll(sources, opts.fetcher, feedValidators);
   await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { newsLastFailed: failed } });
+  invalidateSettings();
+  if (validators.size) {
+    await FeedState.bulkWrite(
+      [...validators].map(([sourceId, v]) => ({
+        updateOne: {
+          filter: { sourceId },
+          update: { $set: { checkedAt: now, ...(v.etag ? { etag: v.etag } : {}), ...(v.lastModified ? { lastModified: v.lastModified } : {}) }, $unset: { ...(v.etag ? {} : { etag: 1 }), ...(v.lastModified ? {} : { lastModified: 1 }) } },
+          upsert: true,
+        },
+      })),
+      { ordered: false },
+    );
+  }
   const candidates = results.flatMap((r) => r.items.map((i) => i.url));
   const existing = await Article.find({ urlHash: { $in: candidates.map(urlHash) } }, { titleKey: 1, urlHash: 1 }).lean();
   const known = new Set(existing.map((a) => a.urlHash));
@@ -98,6 +114,7 @@ export async function refreshNews(opts: { force?: boolean; now?: Date; fetcher?:
               sourceName: item.sourceName,
               category: item.category,
               ...(item.publishedAt ? { publishedAt: item.publishedAt } : {}),
+              sortAt: sortAtOf(item.publishedAt, now),
               fetchedAt: now,
               snippet: item.snippet,
               titleKey: item.titleKey,
@@ -178,6 +195,24 @@ function toItem(d: ArticleRow): ArticleItem {
   };
 }
 
+let lastBackfillAt = 0;
+
+/** Articles stored before `sortAt` existed get it filled in (at most every 10 minutes per process). */
+async function backfillSortAt(): Promise<void> {
+  if (Date.now() - lastBackfillAt < 600_000) return;
+  lastBackfillAt = Date.now();
+  try {
+    await Article.updateMany(
+      { sortAt: { $exists: false } },
+      [{ $set: { sortAt: { $ifNull: ["$publishedAt", { $subtract: [{ $ifNull: ["$fetchedAt", "$$NOW"] }, UNDATED_PENALTY_MS] }] } } }],
+      { updatePipeline: true },
+    );
+  } catch (err) {
+    lastBackfillAt = 0;
+    console.warn("[news] sortAt backfill failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 export async function listArticles(q: NewsQuery = {}): Promise<ArticleItem[]> {
   await connectDb();
   const where: Record<string, unknown> = {};
@@ -192,13 +227,11 @@ export async function listArticles(q: NewsQuery = {}): Promise<ArticleItem[]> {
     where.contentStatus = { $in: ["full", "extracted"] };
     where.readingMinutes = { $gte: q.minMinutes };
   }
-  const docs = await Article.aggregate<ArticleRow>([
-    { $match: where },
-    { $project: { content: 0 } },
-    { $addFields: { sortAt: { $ifNull: ["$publishedAt", { $subtract: ["$fetchedAt", UNDATED_PENALTY_MS] }] } } },
-    { $sort: { sortAt: -1, _id: 1 } },
-    { $limit: q.limit ?? 60 },
-  ]);
+  await backfillSortAt();
+  const docs = await Article.find(where, { content: 0 })
+    .sort({ sortAt: -1, _id: 1 })
+    .limit(q.limit ?? 60)
+    .lean<ArticleRow[]>();
   return docs.map(toItem);
 }
 
@@ -212,9 +245,23 @@ export async function getArticle(id: string): Promise<ArticleWithContent | null>
 export async function nextUnread(id: string, category: string): Promise<{ id: string; title: string } | null> {
   await connectDb();
   const d = await Article.findOne({ category, read: false, _id: { $ne: id } }, { title: 1 })
-    .sort({ publishedAt: -1, _id: 1 })
+    .sort({ sortAt: -1, _id: 1 })
     .lean<{ _id: unknown; title: string }>();
   return d ? { id: String(d._id), title: d.title } : null;
+}
+
+type ExtractTarget = { _id: unknown; url: string; title: string; leadImage?: string | null };
+
+/** The `$set` that records one extraction outcome. */
+function outcomeFields(a: ExtractTarget, result: { markdown: string; leadImage: string | null } | { error: string }, now: Date) {
+  if ("error" in result) return { contentStatus: "failed" as const, contentError: result.error.slice(0, 300), contentTriedAt: now };
+  return {
+    content: result.markdown,
+    contentStatus: "extracted" as const,
+    readingMinutes: readingMinutes(result.markdown),
+    tags: classifyTags(a.title, result.markdown),
+    ...(a.leadImage || !result.leadImage ? {} : { leadImage: result.leadImage }),
+  };
 }
 
 /**
@@ -232,55 +279,85 @@ export async function ensureArticleContent(id: string, extractor: Extractor = ex
   }
   try {
     const { markdown, leadImage } = await extractor(a.url);
-    await Article.updateOne(
-      { _id: id, contentStatus: null },
-      {
-        $set: {
-          content: markdown,
-          contentStatus: "extracted",
-          readingMinutes: readingMinutes(markdown),
-          tags: classifyTags(a.title, markdown),
-          ...(a.leadImage || !leadImage ? {} : { leadImage }),
-        },
-      },
-    );
+    await Article.updateOne({ _id: id, contentStatus: null }, { $set: outcomeFields(a, { markdown, leadImage }, new Date()) });
     return "extracted";
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await Article.updateOne({ _id: id, contentStatus: null }, { $set: { contentStatus: "failed", contentError: message.slice(0, 300) } });
+    await Article.updateOne({ _id: id, contentStatus: null }, { $set: outcomeFields(a, { error: message }, new Date()) });
     return "failed";
   }
+}
+
+export type RetryResult = { status: "retried"; contentStatus: ContentStatus | null } | { status: "rate-limited"; waitSec: number } | { status: "not-failed" };
+
+/** Manual Retry for a failed extraction: reset it and try again, at most once a minute per article. */
+export async function retryArticleContent(id: string, opts: { now?: Date; extractor?: Extractor } = {}): Promise<RetryResult> {
+  const now = opts.now ?? new Date();
+  await connectDb();
+  const a = await Article.findOne({ _id: id }, { contentStatus: 1, contentTriedAt: 1 }).lean();
+  if (!a || a.contentStatus !== "failed") return { status: "not-failed" };
+  const waitSec = retryExtractWaitSec(a.contentTriedAt, now.getTime());
+  if (waitSec > 0) return { status: "rate-limited", waitSec };
+  // Compare-and-set on the timestamp we just read, so two overlapping clicks run one extraction.
+  const claim = await Article.updateOne(
+    { _id: id, contentStatus: "failed", contentTriedAt: a.contentTriedAt ?? null },
+    { $set: { contentStatus: null, contentTriedAt: now }, $unset: { contentError: 1 } },
+  );
+  if (claim.modifiedCount === 0) return { status: "rate-limited", waitSec: 60 };
+  return { status: "retried", contentStatus: await ensureArticleContent(id, opts.extractor) };
 }
 
 export const PREFETCH_CATEGORIES = ["system-design", "engineering", "ai-labs", "databases", "interview-prep"] as const;
 
 /**
- * Morning job: extract the newest articles without full text so the reader
- * opens instantly. Bounded by count, concurrency and a time budget that keeps
- * the cron inside its 60 s limit.
+ * Morning job: extract the newest unread articles without full text so the reader
+ * opens instantly. One read for the queue and bulk writes for the results; bounded by
+ * count, concurrency and a time budget that keeps the cron inside its 60 s limit.
  */
 export async function prefetchArticleContent(
   opts: { limit?: number; concurrency?: number; budgetMs?: number; extractor?: Extractor } = {},
 ): Promise<{ tried: number; extracted: number; failed: number }> {
   const { limit = 20, concurrency = 4, budgetMs = 25_000, extractor = extractArticle } = opts;
   await connectDb();
-  const queue = (
-    await Article.find({ contentStatus: null, category: { $in: PREFETCH_CATEGORIES } }, { _id: 1 })
-      .sort({ fetchedAt: -1, publishedAt: -1 })
-      .limit(limit)
-      .lean()
-  ).map((d) => String(d._id));
+  const queue = await Article.find(
+    { contentStatus: null, read: false, category: { $in: PREFETCH_CATEGORIES } },
+    { url: 1, title: 1, leadImage: 1 },
+  )
+    .sort({ fetchedAt: -1, publishedAt: -1 })
+    .limit(limit)
+    .lean<ExtractTarget[]>();
   const deadline = Date.now() + budgetMs;
   const counts = { tried: 0, extracted: 0, failed: 0 };
+  type Op = { updateOne: { filter: Record<string, unknown>; update: { $set: Record<string, unknown> } } };
+  let pending: Op[] = [];
+  const flush = async () => {
+    const ops = pending;
+    pending = [];
+    if (ops.length) await Article.bulkWrite(ops, { ordered: false });
+  };
+  const record = (a: ExtractTarget, fields: Record<string, unknown>) => {
+    pending.push({ updateOne: { filter: { _id: a._id, contentStatus: null }, update: { $set: fields } } });
+  };
   async function worker() {
-    for (let id = queue.shift(); id && Date.now() < deadline; id = queue.shift()) {
+    for (let a = queue.shift(); a && Date.now() < deadline; a = queue.shift()) {
       counts.tried++;
-      const status = await ensureArticleContent(id, extractor);
-      if (status === "extracted") counts.extracted++;
-      else if (status === "failed") counts.failed++;
+      if (isHeadlineOnly(a.url)) {
+        record(a, { contentStatus: "headline" });
+        continue;
+      }
+      try {
+        const { markdown, leadImage } = await extractor(a.url);
+        record(a, outcomeFields(a, { markdown, leadImage }, new Date()));
+        counts.extracted++;
+      } catch (err) {
+        record(a, outcomeFields(a, { error: err instanceof Error ? err.message : String(err) }, new Date()));
+        counts.failed++;
+      }
+      if (pending.length >= 8) await flush();
     }
   }
   await Promise.all(Array.from({ length: concurrency }, worker));
+  await flush();
   return counts;
 }
 

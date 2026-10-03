@@ -23,7 +23,7 @@ async function step(fn: () => Promise<unknown>): Promise<StepResult> {
 /**
  * 08:00 IST: settle yesterday, freeze today's plan and post it first (the full
  * digest goes to email/Telegram, so the slow steps can't delay it), then refresh
- * news and pull LeetCode solves. Each step is independent.
+ * news (and prefetch article text) while pulling LeetCode solves in parallel. Each step is isolated.
  */
 export async function runMorning(
   now = new Date(),
@@ -40,9 +40,16 @@ export async function runMorning(
     return { kind: state.plan.kind, notified: res.created, pushed: res.pushed };
   });
   const rebalance = await step(async () => ((await proposeRebalance(now)) ? "proposed" : "none"));
-  const news = await step(() => refreshNews({ force: true, now, fetcher }));
-  const articles = await step(() => prefetchArticleContent({ extractor }));
-  const leetcode = await step(() => syncLeetCode({ force: true, now }));
+  // News (then the prefetch that depends on it) and the LeetCode sync don't touch each other, so they overlap.
+  const [newsChain, leetcode] = await Promise.all([
+    (async () => {
+      const news = await step(() => refreshNews({ force: true, now, fetcher }));
+      const articles = await step(() => prefetchArticleContent({ extractor }));
+      return { news, articles };
+    })(),
+    step(() => syncLeetCode({ force: true, now })),
+  ]);
+  const { news, articles } = newsChain;
   await markRun("lastMorningRunAt", now);
   return { today, news, articles, plan, rebalance, leetcode };
 }

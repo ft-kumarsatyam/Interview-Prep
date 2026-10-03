@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { news } from "@/lib/content";
 import { connectDb } from "@/lib/db";
 import { toLocalDate } from "@/lib/domain/dates";
@@ -35,8 +36,25 @@ export interface AppSettings extends PlanSettings {
   lastExportAt: Date | null;
 }
 
-/** The settings singleton, created on first read. Day logic always uses APP_TIMEZONE. */
-export async function getSettings(): Promise<AppSettings> {
+/** Per-request slot; `cache()` hands every caller in one request the same holder (a plain call outside a request gets a fresh one). */
+const requestSlot = cache(() => ({ value: null as Promise<AppSettings> | null }));
+
+/** Drop this request's memoised settings. Call after any write to the Settings document. */
+export function invalidateSettings(): void {
+  requestSlot().value = null;
+}
+
+/** The settings singleton, created on first read and memoised for the rest of the request. Day logic always uses APP_TIMEZONE. */
+export function getSettings(): Promise<AppSettings> {
+  const slot = requestSlot();
+  const pending = (slot.value ??= loadSettings());
+  pending.catch(() => {
+    if (slot.value === pending) slot.value = null;
+  });
+  return pending;
+}
+
+async function loadSettings(): Promise<AppSettings> {
   await connectDb();
   const e = env();
   const doc =
@@ -104,11 +122,13 @@ function profileFrom(doc: { targetRole?: string | null; targetCompany?: string |
 export async function markRun(field: "lastMorningRunAt" | "lastEveningRunAt" | "lastExportAt", at = new Date()): Promise<void> {
   await connectDb();
   await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { [field]: at } }, { upsert: true });
+  invalidateSettings();
 }
 
 export async function setRoastMode(on: boolean): Promise<void> {
   await connectDb();
   await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { roastMode: on } }, { upsert: true });
+  invalidateSettings();
 }
 
 export type SettingsPatch = Partial<
@@ -133,6 +153,7 @@ export type SettingsPatch = Partial<
 export async function updateSettings(patch: SettingsPatch): Promise<void> {
   await connectDb();
   await Settings.updateOne({ _id: SETTINGS_ID }, { $set: patch }, { upsert: true });
+  invalidateSettings();
 }
 
 /**
@@ -172,6 +193,7 @@ export async function saveSettings(input: SettingsInput, now = new Date()): Prom
     },
     { upsert: true },
   );
+  invalidateSettings();
   const updated = await getSettings();
   const plannerState = (s: AppSettings) => ({ profile: s.profile, startDate: s.startDate, endDate: s.endDate, hoursByDow: s.hoursByDow ?? [], restDays: s.restDays });
   for (const change of diffPlannerChanges(plannerState(current), plannerState(updated))) await logPlanChange(change, today);

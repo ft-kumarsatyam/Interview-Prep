@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Check, CircleSlash, Keyboard, ListFilter, PartyPopper, RotateCcw, Send, Target, Trophy, X } from "lucide-react";
 import { toast } from "sonner";
+import { SectionHeading } from "@/components/shared/section-heading";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -227,8 +228,7 @@ export function QuizPlayer({ questions, seed, passPct, submit, initial, onRetake
           </CardContent>
         </Card>
 
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-base font-semibold">Review answers</h2>
+        <SectionHeading className="mb-0" title="Review answers" action={
           <div className="inline-flex rounded-lg border bg-muted/40 p-0.5" role="group" aria-label="Filter questions">
             <FilterButton pressed={!wrongOnly} onClick={() => setWrongOnly(false)}>
               All ({graded.length})
@@ -237,7 +237,7 @@ export function QuizPlayer({ questions, seed, passPct, submit, initial, onRetake
               <ListFilter className="size-3.5" aria-hidden /> Wrong only ({wrongCount})
             </FilterButton>
           </div>
-        </div>
+        } />
 
         {shown.length === 0 ? (
           <p className="flex items-center gap-2 rounded-xl border border-dashed p-6 text-sm text-success">
@@ -413,7 +413,7 @@ export function QuizPlayer({ questions, seed, passPct, submit, initial, onRetake
 }
 
 function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground">{children}</kbd>;
+  return <kbd className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-2xs text-foreground">{children}</kbd>;
 }
 
 function Chip({ className, children }: { className?: string; children: ReactNode }) {
@@ -469,7 +469,7 @@ function ScoreGauge({ pct, passed, passPct }: { pct: number; passed: boolean; pa
       </svg>
       <span className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="font-mono text-2xl font-semibold tabular-nums">{pct}%</span>
-        <span className="text-[10px] text-muted-foreground">pass {passPct}%</span>
+        <span className="text-2xs text-muted-foreground">pass {passPct}%</span>
       </span>
     </div>
   );

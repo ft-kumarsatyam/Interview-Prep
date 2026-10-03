@@ -5,9 +5,10 @@ import { AArrowDown, AArrowUp, Loader2, Maximize2, Minimize2, Play, RotateCcw, S
 import { toast } from "sonner";
 import { EdgeCasesPanel } from "@/components/dsa/edge-cases-panel";
 import { CodeEditor } from "@/components/playground/code-editor";
+import { CompactTabsList, CompactTabsTrigger } from "@/components/shared/compact-tabs";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { summarizeCases, type ArgType, type CaseSummary, type CompareMode, type ReturnKind, type TestCase } from "@/lib/domain/dsa-runner";
 import { caseToDraft, casesFromInputs, parseDrafts, stepFontSize, type CaseDraft } from "@/lib/domain/ide";
 import { LANGUAGES, isLanguage, starterFor, type Language, type StarterSource } from "@/lib/domain/starters";
@@ -198,7 +199,7 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
         ))}
       </select>
       {language === "python" && py === "loading" && (
-        <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1 text-2xs text-muted-foreground">
           <Loader2 className="size-3 animate-spin motion-reduce:animate-none" /> Loading Python…
         </span>
       )}
@@ -206,7 +207,7 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
         <Button type="button" variant="ghost" size="icon" className="size-8" onClick={() => changeFont(-1)} aria-label="Smaller font">
           <AArrowDown />
         </Button>
-        <span className="w-6 text-center font-mono text-[11px] text-muted-foreground tabular-nums">{fontSize}</span>
+        <span className="w-6 text-center font-mono text-2xs text-muted-foreground tabular-nums">{fontSize}</span>
         <Button type="button" variant="ghost" size="icon" className="size-8" onClick={() => changeFont(1)} aria-label="Larger font">
           <AArrowUp />
         </Button>
@@ -264,26 +265,26 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
   const bottom = (
     <Tabs value={tab} onValueChange={(v) => setTab(v as BottomTab)} className="flex h-full min-h-0 flex-col gap-0">
       <div className="flex shrink-0 items-center border-b bg-muted/30 px-2 py-1">
-        <TabsList className="h-8 bg-transparent p-0">
-          <TabsTrigger value="cases" className="h-7 px-2.5 text-xs data-[state=active]:bg-background">
+        <CompactTabsList>
+          <CompactTabsTrigger value="cases">
             Testcases
-          </TabsTrigger>
-          <TabsTrigger value="result" className="h-7 px-2.5 text-xs data-[state=active]:bg-background">
+          </CompactTabsTrigger>
+          <CompactTabsTrigger value="result">
             Result
             {view && !view.crashed && view.results.length > 0 && (
               <span className={cn("size-1.5 rounded-full", view.results.every((r) => r.pass || view.cases[r.index]?.custom) ? "bg-success" : "bg-destructive")} aria-hidden />
             )}
-          </TabsTrigger>
+          </CompactTabsTrigger>
           {edgeCount > 0 && (
-            <TabsTrigger value="edges" className="h-7 px-2.5 text-xs data-[state=active]:bg-background">
-              Edge cases <span className="font-mono text-[10px] text-muted-foreground">{edgeCount}</span>
-            </TabsTrigger>
+            <CompactTabsTrigger value="edges">
+              Edge cases <span className="font-mono text-2xs text-muted-foreground">{edgeCount}</span>
+            </CompactTabsTrigger>
           )}
-          <TabsTrigger value="console" className="h-7 px-2.5 text-xs data-[state=active]:bg-background">
+          <CompactTabsTrigger value="console">
             <Terminal className="size-3.5" /> Console
-            {logs.length > 0 && <span className="font-mono text-[10px] text-muted-foreground">{logs.length}</span>}
-          </TabsTrigger>
-        </TabsList>
+            {logs.length > 0 && <span className="font-mono text-2xs text-muted-foreground">{logs.length}</span>}
+          </CompactTabsTrigger>
+        </CompactTabsList>
       </div>
       <div className={cn("min-h-0 flex-1 p-3", split && "overflow-y-auto overscroll-contain")}>
         <TabsContent value="cases">

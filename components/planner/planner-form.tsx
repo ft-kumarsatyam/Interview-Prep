@@ -17,7 +17,7 @@ export interface PlannerFormValues extends PlannerProfile {
   hoursByDow: number[];
 }
 
-/** Your goals and availability. Hours and the interview date are the same fields as in Settings. Future days re-plan; today stays frozen. */
+/** The one editor for your goals, interview date and weekly hours (Settings only shows them). Future days re-plan; today stays frozen. */
 export function PlannerForm({ initial, firstTime }: { initial: PlannerFormValues; firstTime: boolean }) {
   const [v, setV] = useState<PlannerFormValues>(initial);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -116,7 +116,7 @@ export function PlannerForm({ initial, firstTime }: { initial: PlannerFormValues
         <Button type="submit" loading={pending}>
           {!pending && <Save />} {pending ? "Saving…" : firstTime ? "Save my planner" : "Save changes"}
         </Button>
-        <p className="text-xs text-muted-foreground">Rest days are edited in Settings.</p>
+        <p className="text-xs text-muted-foreground">Need a break? Use Pause or skip days above. Other rest days are in Settings.</p>
       </div>
     </form>
   );

@@ -1,14 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowRight, Clock, ExternalLink, FileText, Newspaper } from "lucide-react";
+import { ArrowRight, CheckCircle2, Clock, ExternalLink, FileText, Newspaper } from "lucide-react";
+import { LinkCard } from "@/components/shared/link-card";
+import { ArticleBodyLoader } from "@/components/news/article-body-loader";
 import { ArticleMarkdown } from "@/components/news/article-markdown";
 import { ReaderActions } from "@/components/news/reader-actions";
+import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { news } from "@/lib/content";
 import { tagLabel } from "@/lib/domain/article";
 import { READINGS_PER_DAY } from "@/lib/domain/plan-config";
-import { ensureArticleContent, getArticle, nextUnread } from "@/lib/services/news";
+import { getArticle, nextUnread } from "@/lib/services/news";
 
 const ID = /^[a-f0-9]{24}$/;
 const catName = new Map(news.categories.map((c) => [c.id, c.name]));
@@ -26,12 +29,9 @@ function hostOf(url: string): string {
 export default async function ArticlePage({ params }: PageProps<"/news/[id]">) {
   const { id } = await params;
   if (!ID.test(id)) notFound();
-  let article = await getArticle(id);
+  // Render straight away: a body that isn't stored yet is loaded by <ArticleBodyLoader> after paint.
+  const article = await getArticle(id);
   if (!article) notFound();
-  if (article.contentStatus === null) {
-    await ensureArticleContent(id);
-    article = (await getArticle(id)) ?? article;
-  }
   const next = await nextUnread(id, article.category);
   const published = article.publishedAt
     ? new Date(article.publishedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
@@ -97,17 +97,13 @@ export default async function ArticlePage({ params }: PageProps<"/news/[id]">) {
       <div className="mt-6">
         {hasBody ? (
           <ArticleMarkdown markdown={article.content!} />
-        ) : (
+        ) : article.contentStatus === "headline" ? (
           <div className="rounded-xl border bg-card p-5">
             <div className="mb-2 flex items-center gap-2 text-sm font-medium">
               <FileText className="size-4 text-muted-foreground" aria-hidden />
-              {article.contentStatus === "headline" ? "Headline only" : "Couldn't load the full article"}
+              Headline only
             </div>
-            <p className="text-sm text-muted-foreground">
-              {article.contentStatus === "headline"
-                ? "Google News links only resolve in a browser, so PrepOS can't show this one inline."
-                : `${host} didn't let PrepOS read the page${article.contentError ? ` (${article.contentError})` : ""}.`}
-            </p>
+            <p className="text-sm text-muted-foreground">Google News links only resolve in a browser, so PrepOS can&apos;t show this one inline.</p>
             {article.snippet && <p className="mt-4 border-l-2 pl-3 text-sm">{article.snippet}</p>}
             <Button asChild className="mt-4 h-9">
               <a href={article.url} target="_blank" rel="noopener noreferrer">
@@ -115,25 +111,28 @@ export default async function ArticlePage({ params }: PageProps<"/news/[id]">) {
               </a>
             </Button>
           </div>
+        ) : (
+          <ArticleBodyLoader
+            id={article.id}
+            snippet={article.snippet}
+            url={article.url}
+            host={host}
+            {...(article.contentStatus === "failed" ? { initialError: article.contentError ?? "" } : {})}
+          />
         )}
       </div>
 
       <footer className="mt-10 space-y-4 border-t pt-6">
         {next ? (
-          <Link
-            href={`/news/${next.id}`}
-            className="group flex items-center gap-3 rounded-xl border bg-card p-4 transition-colors hover:border-primary/50 focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
-          >
+          <LinkCard href={`/news/${next.id}`} className="p-4">
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Up next · unread in {catName.get(article.category) ?? "this category"}</p>
               <p className="mt-1 line-clamp-2 leading-snug font-medium group-hover:text-primary">{next.title}</p>
             </div>
             <ArrowRight className="size-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" aria-hidden />
-          </Link>
+          </LinkCard>
         ) : (
-          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
-            You&apos;re caught up on {catName.get(article.category) ?? "this category"}.
-          </p>
+          <EmptyState compact icon={CheckCircle2} title={`You're caught up on ${catName.get(article.category) ?? "this category"}.`} />
         )}
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <Button asChild variant="outline" className="h-9">

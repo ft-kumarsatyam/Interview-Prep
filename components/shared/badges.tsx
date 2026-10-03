@@ -2,9 +2,9 @@ import { cn } from "@/lib/utils";
 import type { Difficulty } from "@/lib/content";
 
 const DIFFICULTY_CLASS: Record<Difficulty, string> = {
-  Easy: "bg-success/12 text-success",
-  Medium: "bg-warning/12 text-warning",
-  Hard: "bg-destructive/12 text-destructive",
+  Easy: "bg-success/10 text-success",
+  Medium: "bg-warning/10 text-warning",
+  Hard: "bg-destructive/10 text-destructive",
 };
 
 export function DifficultyBadge({ difficulty }: { difficulty: Difficulty }) {

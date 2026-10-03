@@ -1,21 +1,42 @@
 import type { Metadata } from "next";
-import { Compass } from "lucide-react";
+import { Archive, Compass } from "lucide-react";
 import { IntakeWizard, type WizardTrack } from "@/components/planner/intake-wizard";
+import { PlanHistory, ResetPlannerButton } from "@/components/planner/plan-history";
 import { PageHeader } from "@/components/shared/page-header";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { orderedTopics, trackById, tracks } from "@/lib/content";
+import { formatDate } from "@/lib/plan-clock";
 import { getIntake } from "@/lib/services/planner-intake";
+import { listSnapshots } from "@/lib/services/planner-snapshot";
 
 export const metadata: Metadata = { title: "Plan setup" };
 
 export default async function PlanSetupPage() {
-  const intake = await getIntake();
+  const [intake, snapshots] = await Promise.all([getIntake(), listSnapshots()]);
   const byTrack: WizardTrack[] = tracks
     .map((t) => ({ id: t.id, name: trackById.get(t.id)?.name ?? t.id, topics: orderedTopics().filter((x) => x.track === t.id).map((x) => ({ id: x.id, title: x.title, subtopics: x.subtopics.length })) }))
     .filter((t) => t.topics.length > 0);
+  const fresh = !intake.completedAt && intake.stepsDone.length === 0;
   return (
     <>
-      <PageHeader icon={Compass} title="Plan setup" description="Tell the planner what you want, where you are strong or weak, and how much time you have. It builds the plan from your answers and tells you honestly if the time isn't enough." />
+      <PageHeader icon={Compass} title="Plan setup" description="Tell the planner what you're aiming for, where you're strong or weak, and how much time you have. It builds the plan from your answers and tells you honestly if the time isn't enough.">
+        {intake.completedAt && <ResetPlannerButton />}
+      </PageHeader>
+      {fresh && snapshots.length > 0 && (
+        <Card className="mx-auto mb-5 max-w-3xl">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Archive className="size-4" aria-hidden /> Go back to a saved plan instead?
+            </CardTitle>
+            <CardDescription>You have saved plans from the last 60 days. Restore one to skip setup, or carry on below to build a new plan.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PlanHistory rows={snapshots.slice(0, 3).map((s) => ({ ...s, takenOnLabel: formatDate(s.takenOn, { day: "numeric", month: "short", year: "numeric" }) }))} />
+          </CardContent>
+        </Card>
+      )}
       <IntakeWizard
+        key={intake.completedAt ? intake.completedAt.getTime() : "draft"}
         tracks={byTrack}
         initial={{
           goals: intake.goals,

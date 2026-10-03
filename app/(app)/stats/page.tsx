@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import type { LucideIcon } from "lucide-react";
 import { Award, BarChart3, BookOpen, CalendarCheck, Code2, ExternalLink, Flame, ListChecks, Radar as RadarIcon, Settings, Target, TrendingDown, TrendingUp } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { SectionHeading } from "@/components/shared/section-heading";
+import { StatTile } from "@/components/shared/stat-tile";
+import { ToneBadge } from "@/components/shared/tone-badge";
 import { CumulativeChart, DifficultyChart, MasteryRadar, QuizTrendChart, SolvesPerDayChart } from "@/components/stats/charts";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -16,21 +17,6 @@ import { cn } from "@/lib/utils";
 export const metadata: Metadata = { title: "Stats" };
 
 const pctOf = (done: number, total: number) => Math.round((100 * done) / Math.max(1, total));
-
-function Tile({ icon: Icon, label, value, hint, tone, children }: { icon: LucideIcon; label: string; value: string; hint?: string; tone?: string; children?: React.ReactNode }) {
-  return (
-    <Card size="sm">
-      <CardContent className="flex h-full flex-col gap-1">
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Icon className={cn("size-3.5 shrink-0", tone)} aria-hidden /> <span className="truncate">{label}</span>
-        </p>
-        <p className="font-mono text-2xl font-semibold tabular-nums">{value}</p>
-        {hint && <p className="truncate text-xs text-muted-foreground">{hint}</p>}
-        {children}
-      </CardContent>
-    </Card>
-  );
-}
 
 function ChartCard({ title, description, action, children, className }: { title: string; description: string; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
@@ -48,7 +34,7 @@ function ChartCard({ title, description, action, children, className }: { title:
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mt-8 space-y-3">
-      <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">{title}</h2>
+      <SectionHeading eyebrow className="mb-0" title={title} />
       {children}
     </section>
   );
@@ -88,14 +74,14 @@ export default async function StatsPage() {
       <PageHeader title="Stats" icon={BarChart3} description="Are you on pace? Solves, quiz trend, coverage and mastery in one place." />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
-        <Tile icon={Flame} tone="text-streak" label="Streak" value={`${t.streak}d`} hint={`Best ${t.best}d`} />
-        <Tile icon={Code2} label="Problems solved" value={String(s.totals.solved)} hint={`${last30} in the last 30 days`} />
-        <Tile icon={Target} label="Main track" value={`${mainPct}%`} hint={`${s.totals.mainSolved} of ${s.totals.mainTotal}`}>
+        <StatTile icon={Flame} tone="streak" label="Streak" value={`${t.streak}d`} hint={`Best ${t.best}d`} />
+        <StatTile icon={Code2} label="Problems solved" value={String(s.totals.solved)} hint={`${last30} in the last 30 days`} />
+        <StatTile icon={Target} label="Main track" value={`${mainPct}%`} hint={`${s.totals.mainSolved} of ${s.totals.mainTotal}`}>
           <Progress value={mainPct} className="mt-1" aria-label={`Main track ${mainPct}% done`} />
-        </Tile>
-        <Tile icon={CalendarCheck} tone="text-success" label="Days complete" value={String(s.totals.daysComplete)} />
-        <Tile icon={ListChecks} label="Quizzes passed" value={String(s.totals.quizzesPassed)} hint={quizAvg === null ? "No quizzes yet" : `Avg best ${quizAvg}%`} />
-        <Tile icon={Award} tone="text-warning" label="Topics mastered" value={String(s.totals.mastered)} />
+        </StatTile>
+        <StatTile icon={CalendarCheck} tone="success" label="Days complete" value={String(s.totals.daysComplete)} />
+        <StatTile icon={ListChecks} label="Quizzes passed" value={String(s.totals.quizzesPassed)} hint={quizAvg === null ? "No quizzes yet" : `Avg best ${quizAvg}%`} />
+        <StatTile icon={Award} tone="warning" label="Topics mastered" value={String(s.totals.mastered)} />
       </div>
 
       <Section title="Practice pace">
@@ -105,13 +91,9 @@ export default async function StatsPage() {
             description="Distinct main-track problems against the plan curve."
             action={
               pace && s.cumulative.length > 1 ? (
-                <Badge
-                  variant="outline"
-                  className={cn(gap >= 0 ? "border-success/30 bg-success/10 text-success" : "border-destructive/30 bg-destructive/10 text-destructive")}
-                >
-                  {gap >= 0 ? <TrendingUp aria-hidden /> : <TrendingDown aria-hidden />}
+                <ToneBadge tone={gap >= 0 ? "success" : "danger"} icon={gap >= 0 ? TrendingUp : TrendingDown}>
                   {gap === 0 ? "On pace" : gap > 0 ? `${gap} ahead` : `${-gap} behind`}
-                </Badge>
+                </ToneBadge>
               ) : undefined
             }
           >
@@ -198,9 +180,9 @@ export default async function StatsPage() {
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     <span className="sr-only">Mastered:</span>
                     {mastered.map((r) => (
-                      <Badge key={r.title} variant="outline" className="border-success/30 bg-success/10 text-success">
-                        <Award aria-hidden /> {r.title}
-                      </Badge>
+                      <ToneBadge key={r.title} tone="success" icon={Award}>
+                        {r.title}
+                      </ToneBadge>
                     ))}
                   </div>
                 )}
@@ -272,7 +254,7 @@ export default async function StatsPage() {
                     <div key={d} className="rounded-lg bg-muted/50 p-2">
                       <p className={cn("text-xs font-medium", tone)}>{d}</p>
                       <p className="font-mono text-lg font-semibold tabular-nums">{lc.stats!.solved[d]}</p>
-                      <p className="text-[11px] text-muted-foreground">of {lc.stats!.total[d]}</p>
+                      <p className="text-2xs text-muted-foreground">of {lc.stats!.total[d]}</p>
                     </div>
                   ))}
                 </div>

@@ -55,7 +55,7 @@ export default async function ProblemsPage() {
                   <CheckCircle2 className={cn("size-4 shrink-0", p.solvedOn ? "text-success" : "text-muted-foreground/30")} aria-label={p.solvedOn ? "Solved" : "Not solved"} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium">{p.title}</span>
                   <span className="hidden text-xs text-muted-foreground sm:inline">{p.topic}</span>
-                  <span className="hidden rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground md:inline">{p.source === "ai" ? "AI" : "Pasted"}</span>
+                  <span className="hidden rounded-full bg-muted px-2 py-0.5 text-2xs text-muted-foreground md:inline">{p.source === "ai" ? "AI" : "Pasted"}</span>
                   <span className={cn("w-14 text-right text-xs font-medium", DIFF_CLASS[p.difficulty])}>{p.difficulty}</span>
                 </Link>
               </li>

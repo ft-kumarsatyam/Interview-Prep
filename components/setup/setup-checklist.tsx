@@ -2,23 +2,25 @@
 
 import { useRouter } from "next/navigation";
 import { useTransition } from "react";
-import { AlertCircle, CheckCircle2, ChevronDown, CircleDashed, Download, Loader2, Smartphone } from "lucide-react";
+import { CheckCircle2, ChevronDown, Download, Loader2, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import { syncLeetCodeNow } from "@/app/(app)/dashboard/actions";
 import { refreshNewsAction } from "@/app/(app)/news/actions";
 import { reseedAction, testNotificationAction } from "@/app/(app)/settings/actions";
 import { runMorningAction, testLlmAction } from "@/app/(app)/setup/actions";
 import { IosInstallSteps, promptInstall, useInstallState } from "@/components/layout/install-hint";
+import { StatusIcon, type StatusKind } from "@/components/shared/status-icon";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/shared/empty-state";
 import type { CheckStatus, SetupAction, SetupActionId, SetupItem } from "@/lib/domain/setup";
 import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<CheckStatus, string> = { ok: "Done", warn: "Needs attention", todo: "To do" };
 const STATUS_TONE: Record<CheckStatus, string> = { ok: "text-success", warn: "text-warning", todo: "text-muted-foreground" };
+const STATUS_KIND: Record<CheckStatus, StatusKind> = { ok: "done", warn: "warn", todo: "idle" };
 
-export function StatusIcon({ status, className }: { status: CheckStatus; className?: string }) {
-  const Icon = status === "ok" ? CheckCircle2 : status === "warn" ? AlertCircle : CircleDashed;
-  return <Icon className={cn("size-5 shrink-0", STATUS_TONE[status], className)} aria-label={STATUS_LABEL[status]} />;
+function CheckIcon({ status, className }: { status: CheckStatus; className?: string }) {
+  return <StatusIcon kind={STATUS_KIND[status]} label={STATUS_LABEL[status]} className={cn("size-5", className)} />;
 }
 
 async function run(id: SetupActionId): Promise<boolean> {
@@ -119,7 +121,7 @@ function Row({
 }) {
   return (
     <li id={id} className={cn("flex scroll-mt-20 gap-3 rounded-xl border bg-card p-4", next && "border-primary/50 ring-1 ring-primary/20")}>
-      <StatusIcon status={status} className="mt-0.5" />
+      <CheckIcon status={status} className="mt-0.5" />
       <div className="min-w-0 flex-1 space-y-2">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <h3 className="font-medium">{title}</h3>
@@ -184,9 +186,9 @@ export function SetupChecklistView({ items }: { items: SetupItem[] }) {
           {open.length ? `To do · ${open.length}` : "To do"}
         </h2>
         {open.length === 0 ? (
-          <p className="flex items-center gap-2 rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
-            <CheckCircle2 className="size-4 text-success" aria-hidden /> Everything is set up. PrepOS runs on its own now.
-          </p>
+          <EmptyState compact icon={CheckCircle2} title="Everything is set up.">
+            PrepOS runs on its own now.
+          </EmptyState>
         ) : (
           <ul className="space-y-3">
             {open.map((item, i) => (

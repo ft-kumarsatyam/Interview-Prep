@@ -47,10 +47,17 @@ export const plannerInputSchema = z
 
 export type PlannerInput = z.infer<typeof plannerInputSchema>;
 
-/** Cross-field checks that need today's settings. Returns an error message, or null. */
+/** The one rule for how long a plan may be: the interview date comes after the start and within 400 days of it. Returns an error message, or null. */
+export function validatePlanSpan(startDate: DateStr, endDate: DateStr): string | null {
+  if (endDate <= startDate) return "The interview date must be after the plan start";
+  if (diffDays(endDate, startDate) > 400) return "Keep the plan under 400 days";
+  return null;
+}
+
+/** The planner's rule for an interview date: a valid span (see `validatePlanSpan`) that is still in the future. Returns an error message, or null. */
 export function validatePlannerWindow(input: Pick<PlannerInput, "endDate">, settings: Pick<PlanSettings, "startDate">, today: DateStr): string | null {
-  if (input.endDate <= settings.startDate) return "The interview date must be after the plan start";
-  if (diffDays(input.endDate, settings.startDate) > 400) return "Keep the plan under 400 days";
+  const span = validatePlanSpan(settings.startDate, input.endDate);
+  if (span) return span;
   if (input.endDate <= today) return "The interview date must be in the future";
   return null;
 }

@@ -7,6 +7,7 @@ import { NewsCard } from "@/components/news/news-card";
 import { RefreshNewsButton } from "@/components/news/refresh-news-button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { chipClass } from "@/components/shared/chip";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { news } from "@/lib/content";
@@ -43,10 +44,7 @@ function Pill({ to, active, children }: { to: string; active: boolean; children:
       href={to}
       scroll={false}
       aria-current={active ? "true" : undefined}
-      className={cn(
-        "inline-flex h-9 shrink-0 items-center gap-1 rounded-full border px-3.5 text-sm whitespace-nowrap transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none",
-        active && "border-primary bg-primary/10 font-medium text-primary hover:bg-primary/15",
-      )}
+      className={chipClass(active, "shrink-0")}
     >
       {children}
     </Link>

@@ -1,6 +1,7 @@
 import { CircleCheck, CircleDashed, CircleDot, Trophy, type LucideIcon } from "lucide-react";
 import type { DesignStatus } from "@/lib/domain/design";
-import { cn } from "@/lib/utils";
+import { ToneBadge } from "@/components/shared/tone-badge";
+import type { Tone } from "@/components/shared/stat-tile";
 
 export const STATUS_META: Record<DesignStatus, { label: string; text: string; badge: string; bar: string; icon: LucideIcon }> = {
   new: { label: "Not started", text: "text-muted-foreground", badge: "bg-muted", bar: "bg-muted-foreground/30", icon: CircleDashed },
@@ -9,13 +10,13 @@ export const STATUS_META: Record<DesignStatus, { label: string; text: string; ba
   mastered: { label: "Mastered", text: "text-success", badge: "bg-success/12", bar: "bg-success", icon: Trophy },
 };
 
+const STATUS_TONE: Record<DesignStatus, Tone> = { new: "neutral", studying: "warning", practised: "primary", mastered: "success" };
+
 export function StatusBadge({ status, className }: { status: DesignStatus; className?: string }) {
   const meta = STATUS_META[status];
-  const Icon = meta.icon;
   return (
-    <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium", meta.badge, meta.text, className)}>
-      <Icon className="size-3" aria-hidden />
+    <ToneBadge tone={STATUS_TONE[status]} icon={meta.icon} className={className}>
       {meta.label}
-    </span>
+    </ToneBadge>
   );
 }

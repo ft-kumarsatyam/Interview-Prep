@@ -3,6 +3,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronsDownUp, ChevronsUpDown, Search, SearchX, SlidersHorizontal, X } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
+import { Chip } from "@/components/shared/chip";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -196,7 +197,7 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
                   <X className="size-4" />
                 </button>
               ) : (
-                <kbd className="pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded border bg-muted px-1.5 font-mono text-[10px] text-muted-foreground md:block">/</kbd>
+                <kbd className="pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded border bg-muted px-1.5 font-mono text-2xs text-muted-foreground md:block">/</kbd>
               )}
             </div>
             <DesktopFilters {...filterControls} />
@@ -361,7 +362,7 @@ function MobileFilters({
         <Button variant="outline" className={cn("h-10 md:hidden", count > 0 && "border-primary/50 text-primary")} aria-label={count > 0 ? `Filters, ${count} active` : "Filters"}>
           <SlidersHorizontal />
           <span className="hidden min-[400px]:inline">Filters</span>
-          {count > 0 && <span className="tabular grid size-5 place-items-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">{count}</span>}
+          {count > 0 && <span className="tabular grid size-5 place-items-center rounded-full bg-primary text-2xs font-semibold text-primary-foreground">{count}</span>}
         </Button>
       </SheetTrigger>
       <SheetContent side="bottom" className="max-h-[85dvh] rounded-t-2xl">
@@ -390,18 +391,9 @@ function MobileFilters({
             <Field label="Pattern">
               <div className="flex flex-wrap gap-2" role="group" aria-label="Pattern">
                 {["", ...patterns].map((p) => (
-                  <button
-                    key={p || "all"}
-                    type="button"
-                    aria-pressed={pattern === p}
-                    onClick={() => update({ pattern: p })}
-                    className={cn(
-                      "h-9 rounded-full border px-3 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-                      pattern === p ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
-                    )}
-                  >
+                  <Chip key={p || "all"} pressed={pattern === p} onClick={() => update({ pattern: p })} className="shrink-0 text-xs">
                     {p || "All patterns"}
-                  </button>
+                  </Chip>
                 ))}
               </div>
             </Field>

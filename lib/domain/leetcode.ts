@@ -51,3 +51,13 @@ export function planSync(input: {
   }
   return { intents, untracked: [...untracked] };
 }
+
+/** LeetCode profile totals are cached this long; they change a few times a day at most. */
+export const STATS_TTL_MS = 15 * 60 * 1000;
+
+/** Whether a cached value taken at `at` is still good at `nowMs`. A clock that went backwards counts as stale. */
+export function isCacheFresh(at: Date | null | undefined, nowMs: number, ttlMs = STATS_TTL_MS): boolean {
+  if (!at) return false;
+  const age = nowMs - at.getTime();
+  return age >= 0 && age < ttlMs;
+}

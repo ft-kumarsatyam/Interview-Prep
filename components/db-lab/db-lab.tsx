@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, CircleAlert, Eye, Lightbulb, ListChecks, Loader2, Play, RotateCcw, Table2 } from "lucide-react";
 import { toast } from "sonner";
+import { Chip } from "@/components/shared/chip";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -80,7 +81,13 @@ export function DbLab() {
   const [verdict, setVerdict] = useState<{ ok: boolean; text: string } | null>(null);
   const [showHint, setShowHint] = useState(false);
   const [showSolution, setShowSolution] = useState(false);
+  const outputRef = useRef<HTMLDivElement>(null);
   const [solved, setSolved] = useState<Set<string>>(() => (typeof window === "undefined" ? new Set() : loadSolved()));
+
+  // On a phone the results land below the fold after Run, so bring them into view.
+  useEffect(() => {
+    if (output) outputRef.current?.scrollIntoView({ block: "nearest", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }, [output]);
 
   const datasets = mode === "sql" ? SQL_DATASETS : MONGO_DATASETS;
   const challenges = useMemo(() => challengesFor(mode, datasetId), [mode, datasetId]);
@@ -216,7 +223,7 @@ export function DbLab() {
             ? schema.map((t) => (
                 <div key={t.table} className="rounded-lg border p-2.5">
                   <p className="font-mono text-xs font-semibold">{t.table}</p>
-                  <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-muted-foreground">
+                  <ul className="mt-1 space-y-0.5 font-mono text-2xs text-muted-foreground">
                     {t.columns.map((c) => (
                       <li key={c} className="truncate">
                         {c}
@@ -230,7 +237,7 @@ export function DbLab() {
                   <p className="font-mono text-xs font-semibold">
                     {name} <span className="font-normal text-muted-foreground">({docs.length} docs)</span>
                   </p>
-                  <pre className="mt-1 overflow-x-auto font-mono text-[11px] whitespace-pre-wrap text-muted-foreground">{JSON.stringify(docs[0])}</pre>
+                  <pre className="mt-1 overflow-x-auto font-mono text-2xs whitespace-pre-wrap text-muted-foreground">{JSON.stringify(docs[0])}</pre>
                 </div>
               ))}
         </div>
@@ -249,9 +256,9 @@ export function DbLab() {
         </Tabs>
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Dataset">
           {datasets.map((d) => (
-            <Button key={d.id} type="button" size="sm" variant={d.id === datasetId ? "secondary" : "ghost"} aria-pressed={d.id === datasetId} onClick={() => switchDataset(d.id)} title={d.blurb}>
+            <Chip key={d.id} pressed={d.id === datasetId} onClick={() => switchDataset(d.id)} title={d.blurb}>
               {d.label}
-            </Button>
+            </Chip>
           ))}
         </div>
       </div>
@@ -316,7 +323,7 @@ export function DbLab() {
               </Button>
             )}
             <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">
-              <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px]">{modKey}</kbd> + <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px]">Enter</kbd> to run
+              <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-2xs">{modKey}</kbd> + <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-2xs">Enter</kbd> to run
             </span>
           </div>
 
@@ -330,6 +337,7 @@ export function DbLab() {
             </p>
           )}
 
+          <div ref={outputRef} className="space-y-3 scroll-mb-24">
           {output?.kind === "error" && (
             <pre role="alert" className="overflow-x-auto rounded-lg border border-destructive/40 bg-destructive/10 p-3 font-mono text-xs whitespace-pre-wrap text-destructive">
               {output.message}
@@ -344,6 +352,7 @@ export function DbLab() {
               {output.sets.length > 0 && <p className="text-xs text-muted-foreground">{output.ms} ms</p>}
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

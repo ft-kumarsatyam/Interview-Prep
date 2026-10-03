@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { Code2, type LucideIcon } from "lucide-react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { CompactTabsList, CompactTabsTrigger } from "@/components/shared/compact-tabs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { SPLIT_QUERY, useMediaQuery } from "./use-client-prefs";
@@ -107,14 +108,14 @@ export function IdeShell({
           <ResizablePanel id="problem" defaultSize="42" minSize="22" className="flex flex-col overflow-hidden rounded-xl border bg-card">
             <Tabs value={leftTab} onValueChange={setLeftTab} className="flex min-h-0 flex-1 flex-col gap-0">
               <div className="flex shrink-0 items-center border-b bg-muted/30 px-2 py-1.5">
-                <TabsList className="h-8 bg-transparent p-0">
+                <CompactTabsList>
                   {panes.map((p) => (
-                    <TabsTrigger key={p.id} value={p.id} className="h-7 px-2.5 text-xs data-[state=active]:bg-background">
+                    <CompactTabsTrigger key={p.id} value={p.id}>
                       <p.icon className="size-3.5" />
                       {p.label}
-                    </TabsTrigger>
+                    </CompactTabsTrigger>
                   ))}
-                </TabsList>
+                </CompactTabsList>
               </div>
               {panes.map((p) => (
                 <TabsContent

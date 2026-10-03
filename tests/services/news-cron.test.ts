@@ -14,6 +14,7 @@ import {
   nextUnread,
   prefetchArticleContent,
   refreshNews,
+  retryArticleContent,
   setBookmark,
 } from "@/lib/services/news";
 import { notify } from "@/lib/services/notifications";
@@ -248,5 +249,44 @@ describe("notifications and cron", () => {
     expect((await GET(new Request("http://x/api/cron/evening", { headers: { authorization: "Bearer nope" } }))).status).toBe(401);
     const ok = await GET(new Request("http://x/api/cron/evening", { headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }));
     expect(ok.status).toBe(200);
+  });
+});
+
+describe("conditional feeds, retry and prefetch", () => {
+  it("sends remembered validators and treats 304 as no change", async () => {
+    const seen: Array<{ id: string; etag?: string }> = [];
+    let round = 0;
+    const fetcher: FeedFetcher = async (source, validators) => {
+      if (source.id !== "hf") return [];
+      seen.push({ id: source.id, etag: validators?.etag });
+      return round++ === 0 ? { items: [item("https://hf.co/1", "A")], etag: '"v1"' } : { notModified: true };
+    };
+    expect(await refreshNews({ fetcher, now: at("2026-10-06") })).toMatchObject({ status: "ok", inserted: 1, failed: [] });
+    const later = new Date(at("2026-10-06").getTime() + 120_000);
+    expect(await refreshNews({ fetcher, force: true, now: later })).toMatchObject({ status: "ok", inserted: 0, failed: [] });
+    expect(seen).toEqual([{ id: "hf", etag: undefined }, { id: "hf", etag: '"v1"' }]);
+  });
+
+  it("retries a failed extraction once a minute", async () => {
+    await refreshNews({ fetcher: fakeFetcher({ infoq: [item("https://www.infoq.com/a", "A")] }), now: at("2026-10-06") });
+    const [a] = await listArticles();
+    expect(await ensureArticleContent(a.id, fakeExtractor(["https://www.infoq.com/a"]))).toBe("failed");
+    const ex = fakeExtractor();
+    expect((await retryArticleContent(a.id, { extractor: ex })).status).toBe("rate-limited");
+    const later = new Date(Date.now() + 61_000);
+    expect(await retryArticleContent(a.id, { extractor: ex, now: later })).toEqual({ status: "retried", contentStatus: "extracted" });
+    expect(await retryArticleContent(a.id, { extractor: ex, now: later })).toEqual({ status: "not-failed" });
+  });
+
+  it("prefetches only unread articles", async () => {
+    await refreshNews({
+      fetcher: fakeFetcher({ infoq: [item("https://www.infoq.com/a", "A"), item("https://www.infoq.com/b", "B")] }),
+      now: at("2026-10-06"),
+    });
+    const [a] = await listArticles();
+    await markArticleRead(a.id, at("2026-10-06"));
+    const ex = fakeExtractor();
+    expect(await prefetchArticleContent({ extractor: ex })).toEqual({ tried: 1, extracted: 1, failed: 0 });
+    expect(ex.calls).toHaveLength(1);
   });
 });

@@ -1,17 +1,18 @@
 "use client";
 
 import { ExtensionStatus } from "@/components/settings/extension-status";
+import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
 import { CalendarDays, CalendarOff, Clock, Code2, Gauge, Lock, Newspaper, Plus, RotateCcw, Save, Sparkles, Timer, Wallet, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
-import { saveSettingsAction } from "@/app/(app)/settings/actions";
+import { saveSettingsSectionsAction, testLeetCodeAction } from "@/app/(app)/settings/actions";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ASK_SUBJECTS } from "@/lib/domain/ask-subjects";
-import { MAX_NEWS_QUERIES, MAX_REST_DAYS, settingsInputSchema, type SettingsInput } from "@/lib/domain/settings";
+import { MAX_NEWS_QUERIES, MAX_REST_DAYS, SETTINGS_SECTION_LABEL, changedSections, mergeSections, sectionOfPath, settingsInputSchema, type SettingsInput } from "@/lib/domain/settings";
 import { formatDuration } from "@/lib/domain/time-budget";
 import { cn } from "@/lib/utils";
 
@@ -49,6 +50,7 @@ function validate(v: SettingsFormValues): Record<string, string> {
 function inputIdFor(key: string): string {
   if (key.startsWith("geminiLinks.")) return `gemini-${key.slice("geminiLinks.".length)}`;
   if (key.startsWith("hoursByDow")) return `hours-${key.split(".")[1] ?? 0}`;
+  if (key.startsWith("endDate")) return "startDate";
   if (key.startsWith("restDays")) return "newRestDay";
   if (key.startsWith("googleNewsQueries")) return "newQuery";
   return key.split(".")[0];
@@ -140,7 +142,9 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
   const [pending, start] = useTransition();
   const [newRest, setNewRest] = useState("");
   const [newQuery, setNewQuery] = useState("");
-  const dirty = JSON.stringify(v) !== JSON.stringify(baseline);
+  const [testingLc, setTestingLc] = useState(false);
+  const dirtySections = changedSections(toPayload(v), toPayload(baseline));
+  const dirty = dirtySections.length > 0;
   const errors = attempted ? { ...serverErrors, ...validate(v) } : serverErrors;
   const errorCount = Object.keys(errors).length;
   const weeklyMinutes = v.hoursByDow.reduce<number>((sum, h) => sum + (typeof h === "number" ? h : 0) * 60, 0);
@@ -195,26 +199,37 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
 
   const save = () => {
     setAttempted(true);
-    const local = validate(v);
-    if (Object.keys(local).length) {
+    const sections = dirtySections;
+    if (sections.length === 0) return;
+    // A section with a local error is skipped, so it can't hold up the others.
+    const local = Object.fromEntries(Object.entries(validate(v)).filter(([k]) => sections.includes(sectionOfPath(k) as never)));
+    const blocked = new Set(Object.keys(local).map((k) => sectionOfPath(k)));
+    const toSave = sections.filter((id) => !blocked.has(id));
+    if (toSave.length === 0) {
       const n = Object.keys(local).length;
       toast.error(`${n} field${n === 1 ? " needs" : "s need"} fixing. Jumped to the first one.`);
       focusFirst(Object.keys(local));
       return;
     }
     start(async () => {
-      const res = await saveSettingsAction(toPayload(v));
-      if (res.ok) {
-        const saved = { ...v, leetcodeUsername: res.saved.leetcodeUsername ?? "" };
-        setV(saved);
-        setBaseline(saved);
-        setAttempted(false);
-        setServerErrors({});
-        toast.success("Settings saved. Tomorrow's plan uses the new values.");
-      } else {
-        const fields = "fields" in res ? res.fields : {};
-        setServerErrors(fields);
-        toast.error(`${res.error}. Fix the highlighted fields and save again.`);
+      const res = await saveSettingsSectionsAction({ sections: toSave, values: toPayload(v) });
+      if (!res.ok) {
+        toast.error(`${res.error}. Try again.`);
+        return;
+      }
+      const { saved, failed, values } = res;
+      if (saved.length > 0) {
+        setBaseline((b) => mergeSections(b, { ...v, leetcodeUsername: values.leetcodeUsername ?? "" }, saved));
+        if (saved.includes("integrations")) setV((cur) => ({ ...cur, leetcodeUsername: values.leetcodeUsername ?? "" }));
+      }
+      const fields = { ...local, ...Object.assign({}, ...failed.map((f) => f.fields)) } as Record<string, string>;
+      setServerErrors(fields);
+      setAttempted(Object.keys(local).length > 0);
+      const names = (ids: readonly string[]) => ids.map((id) => SETTINGS_SECTION_LABEL[id as keyof typeof SETTINGS_SECTION_LABEL]).join(", ");
+      const stillBlocked = [...failed.map((f) => f.section), ...[...blocked].filter((x): x is NonNullable<typeof x> => !!x)];
+      if (stillBlocked.length === 0) toast.success("Settings saved. Tomorrow's plan uses the new values.");
+      else {
+        toast.error(`${saved.length ? `Saved ${names(saved)}. ` : ""}Not saved: ${names(stillBlocked)}. Fix the highlighted fields.`);
         focusFirst(Object.keys(fields));
       }
     });
@@ -246,9 +261,18 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
           <Field id="startDate" label="Start date" error={err("startDate")}>
             <Input id="startDate" type="date" value={v.startDate} onChange={(e) => set("startDate", e.target.value)} {...aria("startDate")} />
           </Field>
-          <Field id="endDate" label="End date" hint="Interview-ready date. Keep the plan under 400 days." error={err("endDate")}>
-            <Input id="endDate" type="date" min={v.startDate || undefined} value={v.endDate} onChange={(e) => set("endDate", e.target.value)} {...aria("endDate")} />
-          </Field>
+          <div className="space-y-1.5">
+            <p className="text-sm font-medium">Interview date (plan end)</p>
+            <p className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+              <span className="tabular-nums">{prettyDay(v.endDate)}</span>
+              <Link href="/plan" className="text-primary underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none">Edit on the Planner</Link>
+            </p>
+            {err("endDate") && (
+              <p className="text-xs text-destructive" role="alert">
+                {err("endDate")} Move the start date, or change the interview date on the Planner.
+              </p>
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           <Field id="minDailyDsa" label="Min DSA / day" hint="0–10" error={err("minDailyDsa")}>
@@ -273,37 +297,21 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
         id="hours"
         icon={Clock}
         title="Study hours"
-        description="How many hours you can give each day. Targets are scaled to fit. Sunday keeps the weekly quiz and reviews and adds optional extras. You can also change today from the dashboard."
+        description="Your weekly hours and interview date are edited on the Planner, together with your goals, so they live in one place."
         action={<span className="tabular rounded-full bg-muted px-2.5 py-1 font-mono text-xs whitespace-nowrap">{formatDuration(weeklyMinutes)} / week</span>}
       >
-        <div className="grid grid-cols-4 gap-2 sm:gap-3 lg:grid-cols-7">
+        <dl className="grid grid-cols-4 gap-2 sm:gap-3 lg:grid-cols-7">
           {DAY_NAMES.map((name, i) => (
-            <div key={name} className="space-y-1.5">
-              <Label htmlFor={`hours-${i}`} className="justify-center text-xs text-muted-foreground sm:justify-start">
-                {name}
-              </Label>
-              <Input
-                id={`hours-${i}`}
-                type="number"
-                inputMode="decimal"
-                min={0}
-                max={12}
-                step={0.5}
-                className="text-center sm:text-left"
-                value={v.hoursByDow[i] ?? ""}
-                onChange={(e) => set("hoursByDow", v.hoursByDow.map((h, j) => (j === i ? (e.target.value === "" ? "" : Number(e.target.value)) : h)))}
-                {...aria(`hoursByDow.${i}`, "hoursByDow")}
-              />
+            <div key={name} className="rounded-md border px-2 py-1.5 text-center sm:text-left">
+              <dt className="text-xs text-muted-foreground">{name}</dt>
+              <dd className="tabular-nums text-sm font-medium">{v.hoursByDow[i] === "" || v.hoursByDow[i] === undefined ? 0 : v.hoursByDow[i]} h</dd>
             </div>
           ))}
-        </div>
-        {Object.keys(errors).some((k) => k.startsWith("hoursByDow")) ? (
-          <p id="hoursByDow-error" className="mt-2 text-xs text-destructive" role="alert">
-            Hours must be between 0 and 12 per day.
-          </p>
-        ) : (
-          <p className="mt-2 text-xs text-muted-foreground">Hours per day, 0–12, half hours allowed.</p>
-        )}
+        </dl>
+        <p className="mt-3 text-sm">
+          <Link href="/plan" className="text-primary underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none">Edit on the Planner</Link>
+          <span className="text-muted-foreground"> · You can also change today only from the dashboard.</span>
+        </p>
       </Section>
 
       <Section id="quiz" icon={Gauge} title="Quiz and mastery" description="The daily quiz must be passed to complete a day." contentClassName="grid gap-4 sm:grid-cols-2">
@@ -407,6 +415,24 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
             {...aria("leetcodeUsername")}
           />
         </Field>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          disabled={!v.leetcodeUsername.trim()}
+          loading={testingLc}
+          onClick={() => {
+            setTestingLc(true);
+            testLeetCodeAction(v.leetcodeUsername).then((res) => {
+              setTestingLc(false);
+              if (res.ok) toast.success(res.message);
+              else toast.error(res.error);
+            });
+          }}
+        >
+          Test username
+        </Button>
       </Section>
 
       <Section
@@ -556,7 +582,7 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
               ) : (
                 <>
                   <span className="font-medium">Unsaved changes</span>
-                  <span className="hidden text-muted-foreground sm:inline"> · apply from tomorrow</span>
+                  <span className="hidden text-muted-foreground sm:inline"> · {dirtySections.map((id) => SETTINGS_SECTION_LABEL[id]).join(", ")} · apply from tomorrow</span>
                 </>
               )}
             </p>

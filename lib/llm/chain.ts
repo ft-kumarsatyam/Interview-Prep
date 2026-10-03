@@ -19,6 +19,8 @@ import type { ProviderDef } from "./providers";
 import type { LlmStore } from "./store";
 import type { LlmProvider } from "./types";
 
+export const DEFAULT_DEADLINE_MS = 20_000;
+
 export interface ChainDeps {
   defs: readonly ProviderDef[];
   store: LlmStore;
@@ -28,6 +30,10 @@ export interface ChainDeps {
   /** You confirmed paid use for this one call. */
   paidOnce?: boolean;
   now?: () => Date;
+  /** Stop trying further providers once this much time has passed in one request (default 20 s). */
+  deadlineMs?: number;
+  /** Test seam for the deadline clock (ms). */
+  clock?: () => number;
   /** Test seam. */
   make?: (def: ProviderDef) => LlmProvider | null;
 }
@@ -65,9 +71,16 @@ export function createChain(deps: ChainDeps): LlmProvider {
       const states = await deps.store.loadStates();
       const byId = new Map(deps.defs.map((d) => [d.id, d]));
       const attempts: Array<{ provider: string; outcome: string }> = [];
+      const clock = deps.clock ?? Date.now;
+      const startedAt = clock();
+      const deadlineMs = deps.deadlineMs ?? DEFAULT_DEADLINE_MS;
 
       for (const id of planOrder(deps.defs.map((d) => d.id), policy)) {
         const def = byId.get(id)!;
+        if (clock() - startedAt >= deadlineMs) {
+          attempts.push({ provider: def.label, outcome: "not tried (request deadline)" });
+          break;
+        }
         const state = states[id] ?? INITIAL_STATE;
         if (!isAvailable(state, nowMs)) {
           attempts.push({ provider: def.label, outcome: describeState(state) });
@@ -95,7 +108,7 @@ export function createChain(deps: ChainDeps): LlmProvider {
           }
         }
 
-        const provider = deps.make ? deps.make(def) : createLlm(def.cfg);
+        const provider = deps.make ? deps.make(def) : createLlm({ ...def.cfg, signal: AbortSignal.timeout(Math.max(1, deadlineMs - (clock() - startedAt))) });
         if (!provider) continue;
         try {
           const out = await provider.generateJson(prompt, schema);

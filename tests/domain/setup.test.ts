@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChecklist, type SetupInput } from "@/lib/domain/setup";
+import { buildChecklist, buildUnreachableChecklist, type SetupInput } from "@/lib/domain/setup";
 
 const now = new Date("2026-10-02T14:00:00Z");
 const hoursAgo = (h: number) => new Date(now.getTime() - h * 3_600_000);
@@ -92,5 +92,24 @@ describe("AI features item", () => {
   it("a paid provider alone does not make AI 'configured'", () => {
     const i = item(withLlm({ configured: false, provider: null, free: [], paid: { label: "Meta Llama (paid)", ready: true, missing: [] } }), "llm");
     expect(i.status).toBe("warn");
+  });
+
+  it("adds the planner step only when it is known, and requires it", () => {
+    expect(buildChecklist(healthy).items.some((i) => i.id === "planner")).toBe(false);
+    const todo = { ...healthy, planner: { completed: false } };
+    expect(item(todo, "planner")).toMatchObject({ status: "todo", required: true, actions: [{ href: "/plan/setup", label: "Start planning" }] });
+    expect(buildChecklist(todo).requiredLeft).toBe(1);
+    const done = { ...healthy, planner: { completed: true } };
+    expect(item(done, "planner")).toMatchObject({ status: "ok", actions: [{ label: "Edit the plan" }] });
+    expect(buildChecklist(done).requiredLeft).toBe(0);
+    expect(buildChecklist(done).total).toBe(10);
+  });
+
+  it("shows one clear item when the database can't be reached", () => {
+    const c = buildUnreachableChecklist("connection refused");
+    expect(c).toMatchObject({ total: 1, done: 0, requiredLeft: 1 });
+    expect(c.items[0]).toMatchObject({ id: "database", status: "todo", required: true });
+    expect(c.items[0]!.detail).toContain("connection refused");
+    expect(c.items[0]!.detail).toContain("Network Access");
   });
 });

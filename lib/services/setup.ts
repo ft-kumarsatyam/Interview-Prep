@@ -1,12 +1,16 @@
 import { problems, topics } from "@/lib/content";
 import { connectDb } from "@/lib/db";
-import { buildChecklist, type SetupChecklist, type SetupInput } from "@/lib/domain/setup";
+import { buildChecklist, buildUnreachableChecklist, type SetupChecklist, type SetupInput } from "@/lib/domain/setup";
 import { env } from "@/lib/env";
-import { leetcodeClient, type LeetCodeClient } from "@/lib/leetcode/client";
+import type { LeetCodeClient } from "@/lib/leetcode/client";
 import { describeProviders, resolveProviders } from "@/lib/llm/providers";
 import { Problem, Topic } from "@/lib/models/content";
+import { pingDb } from "./health";
+import { lookupLeetCodeStats } from "./leetcode-sync";
 import { newsSources } from "./news";
 import { getSettings } from "./settings";
+
+const LIVE_CHECK_TIMEOUT_MS = 3_000;
 
 export interface SetupOptions {
   /** Check the LeetCode profile over the network (Setup page only; the dashboard skips it). */
@@ -19,6 +23,8 @@ export interface SetupOptions {
 export async function getSetupChecklist(opts: SetupOptions): Promise<SetupChecklist> {
   const now = opts.now ?? new Date();
   const e = env();
+  const health = await pingDb();
+  if (!health.ok) return buildUnreachableChecklist(health.error);
   const s = await getSettings();
   await connectDb();
   const [problemCount, topicCount] = await Promise.all([Problem.estimatedDocumentCount(), Topic.estimatedDocumentCount()]);
@@ -26,12 +32,14 @@ export async function getSetupChecklist(opts: SetupOptions): Promise<SetupCheckl
   let profileFound: boolean | null = null;
   let solved: number | null = null;
   if (opts.live && s.leetcodeUsername) {
-    try {
-      const stats = await (opts.client ?? leetcodeClient).stats(s.leetcodeUsername);
-      profileFound = stats !== null;
-      solved = stats?.solved.All ?? null;
-    } catch {
-      // LeetCode unreachable: say nothing rather than claim the profile is missing.
+    // Cached for 15 minutes, 3 s and no retry live so an unreachable LeetCode can't hold the page.
+    const { stats, reachable } = await lookupLeetCodeStats(s.leetcodeUsername, { ...(opts.client ? { client: opts.client } : {}), now, timeoutMs: LIVE_CHECK_TIMEOUT_MS, retries: 0 });
+    // Unreachable and never cached: say nothing rather than claim the profile is missing.
+    if (stats) {
+      profileFound = true;
+      solved = stats.solved.All;
+    } else if (reachable) {
+      profileFound = false;
     }
   }
 
@@ -49,6 +57,7 @@ export async function getSetupChecklist(opts: SetupOptions): Promise<SetupCheckl
     llm: llmStatus(e),
     backup: { lastExportAt: s.lastExportAt },
     session: { remember: opts.remember },
+    planner: { completed: !!s.plannerSetupAt },
   });
 }
 

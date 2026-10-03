@@ -93,7 +93,7 @@ const TONES = {
 function AnswerBox({ tone, label, children }: { tone: keyof typeof TONES; label: string; children: ReactNode }) {
   return (
     <div className={cn("rounded-lg border px-3 py-2", TONES[tone])}>
-      <p className="mb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">{label}:</p>
+      <p className="mb-0.5 text-2xs font-medium tracking-wide text-muted-foreground uppercase">{label}:</p>
       {children}
     </div>
   );

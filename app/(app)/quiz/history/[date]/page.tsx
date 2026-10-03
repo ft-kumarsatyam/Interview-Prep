@@ -7,6 +7,7 @@ import { PracticeWrong } from "@/components/quiz/practice-wrong";
 import { QuestionReview } from "@/components/quiz/question-review";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { SectionHeading } from "@/components/shared/section-heading";
 import { Badge } from "@/components/ui/badge";
 import { isDateStr } from "@/lib/domain/dates";
 import { chosenIndices, correctIndices, isAnswerCorrect } from "@/lib/domain/quiz";
@@ -83,8 +84,10 @@ export default async function QuizReviewPage({ params, searchParams }: PageProps
         }))}
       />
 
-      <div className="mt-6 mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base font-semibold">Review answers</h2>
+      <SectionHeading
+        className="mt-6"
+        title="Review answers"
+        action={
         <nav className="inline-flex rounded-lg border bg-muted/40 p-0.5" aria-label="Filter questions">
           <FilterLink href={href()} active={!wrongOnly}>
             All ({graded.length})
@@ -99,7 +102,8 @@ export default async function QuizReviewPage({ params, searchParams }: PageProps
             </span>
           )}
         </nav>
-      </div>
+        }
+      />
       <ol className="space-y-3">
         {shown.map(({ q, i, right }) => (
           <li key={q.id}>

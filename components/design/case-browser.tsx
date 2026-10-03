@@ -1,8 +1,10 @@
 "use client";
 
 import { useDeferredValue, useMemo, useState } from "react";
-import Link from "next/link";
 import { ArrowRight, BookOpen, Clock, PenLine, Search, SearchX, X } from "lucide-react";
+import { LinkCard } from "@/components/shared/link-card";
+import { SectionHeading } from "@/components/shared/section-heading";
+import { Chip } from "@/components/shared/chip";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,22 +33,6 @@ function matchesStatus(c: CaseCardData, f: StatusFilter): boolean {
   if (f === "todo") return c.status === "new";
   if (f === "mastered") return c.status === "mastered";
   return c.status === "studying" || c.status === "practised";
-}
-
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-        active ? "border-primary bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground",
-      )}
-    >
-      {children}
-    </button>
-  );
 }
 
 export function CaseBrowser({ cases, categories }: { cases: CaseCardData[]; categories?: readonly string[] }) {
@@ -94,7 +80,7 @@ export function CaseBrowser({ cases, categories }: { cases: CaseCardData[]; cate
         <div className="-mx-4 flex items-center gap-2 overflow-x-auto px-4 scrollbar-none sm:mx-0 sm:flex-wrap sm:px-0">
           <div role="group" aria-label="Filter by status" className="flex gap-2">
             {STATUS_FILTERS.map((f) => (
-              <Chip key={f.id} active={status === f.id} onClick={() => setStatus(f.id)}>
+              <Chip key={f.id} className="shrink-0" pressed={status === f.id} onClick={() => setStatus(f.id)}>
                 {f.label}
                 <span className="font-mono text-xs tabular opacity-70">{statusCount(f.id)}</span>
               </Chip>
@@ -103,7 +89,7 @@ export function CaseBrowser({ cases, categories }: { cases: CaseCardData[]; cate
           <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden />
           <div role="group" aria-label="Filter by level" className="flex gap-2">
             {LEVEL_FILTERS.map((f) => (
-              <Chip key={f.id} active={level === f.id} onClick={() => setLevel(f.id)}>
+              <Chip key={f.id} className="shrink-0" pressed={level === f.id} onClick={() => setLevel(f.id)}>
                 {f.label}
               </Chip>
             ))}
@@ -138,10 +124,16 @@ export function CaseBrowser({ cases, categories }: { cases: CaseCardData[]; cate
         groups.map((g) => (
           <div key={g.name ?? "all"} role={g.name ? "group" : undefined} aria-label={g.name ?? undefined} className="space-y-2.5">
             {g.name && (
-              <h3 className="flex items-baseline gap-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                {g.name}
-                <span className="font-normal tracking-normal normal-case">({g.items.length})</span>
-              </h3>
+              <SectionHeading
+                level={3}
+                eyebrow
+                className="mb-0"
+                title={
+                  <>
+                    {g.name} <span className="font-normal tracking-normal normal-case">({g.items.length})</span>
+                  </>
+                }
+              />
             )}
             <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {g.items.map((c) => (
@@ -160,13 +152,7 @@ export function CaseBrowser({ cases, categories }: { cases: CaseCardData[]; cate
 function CaseCard({ c }: { c: CaseCardData }) {
   const pct = c.sectionsTotal ? Math.round((c.sectionsAttempted / c.sectionsTotal) * 100) : 0;
   return (
-    <Link
-      href={c.href}
-      className={cn(
-        "group flex h-full flex-col gap-2 rounded-xl border bg-card p-4 ring-1 ring-white/5 transition-colors hover:border-primary/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-        c.status === "mastered" && "border-success/30",
-      )}
-    >
+    <LinkCard href={c.href} className={cn("h-full flex-col items-stretch gap-2 p-4", c.status === "mastered" && "border-success/30")}>
       <div className="flex items-center gap-2">
         <StatusBadge status={c.status} />
         <span className="text-xs text-muted-foreground capitalize">{c.level}</span>
@@ -194,6 +180,6 @@ function CaseCard({ c }: { c: CaseCardData }) {
           )}
         </div>
       </div>
-    </Link>
+    </LinkCard>
   );
 }

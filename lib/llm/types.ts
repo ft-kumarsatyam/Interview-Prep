@@ -10,6 +10,8 @@ export interface LlmConfig {
   baseUrl?: string;
   /** Output cap per call. Set for the paid provider so one call can't run long. */
   maxTokens?: number;
+  /** Overall request deadline: aborts the call when it fires (each call still has its own 30 s timeout). */
+  signal?: AbortSignal;
 }
 
 /** Port for every LLM call. Output is untrusted: implementations zod-validate before returning. */

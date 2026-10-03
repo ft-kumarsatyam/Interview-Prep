@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Timer } from "lucide-react";
+import { Flag, Play, Timer } from "lucide-react";
+import { dayProgress } from "@/lib/domain/calendar-view";
 import { dayOfWeek } from "@/lib/domain/dates";
 import type { HeatState } from "@/lib/domain/heatmap";
 import type { DayKind } from "@/lib/domain/planner";
@@ -9,16 +10,17 @@ import { cn } from "@/lib/utils";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-const STATE_DOT: Partial<Record<HeatState, string>> = {
-  complete: "bg-success",
-  partial: "bg-warning",
-  missed: "bg-destructive/70",
-  freeze: "bg-chart-5",
+export const STATE_STYLE: Partial<Record<HeatState, { cell: string; dot: string; bar: string; label: string }>> = {
+  complete: { cell: "border-success/35 bg-success/6", dot: "bg-success", bar: "bg-success", label: "Complete" },
+  freeze: { cell: "border-chart-5/40 bg-chart-5/6", dot: "bg-chart-5", bar: "bg-chart-5", label: "Freeze used" },
+  partial: { cell: "border-warning/40 bg-warning/6", dot: "bg-warning", bar: "bg-warning", label: "Partly done" },
+  missed: { cell: "border-destructive/30 bg-destructive/5", dot: "bg-destructive/70", bar: "bg-destructive/70", label: "Missed" },
 };
 
-const KIND_LABEL: Partial<Record<DayKind, string>> = { sunday: "Light day", rest: "Rest", revision: "Revision" };
+export const KIND_LABEL: Record<DayKind, string> = { study: "Study", sunday: "Light day", rest: "Rest", revision: "Revision", outside: "Outside plan" };
+export const MOCK_LABEL = { dsa: "DSA mock", hld: "System design mock" } as const;
 
-function summary(d: CalendarDay): string {
+export function daySummary(d: CalendarDay): string {
   if (d.kind === "outside") return "Outside the plan";
   if (d.kind === "rest") return "Rest day";
   const parts = [d.dsaTarget ? `${d.dsaTarget} DSA` : null, d.theoryTarget ? `${d.theoryTarget} theory` : null, d.reviews ? `${d.reviews} review${d.reviews === 1 ? "" : "s"}` : null].filter(Boolean);
@@ -27,81 +29,135 @@ function summary(d: CalendarDay): string {
   return [base, ...mocks].join(" · ");
 }
 
-const MOCK_LABEL = { dsa: "DSA mock", hld: "System design mock" } as const;
-
 export function MonthGrid({ data }: { data: CalendarMonth }) {
   const lead = (dayOfWeek(data.days[0].date) + 6) % 7;
+  const trail = (7 - ((lead + data.days.length) % 7)) % 7;
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-medium text-muted-foreground sm:gap-2 sm:text-xs" aria-hidden>
-        {WEEKDAYS.map((w) => (
-          <div key={w}>{w}</div>
-        ))}
-      </div>
-      <ol className="grid grid-cols-7 gap-1 sm:gap-2">
-        {Array.from({ length: lead }, (_, i) => (
-          <li key={`pad-${i}`} aria-hidden />
-        ))}
-        {data.days.map((d) => {
-          const isToday = d.date === data.today;
-          const outside = d.kind === "outside";
-          const dot = d.date <= data.today ? STATE_DOT[d.state] : undefined;
-          return (
-            <li key={d.date}>
-              <Link
-                href={`/calendar/${d.date}`}
-                aria-label={`${formatDate(d.date, { weekday: "long", day: "numeric", month: "long" })}: ${summary(d)}${isToday ? " (today)" : ""}`}
-                className={cn(
-                  "flex aspect-square flex-col rounded-lg border bg-card p-1 text-left transition-colors hover:border-primary/50 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:aspect-auto sm:min-h-24 sm:p-2",
-                  outside && "border-dashed bg-transparent text-muted-foreground/60",
-                  (d.kind === "rest" || d.kind === "sunday") && "bg-muted/30",
-                  isToday && "border-primary ring-1 ring-primary",
-                )}
-              >
-                <span className="flex items-center justify-between gap-1">
-                  <span className={cn("text-xs font-semibold tabular sm:text-sm", isToday && "text-primary")}>{Number(d.date.slice(8))}</span>
-                  <span className="flex items-center gap-1">
-                    {d.mocks.length > 0 && (
-                      <Timer className={cn("size-3 sm:hidden", d.mocks.every((m) => m.done) ? "text-success" : "text-primary")} aria-hidden />
-                    )}
-                    {dot && <span className={cn("size-2 rounded-full", dot)} aria-hidden />}
-                  </span>
-                </span>
-                {!outside && (
-                  <>
-                    <span className="mt-auto text-[10px] leading-tight text-muted-foreground sm:hidden">{d.dsaTarget ? `${d.dsaTarget}·${d.theoryTarget}` : (KIND_LABEL[d.kind]?.[0] ?? "")}</span>
-                    <span className="mt-1 hidden space-y-0.5 text-[11px] leading-tight text-muted-foreground sm:block">
-                      {KIND_LABEL[d.kind] && <span className="block font-medium text-foreground/80">{KIND_LABEL[d.kind]}</span>}
-                      {d.dsaTarget > 0 && <span className="block">{d.dsaTarget} DSA</span>}
-                      {d.theoryTarget > 0 && <span className="block">{d.theoryTarget} theory</span>}
-                      {d.reviews > 0 && <span className="block">{d.reviews} review{d.reviews === 1 ? "" : "s"}</span>}
-                      {d.source === "projected" && d.estMinutes != null && <span className="block opacity-70">~{Math.round(d.estMinutes / 30) / 2}h</span>}
-                      {d.mocks.map((m) => (
-                        <span key={m.kind} className={cn("mt-1 flex items-center gap-1 rounded bg-primary/10 px-1 py-0.5 font-medium text-primary", m.done && "bg-success/10 text-success")}>
-                          <Timer className="size-3 shrink-0" aria-hidden />
-                          <span className="truncate">{m.kind === "dsa" ? "DSA mock" : "SD mock"}</span>
-                        </span>
-                      ))}
-                    </span>
-                  </>
-                )}
-              </Link>
+      <div className="overflow-hidden rounded-xl border bg-card">
+        <div className="grid grid-cols-7 border-b bg-muted/40 text-center text-2xs font-medium tracking-wide text-muted-foreground uppercase sm:text-xs" aria-hidden>
+          {WEEKDAYS.map((w, i) => (
+            <div key={w} className={cn("py-2", i >= 5 && "text-foreground/70")}>
+              <span className="sm:hidden">{w[0]}</span>
+              <span className="hidden sm:inline">{w}</span>
+            </div>
+          ))}
+        </div>
+        <ol className="grid grid-cols-7 gap-px bg-border">
+          {Array.from({ length: lead }, (_, i) => (
+            <li key={`pad-${i}`} className="bg-muted/20" aria-hidden />
+          ))}
+          {data.days.map((d) => (
+            <li key={d.date} className="bg-card">
+              <DayCell d={d} today={data.today} isStart={d.date === data.startDate} isEnd={d.date === data.endDate} />
             </li>
-          );
-        })}
-      </ol>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-        {(["complete", "partial", "missed", "freeze"] as const).map((s) => (
-          <span key={s} className="flex items-center gap-1.5">
-            <span className={cn("size-2 rounded-full", STATE_DOT[s])} /> {s === "freeze" ? "freeze used" : s}
-          </span>
-        ))}
-        <span className="flex items-center gap-1.5">
-          <Timer className="size-3 text-primary" aria-hidden /> weekly mock (never affects the streak)
-        </span>
-        <span className="sm:hidden">Numbers are DSA·theory.</span>
-        <span>Future days are a projection and change as you progress.</span>
+          ))}
+          {Array.from({ length: trail }, (_, i) => (
+            <li key={`trail-${i}`} className="bg-muted/20" aria-hidden />
+          ))}
+        </ol>
       </div>
+      <Legend />
+    </div>
+  );
+}
+
+function DayCell({ d, today, isStart, isEnd }: { d: CalendarDay; today: string; isStart: boolean; isEnd: boolean }) {
+  const isToday = d.date === today;
+  const outside = d.kind === "outside";
+  const style = d.date <= today ? STATE_STYLE[d.state] : undefined;
+  const progress = dayProgress(d);
+  const light = d.kind === "rest" || d.kind === "sunday";
+  return (
+    <Link
+      href={`/calendar/${d.date}`}
+      aria-label={`${formatDate(d.date, { weekday: "long", day: "numeric", month: "long" })}: ${daySummary(d)}${style ? `, ${style.label.toLowerCase()}` : ""}${isToday ? " (today)" : ""}`}
+      aria-current={isToday ? "date" : undefined}
+      className={cn(
+        "group relative flex h-full min-h-16 flex-col gap-1 border border-transparent p-1.5 text-left transition-colors hover:bg-muted/50 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:min-h-28 sm:p-2",
+        style?.cell,
+        light && !style && "bg-muted/25",
+        outside && "bg-transparent text-muted-foreground/60",
+        isToday && "z-[1] ring-2 ring-primary ring-inset",
+      )}
+    >
+      <span className="flex items-start justify-between gap-1">
+        <span
+          className={cn(
+            "grid size-6 place-items-center rounded-full text-xs font-semibold tabular-nums sm:size-7 sm:text-sm",
+            isToday && "bg-primary text-primary-foreground",
+            !isToday && d.date < today && !outside && "text-foreground/80",
+          )}
+        >
+          {Number(d.date.slice(8))}
+        </span>
+        <span className="flex items-center gap-1 pt-1">
+          {d.mocks.length > 0 && <Timer className={cn("size-3 sm:hidden", d.mocks.every((m) => m.done) ? "text-success" : "text-primary")} aria-hidden />}
+          {isEnd && <Flag className="size-3 text-destructive sm:hidden" aria-hidden />}
+          {style && <span className={cn("size-2 rounded-full sm:hidden", style.dot)} aria-hidden />}
+        </span>
+      </span>
+
+      {(isStart || isEnd) && (
+        <span className={cn("hidden w-fit items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-medium sm:inline-flex", isEnd ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary")}>
+          {isEnd ? <Flag className="size-3" aria-hidden /> : <Play className="size-3" aria-hidden />}
+          {isEnd ? "Interview" : "Plan start"}
+        </span>
+      )}
+
+      {!outside && (
+        <>
+          <span className="mt-auto text-2xs leading-tight text-muted-foreground sm:hidden">
+            {d.kind === "rest" ? "Rest" : d.dsaTarget || d.theoryTarget ? `${d.dsaTarget}·${d.theoryTarget}` : ""}
+          </span>
+          <span className="hidden min-w-0 flex-col gap-1 text-2xs leading-tight sm:flex">
+            {d.kind !== "study" && <span className="font-medium text-foreground/80">{KIND_LABEL[d.kind]}</span>}
+            {(d.dsaTarget > 0 || d.theoryTarget > 0 || d.reviews > 0) && (
+              <span className="flex flex-wrap gap-1">
+                {d.dsaTarget > 0 && <Pill>{d.done ? `${Math.min(d.done.dsa, d.dsaTarget)}/${d.dsaTarget}` : d.dsaTarget} DSA</Pill>}
+                {d.theoryTarget > 0 && <Pill>{d.done ? `${Math.min(d.done.theory, d.theoryTarget)}/${d.theoryTarget}` : d.theoryTarget} theory</Pill>}
+                {d.reviews > 0 && <Pill>{d.reviews} rev</Pill>}
+              </span>
+            )}
+            {d.source === "projected" && d.estMinutes != null && <span className="text-muted-foreground">~{Math.round(d.estMinutes / 30) / 2} h</span>}
+            {d.mocks.map((m) => (
+              <span key={m.kind} className={cn("flex items-center gap-1 rounded bg-primary/10 px-1 py-0.5 font-medium text-primary", m.done && "bg-success/10 text-success")}>
+                <Timer className="size-3 shrink-0" aria-hidden />
+                <span className="truncate">{m.kind === "dsa" ? "DSA mock" : "SD mock"}</span>
+              </span>
+            ))}
+          </span>
+          {progress !== null && (
+            <span className="mt-auto h-1 w-full overflow-hidden rounded-full bg-muted sm:mt-1" aria-hidden>
+              <span className={cn("block h-full rounded-full", style?.bar ?? "bg-primary")} style={{ width: `${Math.max(progress * 100, progress > 0 ? 8 : 0)}%` }} />
+            </span>
+          )}
+        </>
+      )}
+    </Link>
+  );
+}
+
+function Pill({ children }: { children: React.ReactNode }) {
+  return <span className="rounded bg-muted px-1 py-0.5 text-muted-foreground tabular-nums">{children}</span>;
+}
+
+export function Legend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+      {(["complete", "partial", "missed", "freeze"] as const).map((s) => (
+        <span key={s} className="flex items-center gap-1.5">
+          <span className={cn("size-2.5 rounded-full", STATE_STYLE[s]!.dot)} /> {STATE_STYLE[s]!.label}
+        </span>
+      ))}
+      <span className="flex items-center gap-1.5">
+        <Timer className="size-3 text-primary" aria-hidden /> Weekly mock (never affects the streak)
+      </span>
+      <span className="flex items-center gap-1.5">
+        <Flag className="size-3 text-destructive" aria-hidden /> Interview date
+      </span>
+      <span className="sm:hidden">Numbers are DSA·theory.</span>
+      <span>Future days are a projection and change as you progress.</span>
     </div>
   );
 }

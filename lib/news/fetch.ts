@@ -1,5 +1,6 @@
 import Parser from "rss-parser";
 import { cleanSnippet, safeUrl, type FeedSource, type RawItem } from "@/lib/domain/news";
+import { fetchWithPolicy, pLimit } from "@/lib/http";
 import { parsePageMeta, parseSitemap, pickRecentEntries } from "@/lib/domain/sitemap";
 
 const TIMEOUT_MS = 10_000;
@@ -18,7 +19,40 @@ function imageUrl(raw: string | undefined): string | null {
   return url?.startsWith("https:") ? url : null;
 }
 
-export type FeedFetcher = (source: FeedSource) => Promise<RawItem[]>;
+/** Cache validators remembered per feed so the next request can be conditional. */
+export interface FeedValidators {
+  etag?: string;
+  lastModified?: string;
+}
+
+/** A feed answered 304 Not Modified: nothing new, nothing failed. */
+export interface FeedNotModified {
+  notModified: true;
+}
+
+export interface FeedResponse extends FeedValidators {
+  items: RawItem[];
+}
+
+/** Plain arrays are still accepted (tests and simple fetchers); real fetches return a FeedResponse or 304. */
+export type FeedFetchResult = RawItem[] | FeedResponse | FeedNotModified;
+
+export type FeedFetcher = (source: FeedSource, validators?: FeedValidators) => Promise<FeedFetchResult>;
+
+export const FEED_CONCURRENCY = 6;
+
+function conditionalHeaders(v: FeedValidators | undefined): Record<string, string> {
+  return {
+    ...(v?.etag ? { "if-none-match": v.etag } : {}),
+    ...(v?.lastModified ? { "if-modified-since": v.lastModified } : {}),
+  };
+}
+
+function validatorsOf(res: Response): FeedValidators {
+  const etag = res.headers.get("etag");
+  const lastModified = res.headers.get("last-modified");
+  return { ...(etag ? { etag } : {}), ...(lastModified ? { lastModified } : {}) };
+}
 
 const PAGE_TIMEOUT_MS = 8_000;
 /** Meta tags live in `<head>`; there's no need to download the article. */
@@ -43,7 +77,7 @@ async function readHead(res: Response, limit: number): Promise<string> {
 
 async function fetchPageItem(url: string, lastmod: Date | null): Promise<RawItem | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(PAGE_TIMEOUT_MS), headers: { "user-agent": USER_AGENT, accept: "text/html,*/*;q=0.8" } });
+    const res = await fetchWithPolicy(url, { timeoutMs: PAGE_TIMEOUT_MS, retries: 1, headers: { "user-agent": USER_AGENT, accept: "text/html,*/*;q=0.8" } });
     if (!res.ok) return null;
     const meta = parsePageMeta(await readHead(res, PAGE_HEAD_BYTES));
     if (!meta.title) return null;
@@ -64,34 +98,39 @@ async function fetchPageItem(url: string, lastmod: Date | null): Promise<RawItem
  * title, description and image from its meta tags. The article body is left
  * for the reader's on-demand extraction, like any other teaser.
  */
-async function fetchSitemapFeed(source: FeedSource): Promise<RawItem[]> {
-  const res = await fetch(source.url, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: { "user-agent": USER_AGENT, accept: "application/xml, text/xml, */*;q=0.8" } });
+async function fetchSitemapFeed(source: FeedSource, validators?: FeedValidators): Promise<FeedResponse | FeedNotModified> {
+  const res = await fetchWithPolicy(source.url, {
+    timeoutMs: TIMEOUT_MS,
+    retries: 1,
+    headers: { "user-agent": USER_AGENT, accept: "application/xml, text/xml, */*;q=0.8", ...conditionalHeaders(validators) },
+  });
+  if (res.status === 304) return { notModified: true };
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const xml = await res.text();
   if (xml.length > MAX_BYTES) throw new Error("Sitemap too large");
   const recent = pickRecentEntries(parseSitemap(xml), { match: source.match, limit: SITEMAP_ITEMS });
   if (recent.length === 0) throw new Error("No pages in sitemap");
-  const items: RawItem[] = [];
-  for (let i = 0; i < recent.length; i += PAGE_CONCURRENCY) {
-    const batch = await Promise.all(recent.slice(i, i + PAGE_CONCURRENCY).map((e) => fetchPageItem(e.url, e.lastmod)));
-    for (const item of batch) if (item) items.push(item);
-  }
+  const limit = pLimit(PAGE_CONCURRENCY);
+  const fetched = await Promise.all(recent.map((e) => limit(() => fetchPageItem(e.url, e.lastmod))));
+  const items = fetched.filter((item): item is RawItem => item !== null);
   if (items.length === 0) throw new Error("No readable pages");
-  return items;
+  return { items, ...validatorsOf(res) };
 }
 
 /** Fetch and parse one RSS/Atom feed (or sitemap blog). Throws on timeout, HTTP errors and oversized bodies. */
-export const fetchFeed: FeedFetcher = async (source) => {
-  if (source.kind === "sitemap") return fetchSitemapFeed(source);
-  const res = await fetch(source.url, {
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-    headers: { "user-agent": USER_AGENT, accept: ACCEPT },
+export const fetchFeed: FeedFetcher = async (source, validators) => {
+  if (source.kind === "sitemap") return fetchSitemapFeed(source, validators);
+  const res = await fetchWithPolicy(source.url, {
+    timeoutMs: TIMEOUT_MS,
+    retries: 1,
+    headers: { "user-agent": USER_AGENT, accept: ACCEPT, ...conditionalHeaders(validators) },
   });
+  if (res.status === 304) return { notModified: true };
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const xml = await res.text();
   if (xml.length > MAX_BYTES) throw new Error("Feed too large");
   const feed = await parser.parseString(xml);
-  return feed.items.flatMap((item) => {
+  const items = feed.items.flatMap((item) => {
     const url = safeUrl(item.link);
     const title = cleanSnippet(item.title, 300);
     if (!url || !title) return [];
@@ -111,19 +150,35 @@ export const fetchFeed: FeedFetcher = async (source) => {
       },
     ];
   });
+  return { items, ...validatorsOf(res) };
 };
 
-/** All feeds in parallel; one slow or broken feed never sinks the refresh. */
+export interface FetchAllResult {
+  results: Array<{ source: FeedSource; items: RawItem[] }>;
+  failed: string[];
+  /** Feed ids that answered 304 Not Modified. */
+  unchanged: string[];
+  /** Fresh validators to remember, by feed id. */
+  validators: Map<string, FeedValidators>;
+}
+
+/** Feeds with bounded concurrency; one slow or broken feed never sinks the refresh. */
 export async function fetchAll(
   sources: readonly FeedSource[],
   fetcher: FeedFetcher = fetchFeed,
-): Promise<{ results: Array<{ source: FeedSource; items: RawItem[] }>; failed: string[] }> {
-  const settled = await Promise.allSettled(sources.map((s) => fetcher(s)));
-  const results: Array<{ source: FeedSource; items: RawItem[] }> = [];
-  const failed: string[] = [];
+  known: ReadonlyMap<string, FeedValidators> = new Map(),
+): Promise<FetchAllResult> {
+  const limit = pLimit(FEED_CONCURRENCY);
+  const settled = await Promise.allSettled(sources.map((s) => limit(() => fetcher(s, known.get(s.id)))));
+  const out: FetchAllResult = { results: [], failed: [], unchanged: [], validators: new Map() };
   settled.forEach((r, i) => {
-    if (r.status === "fulfilled") results.push({ source: sources[i], items: r.value });
-    else failed.push(sources[i].id);
+    const source = sources[i];
+    if (r.status === "rejected") return void out.failed.push(source.id);
+    const value = r.value;
+    if (Array.isArray(value)) return void out.results.push({ source, items: value });
+    if ("notModified" in value) return void out.unchanged.push(source.id);
+    out.results.push({ source, items: value.items });
+    if (value.etag || value.lastModified) out.validators.set(source.id, { etag: value.etag, lastModified: value.lastModified });
   });
-  return { results, failed };
+  return out;
 }

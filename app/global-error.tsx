@@ -22,7 +22,7 @@ export default function GlobalError({ error, retry }: { error: Error & { digest?
           >
             Try again
           </button>
-          {error.digest && <p className="mt-4 font-mono text-[11px] text-muted-foreground">Ref {error.digest}</p>}
+          {error.digest && <p className="mt-4 font-mono text-2xs text-muted-foreground">Ref {error.digest}</p>}
         </div>
       </body>
     </html>
