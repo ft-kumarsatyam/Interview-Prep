@@ -92,16 +92,19 @@ export async function pushToChannels(
   body: string,
   channels: readonly NotifyChannel[] = configuredChannels(),
   html?: string,
-): Promise<{ sent: string[]; failed: string[] }> {
+): Promise<{ sent: string[]; failed: string[]; errors: Record<string, string> }> {
   const results = await Promise.allSettled(channels.map((c) => c.send(title, body, html)));
   const sent: string[] = [];
   const failed: string[] = [];
+  const errors: Record<string, string> = {};
   results.forEach((r, i) => {
     if (r.status === "fulfilled") sent.push(channels[i].name);
     else {
+      const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
       failed.push(channels[i].name);
-      console.warn(`[notify] ${channels[i].name} failed:`, r.reason instanceof Error ? r.reason.message : r.reason);
+      errors[channels[i].name] = message;
+      console.warn(`[notify] ${channels[i].name} failed:`, message);
     }
   });
-  return { sent, failed };
+  return { sent, failed, errors };
 }

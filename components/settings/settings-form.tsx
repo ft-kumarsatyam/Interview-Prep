@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { CalendarDays, CalendarOff, Clock, Code2, Gauge, Loader2, Lock, Newspaper, Plus, RotateCcw, Save, Sparkles, Timer, Wallet, X, type LucideIcon } from "lucide-react";
+import { CalendarDays, CalendarOff, Clock, Code2, Gauge, Lock, Newspaper, Plus, RotateCcw, Save, Sparkles, Timer, Wallet, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { saveSettingsAction } from "@/app/(app)/settings/actions";
 import { Button } from "@/components/ui/button";
@@ -561,8 +561,8 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
             <Button type="button" variant="ghost" className="h-9" onClick={discard} disabled={pending}>
               Discard
             </Button>
-            <Button type="submit" className="h-9" disabled={pending}>
-              {pending ? <Loader2 className="animate-spin" aria-hidden /> : <Save aria-hidden />} {pending ? "Saving" : "Save"}
+            <Button type="submit" className="h-9" loading={pending}>
+              {!pending && <Save aria-hidden />} {pending ? "Saving…" : "Save"}
             </Button>
           </div>
         </div>

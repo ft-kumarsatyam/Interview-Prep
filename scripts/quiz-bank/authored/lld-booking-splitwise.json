@@ -1,0 +1,442 @@
+{
+  "lld-booking-splitwise:0": [
+    {
+      "type": "single",
+      "prompt": "In a BookMyShow-style flow, why does selecting seats create a temporary hold with an expiry instead of booking immediately or doing nothing until payment?",
+      "options": [
+        "It lets the payment gateway reserve funds before the seat is checked",
+        "It stops others taking the seats during payment, and the expiry frees seats from abandoned checkouts",
+        "It allows the same seat to be sold to several users and resolved later by refunds",
+        "It avoids the need for any database transaction when confirming the booking"
+      ],
+      "answerIndex": 1,
+      "explanation": "Payment takes minutes, so seats need protection meanwhile, but users abandon checkouts, so the hold must lapse on its own. Overselling and refunding is a poor experience, and confirmation still needs an atomic check that the hold is valid.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "single",
+      "prompt": "Two users try to hold the same seat at the same moment. Which statement makes the hold safe in PostgreSQL without an explicit lock, assuming the app checks the affected row count?",
+      "options": [
+        "SELECT status FROM seats WHERE id = $1; then, if 'AVAILABLE', UPDATE seats SET status = 'HELD' WHERE id = $1",
+        "UPDATE seats SET status = 'HELD', held_by = $2 WHERE id = $1",
+        "INSERT INTO holds (seat_id, user_id) VALUES ($1, $2) with no constraints on holds",
+        "UPDATE seats SET status = 'HELD', held_by = $2 WHERE id = $1 AND status = 'AVAILABLE'"
+      ],
+      "answerIndex": 3,
+      "explanation": "Putting the availability condition in the UPDATE's WHERE makes check and write one atomic statement; the loser's update matches 0 rows once the winner commits. SELECT-then-UPDATE has a race window, and an unconditional UPDATE lets the second user overwrite the first.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "single",
+      "prompt": "In PostgreSQL, each booking locks its seats with SELECT ... FOR UPDATE in the order the user clicked them. Under load you see occasional 'deadlock detected' errors. What is the fix?",
+      "options": [
+        "Lock seats in a consistent order, e.g. ORDER BY seat_id, so transactions can't wait on each other in a cycle",
+        "Switch to SERIALIZABLE isolation, which prevents deadlocks",
+        "Add an index on seat_id so the locks are acquired faster",
+        "Use FOR SHARE instead of FOR UPDATE so the locks don't conflict"
+      ],
+      "answerIndex": 0,
+      "explanation": "User A locks seat 5 then 6 while B locks 6 then 5, a lock cycle. A global ordering removes cycles. SERIALIZABLE adds serialization failures rather than removing lock waits, and shared locks let both read and then deadlock when upgrading to write.",
+      "difficulty": "hard"
+    },
+    {
+      "type": "single",
+      "prompt": "A seat hold uses a Redis lock: `SET seat:42 <userId> NX PX 600000`, released with `DEL seat:42` after payment. What is the bug?",
+      "options": [
+        "NX makes SET fail if the key is missing, so no lock is ever acquired",
+        "PX is in seconds, so the hold lasts 600000 seconds",
+        "If the hold expired and another user took it, the late DEL removes that user's hold; release should compare-and-delete in a Lua script",
+        "DEL is asynchronous, so the key may linger for several seconds"
+      ],
+      "answerIndex": 2,
+      "explanation": "Release must only delete the key if it still holds your value, which needs an atomic check-and-delete (Lua). NX means 'set only if not exists', which is correct for acquiring, and PX is milliseconds (600000 ms = 10 minutes).",
+      "difficulty": "hard"
+    },
+    {
+      "type": "single",
+      "prompt": "A user's payment succeeds 30 seconds after their 10-minute seat hold expired, and the seat has already been held by someone else. What should the confirm step do?",
+      "options": [
+        "Confirm anyway, since the payment is proof of intent, and move the other user to a different seat",
+        "Run a conditional confirm (held_by = me AND hold still valid); if it matches 0 rows, refund or void the payment",
+        "Extend every hold to 30 minutes so this can never happen",
+        "Mark both bookings as confirmed and let the cinema resolve it at the door"
+      ],
+      "answerIndex": 1,
+      "explanation": "Payment and hold are separate systems, so the confirm must re-check ownership atomically and compensate when it fails. Longer holds reduce but never eliminate the race, and overriding another user's hold breaks the guarantee you gave them.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "single",
+      "prompt": "Seats move through AVAILABLE → HELD → BOOKED, with HELD → AVAILABLE on expiry or cancel. Which transition should the booking service reject?",
+      "options": [
+        "HELD → BOOKED after a successful payment by the holder",
+        "HELD → AVAILABLE when the hold times out",
+        "AVAILABLE → HELD when a user selects the seat",
+        "BOOKED → HELD when a different user selects the seat"
+      ],
+      "answerIndex": 3,
+      "explanation": "A booked seat is sold; letting it go back to HELD would allow it to be resold. Cancellation of a booking is a separate, explicit flow (with refund) that usually returns the seat to AVAILABLE. The other three are the normal lifecycle.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "single",
+      "prompt": "Instead of relying only on a cron job to flip expired holds back to AVAILABLE, many designs treat a seat as free in the hold query if `hold_expires_at < now()`. Why?",
+      "options": [
+        "Correctness then doesn't depend on the sweeper running on time; a lagging cron can't keep seats blocked",
+        "It removes the need to store hold_expires_at at all",
+        "Cron jobs are not allowed to update rows that another transaction might read",
+        "It ensures holds can never expire while the user is still on the payment page"
+      ],
+      "answerIndex": 0,
+      "explanation": "Lazy expiry makes the condition part of the atomic UPDATE (status = 'AVAILABLE' OR hold expired), so seats free up exactly on time even if the sweeper is late or down. A sweeper is still useful for tidying data, but no longer for correctness.",
+      "difficulty": "hard"
+    },
+    {
+      "type": "multi",
+      "prompt": "Which mechanisms guarantee a seat can't be double-booked even if application code has a race? Select all that apply.",
+      "options": [
+        "A unique constraint on (show_id, seat_id) in the booked_seats table",
+        "A conditional UPDATE that only matches available seats, with an affected-row-count check",
+        "Hiding seats that look taken in the UI before the user submits",
+        "Caching the seat map in Redis for fast reads"
+      ],
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "The database is the last line of defence: a unique constraint rejects the second insert, and a conditional update can only succeed for one writer. UI state is stale by the time the request arrives, and a read cache doesn't serialize writes.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "multi",
+      "prompt": "A client times out on POST /bookings/confirm and retries. How do you make confirmation idempotent? Select all that apply.",
+      "options": [
+        "Have the client send an idempotency key, stored with a unique constraint",
+        "On a repeated key, return the original result instead of processing again",
+        "Generate a fresh booking ID on every retry so retries never collide",
+        "Charge again on retry and refund duplicates in a nightly job"
+      ],
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "A client-generated key lets the server recognize retries; the unique constraint closes the race between two concurrent retries, and replaying the stored response gives the client a consistent answer. New IDs per retry or charge-then-refund create duplicates by design.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "In PostgreSQL, wrapping 'SELECT seat status, then UPDATE if available' in a READ COMMITTED transaction is enough on its own to stop two users booking the same seat.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "answerIndex": 1,
+      "explanation": "READ COMMITTED lets both transactions read 'AVAILABLE' before either writes; the plain SELECT takes no lock. You need SELECT ... FOR UPDATE, a conditional UPDATE, a unique constraint, or SERIALIZABLE with retries.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "In PostgreSQL, SELECT ... FOR UPDATE SKIP LOCKED suits 'give me any 2 free seats in this section', since concurrent transactions skip rows that others have locked instead of waiting on them.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "answerIndex": 0,
+      "explanation": "SKIP LOCKED turns contention into a non-blocking choice of other rows, which is ideal when any matching seat will do (best-available allocation). It is wrong for specific seats the user picked, because skipping would silently give them different seats.",
+      "difficulty": "hard"
+    }
+  ],
+  "lld-booking-splitwise:1": [
+    {
+      "type": "single",
+      "prompt": "In a Splitwise-style app, what is the first step of balance simplification?",
+      "options": [
+        "Sort all expenses by amount and settle the largest expense first",
+        "Compute each person's net balance (total paid minus total share owed)",
+        "Build a pairwise matrix and cancel each A→B debt against B→A only",
+        "Pick a group treasurer and route every payment through them"
+      ],
+      "answerIndex": 1,
+      "explanation": "Net balances collapse the whole history into one number per person; only those numbers matter for settling up. Cancelling only pairwise debts misses chains like A→B→C, which netting removes.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "output",
+      "code": "const expenses = [\n  { paidBy: 'A', amount: 90, split: ['A', 'B', 'C'] },\n  { paidBy: 'B', amount: 30, split: ['A', 'B', 'C'] },\n];\nconst net = {};\nfor (const e of expenses) {\n  const share = e.amount / e.split.length;\n  net[e.paidBy] = (net[e.paidBy] ?? 0) + e.amount;\n  for (const p of e.split) net[p] = (net[p] ?? 0) - share;\n}\nconsole.log(Object.entries(net).map(([k, v]) => k + '=' + v).join(' '));",
+      "distractors": [
+        "A=60 B=-20 C=-40",
+        "A=50 B=-20 C=-30",
+        "A=40 B=0 C=-40"
+      ],
+      "explanation": "A: +90 − 30 − 10 = 50. B: −30 + 30 − 10 = −10. C: −30 − 10 = −40. The nets sum to zero, which is a useful invariant check. Forgetting that the payer also owes their own share is what produces the A=60-style answers.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "output",
+      "code": "const net = { A: 50, B: -10, C: -40 };\nconst cred = Object.entries(net).filter(([, v]) => v > 0);\nconst debt = Object.entries(net).filter(([, v]) => v < 0).map(([k, v]) => [k, -v]);\nconst tx = [];\nlet i = 0, j = 0;\nwhile (i < cred.length && j < debt.length) {\n  const amt = Math.min(cred[i][1], debt[j][1]);\n  tx.push(`${debt[j][0]}->${cred[i][0]}:${amt}`);\n  cred[i][1] -= amt; debt[j][1] -= amt;\n  if (cred[i][1] === 0) i++;\n  if (debt[j][1] === 0) j++;\n}\nconsole.log(tx.join(' '));",
+      "distractors": [
+        "C->A:40 B->A:10",
+        "A->B:10 A->C:40",
+        "B->A:10 C->A:40 B->C:0"
+      ],
+      "explanation": "Creditors: [A,50]; debtors: [B,10],[C,40] in insertion order. B pays 10 (B settled), then C pays the remaining 40 (both settled). Debtors pay creditors, and the two-pointer loop advances whichever side reaches zero, so no zero-amount transfers appear.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "single",
+      "prompt": "Using a greedy 'largest debtor pays largest creditor' settlement, what is the maximum number of transfers needed for n people with non-zero balances?",
+      "options": [
+        "n / 2",
+        "n(n − 1) / 2",
+        "n − 1",
+        "log2(n)"
+      ],
+      "answerIndex": 2,
+      "explanation": "Each transfer fully settles at least one person (whoever has the smaller remaining amount), and the last transfer settles two, so at most n − 1 transfers. n(n − 1)/2 is the number of pairs, which is what naive pairwise settlement can approach.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "single",
+      "prompt": "An interviewer asks whether your Splitwise simplification always finds the fewest possible transfers. What is the accurate answer?",
+      "options": [
+        "No: finding the true minimum is NP-hard; greedy guarantees at most n − 1 but can miss groups that settle among themselves",
+        "Yes: sorting by balance and matching greedily is provably optimal",
+        "Yes, provided all amounts are integers in minor currency units",
+        "No, but a max-flow algorithm finds the exact minimum in polynomial time"
+      ],
+      "answerIndex": 0,
+      "explanation": "The minimum equals n minus the maximum number of disjoint zero-sum subgroups, which is a partition-style NP-hard problem. Greedy is fast and bounded but can break up zero-sum subgroups that could settle among themselves. Max-flow simplifies along existing edges but doesn't solve the general minimum.",
+      "difficulty": "hard"
+    },
+    {
+      "type": "single",
+      "prompt": "Three friends split a ₹100 bill equally. How should the app store and divide it?",
+      "options": [
+        "Store 33.333... as a JS number and round only when displaying",
+        "Store 33.33 for each person and ignore the leftover 0.01",
+        "Store each share as a decimal string so floating-point is avoided",
+        "Store paise as integers: 3334, 3333, 3333, giving the extra paisa to someone by a deterministic rule"
+      ],
+      "answerIndex": 3,
+      "explanation": "Integer minor units keep sums exact, and allocating the remainder deterministically (e.g. to the payer or first in the list) keeps the shares summing to exactly 10000 paise. Dropping the remainder makes balances not sum to zero, and floats accumulate rounding errors.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "single",
+      "prompt": "Why do Splitwise-style designs usually store expenses and their splits as a ledger and derive balances from it, rather than storing only each person's running balance?",
+      "options": [
+        "Balances can't be stored in a relational database",
+        "Editing or deleting an expense needs the original record, and the history doubles as an audit trail",
+        "Deriving balances is faster than reading a stored number",
+        "Running balances can't represent negative values"
+      ],
+      "answerIndex": 1,
+      "explanation": "If you keep only totals, you can't undo or correct one expense or explain to a user why they owe ₹420. Many systems also cache derived balances for speed, but the ledger stays the source of truth.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "multi",
+      "prompt": "Expense splitting is modelled with a SplitStrategy (Equal, Exact, Percent). Which validations belong in those strategies? Select all that apply.",
+      "options": [
+        "Exact split: the given amounts must add up to the expense total",
+        "Percent split: the percentages must add up to 100",
+        "Equal split: the caller must supply each participant's amount",
+        "Percent split: no validation needed, since the result is normalized anyway"
+      ],
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "Each strategy owns its own invariants, which is why they are separate classes. Equal split only needs the participant list (the strategy computes amounts), and silently normalizing bad percentages hides user mistakes instead of rejecting them.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "multi",
+      "prompt": "After you add debt simplification to a group, which concerns are valid? Select all that apply.",
+      "options": [
+        "A member may be told to pay someone they never shared an expense with",
+        "The original per-expense records must still be kept for audit and edits",
+        "Simplification changes each member's net balance",
+        "The simplified transfers must be recomputed or updated when new expenses arrive"
+      ],
+      "answerIndices": [
+        0,
+        1,
+        3
+      ],
+      "explanation": "Simplification rewires who pays whom (possibly to strangers in the group), so keep the raw ledger and recompute as expenses change. It never changes net balances; preserving them is the whole point.",
+      "difficulty": "hard"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "In a correctly recorded group, the net balances of all members always add up to zero.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "answerIndex": 0,
+      "explanation": "Every expense adds the amount to the payer and subtracts the same total across the split, so each expense contributes zero overall. A non-zero sum signals a rounding or recording bug, which makes it a good invariant to assert.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "The greedy 'max creditor vs max debtor' algorithm always produces the minimum possible number of transfers.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "answerIndex": 1,
+      "explanation": "Greedy guarantees at most n − 1 transfers but not the minimum: it can split up subgroups whose balances would cancel among themselves, costing extra transfers. Finding the exact minimum is NP-hard in general.",
+      "difficulty": "medium"
+    }
+  ],
+  "lld-booking-splitwise:2": [
+    {
+      "type": "single",
+      "prompt": "Why is Strategy a good fit for supporting UPI, card and wallet payments in a booking system?",
+      "options": [
+        "It guarantees each payment method is only instantiated once",
+        "It lets each payment method change its own state as the payment progresses",
+        "It puts interchangeable payment algorithms behind one interface, chosen at runtime",
+        "It notifies all payment providers whenever a booking is created"
+      ],
+      "answerIndex": 2,
+      "explanation": "Strategy encapsulates a family of algorithms with the same contract so the caller can swap them. Instantiating once is Singleton, self-transitioning lifecycle is State, and broadcasting is Observer.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "single",
+      "prompt": "What is the main design problem with this code as new payment methods keep getting added?",
+      "code": "class BookingService {\n  async pay(method, amount) {\n    switch (method) {\n      case 'upi': return upiClient.collect(amount);\n      case 'card': return cardGateway.charge(amount);\n      case 'wallet': return walletApi.debit(amount);\n      default: throw new Error('unsupported');\n    }\n  }\n}",
+      "options": [
+        "It violates Open/Closed: every new method means editing and retesting BookingService",
+        "Switch statements are slower than if/else chains in JavaScript",
+        "The await inside a switch case causes the cases to run concurrently",
+        "It violates Liskov substitution because the cases return different types"
+      ],
+      "answerIndex": 0,
+      "explanation": "Each new provider forces changes to core booking code. A PaymentStrategy interface plus a registry keyed by method lets you add a class without touching BookingService. Performance and concurrency aren't the issue, and LSP is about subtypes, which this code doesn't use.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "single",
+      "prompt": "With a PaymentStrategy interface in place, how should BookingService get the right strategy for a request with `method: 'upi'`?",
+      "options": [
+        "BookingService imports every concrete strategy and calls `new UpiPayment()` itself",
+        "Each strategy checks the request and decides whether to handle it, all being called in turn",
+        "The client sends the class name and BookingService evaluates it dynamically",
+        "An injected registry/factory maps 'upi' to a PaymentStrategy, so BookingService depends only on the interface"
+      ],
+      "answerIndex": 3,
+      "explanation": "A registry keeps creation in one place (Dependency Inversion) and makes adding a method a registration, not a code change in the service. Instantiating concretes in the service recouples it, and evaluating client-supplied class names is a security hole.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "single",
+      "prompt": "A card charge call times out: you don't know if the customer was charged. What should the payment flow do?",
+      "options": [
+        "Immediately retry the charge with a new idempotency key",
+        "Mark the payment PENDING and reconcile via the gateway's status API or webhook, retrying only with the same idempotency key",
+        "Mark the payment FAILED and release the seats right away",
+        "Ask the user to pay again with a different method"
+      ],
+      "answerIndex": 1,
+      "explanation": "A timeout is an unknown outcome, not a failure. Reconciling (status query, webhook) resolves it, and reusing the same idempotency key makes any retry safe. A new key or a second payment can double-charge; declaring failure can release seats the customer actually paid for.",
+      "difficulty": "hard"
+    },
+    {
+      "type": "single",
+      "prompt": "Choosing the payment method is modelled with Strategy. Which pattern best models a single payment's lifecycle (CREATED → PENDING → CAPTURED → REFUNDED) where allowed actions depend on the current stage?",
+      "options": [
+        "Decorator",
+        "Strategy",
+        "State",
+        "Builder"
+      ],
+      "answerIndex": 2,
+      "explanation": "The behaviour of capture/refund depends on the payment's current stage, and the object moves between stages over time: that is State. Strategy is picked by the client and doesn't transition itself; Decorator adds behaviour by wrapping, and Builder constructs objects step by step.",
+      "difficulty": "medium"
+    },
+    {
+      "type": "single",
+      "prompt": "Your interface is `pay(amountPaise, idempotencyKey)`, but the Stripe SDK expects a PaymentIntent with amount, currency and an idempotency option. Which pattern describes the class that translates your call into the SDK's API?",
+      "options": [
+        "Adapter",
+        "Facade",
+        "Proxy",
+        "Template Method"
+      ],
+      "answerIndex": 0,
+      "explanation": "Converting one interface into another that a client expects is Adapter; here each concrete strategy also adapts a vendor SDK. A Facade simplifies a whole subsystem behind a new interface rather than matching an existing one, and a Proxy keeps the same interface.",
+      "difficulty": "hard"
+    },
+    {
+      "type": "single",
+      "prompt": "How does the Strategy pattern make BookingService easier to unit test?",
+      "options": [
+        "Strategies are static, so they can be called without mocking",
+        "Tests can inject a fake PaymentStrategy that succeeds, fails or times out on demand",
+        "Strategy removes the need to test payment failure paths",
+        "It lets tests call real gateways safely in sandbox mode"
+      ],
+      "answerIndex": 1,
+      "explanation": "Because BookingService depends on an interface, a test double can simulate each outcome deterministically without network calls. Sandboxes are useful for integration tests, not unit tests, and failure paths still need testing.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "multi",
+      "prompt": "Which methods belong on a PaymentStrategy interface used by a booking service? Select all that apply.",
+      "options": [
+        "pay(amount, idempotencyKey)",
+        "refund(paymentId, amount)",
+        "selectSeats(showId, seatIds)",
+        "renderCheckoutPage(): string of HTML"
+      ],
+      "answerIndices": [
+        0,
+        1
+      ],
+      "explanation": "The interface should cover the payment operations every method supports. Seat selection belongs to the booking domain, and HTML rendering is a presentation concern; putting either in the strategy mixes responsibilities.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "multi",
+      "prompt": "Payment gateways confirm results through webhooks. Which practices are required for a correct webhook handler? Select all that apply.",
+      "options": [
+        "Verify the webhook signature before trusting the payload",
+        "Handle duplicate deliveries idempotently, e.g. by event ID",
+        "Handle out-of-order events by checking the payment's current state before transitioning",
+        "Trust the amount and status in the body without checking them against your records"
+      ],
+      "answerIndices": [
+        0,
+        1,
+        2
+      ],
+      "explanation": "Gateways retry deliveries, so duplicates and reordering are normal, and anyone can POST to your endpoint, so signatures matter. Always compare the event with your stored order (amount, currency) rather than trusting the body blindly.",
+      "difficulty": "hard"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "With a well-applied Strategy pattern, adding a new payment method should require changing BookingService's code.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "answerIndex": 1,
+      "explanation": "BookingService depends only on the PaymentStrategy interface, so a new method means a new class plus a registration (often configuration). Needing to edit the service means the switch statement has crept back in.",
+      "difficulty": "easy"
+    },
+    {
+      "type": "truefalse",
+      "prompt": "Payment gateways such as Stripe and Razorpay take amounts as integers in the smallest currency unit, e.g. 49900 for ₹499.00.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "answerIndex": 0,
+      "explanation": "Using integer minor units avoids floating-point rounding errors. Your PaymentStrategy should accept integer minor units and convert only for display, so sums and refunds stay exact.",
+      "difficulty": "medium"
+    }
+  ]
+}

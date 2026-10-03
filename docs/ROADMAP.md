@@ -7,9 +7,12 @@
 
 | Data file | What's inside |
 |---|---|
-| [`data/dsa-problems.json`](../data/dsa-problems.json) | **669 free LeetCode problems** in 3 tracks: `js` (35, LeetCode *30 Days of JavaScript*), `main` DSA (604 = 151 **core** + 453 **extended**), and `sql` (30). Every link checked on 2026-10-02 |
-| [`data/syllabus.json`](../data/syllabus.json) | **70 topics, 410 subtopics** in 10 tracks: JS/TS, Node.js, DSA concepts, DBMS & SQL, OOP, LLD, HLD, CS fundamentals, AI, behavioral |
-| [`data/news-sources.json`](../data/news-sources.json) | 46 checked feeds (OpenAI, Google AI, Google Research, DeepMind, JS/Node, databases, big-tech engineering) + Google News keyword feeds |
+| [`data/dsa-problems.json`](../data/dsa-problems.json) | **671 free LeetCode problems** in 3 tracks: `js` (35, LeetCode *30 Days of JavaScript*), `main` DSA (606 = 153 **core** + 453 **extended**), and `sql` (30). Every link checked on 2026-10-02 |
+| [`data/syllabus.json`](../data/syllabus.json) | **78 topics, 466 subtopics** in 10 tracks: JS/TS, Node.js, DSA concepts, DBMS & SQL, OOP, LLD, HLD, CS fundamentals, AI, behavioral |
+| [`data/quiz-bank.json`](../data/quiz-bank.json) | **5,584 quiz questions**: about 11 hand-written per subtopic (single answer, multi-select, true/false and real-output JS snippets, each tagged easy/medium/hard) plus DSA-pattern and concept questions. Feeds the daily/weekly quiz, subtopic practice and topic quizzes |
+| [`data/case-quizzes.json`](../data/case-quizzes.json) | **1,031 case questions**, about 25 for each of the 41 HLD case studies and OS/DBMS cases |
+| [`data/aptitude-bank.json`](../data/aptitude-bank.json) | **750 aptitude questions** (logical and verbal, tagged by difficulty); quant and most logical drills are also generated, so they never run out |
+| [`data/news-sources.json`](../data/news-sources.json) | 57 checked feeds (OpenAI, Google AI, Google Research, DeepMind, JS/Node, databases, big-tech engineering) + Google News keyword feeds |
 
 ---
 
@@ -29,13 +32,13 @@
 
 | Phase | Weeks | Dates | Outcome |
 |---|---|---|---|
-| **1. Language and foundations** | 1–7 | Oct 5 → Nov 22 | Fluent JS/TS, async and event loop, DBMS theory and SQL, OOP, design patterns, **all 151 core DSA problems** |
+| **1. Language and foundations** | 1–7 | Oct 5 → Nov 22 | Fluent JS/TS, async and event loop, DBMS theory and SQL, OOP, design patterns, **all 153 core DSA problems** |
 | **2. Backend engineer** | 8–12 | Nov 23 → Dec 27 | Node internals and production, transactions and concurrency control, NoSQL, LLD, scaling basics |
 | **3. Distributed systems and AI** | 13–18 | Dec 28 → Feb 7 | Partitioning, consensus, messaging, microservices, 12+ HLD designs, ML → transformers → RAG → agents |
 | **4. Big-tech level** | 19–20 | Feb 8 → Feb 21 | Real architectures (Discord, Netflix, Stripe, Uber…), complex designs, behavioral |
 | **5. Interview mode** | 21–24 | Feb 22 → Mar 21 | Mocks, weak-area revision, live interviews |
 
-**Core first, then extended.** Weeks 1–7 work through the 151 must-know problems across every pattern, from arrays up to DP. That gives you the full breadth early, so you're interviewable by mid-January. From week 8 the 453 extended problems build depth, pattern by pattern.
+**Core first, then extended.** Weeks 1–7 work through the 153 must-know problems across every pattern, from arrays up to DP. That gives you the full breadth early, so you're interviewable by mid-January. From week 8 the 453 extended problems build depth, pattern by pattern.
 
 **When to apply:** resume in week 14, applications from **week 16 (mid-January)**, offers in Feb–March. Hiring loops take 3–6 weeks.
 
@@ -49,7 +52,7 @@
 | 4 | Oct 26–Nov 1 | **Async JS and the event loop** | Linked lists, trees | **Advanced SQL** · *SQL track 1/day starts* | SOLID | — |
 | 5 | Nov 2–8 | **Advanced JS** (generators, modules, polyfills) | Heaps (build a MinHeap), tries, intervals, greedy | Normalization and FDs | Design patterns I | — |
 | 6 | Nov 9–15 | **TypeScript** | Backtracking, graphs | Storage and indexing (B+ tree, LSM) | Design patterns II | Networking |
-| 7 | Nov 16–22 | **Node.js internals** | DP, bits · **Core 151 done ✅** | Query processing and optimization | — | API design |
+| 7 | Nov 16–22 | **Node.js internals** | DP, bits · **Core 153 done ✅** | Query processing and optimization | — | API design |
 | 8 | Nov 23–29 | **Building APIs with Node** | Extended: arrays → two pointers | **Transactions and serializability** | **LLD:** method, Parking Lot, Elevator | — |
 | 9 | Nov 30–Dec 6 | **Node in production** | Extended: sliding window, stack | Concurrency control and recovery | **LLD:** LRU, Rate limiter | — |
 | 10 | Dec 7–13 | — | Extended: binary search, linked list | **NoSQL and MongoDB** | **LLD:** BookMyShow, Splitwise | OS and concurrency |
@@ -63,10 +66,10 @@
 | 18 | Feb 1–7 | — | Extended: 2-D DP | — | **HLD:** Payments, Ticketing, Docs, Autocomplete | **AI system design** · first mock |
 | 19 | Feb 8–14 | — | Extended: 2-D DP, bits, math | — | **Big-tech case studies** · Crawler, Dropbox | Mock |
 | 20 | Feb 15–21 | — | Extended: design, union-find | — | **HLD:** Ad clicks, Leaderboard, Scheduler, Monitoring | Behavioral stories |
-| 21 | Feb 22–28 | JS output rapid-fire | Finish extended / re-solves | — | Mocks (DSA, HLD, LLD, JS) | — |
-| 22 | Mar 1–7 | — | Re-solve the *struggled* list | — | Redo 5 HLDs on a timer | Mocks |
-| 23 | Mar 8–14 | — | Company-tagged problems | — | Weak areas | Interviews |
-| 24 | Mar 15–21 | — | 2 timed mediums/day | — | Light review | Interviews |
+| 21 | Feb 22–28 | JS output rapid-fire (*hard* JS practice) | Finish extended / re-solves | — | Mocks (DSA, HLD, LLD, JS) | — |
+| 22 | Mar 1–7 | — | Re-solve the *struggled* list | — | Redo 5 HLDs on a timer · case quizzes | Mocks |
+| 23 | Mar 8–14 | — | Company-tagged problems | — | Weak areas: **Mistakes review** every day | Interviews |
+| 24 | Mar 15–21 | — | 2 timed mediums/day | — | Light review · Mistakes review until it's empty | Interviews |
 
 ## 4. Rules the app enforces
 
@@ -86,7 +89,17 @@
    - *struggled* problems return after 3, 7 and 21 days, then every 21 days while still struggled
    - *ok* problems return after 14 days
    - *easy* problems never return
-7. **Being honest about scale:** 604 DSA problems in 24 weeks while learning JS is a stretch goal. **The 151 core problems plus about 250 extended are enough to interview well.** The dashboard shows a "Core ✅" milestone and an on-pace indicator so you can see clearly where you stand.
+7. **Being honest about scale:** 606 DSA problems in 24 weeks while learning JS is a stretch goal. **The 153 core problems plus about 250 extended are enough to interview well.** The dashboard shows a "Core ✅" milestone and an on-pace indicator so you can see clearly where you stand.
+
+## 4a. Quizzes and practice
+
+The daily quiz is the only one that gates the streak. Everything else is optional practice you can repeat as often as you like:
+
+- **Subtopic practice** (5 questions) and **topic quiz** (10) from `/learn`, and **case quizzes** (10) from each HLD/OS/DBMS case. Each subtopic has about 11 bank questions, so repeat runs keep finding new ones.
+- **Rotation:** questions you've never seen come first, then ones you last got wrong. A question you answered right rests for about two weeks before it comes back. This applies to the daily and weekly quizzes too.
+- **Difficulty:** pick Any, Easy, Medium or Hard before a practice run or an aptitude drill. Start on Easy while a topic is new, then switch to Hard in the weeks before interviews.
+- **Mistakes review** (`/quiz/mistakes`): every question whose latest answer was wrong, from any quiz or practice run. Review all of them or one track at a time, 10 per run, with the most-missed first. A right answer clears a question. It never changes mastery or the streak. It's the main tool for the weak-area weeks (21–24).
+- **Aptitude:** drills rotate through the bank in the same way (unseen, then missed) and accept a difficulty filter. Mocks stay mixed.
 
 ## 5. Interview-readiness checklist
 

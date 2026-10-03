@@ -2,7 +2,7 @@ import { z } from "zod";
 import caseQuizzesJson from "@/data/case-quizzes.json";
 import { designCaseBySlug, practiceCaseBySlug } from "@/lib/content";
 import { ANCHOR_LABELS, casePath, caseRef, parseCaseRef, type CaseKind } from "@/lib/domain/case-quiz";
-import { MAX_OPTIONS, quizQuestionSchema, type QuizQuestion, type ReviewItem } from "./question";
+import { difficultySchema, MAX_OPTIONS, quizQuestionSchema, type QuizQuestion, type ReviewItem } from "./question";
 
 /** Stored shape: a quiz question plus where in the case page to read more. `source` and `style` are filled in on load. */
 export const caseQuestionSchema = z.object({
@@ -18,6 +18,7 @@ export const caseQuestionSchema = z.object({
   anchor: z.string().min(1).max(40),
   /** Optional index into the case's `readings`. */
   reading: z.number().int().min(0).max(20).optional(),
+  difficulty: difficultySchema.optional(),
 });
 export type StoredCaseQuestion = z.infer<typeof caseQuestionSchema>;
 

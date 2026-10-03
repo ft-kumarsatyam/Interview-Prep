@@ -4,20 +4,28 @@ import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/lib/auth/dal";
+import { DIFFICULTIES, type Difficulty } from "@/lib/quiz/question";
 import { startPractice, submitPractice, type PracticeResult, type PracticeStart } from "@/lib/services/practice";
 
 function fail(err: unknown): { ok: false; error: string } {
   return { ok: false, error: err instanceof Error ? err.message : "Something went wrong, try again" };
 }
 
-const refSchema = z.string().regex(/^[\w-]+(:\d+)?$/).max(120);
+/** A subtopic (`topic:3`), topic, case (`case:hld:url-shortener`) or mistakes review (`mistakes`, `mistakes:js`). */
+const refSchema = z
+  .string()
+  .max(120)
+  .regex(/^(?:case:(?:hld|os|dbms):[a-z0-9][a-z0-9-]*|mistakes(?::[a-z]+)?|[\w-]+(?::\d+)?)$/);
+const difficultySchema = z.enum(DIFFICULTIES).nullable().optional();
 
-export async function startPracticeAction(ref: string): Promise<ActionResult<{ run: PracticeStart }>> {
+export async function startPracticeAction(ref: string, difficulty?: Difficulty | null): Promise<ActionResult<{ run: PracticeStart }>> {
   await requireSession();
   const parsed = refSchema.safeParse(ref);
   if (!parsed.success) return { ok: false, error: "Unknown topic" };
+  const level = difficultySchema.safeParse(difficulty);
+  if (!level.success) return { ok: false, error: "Unknown difficulty" };
   try {
-    return { ok: true, run: await startPractice(parsed.data) };
+    return { ok: true, run: await startPractice(parsed.data, undefined, undefined, { difficulty: level.data }) };
   } catch (err) {
     return fail(err);
   }

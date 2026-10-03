@@ -51,6 +51,19 @@ export function hoursFor(date: DateStr, s: Pick<PlanSettings, "hoursByDow">): nu
   return h === undefined || Number.isNaN(h) ? undefined : h;
 }
 
+/** A date range with its own study hours, replacing the weekday default (an exam week, a lighter month). */
+export interface HoursOverride {
+  from: DateStr;
+  to: DateStr;
+  hours: number;
+}
+
+/** Hours for a date: a matching override wins over the weekday default. */
+export function hoursOn(date: DateStr, s: Pick<PlanSettings, "hoursByDow">, overrides: readonly HoursOverride[] = []): number | undefined {
+  const o = overrides.find((r) => date >= r.from && date <= r.to);
+  return o ? o.hours : hoursFor(date, s);
+}
+
 export function baselineMinutes(date: DateStr): number {
   return dayOfWeek(date) === 6 ? BASELINE_SATURDAY_MIN : BASELINE_WEEKDAY_MIN;
 }

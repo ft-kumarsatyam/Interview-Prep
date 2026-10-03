@@ -6,11 +6,16 @@ import { DEFAULT_PAID_SETTINGS, type PaidSettings } from "@/lib/domain/llm-route
 import { checkGeminiLink, isAskSubject, type AskSubject } from "@/lib/domain/ask-subjects";
 import { DEFAULT_MOCK_SCHEDULE } from "@/lib/domain/mock";
 import { DEFAULT_HOURS } from "@/lib/domain/time-budget";
+import { DEFAULT_PROFILE, LANGUAGES, PRIORITIES, type PlannerProfile, type PriorityId } from "@/lib/domain/planner-profile";
 import { mergeRestDays, normaliseQueries, type SettingsInput } from "@/lib/domain/settings";
+import { diffPlannerChanges } from "@/lib/domain/plan-changes";
 import { env } from "@/lib/env";
 import { Settings, SETTINGS_ID } from "@/lib/models/system";
+import { logPlanChange } from "./plan-log";
 
 export interface AppSettings extends PlanSettings {
+  profile: PlannerProfile;
+  plannerSetupAt: Date | null;
   llmPaid: PaidSettings;
   geminiLinks: Partial<Record<AskSubject, string>>;
   mockSchedule: { dsaWeekday: number; hldWeekday: number };
@@ -24,6 +29,7 @@ export interface AppSettings extends PlanSettings {
   newsLastFetchAt: Date | null;
   newsLastFailed: string[];
   leetcodeLastError: string | null;
+  roastMode: boolean;
   lastMorningRunAt: Date | null;
   lastEveningRunAt: Date | null;
   lastExportAt: Date | null;
@@ -54,6 +60,8 @@ export async function getSettings(): Promise<AppSettings> {
     revisionWeeks: doc.revisionWeeks ?? DEFAULT_SETTINGS.revisionWeeks,
     restDays: doc.restDays ?? [],
     hoursByDow: doc.hoursByDow?.length === 7 ? [...doc.hoursByDow] : [...DEFAULT_HOURS],
+    profile: profileFrom(doc),
+    plannerSetupAt: doc.plannerSetupAt ?? null,
     llmPaid: {
       enabled: doc.llmPaidEnabled ?? DEFAULT_PAID_SETTINGS.enabled,
       dailyCap: doc.llmPaidDailyCap ?? DEFAULT_PAID_SETTINGS.dailyCap,
@@ -74,9 +82,21 @@ export async function getSettings(): Promise<AppSettings> {
     newsLastFetchAt: doc.newsLastFetchAt ?? null,
     newsLastFailed: doc.newsLastFailed ?? [],
     leetcodeLastError: doc.leetcodeLastError ?? null,
+    roastMode: doc.roastMode ?? true,
     lastMorningRunAt: doc.lastMorningRunAt ?? null,
     lastEveningRunAt: doc.lastEveningRunAt ?? null,
     lastExportAt: doc.lastExportAt ?? null,
+  };
+}
+
+function profileFrom(doc: { targetRole?: string | null; targetCompany?: string | null; preferredLanguage?: string | null; priorities?: string[] | null }): PlannerProfile {
+  const ids = new Set<string>(PRIORITIES.map((p) => p.id));
+  const priorities = (doc.priorities ?? []).filter((p): p is PriorityId => ids.has(p));
+  return {
+    targetRole: doc.targetRole ?? DEFAULT_PROFILE.targetRole,
+    targetCompany: doc.targetCompany ?? "",
+    preferredLanguage: (LANGUAGES as readonly string[]).includes(doc.preferredLanguage ?? "") ? (doc.preferredLanguage as PlannerProfile["preferredLanguage"]) : DEFAULT_PROFILE.preferredLanguage,
+    priorities: priorities.length ? priorities : [...DEFAULT_PROFILE.priorities],
   };
 }
 
@@ -84,6 +104,11 @@ export async function getSettings(): Promise<AppSettings> {
 export async function markRun(field: "lastMorningRunAt" | "lastEveningRunAt" | "lastExportAt", at = new Date()): Promise<void> {
   await connectDb();
   await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { [field]: at } }, { upsert: true });
+}
+
+export async function setRoastMode(on: boolean): Promise<void> {
+  await connectDb();
+  await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { roastMode: on } }, { upsert: true });
 }
 
 export type SettingsPatch = Partial<
@@ -147,7 +172,10 @@ export async function saveSettings(input: SettingsInput, now = new Date()): Prom
     },
     { upsert: true },
   );
-  return getSettings();
+  const updated = await getSettings();
+  const plannerState = (s: AppSettings) => ({ profile: s.profile, startDate: s.startDate, endDate: s.endDate, hoursByDow: s.hoursByDow ?? [], restDays: s.restDays });
+  for (const change of diffPlannerChanges(plannerState(current), plannerState(updated))) await logPlanChange(change, today);
+  return updated;
 }
 
 /** A lean Map comes back as a plain object; keep only known subjects with valid links. */

@@ -72,6 +72,9 @@ export default async function SettingsPage() {
               },
               { name: "Email (Resend, fallback)", configured: !!(e.RESEND_API_KEY && e.NOTIFY_EMAIL), envVars: "RESEND_API_KEY, NOTIFY_EMAIL" },
             ]}
+            roastMode={s.roastMode}
+            emailTo={e.NOTIFY_EMAIL ?? null}
+            name={e.ADMIN_NAME}
           />
         </div>
       </div>

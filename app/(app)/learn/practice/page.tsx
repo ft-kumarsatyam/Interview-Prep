@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Award, Briefcase, Lock, Sparkles } from "lucide-react";
+import { ArrowLeft, Award, Briefcase, Lock, RotateCcw, Sparkles } from "lucide-react";
 import { PracticeRunner, type NextStep } from "@/components/learn/practice-runner";
 import { TrackChip } from "@/components/shared/badges";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -11,7 +11,7 @@ import { topicById, topics, trackById } from "@/lib/content";
 import { CASE_QUIZ_SIZE } from "@/lib/domain/case-quiz";
 import { SUBTOPIC_PRACTICE_SIZE, TOPIC_QUIZ_SIZE } from "@/lib/domain/mastery";
 import { getMasteryMap } from "@/lib/services/mastery";
-import { resolvePracticeTarget, topicQuizEligibility, type PracticeTarget } from "@/lib/services/practice";
+import { MISTAKES_QUIZ_SIZE, resolvePracticeTarget, topicQuizEligibility, type PracticeTarget } from "@/lib/services/practice";
 import { getSettings } from "@/lib/services/settings";
 
 export const metadata: Metadata = { title: "Practice" };
@@ -20,7 +20,7 @@ const topicHref = (topicId: string) => `/learn/${encodeURIComponent(topicId)}`;
 
 /** Where to go after this run: the next subtopic, then the topic quiz, then the next topic in the track. */
 function nextStepFor(target: PracticeTarget): NextStep | null {
-  if (target.scope === "case") return null;
+  if (target.scope === "case" || target.scope === "mistakes") return null;
   const topic = topicById.get(target.topicId);
   if (!topic) return null;
   if (target.scope === "subtopic") {
@@ -47,11 +47,13 @@ export default async function PracticePage({ searchParams }: PageProps<"/learn/p
   const trackInfo = trackById.get(target.track);
   const track = trackInfo?.name ?? target.track;
   const passPct = target.scope === "topic" ? settings.topicMasteryPct : settings.quizPassPct;
-  const size = target.scope === "topic" ? TOPIC_QUIZ_SIZE : target.scope === "case" ? CASE_QUIZ_SIZE : SUBTOPIC_PRACTICE_SIZE;
+  const size = { topic: TOPIC_QUIZ_SIZE, case: CASE_QUIZ_SIZE, mistakes: MISTAKES_QUIZ_SIZE, subtopic: SUBTOPIC_PRACTICE_SIZE }[target.scope];
   const back =
-    target.scope === "case"
-      ? { href: target.href ?? `/learn?track=${target.track}`, label: target.title }
-      : { href: topicHref(target.topicId), label: target.topicTitle };
+    target.scope === "mistakes"
+      ? { href: "/quiz/mistakes", label: "your mistakes" }
+      : target.scope === "case"
+        ? { href: target.href ?? `/learn?track=${target.track}`, label: target.title }
+        : { href: topicHref(target.topicId), label: target.topicTitle };
 
   return (
     <>
@@ -62,13 +64,15 @@ export default async function PracticePage({ searchParams }: PageProps<"/learn/p
         <ArrowLeft className="size-4 shrink-0" /> <span className="truncate">Back to {back.label}</span>
       </Link>
       <PageHeader
-        icon={target.scope === "topic" ? Award : target.scope === "case" ? Briefcase : Sparkles}
+        icon={target.scope === "topic" ? Award : target.scope === "case" ? Briefcase : target.scope === "mistakes" ? RotateCcw : Sparkles}
         title={target.scope === "topic" ? `Topic quiz: ${target.title}` : target.scope === "case" ? `Case quiz: ${target.title}` : target.title}
         description={
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {target.scope !== "case" && trackInfo && <TrackChip color={trackInfo.color}>{track}</TrackChip>}
             <span>
-              {target.scope === "topic"
+              {target.scope === "mistakes"
+                ? "Doesn't change mastery or your streak."
+                : target.scope === "topic"
                 ? m?.masteredOn
                   ? `Mastered on ${m.masteredOn} · best ${m.bestPct}%`
                   : `Pass ≥ ${settings.topicMasteryPct}% to earn the Mastered badge.`

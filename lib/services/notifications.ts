@@ -2,7 +2,7 @@ import { connectDb } from "@/lib/db";
 import { Notification } from "@/lib/models/system";
 import { pushToChannels, type NotifyChannel } from "@/lib/notify";
 
-export type NotificationKind = "plan" | "reminder" | "streak" | "milestone" | "sync";
+export type NotificationKind = "plan" | "reminder" | "recap" | "streak" | "milestone" | "sync";
 
 export interface NotificationItem {
   id: string;

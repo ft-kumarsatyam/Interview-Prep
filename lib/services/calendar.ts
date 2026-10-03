@@ -81,7 +81,7 @@ async function finishedMocks(from: DateStr, to: DateStr): Promise<FinishedMock[]
 const inWindow = (date: DateStr, s: AppSettings) => date >= s.startDate && date <= s.endDate;
 
 /** Projected plans from tomorrow through `to`, starting from today's frozen plan as if it were done. */
-async function projectThrough(s: AppSettings, today: DateStr, todayPlan: DailyPlanDraft, to: DateStr): Promise<Map<DateStr, DailyPlanDraft>> {
+export async function projectThrough(s: AppSettings, today: DateStr, todayPlan: DailyPlanDraft, to: DateStr): Promise<Map<DateStr, DailyPlanDraft>> {
   const from = addDays(today, 1);
   const end = to < s.endDate ? to : s.endDate;
   if (from > end) return new Map();

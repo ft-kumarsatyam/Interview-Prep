@@ -41,6 +41,7 @@ import { syncLeetCode } from "@/lib/services/leetcode-sync";
 import { LeetCodeCard } from "@/components/leetcode/leetcode-card";
 import { WeeklyMocksCard } from "@/components/mock/weekly-mocks-card";
 import { weeklyMocks } from "@/lib/services/mock";
+import { getPlanUpdate } from "@/lib/services/recap";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -83,7 +84,7 @@ export default async function DashboardPage() {
   ]);
   const latestNews = [...unreadNews.filter((a) => isLongRead(a)), ...unreadNews.filter((a) => !isLongRead(a))].slice(0, 3);
   const { day, plan, settings, today } = data;
-  const mockSlots = await weeklyMocks(today, settings.mockSchedule);
+  const [mockSlots, planUpdate] = await Promise.all([weeklyMocks(today, settings.mockSchedule), getPlanUpdate(today, settings, data.pace.solved)]);
   const clock = planClock(settings);
   const hour = localHour(settings.timezone);
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
@@ -195,6 +196,18 @@ export default async function DashboardPage() {
           </p>
         ) : null}
       </div>
+
+      {(planUpdate.carryOver || planUpdate.forecast) && (
+        <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm" aria-label="Plan update">
+          <p className="mb-1 flex items-center gap-2 font-medium">
+            <CalendarClock className="size-4 text-warning" aria-hidden /> Plan update
+          </p>
+          <ul className="space-y-1 text-muted-foreground">
+            {planUpdate.carryOver && <li>{planUpdate.carryOver}</li>}
+            {planUpdate.forecast && <li>{planUpdate.forecast}</li>}
+          </ul>
+        </div>
+      )}
 
       {setup.requiredLeft > 0 && (
         <Link

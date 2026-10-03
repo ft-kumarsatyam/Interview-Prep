@@ -1,10 +1,12 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { Flame, LogOut } from "lucide-react";
 import { AiProvider } from "@/components/ai/ai-context";
 import { MobileTabBar, SidebarNav, TodayMiniCard, TopBarTitle } from "@/components/layout/app-nav";
 import { CommandPalette } from "@/components/layout/command-palette";
 import { InstallHint } from "@/components/layout/install-hint";
 import { NotificationBell, type BellItem } from "@/components/layout/notification-bell";
+import { RouteProgress } from "@/components/layout/route-progress";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { requireSession } from "@/lib/auth/dal";
@@ -28,6 +30,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <AiProvider links={settings.geminiLinks} aiAvailable={aiAvailable}>
+    <Suspense fallback={null}>
+      <RouteProgress />
+    </Suspense>
     <div className="min-h-dvh lg:grid lg:grid-cols-[240px_1fr]">
       <a
         href="#main"

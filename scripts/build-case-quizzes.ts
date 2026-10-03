@@ -1,6 +1,7 @@
 /**
  * Builds data/case-quizzes.json from the authored parts in scripts/case-quizzes/parts/*.json
- * (each file: { "<hld|os|dbms>:<slug>": AuthoredCaseQuestion[] }). Validates every question against the
+ * (each file: { "<hld|os|dbms>:<slug>": AuthoredCaseQuestion[] }). A case may appear in several files: their
+ * questions are appended in file-name order, so adding a file never renumbers existing ids. Validates every question against the
  * case it belongs to (anchor exists on that kind of page, reading index exists, enough questions, no
  * "all of the above"), assigns ids and shuffles options deterministically. Writes nothing if anything fails.
  *
@@ -22,8 +23,7 @@ const errors: string[] = [];
 for (const file of readdirSync(PARTS).filter((f) => f.endsWith(".json")).sort()) {
   const json = JSON.parse(readFileSync(path.join(PARTS, file), "utf8")) as Record<string, AuthoredCaseQuestion[]>;
   for (const [key, list] of Object.entries(json)) {
-    if (authored.has(key)) errors.push(`${file}: ${key} is defined twice`);
-    authored.set(key, list);
+    authored.set(key, [...(authored.get(key) ?? []), ...list]);
   }
 }
 
@@ -37,6 +37,11 @@ for (const key of order) {
   }
   const [kind, slug] = key.split(":") as [CaseKind, string];
   const { questions, errors: errs } = buildCaseQuestions(kind, slug, list);
+  const prompts = new Set<string>();
+  for (const [i, q] of questions.entries()) {
+    if (prompts.has(q.prompt)) errs.push(`${key} #${i + 1}: duplicate prompt`);
+    prompts.add(q.prompt);
+  }
   const readings = (kind === "hld" ? designCaseBySlug.get(slug)?.readings : practiceCaseBySlug.get(key)?.readings) ?? [];
   for (const [i, q] of questions.entries()) {
     if (q.reading !== undefined && !readings[q.reading]) errs.push(`${key} #${i + 1}: reading ${q.reading} doesn't exist (the case has ${readings.length})`);

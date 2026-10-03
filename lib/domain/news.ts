@@ -3,6 +3,10 @@ export interface FeedSource {
   name: string;
   category: string;
   url: string;
+  /** Blogs without RSS: `url` is a sitemap and each recent page is read for its meta tags. Absent means RSS/Atom. */
+  kind?: "sitemap";
+  /** Sitemap sources only: keep URLs containing this text (e.g. "/blog/"). */
+  match?: string;
 }
 
 export interface GoogleNewsQuery {

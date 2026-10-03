@@ -19,7 +19,9 @@ import {
   type QuizOutcome,
   type QuizQuestion,
 } from "@/lib/quiz/question";
+import { rotationWeight } from "@/lib/domain/question-history";
 import { recomputeDay, type DayState } from "./day";
+import { loadQuestionHistory } from "./question-history";
 import { ensureToday, todayIn } from "./plan";
 import { getSettings } from "./settings";
 
@@ -38,13 +40,15 @@ export function quizKindFor(kind: DayKind): QuizKind | null {
 // ---------------------------------------------------------------------------
 // Picking questions from the bank
 
+type Weight = (q: QuizQuestion) => number;
+
 /** Take up to `n` unused questions, walking the layers in order (most relevant first). */
-function takeLayered(layers: QuizQuestion[][], n: number, used: Set<string>, rng: Rng): QuizQuestion[] {
+function takeLayered(layers: QuizQuestion[][], n: number, used: Set<string>, rng: Rng, weight: Weight = questionWeight): QuizQuestion[] {
   const out: QuizQuestion[] = [];
   for (const layer of layers) {
     if (out.length >= n) break;
     const fresh = layer.filter((q) => !used.has(q.id));
-    for (const q of weightedSample(fresh, questionWeight, n - out.length, rng)) {
+    for (const q of weightedSample(fresh, weight, n - out.length, rng)) {
       used.add(q.id);
       out.push(q);
     }
@@ -92,25 +96,28 @@ async function loadDailyContext(date: DateStr): Promise<DailyContext> {
 const isJsDay = (ctx: DailyContext) => ctx.subtopics.some((s) => s.track === "js") || ctx.solved.some((p) => p.track === "js");
 
 /** Verified output-prediction questions for JS-track days. */
-function outputQuestions(ctx: DailyContext, n: number, used: Set<string>, rng: Rng): QuizQuestion[] {
+function outputQuestions(ctx: DailyContext, n: number, used: Set<string>, rng: Rng, weight: Weight = questionWeight): QuizQuestion[] {
   const isOutput = (q: QuizQuestion) => q.style === "output";
   const today = forSubtopics(ctx.subtopics.map((s) => s.id)).filter(isOutput);
   const studied = forSubtopics(studiedBy(ctx.weekNumber).filter((s) => s.track === "js").map((s) => s.id)).filter(isOutput);
-  return takeLayered([today, studied], n, used, rng);
+  return takeLayered([today, studied], n, used, rng, weight);
 }
 
-/** ARCHITECTURE §8 fallback: 4 DSA + 4 theory + 2 reading/AI, from what was done today. */
-export function pickDailyFromBank(ctx: DailyContext, rng: Rng): QuizQuestion[] {
+/**
+ * ARCHITECTURE §8 fallback: 4 DSA + 4 theory + 2 reading/AI, from what was done today.
+ * `weight` lets the caller rotate away from questions already answered right on earlier days.
+ */
+export function pickDailyFromBank(ctx: DailyContext, rng: Rng, weight: Weight = questionWeight): QuizQuestion[] {
   const used = new Set<string>();
   const solvedPatterns = ctx.solved.map((p) => p.pattern);
   const plannedPatterns = ctx.plannedSlugs.flatMap((s) => problemBySlug.get(s)?.pattern ?? []);
-  const dsa = takeLayered([forPatterns(solvedPatterns), forPatterns(plannedPatterns), forPatterns(bank().byPattern.keys())], 4, used, rng);
+  const dsa = takeLayered([forPatterns(solvedPatterns), forPatterns(plannedPatterns), forPatterns(bank().byPattern.keys())], 4, used, rng, weight);
 
   const reading = ctx.articles.length
-    ? takeLayered([(bank().byTrack.get("ai") ?? []).filter((q) => q.style !== "recall")], 2, used, rng)
+    ? takeLayered([(bank().byTrack.get("ai") ?? []).filter((q) => q.style !== "recall")], 2, used, rng, weight)
     : [];
 
-  const output = isJsDay(ctx) ? outputQuestions(ctx, 2, used, rng) : [];
+  const output = isJsDay(ctx) ? outputQuestions(ctx, 2, used, rng, weight) : [];
   const theoryNeeded = DAILY_SIZE - dsa.length - reading.length - output.length;
   const todayIds = ctx.subtopics.map((s) => s.id);
   const siblingIds = subtopics.filter((s) => ctx.subtopics.some((t) => t.topicId === s.topicId)).map((s) => s.id);
@@ -120,10 +127,11 @@ export function pickDailyFromBank(ctx: DailyContext, rng: Rng): QuizQuestion[] {
     theoryNeeded,
     used,
     rng,
+    weight,
   );
 
   const picked = [...dsa, ...output, ...theory, ...reading];
-  if (picked.length < DAILY_SIZE) picked.push(...takeLayered([bank().all], DAILY_SIZE - picked.length, used, rng));
+  if (picked.length < DAILY_SIZE) picked.push(...takeLayered([bank().all], DAILY_SIZE - picked.length, used, rng, weight));
   return shuffle(picked, rng);
 }
 
@@ -156,6 +164,12 @@ async function generateDailyWithLlm(ctx: DailyContext, llm: LlmProvider, rng: Rn
   return shuffle([...generated, ...output], rng);
 }
 
+/** Bank weight × rotation, so day-to-day quizzes don't keep re-asking what you already know. */
+async function rotationWeights(now = Date.now()): Promise<Weight> {
+  const { history } = await loadQuestionHistory();
+  return (q) => questionWeight(q) * rotationWeight(history.get(q.id), now);
+}
+
 async function buildDaily(date: DateStr, llm: LlmProvider | null): Promise<{ questions: QuizQuestion[]; generatedBy: "llm" | "bank" }> {
   const ctx = await loadDailyContext(date);
   const rng = seededRng(seedFrom(`daily:${date}`));
@@ -166,7 +180,7 @@ async function buildDaily(date: DateStr, llm: LlmProvider | null): Promise<{ que
       console.warn(`[quiz] LLM generation failed, using the bank: ${err instanceof Error ? err.message : err}`);
     }
   }
-  return { questions: pickDailyFromBank(ctx, rng), generatedBy: "bank" };
+  return { questions: pickDailyFromBank(ctx, rng, await rotationWeights()), generatedBy: "bank" };
 }
 
 /** Sunday: 25 questions from this week's daily quizzes (wrong answers weighted 3×) plus 5 new ones. */
@@ -202,7 +216,7 @@ async function buildWeekly(date: DateStr): Promise<{ questions: QuizQuestion[]; 
     forSubtopics(studiedBy(week).map((s) => s.id)),
     bank().all,
   ];
-  const fresh = takeLayered(layers, WEEKLY_NEW_SIZE + (WEEKLY_REVIEW_SIZE - review.length), used, rng);
+  const fresh = takeLayered(layers, WEEKLY_NEW_SIZE + (WEEKLY_REVIEW_SIZE - review.length), used, rng, await rotationWeights());
   return { questions: shuffle([...review, ...fresh], rng), generatedBy: "bank" };
 }
 

@@ -29,10 +29,10 @@ const practiceQuestionSchema = new Schema(
   { _id: false },
 );
 
-/** One practice run: a subtopic drill (5 questions) or a topic mastery quiz (10). */
+/** One practice run: a subtopic drill (5 questions), a topic mastery quiz (10), a case quiz, or a mistakes review. */
 const practiceAttemptSchema = new Schema(
   {
-    scope: { type: String, enum: ["subtopic", "topic", "case"], required: true },
+    scope: { type: String, enum: ["subtopic", "topic", "case", "mistakes"], required: true },
     ref: { type: String, required: true },
     questions: { type: [practiceQuestionSchema], default: [] },
     answers: { type: [Number], default: [] },
@@ -42,6 +42,7 @@ const practiceAttemptSchema = new Schema(
   { timestamps: true },
 );
 practiceAttemptSchema.index({ ref: 1, createdAt: -1 });
+practiceAttemptSchema.index({ submittedAt: -1 });
 
 /** Rolling mastery per subtopic or topic. `masteredOn` is set only by a passed topic quiz. */
 const masterySchema = new Schema(
@@ -90,9 +91,29 @@ const practiceAnswerSchema = new Schema(
 );
 practiceAnswerSchema.index({ kind: 1, slug: 1 }, { unique: true });
 
+/** One aptitude drill or mock, rolled up per topic: how many answered, how many right, and the time taken. */
+const aptitudeSessionSchema = new Schema(
+  {
+    topicId: { type: String, required: true },
+    mode: { type: String, enum: ["topic", "mock"], required: true },
+    /** Local calendar date in APP_TIMEZONE (YYYY-MM-DD). */
+    date: { type: String, required: true },
+    total: { type: Number, required: true, min: 1, max: 100 },
+    correct: { type: Number, required: true, min: 0, max: 100 },
+    totalMs: { type: Number, required: true, min: 0 },
+    /** Keys of the hand-written questions answered right / wrong (bankKey), for rotating drills. Absent on older rows. */
+    rightKeys: { type: [String], default: undefined },
+    wrongKeys: { type: [String], default: undefined },
+  },
+  { timestamps: true },
+);
+aptitudeSessionSchema.index({ topicId: 1, createdAt: -1 });
+aptitudeSessionSchema.index({ createdAt: -1 });
+
 export type DesignDoc = InferSchemaType<typeof designSchema>;
 export type PracticeAnswerDoc = InferSchemaType<typeof practiceAnswerSchema>;
 export type SnippetDoc = InferSchemaType<typeof snippetSchema>;
+export type AptitudeSessionDoc = InferSchemaType<typeof aptitudeSessionSchema>;
 export type PracticeAttemptDoc = InferSchemaType<typeof practiceAttemptSchema>;
 export type MasteryDoc = InferSchemaType<typeof masterySchema>;
 
@@ -102,3 +123,4 @@ export const PracticeAttempt: Model<PracticeAttemptDoc> =
 export const Mastery: Model<MasteryDoc> = models.Mastery ?? model("Mastery", masterySchema);
 export const Design: Model<DesignDoc> = models.Design ?? model("Design", designSchema);
 export const PracticeAnswer: Model<PracticeAnswerDoc> = models.PracticeAnswer ?? model("PracticeAnswer", practiceAnswerSchema);
+export const AptitudeSession: Model<AptitudeSessionDoc> = models.AptitudeSession ?? model("AptitudeSession", aptitudeSessionSchema);

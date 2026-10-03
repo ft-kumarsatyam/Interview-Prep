@@ -5,11 +5,13 @@ import { useState, useTransition } from "react";
 import { AlertCircle, ArrowLeft, ArrowRight, Award, Keyboard, ListChecks, Loader2, Play, RotateCcw, Target, Trophy } from "lucide-react";
 import { toast } from "sonner";
 import { startPracticeAction, submitPracticeAction } from "@/app/(app)/learn/practice/actions";
+import { DifficultyPicker } from "@/components/quiz/difficulty-picker";
 import { QuizPlayer, type SubmitFn } from "@/components/quiz/quiz-player";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { PracticeResult, PracticeStart } from "@/lib/services/practice";
+import type { Difficulty } from "@/lib/quiz/question";
+import type { PracticeResult, PracticeScope, PracticeStart } from "@/lib/services/practice";
 
 export interface NextStep {
   href: string;
@@ -33,7 +35,7 @@ export function PracticeRunner({
   next,
 }: {
   target: string;
-  scope: "subtopic" | "topic" | "case";
+  scope: PracticeScope;
   passPct: number;
   size: number;
   bestPct: number | null;
@@ -43,13 +45,14 @@ export function PracticeRunner({
   const [run, setRun] = useState<PracticeStart | null>(null);
   const [result, setResult] = useState<PracticeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
   const [pending, startTransition] = useTransition();
 
   function start() {
     if (pending) return;
     setError(null);
     startTransition(async () => {
-      const res = await startPracticeAction(practiceRef);
+      const res = await startPracticeAction(practiceRef, difficulty);
       if (!res.ok) {
         setError(res.error);
         toast.error(`${res.error}. Try starting again.`);
@@ -64,7 +67,7 @@ export function PracticeRunner({
   if (pending) return <PreparingSkeleton size={size} />;
 
   if (!run) {
-    const startLabel = scope === "topic" ? "Start topic quiz" : scope === "case" ? "Start case quiz" : "Start practice";
+    const startLabel = scope === "topic" ? "Start topic quiz" : scope === "case" ? "Start case quiz" : scope === "mistakes" ? "Start review" : "Start practice";
     return (
       <Card className="mx-auto max-w-2xl">
         <CardContent className="space-y-5">
@@ -73,8 +76,17 @@ export function PracticeRunner({
               ? "Questions span the whole topic, weighted toward your weakest subtopics."
               : scope === "case"
                 ? "Trade-offs, numbers and the usual follow-ups. Each answer links back to the part of the case that explains it."
-                : "Quick check on this subtopic. Practice is ungated and doesn't affect your streak; each run updates your mastery score."}
+                : scope === "mistakes"
+                  ? "Questions you got wrong last time, from practice runs and daily or weekly quizzes. Answer one right and it leaves the list."
+                  : "Quick check on this subtopic. Practice is ungated and doesn't affect your streak; each run updates your mastery score."}
+            {scope !== "mistakes" && " Each new run favours questions you haven't seen yet or got wrong before."}
           </p>
+          {scope !== "mistakes" && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">Difficulty</p>
+              <DifficultyPicker value={difficulty} onChange={setDifficulty} />
+            </div>
+          )}
           <ul className="grid gap-2 text-sm sm:grid-cols-3">
             <Fact icon={ListChecks} label="Questions" value={String(size)} />
             <Fact icon={Target} label={scope === "topic" ? "To master" : "To pass"} value={`${passPct}%`} />
@@ -127,10 +139,15 @@ export function PracticeRunner({
           result && (
             <div className="mt-1 space-y-3">
               <div className="space-y-1 text-xs text-muted-foreground">
-                <p>
-                  Mastery {result.mastery.score}% · best {result.mastery.bestPct}% · {result.mastery.attempts} run{result.mastery.attempts === 1 ? "" : "s"}
-                </p>
-                {result.target.scope === "topic" &&
+                {result.mastery && (
+                  <p>
+                    Mastery {result.mastery.score}% · best {result.mastery.bestPct}% · {result.mastery.attempts} run{result.mastery.attempts === 1 ? "" : "s"}
+                  </p>
+                )}
+                {result.remainingMistakes !== undefined && (
+                  <p>{result.remainingMistakes === 0 ? "No mistakes left to review. Nice work." : `${result.remainingMistakes} missed question${result.remainingMistakes === 1 ? "" : "s"} still to fix.`}</p>
+                )}
+                {result.target.scope === "topic" && result.mastery &&
                   (result.mastery.masteredOn ? (
                     <p className="inline-flex items-center gap-1 text-success">
                       <Award className="size-3.5" aria-hidden /> Mastered on {result.mastery.masteredOn}

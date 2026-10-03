@@ -28,13 +28,15 @@ export function subtopicWeight(score: number | undefined): number {
 
 /**
  * Pick `n` questions across a topic's subtopics, drawing each slot from a
- * subtopic chosen by weakness. Subtopics drop out once their questions run out.
+ * subtopic chosen by weakness, then a question within it by `questionWeight`.
+ * Subtopics drop out once their questions run out.
  */
 export function pickTopicQuestions<T extends { id: string }>(
   bySubtopic: ReadonlyMap<string, readonly T[]>,
   scores: Readonly<Record<string, number>>,
   n: number,
   rng: Rng,
+  questionWeight: (q: T) => number = () => 1,
 ): T[] {
   const remaining = new Map([...bySubtopic].map(([ref, qs]) => [ref, [...qs]]));
   const picked: T[] = [];
@@ -44,7 +46,8 @@ export function pickTopicQuestions<T extends { id: string }>(
     if (refs.length === 0) break;
     const [ref] = weightedSample(refs, (r) => subtopicWeight(scores[r]), 1, rng);
     const qs = remaining.get(ref)!;
-    const q = qs.splice(Math.floor(rng() * qs.length), 1)[0];
+    const [chosen] = weightedSample(qs, (x) => Math.max(questionWeight(x), 0.01), 1, rng);
+    const q = qs.splice(qs.indexOf(chosen), 1)[0];
     if (!seen.has(q.id)) {
       seen.add(q.id);
       picked.push(q);

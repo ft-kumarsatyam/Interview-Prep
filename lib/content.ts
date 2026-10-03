@@ -2,12 +2,14 @@
  * Typed access to the static content in data/*.json — the seed source and the
  * read-only fallback for pages that don't need progress data.
  */
+import aptitudeBankJson from "@/data/aptitude-bank.json";
 import problemsJson from "@/data/dsa-problems.json";
 import testcasesJson from "@/data/dsa-testcases.json";
 import practiceCasesJson from "@/data/os-dbms-cases.json";
 import newsJson from "@/data/news-sources.json";
 import syllabusJson from "@/data/syllabus.json";
 import systemDesignJson from "@/data/system-design.json";
+import type { AptitudeBank } from "./domain/aptitude";
 import type { DesignSectionId } from "./domain/design";
 import { normaliseHints, type ArgType, type CompareMode, type HintLevel, type ReturnKind, type TestCase } from "./domain/dsa-runner";
 import type { PracticeKind } from "./domain/practice-cases";
@@ -52,6 +54,8 @@ export interface NewsFeed {
   name: string;
   category: string;
   url: string;
+  kind?: "sitemap";
+  match?: string;
 }
 
 export interface DesignStep {
@@ -162,6 +166,9 @@ export const problems = problemsJson as ContentProblem[];
 export const testcaseBySlug = loadTestcases(testcasesJson as unknown as Record<string, RawTestcaseEntry>);
 export const tracks = (syllabusJson.tracks as ContentTrack[]).toSorted((a, b) => a.order - b.order);
 export const topics = syllabusJson.topics as ContentTopic[];
+
+/** Hand-written aptitude questions (logical reasoning and verbal); quantitative drills are generated. */
+export const aptitudeBank = aptitudeBankJson as unknown as AptitudeBank;
 
 export const news = {
   feeds: newsJson.feeds as NewsFeed[],

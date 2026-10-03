@@ -10,6 +10,10 @@ export const QUESTION_TYPES = ["single", "multi", "truefalse"] as const;
 export type QuestionType = (typeof QUESTION_TYPES)[number];
 export const MAX_OPTIONS = 6;
 
+export const DIFFICULTIES = ["easy", "medium", "hard"] as const;
+export type Difficulty = (typeof DIFFICULTIES)[number];
+export const difficultySchema = z.enum(DIFFICULTIES);
+
 const optionText = z.string().trim().min(1).max(300);
 const distinct = (o: string[]) => new Set(o).size === o.length;
 
@@ -33,6 +37,8 @@ export const quizQuestionSchema = z
     explanation: z.string().trim().max(600),
     source: z.object({ kind: z.enum(SOURCE_KINDS), ref: z.string().max(200) }),
     style: z.enum(QUESTION_STYLES),
+    /** Unrated questions (generated, LLM) count as any difficulty. */
+    difficulty: difficultySchema.optional(),
   })
   .superRefine((q, ctx) => {
     const issue = (message: string) => ctx.addIssue({ code: "custom", message });

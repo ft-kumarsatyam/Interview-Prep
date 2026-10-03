@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CASE_ANCHORS, casePath, caseRef, parseCaseRef, pickCaseQuestions } from "@/lib/domain/case-quiz";
+import { CASE_ANCHORS, MIN_QUESTIONS_PER_CASE, casePath, caseRef, parseCaseRef, pickCaseQuestions } from "@/lib/domain/case-quiz";
 import { buildCaseQuestions, type AuthoredCaseQuestion } from "@/lib/domain/case-quiz-build";
 import { seededRng } from "@/lib/domain/sampling";
 import { askSubjectForRef } from "@/lib/quiz/subject";
@@ -57,7 +57,7 @@ describe("buildCaseQuestions", () => {
     anchor: "tradeoffs",
     ...over,
   });
-  const many = (q: AuthoredCaseQuestion, n = 8) => Array.from({ length: n }, (_, i) => ({ ...q, prompt: `${q.prompt} ${i}` }));
+  const many = (q: AuthoredCaseQuestion, n = MIN_QUESTIONS_PER_CASE) => Array.from({ length: n }, (_, i) => ({ ...q, prompt: `${q.prompt} ${i}` }));
 
   it("assigns stable ids and keeps the right option right after shuffling", () => {
     const { questions, errors } = buildCaseQuestions("hld", "chat", many(base()));
@@ -90,7 +90,7 @@ describe("buildCaseQuestions", () => {
     expect(buildCaseQuestions("hld", "x", many(base({ answerIndex: 9 }))).errors.join()).toContain("outside");
     expect(buildCaseQuestions("hld", "x", many(base({ options: ["a", "b", "All of the above"] }))).errors.join()).toContain("above");
     expect(buildCaseQuestions("hld", "x", many(base({ type: "multi", answerIndices: [0, 1, 2, 3] }))).errors.join()).toContain("at least one wrong");
-    expect(buildCaseQuestions("hld", "x", many(base(), 3)).errors.join()).toContain("at least 8");
+    expect(buildCaseQuestions("hld", "x", many(base(), 3)).errors.join()).toContain(`at least ${MIN_QUESTIONS_PER_CASE}`);
     expect(buildCaseQuestions("hld", "x", many(base({ options: ["a", "a", "b"] }))).errors.join()).toContain("distinct");
   });
 

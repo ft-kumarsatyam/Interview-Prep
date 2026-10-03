@@ -1,7 +1,7 @@
 "use client";
 
 import { useTransition } from "react";
-import { Bell, CalendarCheck, CheckCheck, Flame, RefreshCw, Trophy, AlarmClock, type LucideIcon } from "lucide-react";
+import { Bell, CalendarCheck, CheckCheck, ClipboardCheck, Flame, RefreshCw, Trophy, AlarmClock, type LucideIcon } from "lucide-react";
 import { markNotificationsReadAction } from "@/app/(app)/notifications/actions";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 
 export interface BellItem {
   id: string;
-  kind: "plan" | "reminder" | "streak" | "milestone" | "sync";
+  kind: "plan" | "reminder" | "recap" | "streak" | "milestone" | "sync";
   title: string;
   body: string;
   read: boolean;
@@ -19,6 +19,7 @@ export interface BellItem {
 const ICONS: Record<BellItem["kind"], LucideIcon> = {
   plan: CalendarCheck,
   reminder: AlarmClock,
+  recap: ClipboardCheck,
   streak: Flame,
   milestone: Trophy,
   sync: RefreshCw,
@@ -47,7 +48,7 @@ export function NotificationBell({ items, unread }: { items: BellItem[]; unread:
         </SheetHeader>
         <div className="flex-1 overflow-y-auto">
           {items.length === 0 ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">Nothing yet. The morning plan lands here at 05:30.</p>
+            <p className="p-6 text-center text-sm text-muted-foreground">Nothing yet. The 8:00 plan and 23:59 recap land here.</p>
           ) : (
             <ul className="divide-y">
               {items.map((n) => {

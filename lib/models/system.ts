@@ -28,6 +28,13 @@ const settingsSchema = new Schema(
     /** Weekly mock days (0 = Sunday … 6 = Saturday). Shown on the dashboard and calendar; never gate the streak. */
     mockDsaWeekday: { type: Number, default: undefined },
     mockHldWeekday: { type: Number, default: undefined },
+    /** Planner profile (single user): goals and focus. Hours, rest days and the plan window live above. */
+    targetRole: { type: String, maxlength: 80, default: undefined },
+    targetCompany: { type: String, maxlength: 80, default: "" },
+    preferredLanguage: { type: String, enum: ["javascript", "typescript", "python"], default: undefined },
+    priorities: { type: [String], default: undefined },
+    /** When the planner setup was first saved; null shows the setup prompt. */
+    plannerSetupAt: { type: Date, default: null },
     freezeTokens: { type: Number, default: 0 },
     /** Last day whose streak outcome has been settled. */
     settledThrough: { type: String, default: null },
@@ -44,6 +51,8 @@ const settingsSchema = new Schema(
     newsLastFailed: { type: [String], default: [] },
     /** Last LeetCode sync error, cleared on the next successful sync. */
     leetcodeLastError: { type: String, default: null },
+    /** Lead morning/evening emails with a desi roast line (lib/domain/roast.ts). */
+    roastMode: { type: Boolean, default: true },
     lastMorningRunAt: { type: Date, default: null },
     lastEveningRunAt: { type: Date, default: null },
     lastExportAt: { type: Date, default: null },
@@ -88,7 +97,7 @@ articleSchema.index({ publishedAt: -1 });
 
 const notificationSchema = new Schema(
   {
-    kind: { type: String, enum: ["plan", "reminder", "streak", "milestone", "sync"], required: true },
+    kind: { type: String, enum: ["plan", "reminder", "recap", "streak", "milestone", "sync"], required: true },
     title: { type: String, required: true },
     body: { type: String, default: "" },
     read: { type: Boolean, default: false },

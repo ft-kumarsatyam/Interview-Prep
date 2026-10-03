@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 
 export interface UsageSummary {
   provider: string;
+  feature?: string;
   calls: number;
   fails: number;
   cacheHits: number;
@@ -98,8 +99,11 @@ export function AiPanel({ providers, usage }: { providers: ProviderRow[]; usage:
           ) : (
             <ul className="divide-y text-sm">
               {usage.map((u) => (
-                <li key={u.provider} className="flex justify-between gap-3 py-2">
-                  <span>{u.provider === "cache" ? "Cached answers" : u.provider}</span>
+                <li key={`${u.provider}:${u.feature}`} className="flex justify-between gap-3 py-2">
+                  <span>
+                    {u.provider === "cache" ? "Cached answers" : u.provider}
+                    {u.feature && <span className="text-muted-foreground"> · {u.feature}</span>}
+                  </span>
                   <span className="tabular font-mono text-xs text-muted-foreground">
                     {u.provider === "cache" ? `${u.cacheHits} served` : `${u.calls} calls${u.fails ? `, ${u.fails} failed` : ""}`}
                   </span>

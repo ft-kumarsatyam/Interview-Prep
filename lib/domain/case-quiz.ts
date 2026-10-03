@@ -1,12 +1,12 @@
-import { shuffle, type Rng } from "./sampling";
+import { shuffle, weightedSample, type Rng } from "./sampling";
 
 /** The three kinds of "case" that get their own quiz: System Design cases, OS cases and DBMS cases. */
 export const CASE_KINDS = ["hld", "os", "dbms"] as const;
 export type CaseKind = (typeof CASE_KINDS)[number];
 
 /** Questions per run. Every case has more than this in the bank, so retakes aren't identical. */
-export const CASE_QUIZ_SIZE = 8;
-export const MIN_QUESTIONS_PER_CASE = 8;
+export const CASE_QUIZ_SIZE = 10;
+export const MIN_QUESTIONS_PER_CASE = 20;
 
 /** Section ids on each kind of case page (the `id` of each heading), so a "Learn more" link can deep-link to one. */
 export const CASE_ANCHORS: Record<CaseKind, readonly string[]> = {
@@ -49,11 +49,11 @@ export function casePath(kind: CaseKind, slug: string, anchor?: string): string 
 }
 
 /**
- * Pick `n` questions for a run: a seeded shuffle, but if the case has multi-select or true/false
+ * Pick `n` questions for a run: a seeded shuffle (weighted when `weight` is given), but if the case has multi-select or true/false
  * questions and the draw missed them all, one replaces the last pick so every run tries the formats.
  */
-export function pickCaseQuestions<T extends { id: string; type?: string }>(questions: readonly T[], n: number, rng: Rng): T[] {
-  const shuffled = shuffle(questions, rng);
+export function pickCaseQuestions<T extends { id: string; type?: string }>(questions: readonly T[], n: number, rng: Rng, weight?: (q: T) => number): T[] {
+  const shuffled = weight ? weightedSample(questions, (q) => Math.max(weight(q), 0.01), questions.length, rng) : shuffle(questions, rng);
   const picked = shuffled.slice(0, n);
   const isOther = (q: T) => q.type === "multi" || q.type === "truefalse";
   if (picked.length > 1 && !picked.some(isOther)) {

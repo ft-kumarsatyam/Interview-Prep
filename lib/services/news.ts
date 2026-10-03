@@ -252,7 +252,7 @@ export async function ensureArticleContent(id: string, extractor: Extractor = ex
   }
 }
 
-export const PREFETCH_CATEGORIES = ["system-design", "engineering", "ai-labs", "databases"] as const;
+export const PREFETCH_CATEGORIES = ["system-design", "engineering", "ai-labs", "databases", "interview-prep"] as const;
 
 /**
  * Morning job: extract the newest articles without full text so the reader

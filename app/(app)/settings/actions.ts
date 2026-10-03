@@ -1,12 +1,13 @@
 "use server";
 
 import { refresh } from "next/cache";
+import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/lib/auth/dal";
 import { settingsInputSchema, type SettingsInput } from "@/lib/domain/settings";
-import { pushToChannels } from "@/lib/notify";
 import { seedContent } from "@/lib/services/seed";
-import { saveSettings } from "@/lib/services/settings";
+import { saveSettings, setRoastMode } from "@/lib/services/settings";
+import { sendTestMail } from "@/lib/services/test-mail";
 
 export async function saveSettingsAction(input: unknown): Promise<ActionResult<{ saved: SettingsInput }> | { ok: false; error: string; fields: Record<string, string> }> {
   await requireSession();
@@ -20,11 +21,30 @@ export async function saveSettingsAction(input: unknown): Promise<ActionResult<{
   return { ok: true, saved: parsed.data };
 }
 
-export async function testNotificationAction(): Promise<ActionResult<{ sent: string[]; failed: string[] }>> {
+const testMailKind = z.enum(["ping", "morning", "evening"]);
+
+export async function testNotificationAction(
+  kind: unknown = "ping",
+): Promise<ActionResult<{ sent: string[]; failed: string[]; errors: Record<string, string>; subject: string; sample: boolean; to: string | null }>> {
   await requireSession();
-  const res = await pushToChannels("PrepOS test", "Notifications are working. You'll get the evening reminder here when a day is unfinished.");
-  if (res.sent.length === 0 && res.failed.length === 0) return { ok: false, error: "No channel configured. Set the Telegram, Brevo or Resend env vars first" };
-  return { ok: true, ...res };
+  const parsed = testMailKind.safeParse(kind);
+  if (!parsed.success) return { ok: false, error: "Unknown test type" };
+  try {
+    const res = await sendTestMail(parsed.data);
+    if (!res) return { ok: false, error: "No channel configured. Set the Telegram, Brevo or Resend env vars first" };
+    return { ok: true, ...res };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Sending failed" };
+  }
+}
+
+export async function setRoastModeAction(on: unknown): Promise<ActionResult<{ roastMode: boolean }>> {
+  await requireSession();
+  const parsed = z.boolean().safeParse(on);
+  if (!parsed.success) return { ok: false, error: "Expected on or off" };
+  await setRoastMode(parsed.data);
+  refresh();
+  return { ok: true, roastMode: parsed.data };
 }
 
 export async function reseedAction(): Promise<ActionResult<{ message: string }>> {

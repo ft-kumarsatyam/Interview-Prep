@@ -60,9 +60,14 @@ export const ARTICLE_TAGS: readonly ArticleTag[] = [
   { id: "infra", label: "Cloud & infra", pattern: /\bkubernetes\b|\bk8s\b|\bdocker\b|\bserverless\b|\baws\b|\bgcp\b|\bazure\b|\bterraform\b|\binfrastructure\b/i },
   { id: "reliability", label: "Reliability", pattern: /\boutage\b|\bincident\b|\bpostmortem\b|\bpost-mortem\b|\bobservability\b|\bslo\b|\blatency\b|\bresilien(ce|t)\b|\brate limit/i },
   { id: "security", label: "Security", pattern: /\bsecurity\b|\bvulnerabilit(y|ies)\b|\bauth(entication|orization)?\b|\bencrypt(ion|ed)\b|\bcve-\d|\bzero[- ]day\b|\bexploit\b/i },
-  { id: "llm", label: "LLMs & agents", pattern: /\bllms?\b|\bgpt-?\d|\bgemini\b|\bclaude\b|\bagents?\b|\brag\b|\bembeddings?\b|\bfine-?tun|\btransformer|\binference\b|\bprompt/i },
+  { id: "llm", label: "AI, LLMs & agents", pattern: /\bllms?\b|\bai\b|\bartificial intelligence\b|\bmachine learning\b|\bgpt-?\d|\bgemini\b|\bclaude\b|\bagents?\b|\brag\b|\bembeddings?\b|\bfine-?tun|\btransformer|\binference\b|\bprompt/i },
   { id: "javascript", label: "JS & Node", pattern: /\bjavascript\b|\btypescript\b|\bnode(\.js)?\b|\breact\b|\bv8\b|\bdeno\b|\bbun\b|\bnext\.js\b/i },
-  { id: "career", label: "Career", pattern: /\binterview(s|ing)?\b|\bcareer\b|\bhiring\b|\bpromotion\b|\blayoffs?\b|\bsalar(y|ies)\b/i },
+  { id: "career", label: "Interviews & career", pattern: /\binterview(s|ing)?\b|\bcareer\b|\bhiring\b|\bpromotion\b|\blayoffs?\b|\bsalar(y|ies)\b/i },
+  { id: "dsa", label: "DSA", pattern: /\bdsa\b|\bdata structures?\b|\balgorithms?\b|\bleetcode\b|\bdynamic programming\b|\bbinary (search|tree)\b|\bgraphs?\b|\blinked lists?\b|\btwo pointers\b|\bsliding window\b|\bbacktracking\b/i },
+  { id: "coding", label: "Coding", pattern: /\bcoding\b|\bprogramming\b|\bpython\b|\bjava\b|\bc\+\+|\brust\b|\bgolang\b|\brefactor(ing)?\b|\bcode review\b|\bclean code\b|\bdesign patterns?\b/i },
+  { id: "behavioral", label: "Behavioural & habits", pattern: /\bbehaviou?ral\b|\bstar method\b|\bsoft skills?\b|\bleadership\b|\bhabits?\b|\bproductivity\b|\bcommunication\b|\bmentorship\b|\bburnout\b/i },
+  { id: "science", label: "Science", pattern: /\bscien(ce|tific|tists?)\b|\bphysics\b|\bquantum\b|\bneuroscience\b|\bastronom(y|ers?)\b|\bbiolog(y|ical)\b|\bchemistry\b|\bnasa\b/i },
+  { id: "quiz", label: "Quizzes & puzzles", pattern: /\bquiz(zes)?\b|\bpuzzles?\b|\btrivia\b|\bbrain ?teasers?\b/i },
 ];
 
 export const tagLabel = new Map(ARTICLE_TAGS.map((t) => [t.id, t.label]));

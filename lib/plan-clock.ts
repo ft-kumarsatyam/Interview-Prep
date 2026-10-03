@@ -20,7 +20,7 @@ export function planClock(settings: PlanSettings = DEFAULT_SETTINGS, now = new D
     today,
     week,
     totalWeeks,
-    phase: phaseForWeek(week),
+    phase: phaseForWeek(week, totalWeeks),
     daysUntilStart: started ? 0 : diffDays(settings.startDate, today),
     daysLeft: Math.max(diffDays(settings.endDate, today), 0),
   };

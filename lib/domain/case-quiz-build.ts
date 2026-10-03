@@ -14,6 +14,7 @@ export interface AuthoredCaseQuestion {
   explanation: string;
   anchor: string;
   reading?: number;
+  difficulty?: "easy" | "medium" | "hard";
 }
 
 export interface BuiltCaseQuestion {
@@ -27,6 +28,7 @@ export interface BuiltCaseQuestion {
   explanation: string;
   anchor: string;
   reading?: number;
+  difficulty?: "easy" | "medium" | "hard";
 }
 
 /**
@@ -44,10 +46,11 @@ export function buildCaseQuestions(kind: CaseKind, slug: string, authored: reado
     const bad = (m: string) => errors.push(`${where}: ${m}`);
     if (!CASE_ANCHORS[kind].includes(a.anchor)) bad(`anchor "${a.anchor}" is not a section of a ${kind} case page`);
     if (new Set(a.options).size !== a.options.length) bad("options must be distinct");
+    if (a.difficulty !== undefined && !["easy", "medium", "hard"].includes(a.difficulty)) bad(`difficulty "${a.difficulty}" must be easy, medium or hard`);
     if (type === "truefalse") {
       if (a.options.join("|") !== "True|False") return bad('true/false options must be exactly ["True","False"]');
       if (a.answerIndex !== 0 && a.answerIndex !== 1) return bad("true/false needs answerIndex 0 (True) or 1 (False)");
-      questions.push({ id, prompt: a.prompt, ...(a.code ? { code: a.code } : {}), options: [...a.options], answerIndex: a.answerIndex, type: "truefalse", explanation: a.explanation, anchor: a.anchor, ...(a.reading === undefined ? {} : { reading: a.reading }) });
+      questions.push({ id, prompt: a.prompt, ...(a.code ? { code: a.code } : {}), options: [...a.options], answerIndex: a.answerIndex, type: "truefalse", explanation: a.explanation, anchor: a.anchor, ...(a.reading === undefined ? {} : { reading: a.reading }), ...(a.difficulty ? { difficulty: a.difficulty } : {}) });
       return;
     }
     if (a.options.length < 3 || a.options.length > 6) return bad("single/multi questions need 3-6 options");
@@ -69,6 +72,7 @@ export function buildCaseQuestions(kind: CaseKind, slug: string, authored: reado
       explanation: a.explanation,
       anchor: a.anchor,
       ...(a.reading === undefined ? {} : { reading: a.reading }),
+      ...(a.difficulty ? { difficulty: a.difficulty } : {}),
     });
   });
   if (questions.length < MIN_QUESTIONS_PER_CASE) errors.push(`${kind}:${slug}: needs at least ${MIN_QUESTIONS_PER_CASE} questions (has ${questions.length})`);

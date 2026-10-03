@@ -1,4 +1,4 @@
-import type { QuestionType } from "@/lib/quiz/question";
+import { DIFFICULTIES, type Difficulty, type QuestionType } from "@/lib/quiz/question";
 
 /**
  * A stored answer is one number per question: the chosen option index for
@@ -57,4 +57,17 @@ export function scoreQuiz(answerKey: number[], answers: Array<number | null>): Q
 
 export function isPassing(score: QuizScore, passPct: number): boolean {
   return score.total > 0 && score.pct >= passPct;
+}
+
+export function parseDifficulty(raw: unknown): Difficulty | null {
+  return typeof raw === "string" && (DIFFICULTIES as readonly string[]).includes(raw) ? (raw as Difficulty) : null;
+}
+
+/**
+ * With a difficulty chosen, try every layer's matching questions first, then fall back to the
+ * original layers, so a thin difficulty never leaves a run short. Unrated questions only fill in.
+ */
+export function difficultyLayers<T extends { difficulty?: Difficulty }>(layers: readonly T[][], difficulty: Difficulty | null | undefined): T[][] {
+  if (!difficulty) return [...layers];
+  return [...layers.map((l) => l.filter((q) => q.difficulty === difficulty)), ...layers];
 }

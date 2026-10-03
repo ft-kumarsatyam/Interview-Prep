@@ -1,9 +1,11 @@
 import { mainProblemCount, problemBySlug, subtopicById } from "@/lib/content";
 import { env } from "@/lib/env";
 import { pace } from "@/lib/domain/pace";
+import { carryOverLine } from "@/lib/domain/recap";
 import { morningDigest, type DigestLink } from "@/lib/domain/reminders";
 import { countSolvedMain } from "./dashboard";
 import { listArticles, PREFETCH_CATEGORIES } from "./news";
+import { carryOverFromYesterday } from "./recap";
 import type { TodayState } from "./plan";
 
 const READING_LIMIT = 5;
@@ -17,9 +19,10 @@ const problemLinks = (slugs: readonly (string | null)[]): DigestLink[] =>
 /** Today's morning email, built from the frozen plan, seed content and unread articles. */
 export async function buildMorningDigest(state: Pick<TodayState, "today" | "plan" | "day" | "streak" | "settings">) {
   const { plan, settings, today } = state;
-  const [articles, solvedMain] = await Promise.all([
+  const [articles, solvedMain, carried] = await Promise.all([
     listArticles({ filter: "unread", categories: PREFETCH_CATEGORIES, limit: READING_LIMIT }),
     countSolvedMain(),
+    carryOverFromYesterday(today),
   ]);
   return morningDigest({
     date: today,
@@ -37,6 +40,7 @@ export async function buildMorningDigest(state: Pick<TodayState, "today" | "plan
       note: a.readingMinutes ? `${a.sourceName} · ${a.readingMinutes} min` : a.sourceName,
     })),
     pace: pace(today, solvedMain, mainProblemCount, settings),
+    carryOver: carried ? carryOverLine(carried.gap, carried.kind) : null,
     appUrl: env().APP_URL,
   });
 }

@@ -149,6 +149,41 @@ describe("practice and mastery", () => {
     expect(res.mastery).toMatchObject({ score: 60, attempts: 2, bestPct: 100 });
   });
 
+  it("rotates repeat runs toward questions not seen yet", async () => {
+    const ref = subs[3];
+    const first = await startPractice(ref, null, at(TUE));
+    await submitPractice(first.attemptId, await key(first.attemptId), at(TUE));
+    const second = await startPractice(ref, null, at(TUE));
+    const firstIds = new Set(first.questions.map((q) => q.id));
+    const repeats = second.questions.filter((q) => firstIds.has(q.id)).length;
+    expect(repeats).toBeLessThan(second.questions.length);
+  });
+
+  it("collects wrong answers into a mistakes run that doesn't touch mastery, and clears them when fixed", async () => {
+    await expect(startPractice("mistakes", null, at(TUE))).rejects.toThrow(/No mistakes/);
+    const run = await startPractice(subs[2], null, at(TUE));
+    const answers = await key(run.attemptId);
+    await submitPractice(run.attemptId, answers.map((k, i) => (i < 2 ? (k === 0 ? 1 : 0) : k)), at(TUE));
+
+    const review = await startPractice("mistakes", null, at(TUE));
+    expect(review.target.scope).toBe("mistakes");
+    expect(review.questions.map((q) => q.id).sort()).toEqual(run.questions.slice(0, 2).map((q) => q.id).sort());
+    const byTrack = await startPractice("mistakes:js", null, at(TUE));
+    expect(byTrack.questions).toHaveLength(2);
+    await expect(startPractice("mistakes:hld", null, at(TUE))).rejects.toThrow(/No mistakes/);
+
+    const masteryBefore = await Mastery.countDocuments();
+    const fixed = await submitPractice(review.attemptId, await key(review.attemptId), at(TUE));
+    expect(fixed.mastery).toBeNull();
+    expect(fixed.remainingMistakes).toBe(0);
+    expect(await Mastery.countDocuments()).toBe(masteryBefore);
+  });
+
+  it("prefers the chosen difficulty when the bank has enough of it", async () => {
+    const run = await startPractice(subs[3], null, at(TUE), { difficulty: "hard" });
+    expect(run.questions).toHaveLength(5);
+  });
+
   it("locks the topic quiz until every subtopic is ticked, then awards Mastered once", async () => {
     await expect(startPractice(topicId, null, at(TUE))).rejects.toThrow(/Tick every subtopic/);
     for (const id of subs) await toggleSubtopic(id, TUE);
@@ -157,12 +192,12 @@ describe("practice and mastery", () => {
     expect(run.questions).toHaveLength(10);
     const pass = await submitPractice(run.attemptId, await key(run.attemptId), at(TUE));
     expect(pass.newlyMastered).toBe(true);
-    expect(pass.mastery.masteredOn).toBe(TUE);
+    expect(pass.mastery?.masteredOn).toBe(TUE);
     expect(await Mastery.countDocuments({ scope: "subtopic" })).toBeGreaterThan(0);
 
     const again = await startPractice(topicId, null, at("2026-10-08"));
     const res = await submitPractice(again.attemptId, await key(again.attemptId), at("2026-10-08"));
     expect(res.newlyMastered).toBe(false);
-    expect(res.mastery.masteredOn).toBe(TUE);
+    expect(res.mastery?.masteredOn).toBe(TUE);
   });
 });

@@ -5,6 +5,7 @@ import {
   REVIEWS_PER_DAY,
   REVISION_DSA_PER_DAY,
   SQL_TRACK_START_WEEK,
+  scaledWeek,
   type PlanSettings,
 } from "./plan-config";
 import {
@@ -12,8 +13,9 @@ import {
   baselineMinutes,
   estimateMinutes,
   fitToBudget,
-  hoursFor,
+  hoursOn,
   isBaseline,
+  type HoursOverride,
   scaleCount,
   sundayBonus,
   type BudgetItems,
@@ -44,6 +46,11 @@ export interface SubtopicState {
   /** Global syllabus position, used to keep a stable study order. */
   position: number;
   done: boolean;
+  /**
+   * How much study time the topic should get relative to a neutral one (1), from the intake
+   * (see lib/domain/topic-priority.ts). 0 leaves it out of the plan. Absent means 1.
+   */
+  weight?: number;
 }
 
 export interface DailyPlanDraft {
@@ -94,7 +101,7 @@ export function computeDsaTarget(date: DateStr, remainingMain: number, s: PlanSe
   if (remainingMain === 0) return 0;
 
   const week = weekNumber(date, s.startDate);
-  const ramp = DSA_RAMP.find((r) => week <= r.untilWeek);
+  const ramp = DSA_RAMP.find((r) => week <= scaledWeek(r.untilWeek, s));
   if (ramp) return Math.min(ramp.perDay * weight, remainingMain);
 
   const studyDays = eachDay(date, addDays(revisionStart(s), -1));
@@ -102,6 +109,17 @@ export function computeDsaTarget(date: DateStr, remainingMain: number, s: PlanSe
   const perUnit = clamp(Math.ceil(remainingMain / Math.max(weightedDays, 1)), s.minDailyDsa, s.maxDailyDsa);
   const target = weight === 2 ? Math.min(perUnit * 2, s.maxSaturdayDsa) : perUnit;
   return Math.min(target, remainingMain);
+}
+
+/**
+ * The subtopics that can be scheduled on a day in `week`: not done, not skipped, and due by then (the syllabus
+ * is compressed for windows under 24 weeks). Weaker or wanted topics come first, then syllabus order, so with no
+ * weights the order is the plain syllabus order.
+ */
+export function dueSubtopics(subtopics: readonly SubtopicState[], week: number, s: Pick<PlanSettings, "startDate" | "endDate">): SubtopicState[] {
+  return subtopics
+    .filter((t) => !t.done && t.weight !== 0 && scaledWeek(t.week, s) <= week)
+    .sort((a, b) => (b.weight ?? 1) - (a.weight ?? 1) || a.position - b.position);
 }
 
 /** Theory spreads the subtopics due by this week over the study days left in it. */
@@ -112,9 +130,7 @@ export function computeTheory(
 ): { target: number; ids: string[] } {
   if (dayWeight(date, s) === 0) return { target: 0, ids: [] };
   const week = weekNumber(date, s.startDate);
-  const due = subtopics
-    .filter((t) => !t.done && t.week <= week)
-    .sort((a, b) => a.position - b.position);
+  const due = dueSubtopics(subtopics, week, s);
   if (due.length === 0) return { target: 0, ids: [] };
 
   const daysLeft = eachDay(date, saturdayOfWeek(date)).filter((d) => dayWeight(d, s) > 0).length;
@@ -130,6 +146,8 @@ export function buildDailyPlan(input: {
   subtopics: SubtopicState[];
   /** Plan this one day for this many hours instead of the weekday default (the "hours today" override). */
   hoursOverride?: number;
+  /** Date ranges with their own hours (an exam week). They replace the weekday default but not `hoursOverride`. */
+  overrides?: readonly HoursOverride[];
   costs?: Costs;
 }): DailyPlanDraft {
   const { date, settings: s } = input;
@@ -155,7 +173,7 @@ export function buildDailyPlan(input: {
   const dsaTarget = computeDsaTarget(date, mainLeft.length, s);
   const theory = computeTheory(date, input.subtopics, s);
   const jsProblem = isWorkday ? (unsolved("js")[0]?.slug ?? null) : null;
-  const sqlProblem = isWorkday && week >= SQL_TRACK_START_WEEK ? (unsolved("sql")[0]?.slug ?? null) : null;
+  const sqlProblem = isWorkday && week >= scaledWeek(SQL_TRACK_START_WEEK, s) ? (unsolved("sql")[0]?.slug ?? null) : null;
 
   const legacy: DailyPlanDraft = {
     date,
@@ -170,15 +188,12 @@ export function buildDailyPlan(input: {
     theory: theory.ids,
   };
 
-  const hours = input.hoursOverride ?? hoursFor(date, s);
+  const hours = input.hoursOverride ?? hoursOn(date, s, input.overrides);
   if (hours === undefined || (kind !== "study" && kind !== "revision" && kind !== "sunday")) return legacy;
   const budgetMin = hours * 60;
 
   const dsaPool = mainLeft.map((p) => p.difficulty ?? "Medium");
-  const dueIds = input.subtopics
-    .filter((t) => !t.done && t.week <= week)
-    .sort((a, b) => a.position - b.position)
-    .map((t) => t.id);
+  const dueIds = dueSubtopics(input.subtopics, week, s).map((t) => t.id);
   const itemsOf = (n: { dsa: number; theory: number; reviews: number }): BudgetItems => ({
     kind,
     saturday: dayOfWeek(date) === 6 && isWorkday,
@@ -245,6 +260,7 @@ export function projectDays(input: {
   problems: ProblemState[];
   reviews: ReviewState[];
   subtopics: SubtopicState[];
+  overrides?: readonly HoursOverride[];
   costs?: Costs;
   seed?: Pick<DailyPlanDraft, "dsaNew" | "dsaReview" | "jsProblem" | "sqlProblem" | "theory">;
 }): DailyPlanDraft[] {
@@ -266,6 +282,7 @@ export function projectDays(input: {
       problems: input.problems.map((p) => (p.solved || !solved.has(p.slug) ? p : { ...p, solved: true })),
       reviews: input.reviews.filter((r) => !reviewed.has(r.slug)),
       subtopics: input.subtopics.map((t) => (t.done || !done.has(t.id) ? t : { ...t, done: true })),
+      overrides: input.overrides,
       costs: input.costs,
     });
     out.push(plan);

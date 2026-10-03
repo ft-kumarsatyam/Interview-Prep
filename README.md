@@ -20,7 +20,7 @@ Frontend and backend live in **one Next.js 16 repo**, deployed on Vercel with Mo
 |---|---|
 | 671 LeetCode problems (free, links checked) | 606 DSA (151 core first, then extended) · 35 JavaScript (*30 Days of JS*) · 30 SQL; 83 runnable in the in-app IDE |
 | 70 topics, 410 subtopics | 10 tracks: JS & TS · Node · DSA concepts · DBMS & SQL · OOP · LLD · HLD · CS · AI · Behavioral |
-| 1,147 bank quiz questions | per DSA pattern and per subtopic; JS output-prediction answers are verified by actually running the code |
+| 5,584 bank quiz questions | about 11 hand-written per subtopic (single, multi-select, true/false, JS output; tagged easy/medium/hard) plus DSA patterns. JS output-prediction answers are verified by actually running the code. Practice rotates toward unseen and missed questions, and a Mistakes review re-asks what you got wrong |
 | 54 news feeds + Google News keyword feeds | AI labs, AI news, JS/Node, databases, system design (ByteByteGo, System Design One, AlgoMaster…), big-tech engineering, tech news, career |
 | 25 system design case studies | URL shortener, KV store, rate limiter, ID generator, notifications, news feed, chat, video streaming, ride hailing, payments, ticket booking, collaborative docs, autocomplete, web crawler, file sync, ad click aggregator, leaderboard and more |
 
@@ -31,6 +31,7 @@ All build phases (0–25) are done. See `docs/BUILD_PLAN.md` for the phase list 
 | Area | What you get |
 |---|---|
 | Dashboard | Today's plan, progress ring, streak and freeze tokens, pace, 24-week heatmap (click a day to open it in the calendar), this week's mocks, "Fill in details" inbox for synced solves, news strip (long reads first), "Finish setup" card |
+| Planner | `/plan` and `/plan/setup`: a guided intake (goal and date, a 1-5 rating and must/nice/skip per topic, hours per weekday plus lighter weeks, an optional quick check) that weights the plan towards weak and wanted topics, a feasibility check with fixes when the time is not enough, and a weekly suggestion you approve before it changes anything |
 | Calendar | `/calendar` month view of the whole plan: past days with what was done, future days as a projection of the topics and problems planned for that date, weekly mock days |
 | Setup | `/setup` checklist: database, secrets, LeetCode, crons, feeds, notifications, LLM, backups, session, each with a fix button |
 | System Design | `/design`: 45-minute framework, building blocks, latency/capacity cheat sheet, 17 cases (requirements → estimates → API → data model → diagram → deep dives → trade-offs → interviewer probes), mock-interview timer with autosaved sections and rubric, related articles from your feed |
@@ -94,7 +95,9 @@ Other scripts:
 
 | Command | Does |
 |---|---|
-| `npm run quiz-bank` | Regenerates `data/quiz-bank.json` from the syllabus and patterns. Every JS output question is run in `node:vm`, so the answer key is the real output |
+| `npm run quiz-bank` | Regenerates `data/quiz-bank.json` from the hand-written questions in `scripts/quiz-bank/authored/<topicId>.json`, plus DSA patterns and concepts. Every JS output question is run in `node:vm`, so the answer key is the real output |
+| `node --import tsx scripts/check-quiz-authored.ts <file…>` | Validates authored quiz files (shape, duplicates, at least 10 per subtopic, real snippet output). `--list <topicId>` shows a topic's subtopics and existing questions |
+| `node --import tsx scripts/build-case-quizzes.ts` | Rebuilds `data/case-quizzes.json` from `scripts/case-quizzes/parts/*.json` |
 | `npm run quiz-bank -- --llm` | Same, plus LLM-written questions per subtopic (needs `LLM_API_KEY`; `LLM_DELAY_MS` paces free-tier rate limits) |
 | `npm run icons` | Regenerates the PWA icons in `public/` and `app/apple-icon.png` from the logo |
 | `curl -H "Authorization: Bearer $CRON_SECRET" localhost:3000/api/cron/morning` | Runs the morning job locally (news, article text prefetch, plan, LeetCode sync). `/setup` has a button for it too |
@@ -145,7 +148,7 @@ Pick an idea from the bottom of `docs/BUILD_PLAN.md`, check it works, commit.
 4. Deploy (or *Redeploy* after changing env vars). URL: `https://<project>.vercel.app`. Sign in with `ADMIN_EMAIL` and your password.
    - **Automatic deploys:** `.github/workflows/deploy.yml` deploys every push to `main` to production once tests, typecheck, lint and build pass. One-time setup: create a token at [vercel.com/account/tokens](https://vercel.com/account/tokens) and add it as the `VERCEL_TOKEN` secret in *GitHub → Settings → Secrets and variables → Actions*. Don't also connect the repo in Vercel's Git settings, or each push deploys twice. Manual fallback: `npx vercel@latest deploy --prod`.
    - **Custom domain (`satyam-dev.in`):** both `satyam-dev.in` and `www.satyam-dev.in` are attached to the project, and `www` 308-redirects to the apex. At the DNS host (GoDaddy) keep the NS, SOA, `_domainconnect` and `_dmarc` records, delete `A @ Parked`, and add `A @ 216.198.79.1`, `A @ 64.29.17.1` and `CNAME www → a5765071072e3741.vercel-dns-017.com.` (`npx vercel@latest domains verify satyam-dev.in` prints the current values). A new `.in` domain stays on `clientHold`, resolving nowhere, until the registrant WHOIS email is verified. Vercel issues the HTTPS certificate once DNS resolves. Cookies are per domain, so sign in again on the new domain and re-add the home-screen app from it.
-5. *Settings → Cron Jobs* should list `/api/cron/morning` (00:00 UTC = 05:30 IST) and `/api/cron/evening` (14:30 UTC = 20:00 IST) from `vercel.json`. On Hobby each fires once a day, somewhere within its hour. The app stays correct without them: opening the dashboard builds today's plan and syncs LeetCode.
+5. *Settings → Cron Jobs* should list `/api/cron/morning` (02:30 UTC, about 08:00 IST) and `/api/cron/evening` (18:29 UTC, about 23:59 IST) from `vercel.json`. On Hobby each fires once a day, somewhere within its UTC hour (so the plan email lands 07:30–08:29 IST and the recap 23:30–00:29 IST; a recap that lands after midnight still reports the day that just ended). For exact times, point a free cron-job.org job at each URL with the `Authorization: Bearer $CRON_SECRET` header at 08:00 and 23:59 in your timezone: every email is sent once per day, so running both schedulers is safe. The app stays correct without them: opening the dashboard builds today's plan and syncs LeetCode.
 
 ### 4.4 Check the cron endpoints
 
@@ -177,13 +180,13 @@ It opens on the dashboard. On Android, long-press the icon for shortcuts to the 
 
 ## 5. How a day works
 
-1. **05:30:** news refreshes, past days are settled, today's plan is built and LeetCode syncs. DSA is 2/day in weeks 1–2, 3/day in weeks 3–4, then adaptive (Saturday double), plus a JS-track or SQL problem and 2–3 theory subtopics.
+1. **08:00:** past days are settled, today's plan is built and emailed (with anything yesterday left open called out), then news refreshes and LeetCode syncs. DSA is 2/day in weeks 1–2, 3/day in weeks 3–4, then adaptive (Saturday double), plus a JS-track or SQL problem and 2–3 theory subtopics.
 2. Solve on LeetCode **in JavaScript**. Accepted submissions sync automatically (on dashboard load, at most every 10 minutes, or with *Sync now*). Fill in confidence, time and approach from the *Fill in details* inbox so spaced repetition stays accurate. You can also tick problems by hand.
 3. Check off theory subtopics, take the 5-question **Practice** quiz to build mastery, and try code in the **Playground**. When a topic's subtopics are all done, its **topic quiz** (≥ 70%) earns *Mastered*.
 4. Read 2–3 articles in the in-app reader (System design picks are a good default).
    On HLD weeks, study the matching case in **System Design** and run a 45-minute mock.
 5. **Pass the daily quiz (≥ 60%)** to complete the day. 🔥 It unlocks after 1 problem and 1 subtopic.
-6. **20:00:** you get a reminder if anything is left.
+6. **23:59:** a recap email: what you did today, what is left, your streak standing, tomorrow's adjusted plan and when the DSA list finishes at your recent pace. An optional `/api/cron/reminder` (for an external scheduler) sends a mid-evening nudge if today is incomplete.
 
 Sunday is the re-solve and weekly quiz day. A 7-day streak earns a ❄ freeze token (max 2).
 

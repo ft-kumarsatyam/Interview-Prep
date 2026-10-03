@@ -144,7 +144,7 @@ function jobsItem({ jobs, now, secrets }: SetupInput): SetupItem {
   const never = !jobs.lastMorningAt && !jobs.lastEveningAt;
   return {
     id: "jobs",
-    title: "Daily jobs (05:30 and 20:00)",
+    title: "Daily jobs (8:00 plan, 23:59 recap)",
     status: morning && evening ? "ok" : never ? "todo" : "warn",
     detail: never
       ? "The scheduled jobs haven't run yet. On Vercel they start after the first deploy; locally, run the morning job by hand. The app still works without them."
@@ -196,7 +196,7 @@ function llmItem({ llm }: SetupInput): SetupItem {
     status: llm.configured ? "ok" : "warn",
     detail: llm.configured
       ? `${chain || "An AI provider"} write the daily quiz and power hints and explanations, with the question bank as fallback.${paidNote}`
-      : "Optional. Without GEMINI_API_KEY or GROQ_API_KEY the app uses the 1,373-question bank and static explanations, which works fine.",
+      : "Optional. Without GEMINI_API_KEY or GROQ_API_KEY the app uses the 5,584-question bank and static explanations, which works fine.",
     required: false,
     actions: llm.configured ? [{ kind: "button", id: "test-llm", label: "Test" }] : [],
   };

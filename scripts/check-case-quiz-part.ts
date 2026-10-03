@@ -24,7 +24,8 @@ for (const [key, list] of Object.entries(json)) {
     continue;
   }
   const { questions, errors: errs } = buildCaseQuestions(kind, slug, list);
-  errors.push(...errs);
+  // The per-case minimum applies to all part files merged, which build-case-quizzes.ts checks.
+  errors.push(...errs.filter((e) => !e.includes("needs at least")));
   const prompts = new Set<string>();
   for (const [i, q] of questions.entries()) {
     if (q.reading !== undefined && !known.readings[q.reading]) errors.push(`${key} #${i + 1}: reading ${q.reading} doesn't exist (case has ${known.readings.length})`);

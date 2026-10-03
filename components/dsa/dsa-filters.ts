@@ -2,7 +2,7 @@ import type { ContentProblem } from "@/lib/content";
 import type { ProgressSummary } from "@/lib/services/problems";
 
 export const TRACKS = [
-  { id: "main", label: "DSA (in JS)", short: "DSA", blurb: "Core pass first (151 must-know), then the extended set, pattern by pattern." },
+  { id: "main", label: "DSA (in JS)", short: "DSA", blurb: "Core pass first (153 must-know), then the extended set, pattern by pattern." },
   { id: "js", label: "JavaScript", short: "JS", blurb: "LeetCode 30 Days of JavaScript: closures, promises, debounce, event emitter." },
   { id: "sql", label: "SQL", short: "SQL", blurb: "Classic backend SQL questions. One a day from week 4." },
 ] as const;

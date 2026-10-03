@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Check, CircleSlash, Keyboard, ListFilter, Loader2, PartyPopper, RotateCcw, Send, Target, Trophy, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, CircleSlash, Keyboard, ListFilter, PartyPopper, RotateCcw, Send, Target, Trophy, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -380,8 +380,8 @@ export function QuizPlayer({ questions, seed, passPct, submit, initial, onRetake
           {unanswered > 0 ? `${unanswered} unanswered` : "All answered"}
         </span>
         {isLast ? (
-          <Button size="lg" className="h-10 px-4" onClick={requestSubmit} disabled={submitting} aria-busy={submitting}>
-            {submitting ? <Loader2 className="animate-spin" aria-hidden /> : <Send />} {submitting ? "Grading…" : "Submit"}
+          <Button size="lg" className="h-10 px-4" onClick={requestSubmit} loading={submitting}>
+            {!submitting && <Send />} {submitting ? "Grading…" : "Submit"}
           </Button>
         ) : (
           <Button size="lg" variant={chosenOriginal === null ? "secondary" : "default"} className="h-10 px-4" onClick={next} disabled={submitting}>
@@ -402,8 +402,8 @@ export function QuizPlayer({ questions, seed, passPct, submit, initial, onRetake
             <Button variant="outline" size="lg" className="h-10" onClick={goToFirstUnanswered}>
               Go to first unanswered
             </Button>
-            <Button size="lg" className="h-10" onClick={() => void doSubmit()} disabled={submitting} aria-busy={submitting}>
-              {submitting ? <Loader2 className="animate-spin" aria-hidden /> : <Send />} Submit anyway
+            <Button size="lg" className="h-10" onClick={() => void doSubmit()} loading={submitting}>
+              {!submitting && <Send />} Submit anyway
             </Button>
           </DialogFooter>
         </DialogContent>

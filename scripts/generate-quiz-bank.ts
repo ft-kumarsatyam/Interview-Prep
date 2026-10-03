@@ -2,12 +2,14 @@
  * Builds data/quiz-bank.json, the offline question bank used when no LLM key is
  * set (and for practice quizzes). Deterministic: re-running gives the same ids.
  *
- *   npm run quiz-bank                 # verified output questions, concepts, patterns, recall coverage
+ *   npm run quiz-bank                 # authored + verified output questions, concepts, patterns, recall coverage
  *   npm run quiz-bank -- --llm        # also ask the configured LLM to top up thin subtopics
  *   npm run quiz-bank -- --llm --track=js,node --max=40
  *
  * Output-prediction answers come from actually running each snippet (node:vm),
  * so the answer key can never be wrong. LLM questions are concept-only (no code).
+ * Most questions are hand-written per subtopic in scripts/quiz-bank/authored/<topicId>.json
+ * (dry-run one with scripts/check-quiz-authored.ts).
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -18,6 +20,7 @@ import { createLlm } from "@/lib/llm";
 import { LLM_PROVIDERS, type LlmProviderName } from "@/lib/llm/types";
 import { fromLlm, subtopicPrompt } from "@/lib/quiz/prompts";
 import { llmQuizSchema, quizBankSchema, quizQuestionSchema, type QuizBank, type QuizQuestion } from "@/lib/quiz/question";
+import { buildAllAuthored } from "./quiz-bank/authored";
 import { CONCEPTS } from "./quiz-bank/concepts";
 import { FORMAT_QUESTIONS } from "./quiz-bank/formats";
 import { OUTPUT_SNIPPETS } from "./quiz-bank/output-snippets";
@@ -298,7 +301,9 @@ async function main() {
   const concept = conceptQuestions();
   const pattern = patternQuestions();
   const formats = formatQuestions();
-  const base = [...output, ...concept, ...pattern];
+  const authored = await buildAllAuthored();
+  if (authored.errors.length) throw new Error(`authored questions are invalid:\n${authored.errors.map((e) => `- ${e}`).join("\n")}`);
+  const base = [...output, ...concept, ...pattern, ...authored.questions];
   const fresh = args.has("llm") ? await llmTopUp(base, keptLlm) : [];
 
   const counts = new Map<string, number>();
@@ -315,7 +320,7 @@ async function main() {
 
   console.log(
     `quiz bank: ${bank.questions.length} questions → ${path.relative(process.cwd(), OUT)}\n` +
-      `  output ${output.length} (vm-verified) · concept ${concept.length} · formats ${formats.length} · pattern ${pattern.length} · llm ${keptLlm.length + fresh.length} · recall ${recall.length}`,
+      `  authored ${authored.questions.length} · output ${output.length} (vm-verified) · concept ${concept.length} · formats ${formats.length} · pattern ${pattern.length} · llm ${keptLlm.length + fresh.length} · recall ${recall.length}`,
   );
 }
 

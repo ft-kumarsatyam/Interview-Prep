@@ -1,4 +1,4 @@
-import { designCaseBySlug, practiceCaseBySlug, subtopicById, subtopics, topicById, trackById } from "@/lib/content";
+import { designCaseBySlug, practiceCaseBySlug, problemBySlug, subtopicById, subtopics, topicById, trackById } from "@/lib/content";
 import { connectDb } from "@/lib/db";
 import type { DateStr } from "@/lib/domain/dates";
 import {
@@ -9,7 +9,8 @@ import {
   SUBTOPIC_PRACTICE_SIZE,
   TOPIC_QUIZ_SIZE,
 } from "@/lib/domain/mastery";
-import { correctAnswerKey, isAnswerCorrect, scoreQuiz } from "@/lib/domain/quiz";
+import { mistakeWeight, outstandingMistakes, rotationWeight, type QuestionHistory } from "@/lib/domain/question-history";
+import { correctAnswerKey, difficultyLayers, isAnswerCorrect, scoreQuiz } from "@/lib/domain/quiz";
 import { askSubjectForRef } from "@/lib/quiz/subject";
 import { casePath, CASE_QUIZ_SIZE, parseCaseRef, pickCaseQuestions } from "@/lib/domain/case-quiz";
 import { caseQuestions, caseTitle, learnMoreFor } from "@/lib/quiz/case-bank";
@@ -19,12 +20,19 @@ import { Mastery, PracticeAttempt } from "@/lib/models/learning";
 import { SubtopicProgress } from "@/lib/models/progress";
 import { bank, questionWeight } from "@/lib/quiz/bank";
 import { fromLlm, subtopicPrompt } from "@/lib/quiz/prompts";
-import { llmQuizSchema, toPublic, toReview, type PublicQuestion, type QuizOutcome, type QuizQuestion } from "@/lib/quiz/question";
+import { llmQuizSchema, toPublic, toReview, type Difficulty, type PublicQuestion, type QuizOutcome, type QuizQuestion } from "@/lib/quiz/question";
+import { loadQuestionHistory, type AskedQuestion } from "./question-history";
 import { todayIn } from "./plan";
 import { getSettings } from "./settings";
 
+export type PracticeScope = "subtopic" | "topic" | "case" | "mistakes";
+
+/** Questions in a mistakes review run. */
+export const MISTAKES_QUIZ_SIZE = 10;
+const MISTAKES_REF = /^mistakes(?::([a-z]+))?$/;
+
 export interface PracticeTarget {
-  scope: "subtopic" | "topic" | "case";
+  scope: PracticeScope;
   ref: string;
   title: string;
   topicId: string;
@@ -36,6 +44,13 @@ export interface PracticeTarget {
 }
 
 export function resolvePracticeTarget(ref: string): PracticeTarget | null {
+  const mistakes = MISTAKES_REF.exec(ref);
+  if (mistakes) {
+    const track = mistakes[1];
+    if (track && !trackById.has(track) && track !== "case") return null;
+    const label = track ? (track === "case" ? "Case quizzes" : trackById.get(track)!.name) : "Everything";
+    return { scope: "mistakes", ref, title: `Fix your mistakes: ${label}`, topicId: "", topicTitle: "Mistakes", track: track ?? "", subtopicIds: [], href: "/quiz/mistakes" };
+  }
   const kase = parseCaseRef(ref);
   if (kase) {
     const title = caseTitle(ref);
@@ -73,12 +88,22 @@ export async function topicQuizEligibility(target: PracticeTarget): Promise<{ el
 
 const real = (q: QuizQuestion) => q.style !== "recall";
 
-function take(layers: QuizQuestion[][], n: number, rng: Rng): QuizQuestion[] {
+interface PickContext {
+  rng: Rng;
+  history: QuestionHistory;
+  now: number;
+  difficulty: Difficulty | null;
+}
+
+/** Bank weight × rotation: unseen and previously-missed questions come first on repeat runs. */
+const weightIn = (ctx: PickContext) => (q: QuizQuestion) => questionWeight(q) * rotationWeight(ctx.history.get(q.id), ctx.now);
+
+function take(layers: QuizQuestion[][], n: number, ctx: PickContext): QuizQuestion[] {
   const used = new Set<string>();
   const out: QuizQuestion[] = [];
-  for (const layer of layers) {
+  for (const layer of difficultyLayers(layers, ctx.difficulty)) {
     if (out.length >= n) break;
-    for (const q of weightedSample(layer.filter((q) => !used.has(q.id)), questionWeight, n - out.length, rng)) {
+    for (const q of weightedSample(layer.filter((q) => !used.has(q.id)), weightIn(ctx), n - out.length, ctx.rng)) {
       used.add(q.id);
       out.push(q);
     }
@@ -86,7 +111,7 @@ function take(layers: QuizQuestion[][], n: number, rng: Rng): QuizQuestion[] {
   return out;
 }
 
-async function subtopicQuestions(target: PracticeTarget, llm: LlmProvider | null, rng: Rng): Promise<QuizQuestion[]> {
+async function subtopicQuestions(target: PracticeTarget, llm: LlmProvider | null, ctx: PickContext): Promise<QuizQuestion[]> {
   const own = bank().bySubtopic.get(target.ref) ?? [];
   const n = SUBTOPIC_PRACTICE_SIZE;
   // Prefer the LLM only when the bank has little real material for this subtopic.
@@ -101,23 +126,77 @@ async function subtopicQuestions(target: PracticeTarget, llm: LlmProvider | null
     }
   }
   const siblings = subtopics.filter((s) => s.topicId === target.topicId && s.id !== target.ref).flatMap((s) => bank().bySubtopic.get(s.id) ?? []);
-  return take([own.filter(real), own, siblings.filter(real), siblings], n, rng);
+  return take([own.filter(real), own, siblings.filter(real), siblings], n, ctx);
 }
 
-async function topicQuestions(target: PracticeTarget, rng: Rng): Promise<QuizQuestion[]> {
+async function topicQuestions(target: PracticeTarget, ctx: PickContext): Promise<QuizQuestion[]> {
   const masteries = await Mastery.find({ ref: { $in: target.subtopicIds } }, { ref: 1, score: 1 }).lean();
   const scores = Object.fromEntries(masteries.map((m) => [m.ref, m.score ?? 0]));
   const bySubtopic = new Map(
     target.subtopicIds.map((id) => {
-      const qs = bank().bySubtopic.get(id) ?? [];
-      return [id, qs.filter(real).length >= 2 ? qs.filter(real) : qs];
+      const all = bank().bySubtopic.get(id) ?? [];
+      const qs = all.filter(real).length >= 2 ? all.filter(real) : all;
+      const matching = ctx.difficulty ? qs.filter((q) => q.difficulty === ctx.difficulty) : qs;
+      return [id, matching.length >= 2 ? matching : qs];
     }),
   );
-  const picked = pickTopicQuestions(bySubtopic, scores, TOPIC_QUIZ_SIZE, rng);
+  const picked = pickTopicQuestions(bySubtopic, scores, TOPIC_QUIZ_SIZE, ctx.rng, weightIn(ctx));
   if (picked.length >= TOPIC_QUIZ_SIZE) return picked;
   const used = new Set(picked.map((q) => q.id));
   const fill = (bank().byTrack.get(target.track) ?? []).filter((q) => real(q) && !used.has(q.id));
-  return [...picked, ...weightedSample(fill, questionWeight, TOPIC_QUIZ_SIZE - picked.length, rng)];
+  return [...picked, ...weightedSample(fill, weightIn(ctx), TOPIC_QUIZ_SIZE - picked.length, ctx.rng)];
+}
+
+/** The track a question belongs to, for filtering a mistakes run. */
+function trackOfRef(ref: string): string {
+  if (parseCaseRef(ref)) return "case";
+  const sub = subtopicById.get(ref);
+  if (sub) return sub.track;
+  return bank().byPattern.has(ref) || problemBySlug.has(ref) ? "dsa" : "";
+}
+
+/** Questions whose latest answer was wrong, as they were asked, optionally limited to one track. */
+export function mistakeCandidates(history: QuestionHistory, asked: ReadonlyMap<string, AskedQuestion>, track?: string): Array<AskedQuestion & { weight: number }> {
+  return outstandingMistakes(history).flatMap(({ id, stat }) => {
+    const q = asked.get(id);
+    if (!q || (track && trackOfRef(q.ref) !== track)) return [];
+    return [{ ...q, weight: mistakeWeight(stat) }];
+  });
+}
+
+/** Where a question came from, in words: subtopic, case, or DSA pattern. */
+function sourceLabel(ref: string): string {
+  if (parseCaseRef(ref)) return caseTitle(ref) ?? "Case quiz";
+  const sub = subtopicById.get(ref);
+  if (sub) return `${sub.topicTitle}: ${sub.title}`;
+  return problemBySlug.get(ref)?.title ?? ref;
+}
+
+export interface MistakesOverview {
+  total: number;
+  /** `track` is a syllabus track id, or `case` for case quizzes. */
+  byTrack: Array<{ track: string; name: string; count: number }>;
+  top: Array<{ id: string; prompt: string; where: string; ref: string; wrong: number; attempts: number }>;
+}
+
+export async function getMistakesOverview(limit = 15): Promise<MistakesOverview> {
+  const { history, asked } = await loadQuestionHistory();
+  const all = mistakeCandidates(history, asked);
+  const counts = new Map<string, number>();
+  for (const q of all) {
+    const t = trackOfRef(q.ref);
+    if (t) counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  return {
+    total: all.length,
+    byTrack: [...counts]
+      .map(([track, count]) => ({ track, name: track === "case" ? "Case quizzes" : (trackById.get(track)?.name ?? track), count }))
+      .sort((a, b) => b.count - a.count),
+    top: all.slice(0, limit).map((q) => {
+      const stat = history.get(q.id)!;
+      return { id: q.id, prompt: q.prompt, where: sourceLabel(q.ref), ref: q.ref, wrong: stat.wrong, attempts: stat.attempts };
+    }),
+  };
 }
 
 export interface PracticeStart {
@@ -126,21 +205,38 @@ export interface PracticeStart {
   questions: PublicQuestion[];
 }
 
-/** Create a practice run. Ungated for subtopics; the topic quiz needs every subtopic ticked. */
-export async function startPractice(ref: string, llm: LlmProvider | null = getLlm(), now = new Date()): Promise<PracticeStart> {
+export interface PracticeOptions {
+  /** Prefer questions of this difficulty; unrated and other questions only fill a short run. */
+  difficulty?: Difficulty | null;
+}
+
+type RunQuestion = Pick<QuizQuestion, "id" | "prompt" | "code" | "options" | "answerIndex" | "type" | "answerIndices" | "explanation"> & { source: { ref: string } };
+
+/**
+ * Create a practice run. Ungated for subtopics; the topic quiz needs every subtopic ticked.
+ * Repeat runs rotate: questions you haven't seen or last got wrong are drawn first.
+ */
+export async function startPractice(ref: string, llm: LlmProvider | null = getLlm(), now = new Date(), opts: PracticeOptions = {}): Promise<PracticeStart> {
   await connectDb();
   const target = resolvePracticeTarget(ref);
   if (!target) throw new Error("Unknown topic");
   if (target.scope === "topic" && !(await topicQuizEligibility(target)).eligible) {
     throw new Error("Tick every subtopic in this topic to unlock its quiz");
   }
-  const rng = seededRng(seedFrom(`${ref}:${now.getTime()}`));
-  const questions =
-    target.scope === "case"
-      ? pickCaseQuestions(caseQuestions(ref), CASE_QUIZ_SIZE, rng)
-      : target.scope === "topic"
-        ? await topicQuestions(target, rng)
-        : await subtopicQuestions(target, llm, rng);
+  const { history, asked } = await loadQuestionHistory();
+  const ctx: PickContext = { rng: seededRng(seedFrom(`${ref}:${now.getTime()}`)), history, now: now.getTime(), difficulty: opts.difficulty ?? null };
+  let questions: RunQuestion[];
+  if (target.scope === "mistakes") {
+    const pool = mistakeCandidates(history, asked, target.track || undefined);
+    questions = weightedSample(pool, (q) => q.weight, MISTAKES_QUIZ_SIZE, ctx.rng).map((q) => ({ ...q, source: { ref: q.ref } }));
+    if (questions.length === 0) throw new Error("No mistakes to review: every question you've missed has since been answered right");
+  } else if (target.scope === "case") {
+    const all = caseQuestions(ref);
+    const matching = ctx.difficulty ? all.filter((q) => q.difficulty === ctx.difficulty) : all;
+    questions = pickCaseQuestions(matching.length >= CASE_QUIZ_SIZE ? matching : all, CASE_QUIZ_SIZE, ctx.rng, weightIn(ctx));
+  } else {
+    questions = target.scope === "topic" ? await topicQuestions(target, ctx) : await subtopicQuestions(target, llm, ctx);
+  }
   if (questions.length === 0) throw new Error("No questions for this topic yet");
   const attempt = await PracticeAttempt.create({
     scope: target.scope,
@@ -167,7 +263,7 @@ export interface MasteryState {
   masteredOn: DateStr | null;
 }
 
-async function bumpMastery(ref: string, scope: "subtopic" | "topic" | "case", pct: number, masteredOn?: DateStr): Promise<MasteryState> {
+async function bumpMastery(ref: string, scope: Exclude<PracticeScope, "mistakes">, pct: number, masteredOn?: DateStr): Promise<MasteryState> {
   const prev = await Mastery.findOne({ ref }).lean();
   const score = nextMasteryScore(prev ? { score: prev.score ?? 0, attempts: prev.attempts ?? 0 } : null, pct);
   const setMastered = masteredOn && !prev?.masteredOn ? { masteredOn } : {};
@@ -186,7 +282,10 @@ async function bumpMastery(ref: string, scope: "subtopic" | "topic" | "case", pc
 
 export interface PracticeResult {
   outcome: QuizOutcome;
-  mastery: MasteryState;
+  /** Null for mistakes runs, which don't feed mastery. */
+  mastery: MasteryState | null;
+  /** Mistakes runs only: how many missed questions are still waiting after this run. */
+  remainingMistakes?: number;
   newlyMastered: boolean;
   thresholdPct: number;
   target: PracticeTarget;
@@ -212,9 +311,13 @@ export async function submitPractice(attemptId: string, answers: Array<number | 
 
   const s = await getSettings();
   const thresholdPct = s.topicMasteryPct;
-  let mastery: MasteryState;
+  let mastery: MasteryState | null = null;
   let newlyMastered = false;
-  if (target.scope === "topic") {
+  let remainingMistakes: number | undefined;
+  if (target.scope === "mistakes") {
+    const { history, asked } = await loadQuestionHistory();
+    remainingMistakes = mistakeCandidates(history, asked, target.track || undefined).length;
+  } else if (target.scope === "topic") {
     const passed = passesTopicQuiz(score.pct, thresholdPct);
     const before = await Mastery.findOne({ ref: target.ref }, { masteredOn: 1 }).lean();
     mastery = await bumpMastery(target.ref, "topic", score.pct, passed ? todayIn(s, now) : undefined);
@@ -232,15 +335,21 @@ export async function submitPractice(attemptId: string, answers: Array<number | 
   } else {
     mastery = await bumpMastery(target.ref, target.scope, score.pct);
   }
-  const byId = target.scope === "case" ? new Map(caseQuestions(target.ref).map((q) => [q.id, q])) : null;
+  // Mistakes runs mix cases, so look each case question up by its own ref.
+  const caseLearnMore = (q: { id: string; ref: string }) => {
+    if (!parseCaseRef(q.ref)) return undefined;
+    const found = caseQuestions(q.ref).find((c) => c.id === q.id);
+    return found ? learnMoreFor(q.ref, found) : undefined;
+  };
 
   return {
     outcome: {
       ...score,
       passed: target.scope === "topic" ? passesTopicQuiz(score.pct, thresholdPct) : score.pct >= s.quizPassPct,
-      review: questions.map((q) => toReview({ id: q.id, subject: askSubjectForRef(q.ref), learnMore: byId?.get(q.id) ? learnMoreFor(target.ref, byId.get(q.id)!) : undefined, answerIndex: q.answerIndex, ...(q.type ? { type: q.type } : {}), ...(q.answerIndices?.length ? { answerIndices: [...q.answerIndices] } : {}), explanation: q.explanation ?? "" })),
+      review: questions.map((q) => toReview({ id: q.id, subject: askSubjectForRef(q.ref), learnMore: caseLearnMore(q), answerIndex: q.answerIndex, ...(q.type ? { type: q.type } : {}), ...(q.answerIndices?.length ? { answerIndices: [...q.answerIndices] } : {}), explanation: q.explanation ?? "" })),
     },
     mastery,
+    ...(remainingMistakes === undefined ? {} : { remainingMistakes }),
     newlyMastered,
     thresholdPct,
     target,

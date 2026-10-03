@@ -1,7 +1,7 @@
 import type { Pace } from "./pace";
 import { isDayComplete, type DayProgress } from "./streak";
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** What's still needed to complete the day, in the order it's best done. Empty when nothing is due. */
 export function remainingWork(p: DayProgress): string[] {
@@ -53,6 +53,8 @@ export interface DigestInput {
   theory: DigestLink[];
   reading: DigestLink[];
   pace: Pace | null;
+  /** What yesterday left undone and how it carries into today, when anything did. */
+  carryOver?: string | null;
   appUrl?: string;
 }
 
@@ -109,6 +111,7 @@ export function morningDigest(input: DigestInput): { title: string; text: string
   };
   const text = [
     intro,
+    ...(input.carryOver ? [input.carryOver] : []),
     ...sections.map((s) => `\n${s.heading}\n${s.items.map(textItem).join("\n")}`),
     ...(footer.length ? ["", ...footer] : []),
     ...(base ? ["", `Open PrepOS: ${base}/dashboard`] : []),
@@ -124,6 +127,7 @@ export function morningDigest(input: DigestInput): { title: string; text: string
     `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;color:#111827;line-height:1.5">`,
     `<h2 style="margin:0 0 8px">${escapeHtml(title)}</h2>`,
     `<p style="margin:0 0 16px">${escapeHtml(intro)}</p>`,
+    ...(input.carryOver ? [`<p style="margin:0 0 16px;padding:8px 12px;background:#fffbeb;border-left:3px solid #d97706">${escapeHtml(input.carryOver)}</p>`] : []),
     ...sections.map(
       (s) => `<h3 style="margin:16px 0 4px;font-size:15px">${escapeHtml(s.heading)}</h3><ul style="margin:0;padding-left:20px">${s.items.map(htmlItem).join("")}</ul>`,
     ),

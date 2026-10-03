@@ -3,11 +3,14 @@ import { connectDb } from "@/lib/db";
 import { addDays, eachDay, toLocalDate, type DateStr } from "@/lib/domain/dates";
 import { buildDailyPlan, dayKind, type DailyPlanDraft, type ProblemState, type ReviewState, type SubtopicState } from "@/lib/domain/planner";
 import { bestStreak, currentStreak, settleDays, type DayRecord, type StreakEvent } from "@/lib/domain/streak";
-import { estimateCosts, type Costs } from "@/lib/domain/time-budget";
+import { estimateCosts, type Costs, type HoursOverride } from "@/lib/domain/time-budget";
 import { DailyPlan, DayLog } from "@/lib/models/day";
 import { ProblemProgress, SubtopicProgress } from "@/lib/models/progress";
 import { Notification, Settings, SETTINGS_ID } from "@/lib/models/system";
+import { carryOverChange, replanChange } from "@/lib/domain/plan-changes";
 import { recomputeDay, type DayState } from "./day";
+import { loadPersonalisation, type Personalisation } from "./intake-weights";
+import { gapsOfDays, logPlanChange } from "./plan-log";
 import { getSettings, type AppSettings } from "./settings";
 
 export interface TodayState {
@@ -67,6 +70,11 @@ async function settlePastDays(s: AppSettings, today: DateStr): Promise<number> {
       })),
     );
   }
+  // Record the unfinished work of each closed day: it rolls into the next plan.
+  for (const [date, open] of await gapsOfDays(from, to)) {
+    const change = carryOverChange(date, open.gap);
+    if (change) await logPlanChange(change, today);
+  }
   if (result.events.length > 0) {
     await Notification.insertMany(
       result.events.map((e) => ({ kind: e.type === "freeze-earned" ? "milestone" : "streak", ...EVENT_COPY[e.type](e) })),
@@ -92,19 +100,25 @@ export async function loadCosts(): Promise<Costs> {
 }
 
 /** Current progress in the shape the planner takes. */
-export async function loadPlanInputs(): Promise<{ problems: ProblemState[]; reviews: ReviewState[]; subtopics: SubtopicState[]; costs: Costs }> {
-  const [progressRows, doneSubtopics, costs] = await Promise.all([
+export async function loadPlanInputs(): Promise<{ problems: ProblemState[]; reviews: ReviewState[]; subtopics: SubtopicState[]; costs: Costs; overrides: HoursOverride[]; personal: Personalisation }> {
+  const [progressRows, doneSubtopics, costs, personal] = await Promise.all([
     ProblemProgress.find({}, { slug: 1, status: 1, nextReviewAt: 1 }).lean(),
     SubtopicProgress.find({}, { subtopicId: 1 }).lean(),
     loadCosts(),
+    loadPersonalisation(),
   ]);
   const solved = new Set(progressRows.filter((p) => p.status === "solved").map((p) => p.slug));
   const done = new Set(doneSubtopics.map((d) => d.subtopicId));
   return {
     problems: problems.map((p) => ({ slug: p.slug, track: p.track, order: p.order, solved: solved.has(p.slug), difficulty: p.difficulty })),
     reviews: progressRows.filter((p) => p.nextReviewAt).map((p) => ({ slug: p.slug, nextReviewAt: p.nextReviewAt! })),
-    subtopics: subtopics.map((t) => ({ id: t.id, week: t.week, position: t.position, done: done.has(t.id) })),
+    subtopics: subtopics.map((t) => {
+      const weight = personal.weights.get(t.topicId)?.weight;
+      return { id: t.id, week: t.week, position: t.position, done: done.has(t.id), ...(weight !== undefined ? { weight } : {}) };
+    }),
     costs,
+    overrides: personal.overrides,
+    personal,
   };
 }
 
@@ -212,6 +226,10 @@ export async function replanToday(hours: number, now = new Date()): Promise<Dail
   };
   await DailyPlan.updateOne({ date: today }, { $set: update });
   await recomputeDay(today);
+  await logPlanChange(
+    replanChange(today, hours, { dsa: existing.dsaTarget, theory: existing.theoryTarget }, { dsa: fresh.dsaTarget, theory: fresh.theoryTarget }),
+    today,
+  );
   return toDraft((await DailyPlan.findOne({ date: today }).lean())!);
 }
 

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowRight, BookOpen, CalendarOff, CheckCircle2, Circle, Code2, History, ListChecks, Lock } from "lucide-react";
+import { ArrowRight, BookOpen, CalendarOff, CheckCircle2, Circle, Code2, History, ListChecks, Lock, RotateCcw } from "lucide-react";
 import { DailyQuizRunner } from "@/components/quiz/daily-quiz-runner";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
@@ -35,6 +35,11 @@ export default async function QuizPage() {
             {passedToday ? "Passed today" : "Not passed yet"}
           </Badge>
         )}
+        <Button asChild variant="outline" size="lg" className="h-9">
+          <Link href="/quiz/mistakes">
+            <RotateCcw /> Mistakes
+          </Link>
+        </Button>
         <Button asChild variant="outline" size="lg" className="h-9">
           <Link href="/quiz/history">
             <History /> History

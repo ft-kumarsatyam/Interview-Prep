@@ -4,7 +4,7 @@ import { DayLog } from "@/lib/models/day";
 import { Article, Notification, Settings } from "@/lib/models/system";
 import type { FeedFetcher } from "@/lib/news/fetch";
 import type { NotifyChannel } from "@/lib/notify";
-import { runEvening, runMorning } from "@/lib/services/cron";
+import { runEvening, runMorning, runReminder } from "@/lib/services/cron";
 import type { Extractor } from "@/lib/news/extract";
 import {
   ensureArticleContent,
@@ -186,10 +186,18 @@ describe("notifications and cron", () => {
     await runMorning(at("2026-10-06"), { channels: [ch], fetcher, extractor });
     expect(await Notification.countDocuments({ kind: "plan" })).toBe(1);
     expect((await Notification.findOne({ kind: "plan" }).lean())?.title).toBe("Today's plan is ready");
-    expect(ch.sent).toEqual(["Today's targets · 2026-10-06"]);
+    expect(ch.sent).toHaveLength(1);
+    expect(ch.sent[0]).toMatch(/^.+ \| Today's targets · 2026-10-06$/);
     expect(ch.bodies[0]).toMatch(/DSA problems?.*then the daily quiz/);
     expect(ch.bodies[0]).toContain("Daily quiz");
     expect(ch.htmls[0]).toContain("<h2");
+  });
+
+  it("morning with roast mode off: the plain subject", async () => {
+    await Settings.updateOne({ _id: "settings" }, { $set: { roastMode: false } });
+    const ch = fakeChannel();
+    await runMorning(at("2026-10-06"), { channels: [ch], fetcher: fakeFetcher({}), extractor: fakeExtractor() });
+    expect(ch.sent).toEqual(["Today's targets · 2026-10-06"]);
   });
 
   it("morning on a rest day: a day-off note instead of targets", async () => {
@@ -198,14 +206,24 @@ describe("notifications and cron", () => {
     const res = await runMorning(at("2026-10-06"), { channels: [ch], fetcher: fakeFetcher({}), extractor: fakeExtractor() });
     expect(res.plan).toMatchObject({ ok: true, detail: { kind: "rest", notified: true } });
     expect((await Notification.findOne({ kind: "plan" }).lean())?.title).toBe("Day off");
-    expect(ch.sent).toEqual(["Day off · 2026-10-06"]);
+    expect(ch.sent[0]).toMatch(/^.+ \| Day off · 2026-10-06$/);
   });
 
-  it("evening: reminds when incomplete, once", async () => {
+  it("evening: sends the day recap once", async () => {
     const ch = fakeChannel();
     const res = await runEvening(at("2026-10-06"), [ch]);
+    expect(res).toMatchObject({ recapped: true, pushed: ["telegram"] });
+    expect((await runEvening(at("2026-10-06"), [ch])).recapped).toBe(false);
+    const n = await Notification.findOne({ kind: "recap" }).lean();
+    expect(n?.title).toMatch(/^Day recap · 2026-10-06 · /);
+    expect(n?.body).toMatch(/Still open: \d+ DSA problems?/);
+  });
+
+  it("reminder: nudges when incomplete, once", async () => {
+    const ch = fakeChannel();
+    const res = await runReminder(at("2026-10-06"), [ch]);
     expect(res).toMatchObject({ reminded: true, pushed: ["telegram"] });
-    expect((await runEvening(at("2026-10-06"), [ch])).reminded).toBe(false);
+    expect((await runReminder(at("2026-10-06"), [ch])).reminded).toBe(false);
     expect((await Notification.findOne({ kind: "reminder" }).lean())?.body).toMatch(/^Left: \d+ DSA problems?/);
   });
 

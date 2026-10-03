@@ -86,7 +86,7 @@ Centred card on a dark background with a faint animated grid or noise. It contai
 - **Notification banner** at the top when there are unread notifications (e.g. the morning plan or the evening reminder).
 
 ### 3.3 DSA
-- Track tabs: **DSA (in JS)** · **JavaScript** (30 Days of JS) · **SQL**. The DSA tab is split into **Pass 1 · Core (151)** and **Pass 2 · Extended (453)**. *(The read-only version of this is built.)*
+- Track tabs: **DSA (in JS)** · **JavaScript** (30 Days of JS) · **SQL**. The DSA tab is split into **Pass 1 · Core (153)** and **Pass 2 · Extended (453)**. *(The read-only version of this is built.)*
 - The header shows overall progress, a "Core ✅" milestone, a difficulty split donut and solved-this-week.
 - Each **pattern accordion** carries a progress bar and an "x / y" count. Inside it is a table with order #, title (links out to LeetCode ↗), difficulty badge, status, confidence and last solved date.
 - Filters: pattern, difficulty, status (todo/solved/struggled), and search. Sort by order (default) or by last solved.
@@ -136,6 +136,9 @@ Category pills (All · AI Labs (Google · OpenAI · DeepMind) · AI News · Java
 
 ### 3.8 Stats
 Problems per day (bar, last 30 days), cumulative solved compared with plan (line, actual vs ideal), difficulty mix by week (stacked bar), quiz scores (line with a pass-line at 60%), and a track coverage radar or bars.
+
+### 3.8b Plan setup (`/plan/setup`)
+A single-column wizard (max 3xl) with a five-step header (Goal, Strengths, Time, Check, Review; labels hide on mobile). Each step is one card and is saved before moving on, so a reload resumes. Strengths is a grouped list per track: five 36 px rating buttons (1 to 5), a Must/Nice/Skip select and a "want to learn" tick, with "Rate the rest 3" and "Clear all". Time is a seven-column hours grid plus date-range rows. Review shows the feasibility card (status colour from `success`/`warning`/`destructive`, coverage bar, work left vs time, remedies). Never hard-code colours.
 
 ### 3.9 Settings
 Plan dates, timezone, quiz pass %, rest days (date picker), study hours per weekday, weekly mock days (DSA and System design weekday selects), notification channels with a test button, "Export backup (JSON)" and "Re-seed content".
