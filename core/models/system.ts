@@ -64,6 +64,9 @@ const settingsSchema = new Schema(
     mailBriefing: { type: Boolean, default: true },
     mailAlerts: { type: Boolean, default: true },
     mailJobs: { type: Boolean, default: true },
+    mailDesign: { type: Boolean, default: true },
+    mailResume: { type: Boolean, default: true },
+    mailCalendar: { type: Boolean, default: true },
     mailNudge: { type: Boolean, default: true },
     mailNight: { type: Boolean, default: true },
     mailWeekly: { type: Boolean, default: true },
@@ -136,7 +139,7 @@ const feedStateSchema = new Schema({
 
 const notificationSchema = new Schema(
   {
-    kind: { type: String, enum: ["plan", "reminder", "recap", "streak", "milestone", "sync", "news"], required: true },
+    kind: { type: String, enum: ["plan", "reminder", "recap", "streak", "milestone", "sync", "news", "design", "job", "resume", "calendar"], required: true },
     title: { type: String, required: true },
     body: { type: String, default: "" },
     read: { type: Boolean, default: false },

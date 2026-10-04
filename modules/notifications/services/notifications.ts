@@ -1,5 +1,6 @@
 import { connectDb } from "@/core/db";
 import { Notification } from "@/core/models/system";
+import type { NotificationKind } from "@/modules/notifications/domain/categories";
 import type { MailSpec } from "@/modules/notifications/domain/mail-html";
 import type { PushContent } from "@/modules/resume/domain/roast";
 import { publish } from "@/core/realtime";
@@ -10,7 +11,7 @@ import type { EventPayload } from "@/core/events/schemas";
 import { relayOne } from "@/core/events/relay";
 import { registerNotificationHandlers } from "@/modules/notifications/services/event-handlers";
 
-export type NotificationKind = "plan" | "reminder" | "recap" | "streak" | "milestone" | "sync" | "news";
+export type { NotificationKind };
 
 export interface NotificationItem {
   id: string;
@@ -136,10 +137,14 @@ export async function getNotificationDetail(id: string): Promise<NotificationDet
   };
 }
 
-export async function listNotifications(limit = 20): Promise<{ items: NotificationItem[]; unread: number }> {
+export async function listNotifications(
+  limit = 20,
+  opts: { kinds?: readonly NotificationKind[]; unreadOnly?: boolean } = {},
+): Promise<{ items: NotificationItem[]; unread: number }> {
   await connectDb();
+  const filter = { ...(opts.kinds ? { kind: { $in: opts.kinds } } : {}), ...(opts.unreadOnly ? { read: false } : {}) };
   const [docs, unread] = await Promise.all([
-    Notification.find().sort({ createdAt: -1 }).limit(limit).lean(),
+    Notification.find(filter).sort({ createdAt: -1 }).limit(limit).lean(),
     Notification.countDocuments({ read: false }),
   ]);
   return {

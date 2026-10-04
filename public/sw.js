@@ -4,7 +4,7 @@
  * - page navigations: always network; if offline, show /offline
  * - signed-in HTML and data are never cached (they're personal and change constantly)
  */
-const VERSION = "v1";
+const VERSION = "v2";
 const STATIC_CACHE = `prepos-static-${VERSION}`;
 const OFFLINE_URL = "/offline";
 const PRECACHE = [OFFLINE_URL, "/icon-192.png", "/icon-512.png", "/icon.svg"];
@@ -40,6 +40,8 @@ self.addEventListener("push", (event) => {
     data = { body: event.data ? event.data.text() : "" };
   }
   const title = data.title || "PrepOS";
+  // A dot on the app icon until the app is opened (it then shows the real unread count).
+  if (self.navigator && self.navigator.setAppBadge) self.navigator.setAppBadge().catch(() => {});
   event.waitUntil(
     self.registration.showNotification(title, {
       body: data.body || "",
@@ -66,6 +68,27 @@ self.addEventListener("notificationclick", (event) => {
       if (open) return open.focus().then((w) => (w ? w.navigate(target.href) : self.clients.openWindow(target.href)));
       return self.clients.openWindow(target.href);
     }),
+  );
+});
+
+/*
+ * The browser rotated or expired the subscription: subscribe again with the same key and tell the server,
+ * so notifications keep arriving without anyone opening Settings. The old subscription carries the key.
+ */
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(
+    (async () => {
+      const old = event.oldSubscription;
+      const key = old && old.options && old.options.applicationServerKey;
+      if (!key) return;
+      const sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      await fetch("/api/push/resubscribe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ old: old.endpoint, subscription: sub.toJSON() }),
+      });
+    })().catch(() => {}),
   );
 });
 

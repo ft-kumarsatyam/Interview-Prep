@@ -11,6 +11,7 @@ import { AppSidebar } from "@/components/layout/app-sidebar";
 import { CommandPalette } from "@/components/layout/command-palette";
 import { SIDEBAR_COOKIE } from "@/components/layout/nav-items";
 import { InstallHint } from "@/components/layout/install-hint";
+import { NotificationEffects } from "@/components/layout/notification-effects";
 import { NotificationBell, type BellItem } from "@/components/layout/notification-bell";
 import { RouteProgress } from "@/components/layout/route-progress";
 import { SessionBar } from "@/components/layout/session-bar";
@@ -41,6 +42,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <AiProvider links={settings?.geminiLinks ?? {}} aiAvailable={aiAvailable}>
     <LiveProvider>
     <CaptureListener />
+    <NotificationEffects unread={notes.unread} />
     <LiveRefresh types={["notification", "capture"]} />
     <Suspense fallback={null}>
       <RouteProgress />

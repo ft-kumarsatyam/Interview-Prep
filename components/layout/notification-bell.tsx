@@ -2,31 +2,22 @@
 
 import Link from "next/link";
 import { useTransition } from "react";
-import { Bell, CalendarCheck, CheckCheck, ClipboardCheck, Flame, Newspaper, RefreshCw, Trophy, AlarmClock, type LucideIcon } from "lucide-react";
+import { Bell, CheckCheck } from "lucide-react";
 import { markNotificationsReadAction } from "@/app/(app)/notifications/actions";
 import { Button } from "@/components/ui/button";
+import { NOTIFICATION_ICONS, type NotificationIconKind } from "@/components/shared/notification-icons";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/core/utils";
 
 export interface BellItem {
   id: string;
-  kind: "plan" | "reminder" | "recap" | "streak" | "milestone" | "sync" | "news";
+  kind: NotificationIconKind;
   title: string;
   body: string;
   read: boolean;
   age: string;
   hasDetail: boolean;
 }
-
-const ICONS: Record<BellItem["kind"], LucideIcon> = {
-  plan: CalendarCheck,
-  reminder: AlarmClock,
-  recap: ClipboardCheck,
-  streak: Flame,
-  milestone: Trophy,
-  sync: RefreshCw,
-  news: Newspaper,
-};
 
 export function NotificationBell({ items, unread }: { items: BellItem[]; unread: number }) {
   const [pending, start] = useTransition();
@@ -47,7 +38,7 @@ export function NotificationBell({ items, unread }: { items: BellItem[]; unread:
       <SheetContent className="flex w-full flex-col gap-0 sm:max-w-sm">
         <SheetHeader className="border-b">
           <SheetTitle>Notifications</SheetTitle>
-          <SheetDescription>Plans, reminders, streak news and LeetCode imports.</SheetDescription>
+          <SheetDescription>Daily plan, DSA and quiz reminders, news, system design, jobs, resume and calendar.</SheetDescription>
         </SheetHeader>
         <div className="flex-1 overflow-y-auto">
           {items.length === 0 ? (
@@ -55,7 +46,7 @@ export function NotificationBell({ items, unread }: { items: BellItem[]; unread:
           ) : (
             <ul className="divide-y">
               {items.map((n) => {
-                const Icon = ICONS[n.kind];
+                const Icon = NOTIFICATION_ICONS[n.kind];
                 return (
                   <li key={n.id} className={cn("flex gap-3 p-4", !n.read && "bg-primary/5")}>
                     <Icon className={cn("mt-0.5 size-4 shrink-0", n.read ? "text-muted-foreground" : "text-primary")} />
@@ -80,13 +71,18 @@ export function NotificationBell({ items, unread }: { items: BellItem[]; unread:
             </ul>
           )}
         </div>
-        {unread > 0 && (
-          <div className="border-t p-3">
-            <Button variant="outline" className="w-full" onClick={markAll} disabled={pending}>
-              <CheckCheck /> Mark all as read
+        <div className="flex gap-2 border-t p-3">
+          {unread > 0 && (
+            <Button variant="outline" className="flex-1" onClick={markAll} disabled={pending}>
+              <CheckCheck /> Mark all read
             </Button>
-          </div>
-        )}
+          )}
+          <SheetClose asChild>
+            <Button variant="outline" className="flex-1" asChild>
+              <Link href="/notifications">See all</Link>
+            </Button>
+          </SheetClose>
+        </div>
       </SheetContent>
     </Sheet>
   );

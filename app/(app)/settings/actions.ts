@@ -59,7 +59,7 @@ export async function saveSettingsSectionsAction(input: unknown): Promise<Action
   return { ok: true, saved, failed, values: after };
 }
 
-const testMailKind = z.enum(["ping", "morning", "briefing", "alerts", "nudge", "night", "weekly"]);
+const testMailKind = z.enum(["ping", "morning", "briefing", "design", "alerts", "jobs", "resume", "calendar", "nudge", "night", "weekly"]);
 
 export async function testNotificationAction(
   kind: unknown = "ping",

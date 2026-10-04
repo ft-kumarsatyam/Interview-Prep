@@ -29,6 +29,14 @@ export async function savePushSubscription(sub: PushSubscriptionInput, label: st
   );
 }
 
+/** A browser rotated its subscription: store the new endpoint under the device's old label and drop the old one. */
+export async function replacePushSubscription(oldEndpoint: string, sub: PushSubscriptionInput): Promise<void> {
+  await connectDb();
+  const old = await PushSubscriptionModel.findOne({ endpoint: oldEndpoint }, { label: 1 }).lean();
+  await savePushSubscription(sub, old?.label || "Renewed device");
+  if (oldEndpoint !== sub.endpoint) await PushSubscriptionModel.deleteOne({ endpoint: oldEndpoint });
+}
+
 export async function removePushSubscription(endpoint: string): Promise<void> {
   await connectDb();
   await PushSubscriptionModel.deleteOne({ endpoint });

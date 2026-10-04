@@ -5,6 +5,7 @@ import { sendBriefing } from "@/modules/progress/services/briefing";
 import { syncLeetCode } from "@/modules/dsa/services/leetcode-sync";
 import { buildEveningMail, buildMorningMail, buildNudgeMail, buildWeeklyMail } from "@/modules/notifications/services/mail-content";
 import { prefetchArticleContent, refreshNews } from "@/modules/news/services/news";
+import { sendCalendarHeadsUp, sendDesignTopic, sendResumeCheck } from "@/modules/notifications/services/heads-up";
 import { notify } from "@/modules/notifications/services/notifications";
 import { ensureToday } from "@/modules/planner/services/plan";
 import { proposeRebalance } from "@/modules/planner/services/rebalance";
@@ -53,6 +54,9 @@ export async function runMorning(
     step(() => syncLeetCode({ force: true, now })),
   ]);
   const { news, articles } = newsChain;
+  // The single-purpose pings: today's system design case and the monthly resume check.
+  const design = await step(async () => sendDesignTopic(await ensureToday(now), channels));
+  const resume = await step(async () => sendResumeCheck(await ensureToday(now), channels));
   // Deliver events queued by the steps above (article indexing) and any retries that are due.
   const events = await step(async () => {
     ensureEventHandlers();
@@ -61,7 +65,7 @@ export async function runMorning(
   // The briefing needs fresh news, so it follows the refresh. The briefing job sends it too if this run slips.
   const briefing = await step(async () => sendBriefing(await ensureToday(now), now, channels));
   await markRun("lastMorningRunAt", now);
-  return { today, news, articles, plan, briefing, rebalance, leetcode, events };
+  return { today, news, articles, plan, briefing, design, resume, rebalance, leetcode, events };
 }
 
 /**
@@ -93,8 +97,10 @@ export async function runEvening(now = new Date(), channels?: readonly NotifyCha
  */
 export async function runReminder(now = new Date(), channels?: readonly NotifyChannel[]) {
   const state = await ensureToday(now);
+  // Tomorrow's heads-up is independent of whether today is finished, so it never waits on the nudge.
+  const calendar = await step(() => sendCalendarHeadsUp(state, channels));
   const mail = await buildNudgeMail(state, now);
-  if (!mail) return { today: state.today, reminded: false };
+  if (!mail) return { today: state.today, reminded: false, calendar };
   const res = await notify({ kind: "reminder", ...mail.inApp, dedupeKey: `reminder:${state.today}` }, { push: state.settings.mail.nudge, channels, pushContent: mail.push });
-  return { today: state.today, reminded: res.created, pushed: res.pushed };
+  return { today: state.today, reminded: res.created, pushed: res.pushed, calendar };
 }

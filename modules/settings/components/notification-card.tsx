@@ -1,7 +1,7 @@
 "use client";
 
 import { useOptimistic, useState, useTransition } from "react";
-import { AlertTriangle, Bell, CalendarRange, CheckCircle2, CircleDashed, Flame, Briefcase, Moon, Newspaper, RefreshCw, Send, Sun, Sunset, Zap } from "lucide-react";
+import { AlertTriangle, Bell, CalendarRange, CheckCircle2, CircleDashed, Flame, Briefcase, CalendarDays, FileText, Layers, Moon, Newspaper, RefreshCw, Send, Sun, Sunset, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { setMailPrefAction, setRoastLevelAction, testNotificationAction } from "@/app/(app)/settings/actions";
 import { Chip } from "@/components/shared/chip";
@@ -11,7 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { MAIL_INFO, MAIL_KINDS, type MailKind, type MailPrefs } from "@/modules/notifications/domain/mail-prefs";
 import { ROAST_LEVELS, ROAST_LEVEL_HINT, ROAST_LEVEL_LABEL, roastFor, type RoastLevel, type RoastMailSlot } from "@/modules/resume/domain/roast";
 
-type Kind = "ping" | "morning" | "briefing" | "alerts" | "nudge" | "night" | "weekly";
+type Kind = "ping" | "morning" | "briefing" | "design" | "alerts" | "jobs" | "resume" | "calendar" | "nudge" | "night" | "weekly";
 type Result =
   | { ok: true; subject: string; sent: string[]; failed: string[]; errors: Record<string, string>; sample: boolean; to: string | null }
   | { ok: false; error: string };
@@ -25,13 +25,17 @@ const PREVIEW_MOMENTS: Array<{ slot: RoastMailSlot; label: string; ctx: Paramete
   { slot: "night", label: "Night, nothing done", ctx: { pct: 0, streak: 6 } },
   { slot: "weekly", label: "Weekly, 50%", ctx: { weekPct: 50 } },
 ];
-const MAIL_ICON: Record<MailKind, typeof Sun> = { morning: Sun, briefing: Newspaper, alerts: Zap, jobs: Briefcase, nudge: Sunset, night: Moon, weekly: CalendarRange };
+const MAIL_ICON: Record<MailKind, typeof Sun> = { morning: Sun, briefing: Newspaper, design: Layers, alerts: Zap, jobs: Briefcase, resume: FileText, calendar: CalendarDays, nudge: Sunset, night: Moon, weekly: CalendarRange };
 
 const TESTS: Array<{ kind: Kind; label: string; icon: typeof Send }> = [
   { kind: "ping", label: "Quick ping", icon: Send },
   { kind: "morning", label: "Morning plan", icon: Sun },
   { kind: "briefing", label: "Daily briefing", icon: Newspaper },
+  { kind: "design", label: "System design topic", icon: Layers },
   { kind: "alerts", label: "News alert", icon: Zap },
+  { kind: "jobs", label: "Job matches", icon: Briefcase },
+  { kind: "resume", label: "Resume check", icon: FileText },
+  { kind: "calendar", label: "Calendar heads-up", icon: CalendarDays },
   { kind: "nudge", label: "Evening nudge", icon: Sunset },
   { kind: "night", label: "Night recap", icon: Moon },
   { kind: "weekly", label: "Weekly report", icon: CalendarRange },
@@ -118,7 +122,7 @@ export function NotificationCard({
         <CardTitle className="flex items-center gap-2">
           <Bell className="size-4 text-muted-foreground" aria-hidden /> Notification channels
         </CardTitle>
-        <CardDescription>Morning plan, evening nudge, night recap and a weekly report. In-app notifications always work; email, Telegram and WhatsApp are set with env vars.</CardDescription>
+        <CardDescription>Daily plan (DSA, theory, quiz), news and system design topic, job matches, resume and calendar updates, evening nudge, night recap and weekly report. In-app notifications always work; email, Telegram and WhatsApp are set with env vars.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <ul className="space-y-2 text-sm">
@@ -149,7 +153,7 @@ export function NotificationCard({
         </ul>
 
         <fieldset className="space-y-2 rounded-lg border p-3">
-          <legend className="px-1 text-sm font-medium">Your emails</legend>
+          <legend className="px-1 text-sm font-medium">What you get</legend>
           <ul className="space-y-2">
             {MAIL_KINDS.map((kind) => {
               const Icon = MAIL_ICON[kind];
@@ -171,7 +175,7 @@ export function NotificationCard({
               );
             })}
           </ul>
-          <p className="text-xs text-muted-foreground">Turning one off still posts it to the in-app bell; only the email, Telegram and WhatsApp copies stop. The evening nudge needs the optional scheduler described in the README.</p>
+          <p className="text-xs text-muted-foreground">Turning one off still posts it to the in-app bell; only the pushed copies (app, email, Telegram, WhatsApp) stop. The evening nudge needs the optional scheduler described in the README.</p>
         </fieldset>
 
         <div className="space-y-3 rounded-lg border p-3">

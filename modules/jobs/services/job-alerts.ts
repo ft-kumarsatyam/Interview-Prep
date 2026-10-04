@@ -58,7 +58,7 @@ export async function alertNewJobs(now = new Date(), channels?: readonly NotifyC
     cta: { label: "Open Jobs", path: "/jobs" },
     ...(env().APP_URL ? { appUrl: env().APP_URL } : {}),
   });
-  const res = await notify({ kind: "news", title, body, dedupeKey: `jobs:${day}:${used + 1}` }, { push: true, channels, pushContent: { title, body: text, html, spec } });
+  const res = await notify({ kind: "job", title, body, dedupeKey: `jobs:${day}:${used + 1}` }, { push: true, channels, pushContent: { title, body: text, html, spec } });
   if (res.created) await JobPosting.updateMany({ _id: { $in: hits.map((s) => s.r._id) } }, { $set: { alerted: true } });
   return { sent: res.created, count: hits.length, pushed: res.pushed } as AlertResult;
 }

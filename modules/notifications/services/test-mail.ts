@@ -1,12 +1,15 @@
 import { roastFor, withRoast, type PushContent, type RoastMailSlot } from "@/modules/resume/domain/roast";
 import { env } from "@/core/env";
 import { configuredChannels, pushToChannels, type NotifyChannel } from "@/core/notify";
-import { buildBriefing, buildTopStoryAlert } from "@/modules/progress/services/briefing";
+import { buildBriefing, buildTopStoryAlert, todaysDesignCase } from "@/modules/progress/services/briefing";
 import { buildEveningMail, buildMorningMail, buildNudgeMail, buildWeeklyMail } from "@/modules/notifications/services/mail-content";
 import { saveSentMessage, pushTag, type NotificationKind } from "@/modules/notifications/services/notifications";
+import { calendarHeadsUp, designTopicMail, resumeCheck, type HeadsUp } from "@/modules/notifications/domain/heads-up";
+import { getBaseResume } from "@/modules/resume/services/resume";
+import { toLocalDate } from "@/core/domain/dates";
 import { ensureToday } from "@/modules/planner/services/plan";
 
-export type TestMailKind = "ping" | "morning" | "briefing" | "alerts" | "nudge" | "night" | "weekly";
+export type TestMailKind = "ping" | "morning" | "briefing" | "design" | "alerts" | "jobs" | "resume" | "calendar" | "nudge" | "night" | "weekly";
 
 const SAMPLE: Record<Exclude<TestMailKind, "ping">, PushContent & { slot: RoastMailSlot }> = {
   morning: {
@@ -18,6 +21,26 @@ const SAMPLE: Record<Exclude<TestMailKind, "ping">, PushContent & { slot: RoastM
     slot: "morning",
     title: "Daily briefing (sample)",
     body: "There is nothing to brief yet (no unread news or open targets), so this is a sample. Once the news has refreshed, this message lists the top stories, the system design reading and case to study, and the questions to practise.",
+  },
+  design: {
+    slot: "morning",
+    title: "System design today (sample)",
+    body: "Every case is studied, so this is a sample. Each morning this message names the one system design case to study today and why it is next.",
+  },
+  jobs: {
+    slot: "morning",
+    title: "New job matches (sample)",
+    body: "No new listing clears your threshold right now, so this is a sample. When roles that fit your preferences and resume appear, they are listed here, at most three times a day.",
+  },
+  resume: {
+    slot: "morning",
+    title: "Resume check (sample)",
+    body: "Your resume is up to date, so this is a sample. If none is saved or it is a month old, this message reminds you to update it.",
+  },
+  calendar: {
+    slot: "evening",
+    title: "Calendar heads-up (sample)",
+    body: "Tomorrow is an ordinary study day, so this is a sample. The evening before a mock, a day off, a Sunday review or the plan's countdown, this message says what to expect.",
   },
   alerts: {
     slot: "morning",
@@ -66,6 +89,8 @@ export async function sendTestMail(kind: TestMailKind, now = new Date(), only?: 
         ? await buildMorningMail(state, seed)
         : kind === "briefing" || kind === "alerts"
           ? await briefingTest(state, now, kind)
+          : kind === "design" || kind === "resume" || kind === "calendar" || kind === "jobs"
+          ? await headsUpTest(state, kind)
           : kind === "nudge"
           ? await buildNudgeMail(state, now, seed)
           : kind === "night"
@@ -76,7 +101,7 @@ export async function sendTestMail(kind: TestMailKind, now = new Date(), only?: 
     push = mail?.push ?? roast(fallback.slot, { title: fallback.title, body: fallback.body });
   }
 
-  const kindOf: Record<TestMailKind, NotificationKind> = { ping: "sync", morning: "plan", briefing: "news", alerts: "news", nudge: "reminder", night: "recap", weekly: "recap" };
+  const kindOf: Record<TestMailKind, NotificationKind> = { ping: "sync", morning: "plan", briefing: "news", design: "design", alerts: "news", jobs: "job", resume: "resume", calendar: "calendar", nudge: "reminder", night: "recap", weekly: "recap" };
   const tested: PushContent = { ...push, title: `[Test] ${push.title}`, ...(push.spec ? { spec: { ...push.spec, kicker: `Test · ${push.spec.kicker ?? kind}` } } : {}) };
   const meta = channels.some((c) => c.name === "push")
     ? { content: tested, url: `/notifications/${await saveSentMessage(kindOf[kind], tested)}`, tag: pushTag(kindOf[kind], `test-${kind}`) }
@@ -93,4 +118,22 @@ async function briefingTest(state: Awaited<ReturnType<typeof ensureToday>>, now:
   }
   const mail = await buildBriefing(state, now);
   return mail ? { inApp: { title: mail.title, body: mail.summary }, push: { title: mail.title, body: mail.text, html: mail.html, spec: mail.spec } } : null;
+}
+
+/** The real design topic, resume check or calendar heads-up as a test message; null (so a sample is sent) when there is nothing to say. */
+async function headsUpTest(state: Awaited<ReturnType<typeof ensureToday>>, kind: "design" | "resume" | "calendar" | "jobs") {
+  if (kind === "jobs") return null;
+  const appUrl = env().APP_URL;
+  const { settings, today } = state;
+  let mail: HeadsUp | null;
+  if (kind === "design") {
+    const topic = await todaysDesignCase();
+    mail = topic ? designTopicMail({ ...topic, appUrl }) : null;
+  } else if (kind === "resume") {
+    const base = await getBaseResume();
+    mail = resumeCheck({ today, updatedOn: base ? toLocalDate(new Date(base.updatedAt), settings.timezone) : null, appUrl });
+  } else {
+    mail = calendarHeadsUp({ today, settings, mockSchedule: settings.mockSchedule, appUrl });
+  }
+  return mail ? { inApp: { title: mail.title, body: mail.body }, push: { title: mail.title, body: mail.text, html: mail.html, spec: mail.spec } } : null;
 }

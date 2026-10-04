@@ -139,6 +139,6 @@ describe("test mail and settings", () => {
   });
 
   it("every email is on by default", async () => {
-    expect((await getSettings()).mail).toEqual({ morning: true, briefing: true, alerts: true, jobs: true, nudge: true, night: true, weekly: true });
+    expect((await getSettings()).mail).toEqual({ morning: true, briefing: true, design: true, alerts: true, jobs: true, resume: true, calendar: true, nudge: true, night: true, weekly: true });
   });
 });

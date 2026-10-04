@@ -50,12 +50,19 @@ async function loadPool(): Promise<BriefArticle[]> {
 }
 
 /** The design case to study next: a target's open case first, else the first case you have not practised. */
-async function nextDesignCases(gaps: Awaited<ReturnType<typeof loadCompanyGaps>>): Promise<Array<{ slug: string; why: string }>> {
+export async function nextDesignCases(gaps: Awaited<ReturnType<typeof loadCompanyGaps>>): Promise<Array<{ slug: string; why: string }>> {
   const fromGaps = gaps.filter((g) => g.key.startsWith("design:")).slice(0, 2).map((g) => ({ slug: g.key.slice(7), why: g.note }));
   if (fromGaps.length) return fromGaps;
   const overview = await getDesignOverview();
   const open = Object.values(overview).find((d) => d.status === "new" || d.status === "studying");
   return open ? [{ slug: open.slug, why: open.status === "studying" ? "in progress" : "not started" }] : [];
+}
+
+/** The one system design case to study today (a target's open case first), or null when every case is done. */
+export async function todaysDesignCase(): Promise<{ slug: string; title: string; why: string } | null> {
+  const [first] = await nextDesignCases(await loadCompanyGaps());
+  const dc = first ? designCaseBySlug.get(first.slug) : undefined;
+  return first && dc ? { slug: dc.slug, title: dc.title, why: first.why } : null;
 }
 
 export async function buildBriefing(state: Pick<TodayState, "today" | "plan" | "settings" | "streak">, now: Date) {

@@ -49,7 +49,7 @@ describe("alertNewJobs", () => {
     expect(first).toMatchObject({ sent: true, count: 2 });
     expect(ch.sent).toHaveLength(1);
     const n = (await Notification.findOne({ dedupeKey: /^jobs:/ }).lean())!;
-    expect(n).toMatchObject({ kind: "news", title: "2 new jobs match you" });
+    expect(n).toMatchObject({ kind: "job", title: "2 new jobs match you" });
     expect(JSON.stringify(n.detail)).toContain("/jobs/discover/");
     expect(await alertNewJobs(hours(1), [ch])).toEqual({ sent: false, reason: "nothing new" });
     expect(await JobPosting.countDocuments({ alerted: false })).toBe(0);
