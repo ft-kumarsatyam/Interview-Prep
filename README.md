@@ -75,6 +75,29 @@ scripts/               ← seed, hash-password, quiz-bank generator, icons, Verc
 tests/                 ← Vitest: domain (pure) + services (in-memory MongoDB)
 ```
 
+## Platform, testing and benchmarks
+
+Under the product there is a small platform: owner-scoped data with a migrations runner (`npm run migrate`), a transactional outbox with
+QStash or MongoDB-polling delivery and idempotent consumers (`npm run worker` runs the same handlers outside Vercel), a token-bucket
+rate limiter and a versioned read-through cache, grounded AI answers with citations, OpenTelemetry traces and a health panel on `/setup`,
+and a public API at `/api/v1` (OpenAPI at `/api/v1/openapi.json`, tokens in Settings > API tokens; see `docs/API.md`). Each of these has
+its reasoning in [`docs/adr/`](docs/adr/README.md) and runs with only `MONGODB_URI`: QStash, Redis and OpenTelemetry are optional.
+
+```sh
+npm test                    # unit and integration tests (in-memory MongoDB)
+npm run knip                # dead code
+npm run depcruise           # layer rules
+npm run bench               # benchmarks of the redesigned parts: docs/BENCHMARKS.md
+npm run e2e                 # Playwright in a real browser against the app on an in-memory MongoDB (no Docker, no services)
+E2E_DEV=1 npm run e2e       # same, without a production build
+npm run ai:eval             # score the golden prompt set against your configured free AI providers
+docker compose up -d mongo redis redis-rest   # optional local stack: a MongoDB replica set and Redis
+```
+
+The browser tests start their own server with every external integration blanked (AI, email, Telegram, push, LeetCode, Redis,
+telemetry), so running them can never message you or call a third party. The k6 scripts in `scripts/bench/k6/` are for a running server and
+have not been run yet. Measured results and what they do not prove are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
 ## 1. Free accounts
 
 1. **MongoDB Atlas:** create an **M0** cluster (region `ap-south-1` Mumbai).

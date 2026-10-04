@@ -1,4 +1,5 @@
 import { connectDb } from "@/core/db";
+import { pLimit } from "@/core/http";
 import type { Broker } from "@/core/broker/types";
 import { DEFAULT_RETRY, onFailure, outboxLagMs, type RetryPolicy } from "@/core/domain/retry";
 import { Outbox } from "@/core/models/outbox";
@@ -15,6 +16,8 @@ export interface RelayOptions {
   random?: () => number;
   policy?: RetryPolicy;
   limit?: number;
+  /** How many claimed events are delivered at once (default 8). */
+  concurrency?: number;
 }
 
 export interface RelayResult {
@@ -42,7 +45,7 @@ async function claimOne(now: Date, eventId?: string) {
 }
 
 /** Delivers one claimed row through the broker and records the outcome (done / published / retry / dead). */
-async function processRow(row: { eventId: string; type: string; attempts?: number | null }, opts: Required<Omit<RelayOptions, "limit">>): Promise<keyof Omit<RelayResult, "claimed">> {
+async function processRow(row: { eventId: string; type: string; attempts?: number | null }, opts: Required<Omit<RelayOptions, "limit" | "concurrency">>): Promise<keyof Omit<RelayResult, "claimed">> {
   try {
     const outcome = await opts.broker.dispatch(row.eventId, row.type);
     if (outcome === "done") {
@@ -71,12 +74,16 @@ export async function relayOutbox(options: RelayOptions): Promise<RelayResult> {
   const result: RelayResult = { claimed: 0, done: 0, published: 0, retried: 0, dead: 0 };
   // Rows handed to the queue whose consumer never answered go back to pending.
   await Outbox.updateMany({ status: "published", updatedAt: { $lte: new Date(opts.now.getTime() - PUBLISHED_STALE_MS) } }, { $set: { status: "pending", nextAttemptAt: opts.now } });
+  // Claim a batch first (each claim is an atomic lease, so other relays skip these rows), then deliver them concurrently.
+  const claimed: Array<NonNullable<Awaited<ReturnType<typeof claimOne>>>> = [];
   for (let i = 0; i < (options.limit ?? 25); i++) {
     const row = await claimOne(opts.now);
     if (!row) break;
-    result.claimed++;
-    result[await processRow(row, opts)]++;
+    claimed.push(row);
   }
+  result.claimed = claimed.length;
+  const run = pLimit(options.concurrency ?? 8);
+  for (const outcome of await Promise.all(claimed.map((row) => run(() => processRow(row, opts))))) result[outcome]++;
   return result;
 }
 

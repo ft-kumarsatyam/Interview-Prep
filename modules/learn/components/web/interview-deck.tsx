@@ -196,7 +196,6 @@ export function InterviewDeck({ questions, initialStatus, showTrack = false }: {
                     <div className="mb-2 flex flex-wrap items-center gap-1.5">
                       <span className="tabular font-mono text-xs text-muted-foreground">{i + 1}.</span>
                       <ToneBadge tone={LEVEL_TONE[q.level]} className="capitalize">{q.level}</ToneBadge>
-          {q.generated && <ToneBadge tone="neutral">AI-written</ToneBadge>}
                       {q.generated && <ToneBadge tone="neutral">AI-written</ToneBadge>}
                       {showTrack && <ToneBadge>{q.trackName}</ToneBadge>}
                       {s !== "new" && (
@@ -358,6 +357,7 @@ function Practice({
       <div className="space-y-4 rounded-xl border bg-card p-4 sm:p-6">
         <div className="flex flex-wrap items-center gap-1.5">
           <ToneBadge tone={LEVEL_TONE[q.level]} className="capitalize">{q.level}</ToneBadge>
+          {q.generated && <ToneBadge tone="neutral">AI-written</ToneBadge>}
           {showTrack && <ToneBadge>{q.trackName}</ToneBadge>}
           {s !== "new" && <ToneBadge tone={s === "known" ? "success" : "primary"}>Last time: {STATUS_LABEL[s]}</ToneBadge>}
         </div>

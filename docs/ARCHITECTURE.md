@@ -467,3 +467,56 @@ Feeds with `kind: "sitemap"` (Scale Engineer, its hw.glich.co newsletter and Des
 - **MongoDB M0 (512 MB).** Discovered postings are capped at 4,500 rows of at most about 8 KB (worst case about 40 MB) and expire 30 days after last seen; `kv` and `kvevents` rows expire by TTL (events after an hour, 300 per channel).
 - **GitHub Actions minutes.** `jobs-sync.yml` (8 runs a day, about a minute each) plus the briefing and nudge workflows stay far under the free allowance.
 - **Not built:** managed WebSockets (Ably or Pusher) as a second transport behind `publish()`; Hacker News "Who is hiring" as a source; per-company scrapers for big tech (they get links, by design).
+
+
+## System design (C4)
+
+The platform work added an event backbone, owner-scoped data, a public API and observability around the original app. The decisions
+behind each are in [`docs/adr/`](adr/README.md); measured behaviour is in [`docs/BENCHMARKS.json`](BENCHMARKS.json).
+
+### Context
+
+```mermaid
+flowchart LR
+  you([You]) -->|browser, PWA| prepos[PrepOS]
+  you -->|toolbar click| ext[Chrome extension]
+  ext -->|"Bearer pk_… (capture:write)"| prepos
+  auto[n8n / Zapier / scripts] -->|"Bearer pk_… (jobs:write) or webhook secret"| prepos
+  prepos -->|public APIs| boards[Job boards: Greenhouse, Lever, Ashby, Workable, SmartRecruiters]
+  prepos -->|public career pages via the free reader| careers[Company career pages]
+  prepos -->|public repo, read only| gh[GitHub]
+  prepos -->|free tiers| llm[Gemini / Groq]
+  prepos -->|Telegram, email, WhatsApp, Web Push| you
+  prepos -->|traces and metrics| graf[Grafana Cloud free]
+```
+
+### Containers
+
+```mermaid
+flowchart TB
+  subgraph Vercel[Vercel Hobby]
+    app[Next.js app: RSC, Server Actions, /api/v1, /api/ai, /api/webhooks]
+    queue["/api/queue/[topic] (QStash consumer)"]
+    cron["/api/cron/* (thin triggers)"]
+  end
+  worker["worker/index.ts (optional: Docker, CI)"]
+  mongo[("MongoDB Atlas M0: user data (owner-scoped), outbox, inbox, embeddings, kv fallback")]
+  redis[("Upstash Redis (optional): locks, token buckets, cache, idempotency")]
+  qstash[Upstash QStash optional]
+  app -->|modules services| mongo
+  app -->|"state change + event, one transaction"| mongo
+  app -.->|"if configured"| redis
+  cron -->|publish + relay| mongo
+  relay{{outbox relay}} -->|"claims leased rows"| mongo
+  relay -->|"QStash configured"| qstash
+  qstash -->|"signed push, retries"| queue
+  relay -->|"fallback or no QStash"| handlers[idempotent handlers]
+  queue --> handlers
+  worker --> handlers
+  handlers -->|"inbox: once per event id"| mongo
+```
+
+### Component rules
+`core/` is the base layer (db, kv, cache, broker, events, llm, observability, api). `modules/<feature>` hold the product. A module may
+import another module only through an edge listed in `tests/architecture/boundaries.test.ts`. User data is owner-scoped by the
+`ownerScope()` plugin; the single owner has no sign-up. Events are the loose coupling between modules.

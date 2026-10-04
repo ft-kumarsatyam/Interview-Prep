@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The e2e server builds into its own folder so it never clashes with a `next dev` you already have running.
+  ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
   // The Docker image runs the app (and the worker) outside Vercel; Vercel ignores this.
   ...(process.env.BUILD_STANDALONE === "1" ? { output: "standalone" as const } : {}),
   // Pin the workspace root: a stray lockfile in the home directory would otherwise be picked up.

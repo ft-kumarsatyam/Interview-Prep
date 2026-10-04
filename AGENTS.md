@@ -51,13 +51,15 @@ npm run seed       # run migrations, then upsert problems/topics/settings into M
 npm run migrate    # run pending database migrations only
 npm run ai:eval    # score the golden prompt set against every configured free provider
 npm run worker     # deliver outbox events by polling MongoDB (same handlers as the QStash route)
+npm run e2e        # Playwright against an in-memory MongoDB (E2E_DEV=1 skips the build)
+npm run bench      # benchmarks (writes docs/BENCHMARKS.json); --small for a quick run
 npm run knip       # dead code
 npm run depcruise  # layer rules
 npm run hash -- 'my-password'   # prints ADMIN_PASSWORD_HASH_B64
 ```
 
 ## Definition of done for a phase
-`npm run build` and `npm test` pass, the feature works in the browser, there are no console errors, the mobile layout has been checked, and you report briefly what was built and anything deferred.
+`npm run build`, `npm test` and `npm run e2e` pass, the feature works in the browser, there are no console errors, the mobile layout has been checked, and you report briefly what was built and anything deferred.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
