@@ -228,6 +228,8 @@ Definition of done for any change: `npm run typecheck`, `npx eslint .`, `npm tes
 
 **Add a Server Action.** In the route's `actions.ts`: `"use server"`, `requireSession()`, zod, call a service, `refresh()`, return `ActionResult`.
 
+**Reviewed module edges for AI features.** `jobs > ai` (recruiter email and job chat), `jobs > progress` (readiness reads what you studied), `learn > ai` (interview question generation). Each feature calls the AI service through `runAi` with a feature name whose policy is in `modules/ai/domain/llm-router.ts`; anything that reads resume text is `paid: "never"`.
+
 **Add a feature module.** `modules/<name>/{domain,services,components}` (+ `lib/` if needed). Rules go in `domain/` first with a test. Models go in `core/models/<area>.ts`. If it imports another module, add the edge to `BASELINE` in `tests/architecture/boundaries.test.ts` and say why. Register any backup collection in `core/services/export.ts`. Update this file's module list.
 
 **Add a component.** Pick the lowest row of the taxonomy that fits. Presentational? Props only. Needs data? Make it an async `*-section.tsx`. Needs state? Make a small `"use client"` island and call a Server Action.

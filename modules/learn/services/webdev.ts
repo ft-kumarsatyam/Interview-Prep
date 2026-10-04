@@ -5,6 +5,7 @@ import { parseResumeText } from "@/modules/resume/domain/resume";
 import { renderResumeText } from "@/modules/resume/domain/resume-tailor";
 import type { InterviewStatus } from "@/modules/learn/domain/web-interview";
 import { addProjectToResume } from "@/modules/learn/domain/webdev";
+import { isGeneratedInterviewQuestion } from "@/modules/learn/services/interview-generated";
 import { WebInterviewProgress, WebLessonProgress, WebProjectProgress } from "@/core/models/webdev";
 import { getBaseResume, saveBaseResume } from "@/modules/resume/services/resume";
 
@@ -36,7 +37,7 @@ export async function getInterviewStatus(): Promise<Map<string, InterviewStatus>
 
 /** Rates a question "known" or "review", or resets it to "new" (deletes the row). */
 export async function setInterviewStatus(qid: string, status: InterviewStatus, today: DateStr): Promise<void> {
-  if (!interviewQuestionById.has(qid)) throw new Error("Unknown question");
+  if (!interviewQuestionById.has(qid) && !(await isGeneratedInterviewQuestion(qid))) throw new Error("Unknown question");
   await connectDb();
   if (status === "new") {
     await WebInterviewProgress.deleteOne({ qid });

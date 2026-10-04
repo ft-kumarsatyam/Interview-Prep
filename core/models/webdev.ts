@@ -39,4 +39,23 @@ export type WebProjectProgressRow = InferSchemaType<typeof webProjectProgressSch
 export type WebInterviewProgressRow = InferSchemaType<typeof webInterviewProgressSchema>;
 export const WebLessonProgress: Model<WebLessonProgressRow> = models.WebLessonProgress ?? model("WebLessonProgress", webLessonProgressSchema);
 export const WebProjectProgress: Model<WebProjectProgressRow> = models.WebProjectProgress ?? model("WebProjectProgress", webProjectProgressSchema);
+/** An interview question the model wrote for a track on request. Rated and shown like the hand-written ones. */
+const generatedInterviewSchema = new Schema(
+  {
+    qid: { type: String, required: true },
+    track: { type: String, required: true },
+    level: { type: String, enum: ["junior", "mid", "senior"], required: true },
+    q: { type: String, required: true, maxlength: 240 },
+    answer: { type: String, required: true, maxlength: 6000 },
+    followUps: { type: [{ type: String, maxlength: 200 }], default: [] },
+    mistakes: { type: [{ type: String, maxlength: 240 }], default: [] },
+    provider: { type: String, default: null },
+  },
+  { timestamps: true },
+);
+ownerScope(generatedInterviewSchema, [{ fields: { qid: 1 } }]);
+generatedInterviewSchema.index({ track: 1, level: 1 });
+
+export type GeneratedInterviewRow = InferSchemaType<typeof generatedInterviewSchema>;
+export const GeneratedInterviewDoc: Model<GeneratedInterviewRow> = models.GeneratedInterviewDoc ?? model("GeneratedInterviewDoc", generatedInterviewSchema);
 export const WebInterviewProgress: Model<WebInterviewProgressRow> = models.WebInterviewProgress ?? model("WebInterviewProgress", webInterviewProgressSchema);

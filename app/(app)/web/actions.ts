@@ -6,7 +6,8 @@ import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/core/auth/dal";
 import { todayIn } from "@/modules/planner/services/plan";
 import { getSettings } from "@/modules/settings/services/settings";
-import { INTERVIEW_STATUSES } from "@/modules/learn/domain/web-interview";
+import { INTERVIEW_LEVELS, INTERVIEW_STATUSES } from "@/modules/learn/domain/web-interview";
+import { generateInterviewQuestions } from "@/modules/learn/services/interview-generated";
 import { setInterviewStatus, setLessonDone } from "@/modules/learn/services/webdev";
 
 export async function setInterviewStatusAction(input: unknown): Promise<ActionResult> {
@@ -32,4 +33,17 @@ export async function setLessonDoneAction(input: unknown): Promise<ActionResult>
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Couldn't save" };
   }
+}
+
+const levelSchema = z.enum(INTERVIEW_LEVELS);
+
+/** Asks the model for a few new questions on a track at a level. They join that track's deck and its progress tracking. */
+export async function generateInterviewQuestionsAction(input: unknown): Promise<ActionResult<{ added: number; skippedDuplicates: number }>> {
+  await requireSession();
+  const parsed = z.object({ track: z.string().regex(/^[a-z0-9-]+$/).max(60), level: levelSchema }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Pick a track and a level" };
+  const res = await generateInterviewQuestions(parsed.data.track, parsed.data.level);
+  if (!res.ok) return res;
+  refresh();
+  return { ok: true, added: res.added, skippedDuplicates: res.skippedDuplicates };
 }

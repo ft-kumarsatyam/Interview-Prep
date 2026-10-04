@@ -3,12 +3,12 @@ import { CustomProblem, CustomSolve } from "@/core/models/content";
 import { DailyPlan, DayLog, Quiz } from "@/core/models/day";
 import { MockSession } from "@/core/models/mock";
 import { PlanChange, StudySession } from "@/core/models/planner";
-import { AptitudeSession, Design, Mastery, PracticeAnswer, PracticeAttempt, Snippet } from "@/core/models/learning";
+import { AptitudeSession, Design, GeneratedQuestionRow, Mastery, PracticeAnswer, PracticeAttempt, Snippet } from "@/core/models/learning";
 import { ProblemProgress, SubtopicProgress } from "@/core/models/progress";
 import { Job } from "@/core/models/jobs";
 import { CourseLessonProgress } from "@/core/models/course";
 import { RoadmapEnrollment, RoadmapNodeProgress } from "@/core/models/roadmap";
-import { WebInterviewProgress, WebLessonProgress, WebProjectProgress } from "@/core/models/webdev";
+import { GeneratedInterviewDoc, WebInterviewProgress, WebLessonProgress, WebProjectProgress } from "@/core/models/webdev";
 import { Resume } from "@/core/models/resume";
 import { Article, Notification, Settings } from "@/core/models/system";
 
@@ -21,7 +21,7 @@ export const EXPORT_VERSION = 1;
  */
 export async function exportBackup(now = new Date()) {
   await connectDb();
-  const [settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress] =
+  const [settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews] =
     await Promise.all([
       Settings.find().lean(),
       ProblemProgress.find().lean(),
@@ -50,11 +50,13 @@ export async function exportBackup(now = new Date()) {
       CourseLessonProgress.find().lean(),
       RoadmapEnrollment.find().lean(),
       RoadmapNodeProgress.find().lean(),
+      GeneratedQuestionRow.find().sort({ createdAt: 1 }).lean(),
+      GeneratedInterviewDoc.find().sort({ createdAt: 1 }).lean(),
     ]);
   return {
     app: "PrepOS",
     version: EXPORT_VERSION,
     exportedAt: now.toISOString(),
-    collections: { settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress },
+    collections: { settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews },
   };
 }

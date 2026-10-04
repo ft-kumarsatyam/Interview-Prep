@@ -24,6 +24,8 @@ export interface DeckQuestion {
   followUps: string[];
   mistakes: string[];
   trackName: string;
+  /** Written by the model on request rather than by hand. */
+  generated?: boolean;
   lesson?: { id: string; title: string };
 }
 
@@ -194,6 +196,8 @@ export function InterviewDeck({ questions, initialStatus, showTrack = false }: {
                     <div className="mb-2 flex flex-wrap items-center gap-1.5">
                       <span className="tabular font-mono text-xs text-muted-foreground">{i + 1}.</span>
                       <ToneBadge tone={LEVEL_TONE[q.level]} className="capitalize">{q.level}</ToneBadge>
+          {q.generated && <ToneBadge tone="neutral">AI-written</ToneBadge>}
+                      {q.generated && <ToneBadge tone="neutral">AI-written</ToneBadge>}
                       {showTrack && <ToneBadge>{q.trackName}</ToneBadge>}
                       {s !== "new" && (
                         <ToneBadge tone={s === "known" ? "success" : "primary"} icon={s === "known" ? Check : RotateCcw}>
