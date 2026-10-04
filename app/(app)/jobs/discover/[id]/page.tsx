@@ -13,6 +13,8 @@ import { scoreResume } from "@/modules/jobs/domain/ats";
 import { AGGREGATOR_LABEL, AGGREGATOR_URL, type Aggregator } from "@/modules/jobs/domain/job-postings";
 import { getPostingDetail } from "@/modules/jobs/services/job-discovery";
 import { getJob } from "@/modules/jobs/services/jobs";
+import { getJobReadiness } from "@/modules/jobs/services/job-readiness";
+import { ReadinessCard } from "@/modules/jobs/components/readiness-card";
 import { getBaseResume } from "@/modules/resume/services/resume";
 
 export const metadata: Metadata = { title: "Job" };
@@ -22,6 +24,7 @@ export default async function PostingPage({ params }: PageProps<"/jobs/discover/
   const p = await getPostingDetail(id);
   if (!p) notFound();
   const [base, tracked] = await Promise.all([getBaseResume(), p.savedJobId ? getJob(p.savedJobId) : Promise.resolve(null)]);
+  const fit = await getJobReadiness({ title: p.title, jd: p.jd });
   const ats = base && p.jd.length > 40 ? scoreResume(base.text, { jd: p.jd }) : null;
   const tier = tierProfiles.find((t) => t.id === p.tier)?.name;
   const isAggregator = p.source in AGGREGATOR_LABEL;
@@ -126,6 +129,7 @@ export default async function PostingPage({ params }: PageProps<"/jobs/discover/
               )}
             </CardContent>
           </Card>
+        <ReadinessCard readiness={fit} plan={fit.plan} hasResume={fit.hasResume} />
         </aside>
       </div>
 
