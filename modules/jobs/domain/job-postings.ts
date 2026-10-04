@@ -9,7 +9,9 @@ import { htmlToPlain } from "@/modules/jobs/domain/jobs";
 
 export const BOARD_ATS = ["greenhouse", "lever", "ashby", "workable", "smartrecruiters"] as const;
 export const AGGREGATORS = ["remoteok", "remotive", "arbeitnow"] as const;
-export const POSTING_SOURCES = [...BOARD_ATS, ...AGGREGATORS] as const;
+/** Sources that are not fetched from a fixed API: jobs pushed in through the webhook, and public career pages read through the free reader. */
+export const PUSH_SOURCES = ["webhook", "scrape"] as const;
+export const POSTING_SOURCES = [...BOARD_ATS, ...AGGREGATORS, ...PUSH_SOURCES] as const;
 export type BoardAts = (typeof BOARD_ATS)[number];
 export type Aggregator = (typeof AGGREGATORS)[number];
 export type PostingSource = (typeof POSTING_SOURCES)[number];

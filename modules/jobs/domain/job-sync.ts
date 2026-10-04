@@ -16,7 +16,7 @@ export const START_NEW_UNTIL_LEFT_MS = 15_000;
 
 export interface SourceState {
   id: string;
-  kind: "board" | "aggregator";
+  kind: "board" | "aggregator" | "scrape" | "push";
   enabled: boolean;
   lastTriedAt: Date | null;
   cooldownUntil: Date | null;
@@ -30,7 +30,8 @@ export function dueSources<T extends SourceState>(sources: readonly T[], now: Da
     .filter((s) => {
       if (!s.enabled) return false;
       if (s.cooldownUntil && s.cooldownUntil.getTime() > t) return false;
-      const gap = (s.kind === "aggregator" ? AGGREGATOR_MIN_INTERVAL_MIN : BOARD_MIN_INTERVAL_MIN) * 60_000;
+      if (s.kind === "push") return false; // pushed in, never fetched
+      const gap = (s.kind === "board" ? BOARD_MIN_INTERVAL_MIN : AGGREGATOR_MIN_INTERVAL_MIN) * 60_000;
       return !s.lastTriedAt || t - s.lastTriedAt.getTime() >= gap;
     })
     .toSorted((a, b) => (a.lastTriedAt?.getTime() ?? 0) - (b.lastTriedAt?.getTime() ?? 0) || a.id.localeCompare(b.id));

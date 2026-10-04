@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { fetchSafe, type SafeResponse } from "@/core/http-safe";
+import { parseCareerMarkdown, readerUrl } from "@/modules/jobs/domain/job-push";
 import { AGGREGATORS, parseArbeitnow, parseBoard, parseRemoteOk, parseRemotive, parseSmartRecruiters, parseSmartRecruitersDetail, SLUG_RE, type Aggregator, type BoardAts, type CareerSource, type NormalizedPosting } from "@/modules/jobs/domain/job-postings";
 
 /** Responses from Greenhouse and Lever reach 5-6 MB for large companies, so the cap is generous. The body is never stored. */
@@ -14,6 +15,9 @@ export type Fetcher = (url: string, opts: { etag?: string }) => Promise<Pick<Saf
 
 export const defaultFetcher: Fetcher = (url, { etag }) =>
   fetchSafe(url, { timeoutMs: TIMEOUT_MS, maxBytes: MAX_BYTES, accept: /json/i, headers: { accept: "application/json", ...(etag ? { "if-none-match": etag } : {}) } });
+
+/** For the free reader: it answers with markdown or plain text, not JSON. */
+export const defaultTextFetcher: Fetcher = (url) => fetchSafe(url, { timeoutMs: 30_000, maxBytes: 3_000_000, accept: /text|markdown/i, headers: { accept: "text/markdown, text/plain" } });
 
 export type SourceResult = { status: "ok"; postings: NormalizedPosting[]; etag: string; total: number } | { status: "unchanged" };
 
@@ -70,6 +74,17 @@ export async function fetchAggregator(name: Aggregator, fetcher: Fetcher = defau
   const raw = parse(res);
   const postings = name === "remoteok" ? parseRemoteOk(raw) : name === "remotive" ? parseRemotive(raw) : parseArbeitnow(raw);
   return { status: "ok", postings, etag: etagOf(res), total: postings.length };
+}
+
+/**
+ * A company's public career page, read through the free reader (markdown out), then the job links are picked out.
+ * Only the page address goes to the reader; nothing about you does. Descriptions are not fetched: open a job to read it.
+ */
+export async function fetchCareerPage(source: { id: string; name: string; url: string }, fetcher: Fetcher = defaultTextFetcher): Promise<SourceResult> {
+  const res = await fetcher(readerUrl(source.url), {});
+  if (res.status >= 400) throw new Error(`The reader couldn't open that page (HTTP ${res.status})`);
+  const postings = parseCareerMarkdown(res.text, source.url, source.name, source.id);
+  return { status: "ok", postings, etag: "", total: postings.length };
 }
 
 /** SmartRecruiters' list has no description: fetch it for one posting when you open it. */

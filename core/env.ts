@@ -51,6 +51,8 @@ const schema = z.object({
   QSTASH_URL: z.url().default("https://qstash.upstash.io"),
   QSTASH_CURRENT_SIGNING_KEY: z.string().optional(),
   QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
+  /** Shared secret for POST /api/webhooks/jobs (n8n, Zapier, Apify, scripts). Unset = the webhook answers 503. */
+  JOBS_WEBHOOK_SECRET: z.string().min(16).optional(),
   /** Public base URL used for links in emails, e.g. https://satyam-dev.in */
   APP_URL: z.url().optional(),
 });

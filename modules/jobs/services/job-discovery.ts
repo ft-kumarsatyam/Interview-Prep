@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { bumpVersion, readThrough } from "@/core/cache";
 import { stableName } from "@/core/domain/cache";
 import { connectDb } from "@/core/db";
@@ -5,9 +6,10 @@ import { termsIn } from "@/modules/jobs/domain/ats";
 import type { DateStr } from "@/core/domain/dates";
 import { DEFAULT_PREFS, jobPrefsSchema, matchPosting, type JobPrefs, type Match } from "@/modules/jobs/domain/job-match";
 import { BOARD_ATS, detectBoard, postingKey, type BoardAts } from "@/modules/jobs/domain/job-postings";
-import { healthLabel, type HealthLabel } from "@/modules/jobs/domain/job-sync";
+import { healthLabel, selectPostings, type HealthLabel } from "@/modules/jobs/domain/job-sync";
 import { JobPosting, JobPrefsDoc, JobSource } from "@/core/models/job-postings";
-import { fetchSmartRecruitersDescription, probeBoard, type Fetcher } from "@/modules/jobs/lib/connectors";
+import { fetchCareerPage, fetchSmartRecruitersDescription, probeBoard, type Fetcher } from "@/modules/jobs/lib/connectors";
+import { isPublicCareerUrl } from "@/modules/jobs/domain/job-push";
 import { addJob, getJob, setJobStatus } from "@/modules/jobs/services/jobs";
 import { syncJobs, type SyncSummary } from "@/modules/jobs/services/job-sync";
 import { getBaseResume } from "@/modules/resume/services/resume";
@@ -207,7 +209,7 @@ export async function markPostingApplied(id: string, today: DateStr): Promise<Sa
 export interface SourceRow {
   id: string;
   name: string;
-  kind: "board" | "aggregator";
+  kind: "board" | "aggregator" | "scrape" | "push";
   ats: string;
   tier: string;
   custom: boolean;
@@ -225,7 +227,7 @@ export async function listSources(now = new Date()): Promise<SourceRow[]> {
   return docs.map((d) => ({
     id: d._id, name: d.name, kind: d.kind as SourceRow["kind"], ats: d.ats, tier: d.tier ?? "", custom: Boolean(d.custom), enabled: Boolean(d.enabled), open: open.get(d._id) ?? 0,
     lastOkAt: d.lastOkAt ? d.lastOkAt.toISOString() : null, lastError: d.lastError ?? "",
-    health: healthLabel({ id: d._id, kind: d.kind as "board" | "aggregator", enabled: Boolean(d.enabled), lastTriedAt: d.lastTriedAt ?? null, cooldownUntil: d.cooldownUntil ?? null, consecutiveFailures: d.consecutiveFailures ?? 0, lastOkAt: d.lastOkAt ?? null }, now),
+    health: healthLabel({ id: d._id, kind: d.kind as SourceRow["kind"], enabled: Boolean(d.enabled), lastTriedAt: d.lastTriedAt ?? null, cooldownUntil: d.cooldownUntil ?? null, consecutiveFailures: d.consecutiveFailures ?? 0, lastOkAt: d.lastOkAt ?? null }, now),
   }));
 }
 
@@ -241,7 +243,7 @@ export const MAX_CUSTOM_SOURCES = 40;
 /** Adds a company by the URL of its job board. The board is probed first, so a wrong link never gets saved. */
 export async function addCustomSource(rawUrl: string, tier: string, fetcher?: Fetcher): Promise<{ ok: true; id: string; name: string; count: number } | { ok: false; error: string }> {
   const board = detectBoard(rawUrl);
-  if (!board) return { ok: false, error: "That isn't a Greenhouse, Lever, Ashby, Workable or SmartRecruiters job board link" };
+  if (!board) return addCareerPage(rawUrl, tier, fetcher);
   await connectDb();
   if ((await JobSource.countDocuments({ custom: true })) >= MAX_CUSTOM_SOURCES) return { ok: false, error: `You can add up to ${MAX_CUSTOM_SOURCES} companies` };
   const id = `custom-${board.ats}-${board.slug}`;
@@ -250,6 +252,31 @@ export async function addCustomSource(rawUrl: string, tier: string, fetcher?: Fe
   if (!probe.ok) return { ok: false, error: probe.error };
   await JobSource.create({ _id: id, name: probe.company.slice(0, 120), kind: "board", ats: board.ats, slug: board.slug, tier: tier.slice(0, 40), custom: true, enabled: true });
   return { ok: true, id, name: probe.company, count: probe.count };
+}
+
+/**
+ * Adds a company's own public career page (not an ATS board): it is read through the free reader, and the page must
+ * actually yield job links before it is saved. Sites that forbid automated reading are refused.
+ */
+async function addCareerPage(rawUrl: string, tier: string, fetcher?: Fetcher): Promise<{ ok: true; id: string; name: string; count: number } | { ok: false; error: string }> {
+  const url = rawUrl.trim();
+  if (!isPublicCareerUrl(url)) return { ok: false, error: "Use the public https link of a company's careers page (LinkedIn, Naukri, Indeed and similar sites aren't allowed)" };
+  await connectDb();
+  if ((await JobSource.countDocuments({ custom: true })) >= MAX_CUSTOM_SOURCES) return { ok: false, error: `You can add up to ${MAX_CUSTOM_SOURCES} companies` };
+  const host = new URL(url).hostname.replace(/^(www|careers|jobs)\./, "");
+  const id = `custom-scrape-${createHash("sha256").update(url).digest("hex").slice(0, 10)}`;
+  if (await JobSource.exists({ $or: [{ _id: id }, { kind: "scrape", url }] })) return { ok: false, error: "That page is already in your sources" };
+  const name = host.split(".")[0]!.replace(/^./, (c) => c.toUpperCase()).slice(0, 120);
+  let count: number;
+  try {
+    const r = await fetchCareerPage({ id, name, url }, fetcher);
+    count = r.status === "ok" ? selectPostings(r.postings).length : 0;
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Couldn't read that page" };
+  }
+  if (count === 0) return { ok: false, error: "No engineering job links were found on that page. Try the page that lists the openings, or a Greenhouse, Lever, Ashby, Workable or SmartRecruiters link" };
+  await JobSource.create({ _id: id, name, kind: "scrape", ats: "scrape", slug: "", url, tier: tier.slice(0, 40), custom: true, enabled: true });
+  return { ok: true, id, name, count };
 }
 
 export async function removeCustomSource(id: string): Promise<void> {

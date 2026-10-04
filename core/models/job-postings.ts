@@ -49,7 +49,9 @@ const sourceSchema = new Schema(
   {
     _id: { type: String, required: true },
     name: { type: String, required: true, maxlength: 120 },
-    kind: { type: String, enum: ["board", "aggregator"], required: true },
+    kind: { type: String, enum: ["board", "aggregator", "scrape", "push"], required: true },
+    /** Career page address for a "scrape" source. */
+    url: { type: String, default: "", maxlength: 500 },
     ats: { type: String, required: true },
     slug: { type: String, default: "", maxlength: 80 },
     tier: { type: String, default: "" },

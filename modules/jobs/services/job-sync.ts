@@ -7,7 +7,7 @@ import { dueSources, MAX_POSTINGS_TOTAL, nextHealth, selectPostings, START_NEW_U
 import { bumpVersion } from "@/core/cache";
 import { logger } from "@/core/observability/log";
 import { getKv } from "@/core/kv";
-import { defaultFetcher, fetchAggregator, fetchBoard, isAggregator, type Fetcher, type SourceResult } from "@/modules/jobs/lib/connectors";
+import { defaultFetcher, defaultTextFetcher, fetchAggregator, fetchBoard, fetchCareerPage, isAggregator, type Fetcher, type SourceResult } from "@/modules/jobs/lib/connectors";
 import { JobPosting, JobSource } from "@/core/models/job-postings";
 import { pLimit } from "@/core/http";
 import { publish } from "@/core/realtime";
@@ -54,9 +54,11 @@ export async function ensureSources(): Promise<void> {
   await JobSource.bulkWrite(ops, { ordered: false });
 }
 
-type SourceDoc = { _id: string; name: string; kind: "board" | "aggregator"; ats: string; slug: string; tier: string; companyId: string | null; enabled: boolean; lastTriedAt: Date | null; cooldownUntil: Date | null; consecutiveFailures: number; etag: string };
+type SourceDoc = { _id: string; name: string; url?: string; kind: "board" | "aggregator" | "scrape" | "push"; ats: string; slug: string; tier: string; companyId: string | null; enabled: boolean; lastTriedAt: Date | null; cooldownUntil: Date | null; consecutiveFailures: number; etag: string };
 
-async function fetchSource(doc: SourceDoc, fetcher: Fetcher): Promise<SourceResult> {
+async function fetchSource(doc: SourceDoc, fetcher: Fetcher, textFetcher: Fetcher = defaultTextFetcher): Promise<SourceResult> {
+  if (doc.kind === "scrape") return fetchCareerPage({ id: doc._id, name: doc.name, url: doc.url ?? "" }, textFetcher);
+  if (doc.kind === "push") throw new Error("Pushed sources are not fetched");
   if (doc.kind === "aggregator") {
     if (!isAggregator(doc.ats)) throw new Error("Unknown aggregator");
     return fetchAggregator(doc.ats as Aggregator, fetcher, doc.etag);
@@ -66,7 +68,7 @@ async function fetchSource(doc: SourceDoc, fetcher: Fetcher): Promise<SourceResu
 }
 
 /** Writes one source's postings: new ones are inserted, seen ones refreshed, vanished ones closed. */
-async function store(doc: SourceDoc, postings: NormalizedPosting[], now: Date): Promise<{ added: number; closed: number }> {
+export async function storePostings(doc: Pick<SourceDoc, "_id" | "tier" | "companyId">, postings: NormalizedPosting[], now: Date, opts: { closeMissing?: boolean } = {}): Promise<{ added: number; closed: number }> {
   const ops = postings.map((p) => ({
     updateOne: {
       filter: { key: postingKey(p) },
@@ -84,7 +86,8 @@ async function store(doc: SourceDoc, postings: NormalizedPosting[], now: Date): 
   }));
   const res = ops.length ? await JobPosting.bulkWrite(ops, { ordered: false }) : { upsertedCount: 0 };
   // Anything from this source that was open before this run and was not in the response is gone.
-  const closed = await JobPosting.updateMany({ sourceId: doc._id, closedAt: null, lastSeenAt: { $lt: now } }, { $set: { closedAt: now } });
+  // A pushed source only ever adds: absence from one request says nothing about the others.
+  const closed = opts.closeMissing === false ? { modifiedCount: 0 } : await JobPosting.updateMany({ sourceId: doc._id, closedAt: null, lastSeenAt: { $lt: now } }, { $set: { closedAt: now } });
   return { added: res.upsertedCount, closed: closed.modifiedCount };
 }
 
@@ -116,7 +119,7 @@ export async function syncJobs(opts: SyncOptions = {}): Promise<SyncSummary> {
 
   try {
     await ensureSources();
-    const docs = (await JobSource.find({}).lean()) as unknown as SourceDoc[];
+    const docs = ((await JobSource.find({}).lean()) as unknown as SourceDoc[]).filter((d) => d.kind !== "push");
     const pool = opts.only ? docs.filter((d) => opts.only!.includes(d._id)) : docs;
     const due = dueSources(pool.map((d) => ({ ...d, id: d._id, lastTriedAt: d.lastTriedAt ?? null, cooldownUntil: d.cooldownUntil ?? null })), opts.force ? new Date(now.getTime() + 365 * 86_400_000) : now);
     const queue = [...due];
@@ -133,13 +136,13 @@ export async function syncJobs(opts: SyncOptions = {}): Promise<SyncSummary> {
             if (!doc) return;
             summary.sources++;
             try {
-              const res = await fetchSource(doc, fetcher);
+              const res = await fetchSource(doc, fetcher, opts.fetcher ?? defaultTextFetcher);
               if (res.status === "unchanged") {
                 summary.unchanged++;
                 await JobSource.updateOne({ _id: doc._id }, { $set: { lastTriedAt: now, lastOkAt: now, ...nextHealth(doc, { ok: true }, now) } });
               } else {
                 const kept = selectPostings(res.postings);
-                const { added, closed } = await store(doc, kept, now);
+                const { added, closed } = await storePostings(doc, kept, now);
                 summary.ok++;
                 summary.added += added;
                 summary.closed += closed;

@@ -15,7 +15,7 @@ import type { HealthLabel } from "@/modules/jobs/domain/job-sync";
 export interface SourceView {
   id: string;
   name: string;
-  kind: "board" | "aggregator";
+  kind: "board" | "aggregator" | "scrape" | "push";
   ats: string;
   tierName: string;
   custom: boolean;
