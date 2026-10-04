@@ -12,8 +12,21 @@ type State =
   | { phase: "done"; sources: AskSource[]; text: string; result: AskDone }
   | { phase: "error"; sources: AskSource[]; text: string; error: string; unavailable?: boolean };
 
-/** Reads the newline-delimited JSON stream from /api/ai/ask and renders tokens as they arrive. Text only: never HTML. */
-export function AskNotes() {
+export interface AskNotesProps {
+  /** The streaming endpoint (default: your notes and saved articles). */
+  endpoint?: string;
+  /** Extra fields sent with the question, e.g. which job the chat is about. */
+  extraBody?: Record<string, unknown>;
+  placeholder?: string;
+  /** Send the earlier turns back so the answer can follow the conversation. */
+  withHistory?: boolean;
+  /** Distinguishes two chats on one page. */
+  idPrefix?: string;
+}
+
+/** Reads the newline-delimited JSON stream from the endpoint and renders tokens as they arrive. Text only: never HTML. */
+export function AskNotes({ endpoint = "/api/ai/ask", extraBody, placeholder = "Ask anything from your notes and saved articles, e.g. how does TCP guarantee delivery?", withHistory = false, idPrefix = "ask" }: AskNotesProps) {
+  const history = useRef<Array<{ role: "you" | "assistant"; text: string }>>([]);
   const [question, setQuestion] = useState("");
   const [state, setState] = useState<State>({ phase: "idle" });
   const abort = useRef<AbortController | null>(null);
@@ -27,7 +40,7 @@ export function AskNotes() {
     let text = "";
     setState({ phase: "running", sources, text });
     try {
-      const res = await fetch("/api/ai/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question }), signal: controller.signal });
+      const res = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question, ...extraBody, ...(withHistory ? { history: history.current.slice(-6) } : {}) }), signal: controller.signal });
       if (!res.ok || !res.body) {
         const msg = (await res.json().catch(() => null)) as { error?: string } | null;
         setState({ phase: "error", sources, text, error: msg?.error ?? "Something went wrong. Try again." });
@@ -51,6 +64,7 @@ export function AskNotes() {
           if (ev.type === "sources") sources = ev.sources;
           else if (ev.type === "token") text += ev.text;
           else if (ev.type === "done") {
+            if (withHistory) history.current = [...history.current, { role: "you" as const, text: question }, { role: "assistant" as const, text: ev.result.answer }].slice(-12);
             setState({ phase: "done", sources, text: ev.result.answer, result: ev.result });
             return;
           } else {
@@ -72,15 +86,15 @@ export function AskNotes() {
   return (
     <div className="space-y-4">
       <form onSubmit={ask} className="flex flex-col gap-2 sm:flex-row">
-        <label htmlFor="ask-q" className="sr-only">
+        <label htmlFor={`${idPrefix}-q`} className="sr-only">
           Your question
         </label>
         <input
-          id="ask-q"
+          id={`${idPrefix}-q`}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           maxLength={500}
-          placeholder="Ask anything from your notes and saved articles, e.g. how does TCP guarantee delivery?"
+          placeholder={placeholder}
           className="h-11 min-w-0 flex-1 rounded-lg border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         />
         <Button type="submit" disabled={running || question.trim().length < 3} className="h-11">

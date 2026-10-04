@@ -15,6 +15,11 @@ import { ACTIVE_STATUSES, followUpDraft, SOURCE_LABEL, STATUS_LABEL } from "@/mo
 import { todayIn } from "@/modules/planner/services/plan";
 import { getSettings } from "@/modules/settings/services/settings";
 import { getJob } from "@/modules/jobs/services/jobs";
+import { getJobReadiness } from "@/modules/jobs/services/job-readiness";
+import { listOutreach } from "@/modules/jobs/services/outreach";
+import { JobChatPanel } from "@/modules/jobs/components/job-chat-panel";
+import { OutreachPanel } from "@/modules/jobs/components/outreach-panel";
+import { ReadinessCard } from "@/modules/jobs/components/readiness-card";
 import { getBaseResume } from "@/modules/resume/services/resume";
 
 export const metadata: Metadata = { title: "Job" };
@@ -24,6 +29,7 @@ export default async function JobPage({ params }: PageProps<"/jobs/[id]">) {
   const job = await getJob(id);
   if (!job) notFound();
   const base = await getBaseResume();
+  const [fit, sent] = await Promise.all([getJobReadiness({ title: job.title, jd: job.jd }), listOutreach(job.id)]);
   const today = todayIn(await getSettings());
   const match = base && job.jd.length > 40 ? scoreResume(base.text, { jd: job.jd }) : null;
 
@@ -107,6 +113,9 @@ export default async function JobPage({ params }: PageProps<"/jobs/[id]">) {
               {job.jd ? <p className="max-h-96 overflow-y-auto text-sm whitespace-pre-wrap text-muted-foreground">{job.jd}</p> : <p className="text-sm text-muted-foreground">No description was captured. Open the posting and paste it into the tailor page.</p>}
             </CardContent>
           </Card>
+          <ReadinessCard readiness={fit} plan={fit.plan} hasResume={fit.hasResume} />
+          <JobChatPanel target={{ kind: "job", id: job.id }} />
+          <OutreachPanel target={{ kind: "job", id: job.id }} hasResume={Boolean(base)} sent={sent} />
         </div>
       </div>
     </div>

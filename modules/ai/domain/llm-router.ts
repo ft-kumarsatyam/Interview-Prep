@@ -11,7 +11,7 @@ export type ProviderId = (typeof PROVIDER_IDS)[number];
 /** The only provider that costs money. Always tried last and only with a visible confirmation. */
 export const PAID_PROVIDER: ProviderId = "meta";
 
-export const AI_FEATURES = ["background", "practice", "hint", "explain", "code-review", "answer-feedback", "generate-questions", "mock-grade", "resume-roast", "resume-tailor", "ask", "test"] as const;
+export const AI_FEATURES = ["background", "practice", "hint", "explain", "code-review", "answer-feedback", "generate-questions", "mock-grade", "resume-roast", "resume-tailor", "ask", "job-chat", "recruiter-email", "test"] as const;
 export type AiFeature = (typeof AI_FEATURES)[number];
 
 export type ErrorKind = "rate" | "quota-day" | "auth" | "server" | "timeout" | "network" | "bad-request" | "invalid-output";
@@ -97,6 +97,9 @@ export const FEATURE_POLICY: Record<AiFeature, FeaturePolicy> = {
   "resume-tailor": { prefer: ["gemini"], paid: "never" },
   // Answers grounded in your notes and saved articles: never the paid provider.
   ask: { prefer: ["gemini", "groq"], paid: "never" },
+  // Both read your resume: personal data, so never the paid provider.
+  "job-chat": { prefer: ["gemini", "groq"], paid: "never" },
+  "recruiter-email": { prefer: ["gemini"], paid: "never" },
   test: { prefer: [], paid: "never" },
 };
 

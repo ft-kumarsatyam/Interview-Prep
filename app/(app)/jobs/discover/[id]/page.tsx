@@ -14,6 +14,9 @@ import { AGGREGATOR_LABEL, AGGREGATOR_URL, type Aggregator } from "@/modules/job
 import { getPostingDetail } from "@/modules/jobs/services/job-discovery";
 import { getJob } from "@/modules/jobs/services/jobs";
 import { getJobReadiness } from "@/modules/jobs/services/job-readiness";
+import { listOutreach } from "@/modules/jobs/services/outreach";
+import { JobChatPanel } from "@/modules/jobs/components/job-chat-panel";
+import { OutreachPanel } from "@/modules/jobs/components/outreach-panel";
 import { ReadinessCard } from "@/modules/jobs/components/readiness-card";
 import { getBaseResume } from "@/modules/resume/services/resume";
 
@@ -24,7 +27,7 @@ export default async function PostingPage({ params }: PageProps<"/jobs/discover/
   const p = await getPostingDetail(id);
   if (!p) notFound();
   const [base, tracked] = await Promise.all([getBaseResume(), p.savedJobId ? getJob(p.savedJobId) : Promise.resolve(null)]);
-  const fit = await getJobReadiness({ title: p.title, jd: p.jd });
+  const [fit, sent] = await Promise.all([getJobReadiness({ title: p.title, jd: p.jd }), p.savedJobId ? listOutreach(p.savedJobId) : Promise.resolve([])]);
   const ats = base && p.jd.length > 40 ? scoreResume(base.text, { jd: p.jd }) : null;
   const tier = tierProfiles.find((t) => t.id === p.tier)?.name;
   const isAggregator = p.source in AGGREGATOR_LABEL;
@@ -132,6 +135,9 @@ export default async function PostingPage({ params }: PageProps<"/jobs/discover/
         <ReadinessCard readiness={fit} plan={fit.plan} hasResume={fit.hasResume} />
         </aside>
       </div>
+
+      <JobChatPanel target={{ kind: "posting", id: p.id }} />
+      <OutreachPanel target={{ kind: "posting", id: p.id }} hasResume={Boolean(base)} sent={sent} />
 
       {base ? (
         <section aria-label="Upgrade your resume" className="space-y-3">

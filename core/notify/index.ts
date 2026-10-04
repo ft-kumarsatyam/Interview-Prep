@@ -141,3 +141,34 @@ export async function pushToChannels(
   });
   return { sent, failed, errors };
 }
+
+export type SendEmailResult = { ok: true; provider: "brevo" | "resend" } | { ok: false; error: string };
+
+/**
+ * Sends one plain-text email to any address through the configured provider (Brevo, else Resend), with your own
+ * address as Reply-To so the answer comes to you. Used only for mail you wrote or approved, never in the background.
+ * Resend's shared test sender can only mail the account owner, so a verified RESEND_FROM_EMAIL is required there.
+ */
+export async function sendEmailTo(input: { to: string; subject: string; text: string }): Promise<SendEmailResult> {
+  const e = env();
+  const replyTo = e.ADMIN_EMAIL;
+  try {
+    if (e.BREVO_API_KEY && e.BREVO_SENDER_EMAIL) {
+      await post("https://api.brevo.com/v3/smtp/email", {
+        headers: { "content-type": "application/json", accept: "application/json", "api-key": brevoApiKey(e.BREVO_API_KEY) },
+        body: JSON.stringify({ sender: { name: e.ADMIN_NAME, email: e.BREVO_SENDER_EMAIL }, to: [{ email: input.to }], replyTo: { email: replyTo }, subject: input.subject, textContent: input.text }),
+      });
+      return { ok: true, provider: "brevo" };
+    }
+    if (e.RESEND_API_KEY && e.RESEND_FROM_EMAIL) {
+      await post("https://api.resend.com/emails", {
+        headers: { "content-type": "application/json", authorization: `Bearer ${e.RESEND_API_KEY}` },
+        body: JSON.stringify({ from: `${e.ADMIN_NAME} <${e.RESEND_FROM_EMAIL}>`, to: [input.to], reply_to: replyTo, subject: input.subject, text: input.text }),
+      });
+      return { ok: true, provider: "resend" };
+    }
+    return { ok: false, error: "No email provider is set up for sending to other people. Add BREVO_API_KEY with BREVO_SENDER_EMAIL, or RESEND_API_KEY with a verified RESEND_FROM_EMAIL." };
+  } catch (err) {
+    return { ok: false, error: `The email provider refused it: ${err instanceof Error ? err.message.slice(0, 160) : "unknown error"}` };
+  }
+}

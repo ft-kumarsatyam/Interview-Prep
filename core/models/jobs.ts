@@ -25,6 +25,8 @@ const jobSchema = new Schema(
     interviewOn: { type: String, default: null },
     interviewRound: { type: String, default: "", maxlength: 60 },
     contact: { type: String, default: "", maxlength: 200 },
+    /** Emails you sent to a recruiter about this job from PrepOS (address, subject, when). Never the body. */
+    outreach: { type: [{ to: { type: String, maxlength: 254 }, subject: { type: String, maxlength: 200 }, at: Date, _id: false }], default: [] },
   },
   { timestamps: true },
 );
