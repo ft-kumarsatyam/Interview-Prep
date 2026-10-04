@@ -1,5 +1,6 @@
 import { connectDb } from "@/core/db";
 import { KvDoc, KvEventDoc, KvSeq } from "@/core/models/kv";
+import { bucketTtlSec, type BucketConfig, type BucketResult } from "@/core/domain/rate-limit";
 import { EVENT_MAX, type KvEvent, type KvStore } from "@/core/kv/types";
 
 const isDuplicate = (err: unknown) => typeof err === "object" && err !== null && (err as { code?: number }).code === 11000;
@@ -51,6 +52,38 @@ export class MongoKv implements KvStore {
   async releaseIfOwner(key: string, token: string) {
     await connectDb();
     return (await KvDoc.deleteOne({ _id: key, v: token })).deletedCount === 1;
+  }
+  /**
+   * One update-pipeline `findOneAndUpdate`: refill and take in the database, so concurrent callers cannot both spend the
+   * last token. The row keeps `n` tokens, `t` last ms and `ok`/`wait` from the latest call, which is what we read back.
+   */
+  async tokenBucket(key: string, cfg: BucketConfig, cost = 1, nowMs = Date.now()): Promise<BucketResult> {
+    await connectDb();
+    const { ratePerSec: rate, burst } = cfg;
+    const exp = new Date(nowMs + bucketTtlSec(cfg) * 1000);
+    const refilled = { $min: [burst, { $add: [{ $ifNull: ["$n", burst] }, { $multiply: [{ $divide: [{ $max: [0, { $subtract: [nowMs, { $ifNull: ["$t", nowMs] }] }] }, 1000] }, rate] }] }] };
+    const doc = await KvDoc.collection.findOneAndUpdate(
+      { _id: key as never },
+      [
+        { $set: { f: refilled, last: { $max: [nowMs, { $ifNull: ["$t", nowMs] }] } } },
+        { $set: { ok: { $lte: [cost, "$f"] } } },
+        {
+          $set: {
+            n: { $cond: ["$ok", { $subtract: ["$f", cost] }, "$f"] },
+            t: "$last",
+            wait: { $cond: ["$ok", 0, cost > burst ? -1 : { $ceil: { $multiply: [{ $divide: [{ $subtract: [cost, "$f"] }, rate] }, 1000] } }] },
+            exp,
+            v: "",
+          },
+        },
+        { $unset: ["f", "last"] },
+      ],
+      { upsert: true, returnDocument: "after" },
+    );
+    const remaining = Math.floor((doc?.n as number | undefined) ?? 0);
+    if (doc?.ok) return { allowed: true, remaining, retryAfterMs: 0 };
+    const wait = (doc?.wait as number | undefined) ?? 0;
+    return { allowed: false, remaining, retryAfterMs: wait < 0 ? Number.POSITIVE_INFINITY : wait };
   }
   async eventsAppend(channel: string, data: string) {
     await connectDb();

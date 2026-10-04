@@ -1,10 +1,31 @@
 import { fetchWithPolicy } from "@/core/http";
+import { bucketTtlSec, type BucketConfig, type BucketResult } from "@/core/domain/rate-limit";
 import { EVENT_MAX, EVENT_TTL_SEC, type KvEvent, type KvStore } from "@/core/kv/types";
 
 type Cmd = (string | number)[];
 
 /** Releases a lock only when its value still equals the caller's token. */
 const RELEASE = "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end";
+
+/**
+ * Token bucket in one atomic step. State is a hash `{ n tokens, t last ms }`; the client passes `now` so the Mongo and
+ * Redis implementations agree and tests can control time. Returns `[allowed, tokens*1000 (integer), retryAfterMs]`.
+ */
+const TOKEN_BUCKET = `
+local rate=tonumber(ARGV[1]) local burst=tonumber(ARGV[2]) local now=tonumber(ARGV[3]) local cost=tonumber(ARGV[4]) local ttl=tonumber(ARGV[5])
+local d=redis.call('HMGET',KEYS[1],'n','t')
+local n=tonumber(d[1]) local t=tonumber(d[2])
+if n==nil then n=burst t=now end
+n=math.min(burst, n+math.max(0,now-t)/1000*rate)
+t=math.max(now,t)
+local ok=0 local retry=0
+if cost<=n then n=n-cost ok=1
+elseif cost>burst then retry=-1
+else retry=math.ceil((cost-n)/rate*1000) end
+redis.call('HSET',KEYS[1],'n',tostring(n),'t',tostring(t))
+redis.call('EXPIRE',KEYS[1],ttl)
+return {ok, math.floor(n*1000), retry}
+`;
 
 /**
  * KvStore on Upstash Redis through its REST API (plain fetch, no SDK, no TCP), so it works on Vercel.
@@ -54,6 +75,11 @@ export class UpstashKv implements KvStore {
   }
   async releaseIfOwner(key: string, token: string) {
     return (await this.cmd<number>(["EVAL", RELEASE, 1, key, token])) === 1;
+  }
+  async tokenBucket(key: string, cfg: BucketConfig, cost = 1, nowMs = Date.now()): Promise<BucketResult> {
+    const [ok, milli, retry] = await this.cmd<[number, number, number]>(["EVAL", TOKEN_BUCKET, 1, `tb:${key}`, cfg.ratePerSec, cfg.burst, nowMs, cost, bucketTtlSec(cfg)]);
+    const remaining = Math.floor(milli / 1000);
+    return ok === 1 ? { allowed: true, remaining, retryAfterMs: 0 } : { allowed: false, remaining, retryAfterMs: retry < 0 ? Number.POSITIVE_INFINITY : retry };
   }
   async eventsAppend(channel: string, data: string) {
     const out = await this.post<Array<{ result?: string; error?: string }>>("/pipeline", [["XADD", `ev:${channel}`, "MAXLEN", "~", EVENT_MAX, "*", "d", data], ["EXPIRE", `ev:${channel}`, EVENT_TTL_SEC]]);

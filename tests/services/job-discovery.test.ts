@@ -32,7 +32,7 @@ async function seed(jobs: Array<{ id: number; title: string; location?: string; 
     meta: { total: jobs.length },
   });
   const fetcher: Fetcher = async () => ok(body);
-  await syncJobs({ now: NOW, fetcher, only: [slug] });
+  await syncJobs({ now: NOW, fetcher, only: [slug], force: true });
 }
 
 describe("preferences", () => {
@@ -192,5 +192,34 @@ describe("sources", () => {
     await removeCustomSource(added.id);
     expect(await JobPosting.countDocuments({ sourceId: added.id })).toBe(0);
     await expect(removeCustomSource("stripe")).rejects.toThrow(/Only companies you added/);
+  });
+});
+
+describe("the cached Discover list", () => {
+  it("serves a repeat call from the cache and refreshes after a dismiss, a new sync or new preferences", async () => {
+    await seed([{ id: 1, title: "Backend Engineer" }, { id: 2, title: "Platform Engineer" }]);
+    const first = await discoverJobs({});
+    expect(first.items).toHaveLength(2);
+
+    // A row changed behind the cache's back is not seen until something bumps the version...
+    await JobPosting.updateOne({ title: "Platform Engineer" }, { $set: { dismissed: true } });
+    expect((await discoverJobs({})).items).toHaveLength(2);
+
+    // ...and the app's own dismiss does bump it.
+    const id = first.items.find((i) => i.title === "Backend Engineer")!.id;
+    await setDismissed(id, true);
+    expect((await discoverJobs({})).items).toHaveLength(0);
+    await setDismissed(id, false);
+    expect((await discoverJobs({})).items).toHaveLength(1);
+
+    await seed([{ id: 1, title: "Backend Engineer" }, { id: 3, title: "Data Engineer" }]);
+    expect((await discoverJobs({})).items.map((i) => i.title).sort()).toEqual(["Backend Engineer", "Data Engineer"]);
+  });
+
+  it("keys the cache by filter", async () => {
+    await seed([{ id: 1, title: "Backend Engineer" }, { id: 2, title: "Frontend Engineer" }]);
+    expect((await discoverJobs({ q: "backend" })).items).toHaveLength(1);
+    expect((await discoverJobs({ q: "frontend" })).items).toHaveLength(1);
+    expect((await discoverJobs({})).items).toHaveLength(2);
   });
 });

@@ -1,3 +1,4 @@
+import type { BucketConfig, BucketResult } from "@/core/domain/rate-limit";
 /**
  * The one place PrepOS keeps short-lived shared state: locks, counters, small caches and a tiny event log.
  * Mongo is the default implementation; Upstash Redis is used instead when its env vars are set (an
@@ -21,6 +22,11 @@ export interface KvStore {
   setNx(key: string, token: string, ttlSec: number): Promise<boolean>;
   /** Frees a lock, but only if you still hold it (a slow job must not free the next holder's lock). */
   releaseIfOwner(key: string, token: string): Promise<boolean>;
+  /**
+   * Atomic token bucket: refill since the last call (up to `burst`), then take `cost` tokens if there are enough.
+   * `nowMs` is a test seam; production callers omit it.
+   */
+  tokenBucket(key: string, cfg: BucketConfig, cost?: number, nowMs?: number): Promise<BucketResult>;
   /** Appends to a channel's short log (kept about an hour, newest few hundred) and returns the event id. */
   eventsAppend(channel: string, data: string): Promise<string>;
   /** Events after `after`, oldest first. An unknown or malformed `after` yields nothing rather than a replay. */

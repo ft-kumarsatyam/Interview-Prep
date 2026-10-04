@@ -1,3 +1,4 @@
+import { bumpVersion } from "@/core/cache";
 import { connectDb } from "@/core/db";
 import { scoreResume } from "@/modules/jobs/domain/ats";
 import { parseResumeText, RESUME_TEXT_MAX } from "@/modules/resume/domain/resume";
@@ -51,6 +52,7 @@ export async function saveBaseResume(text: string): Promise<ResumeDto> {
   if (clean.length > RESUME_TEXT_MAX) throw new Error(`Keep it under ${RESUME_TEXT_MAX.toLocaleString()} characters`);
   await connectDb();
   const d = await Resume.findOneAndUpdate({ kind: "base" }, { $set: { text: clean }, $setOnInsert: { label: "My resume" } }, { upsert: true, returnDocument: "after" }).lean();
+  await bumpVersion("jobs"); // Discover scores jobs against the resume's skills
   return toDto(d!);
 }
 

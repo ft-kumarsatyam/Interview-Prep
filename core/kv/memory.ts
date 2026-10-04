@@ -1,3 +1,4 @@
+import { bucketTtlSec, take, type BucketConfig, type BucketResult, type BucketState } from "@/core/domain/rate-limit";
 import { EVENT_MAX, type KvEvent, type KvStore } from "@/core/kv/types";
 
 /** In-process KvStore for tests and as a reference for the contract. Time is injectable. */
@@ -39,6 +40,13 @@ export class MemoryKv implements KvStore {
     if (this.live(key)?.v !== token) return false;
     this.data.delete(key);
     return true;
+  }
+  async tokenBucket(key: string, cfg: BucketConfig, cost = 1, nowMs = this.now()): Promise<BucketResult> {
+    const e = this.live(`tb:${key}`);
+    const prev: BucketState | null = e ? { tokens: e.n, at: Number(e.v) } : null;
+    const { state, result } = take(prev, nowMs, cfg, cost);
+    this.data.set(`tb:${key}`, { v: String(state.at), n: state.tokens, exp: this.now() + bucketTtlSec(cfg) * 1000 });
+    return result;
   }
   async eventsAppend(channel: string, data: string) {
     const log = this.logs.get(channel) ?? this.logs.set(channel, { seq: 0, items: [] }).get(channel)!;

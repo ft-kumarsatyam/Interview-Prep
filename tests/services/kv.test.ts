@@ -1,5 +1,4 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkLimit, windowKey } from "@/core/domain/rate-limit";
 import { FallbackKv } from "@/core/kv/fallback";
 import { MemoryKv } from "@/core/kv/memory";
 import { MongoKv } from "@/core/kv/mongo";
@@ -68,6 +67,28 @@ function contract(name: string, make: () => KvStore) {
       expect(got.filter(Boolean)).toHaveLength(1);
     });
 
+    it("token bucket: bursts, refuses with an exact wait, refills with time, isolates keys", async () => {
+      const kv = make();
+      const cfg = { ratePerSec: 1, burst: 3 };
+      const t = 1_000_000;
+      for (let i = 0; i < 3; i++) expect(await kv.tokenBucket("tb", cfg, 1, t)).toMatchObject({ allowed: true, remaining: 2 - i });
+      expect(await kv.tokenBucket("tb", cfg, 1, t)).toMatchObject({ allowed: false, remaining: 0, retryAfterMs: 1000 });
+      expect(await kv.tokenBucket("tb", cfg, 1, t + 500)).toMatchObject({ allowed: false, retryAfterMs: 500 });
+      expect(await kv.tokenBucket("tb", cfg, 1, t + 1000)).toMatchObject({ allowed: true });
+      expect(await kv.tokenBucket("tb", cfg, 1, t + 1000)).toMatchObject({ allowed: false });
+      expect(await kv.tokenBucket("other", cfg, 1, t)).toMatchObject({ allowed: true, remaining: 2 });
+      expect(await kv.tokenBucket("big", cfg, 5, t)).toMatchObject({ allowed: false, retryAfterMs: Number.POSITIVE_INFINITY });
+      expect(await kv.tokenBucket("tb", cfg, 1, t - 60_000)).toMatchObject({ allowed: false }); // a clock going backwards mints nothing
+    });
+
+    it("token bucket: concurrent callers never overspend the burst", async () => {
+      const kv = make();
+      const cfg = { ratePerSec: 0.001, burst: 5 };
+      const t = 2_000_000;
+      const res = await Promise.all(Array.from({ length: 20 }, () => kv.tokenBucket("race-tb", cfg, 1, t)));
+      expect(res.filter((r) => r.allowed)).toHaveLength(5);
+    });
+
     it("keeps an ordered event log per channel", async () => {
       const kv = make();
       expect(await kv.eventsLastId("ch")).toBeNull();
@@ -108,6 +129,7 @@ describe("MongoKv event log", () => {
 function fakeUpstash() {
   const store = new Map<string, { v: string; exp?: number }>();
   const streams = new Map<string, Array<[string, string[]]>>();
+  const bucket = new Map<string, { n: number; t: number }>();
   let seq = 0;
   const sent: unknown[][] = [];
   const live = (k: string) => {
@@ -130,7 +152,24 @@ function fakeUpstash() {
       case "DEL": return store.delete(k) ? 1 : 0;
       case "INCR": { const n = Number(live(k)?.v ?? 0) + 1; store.set(k, { v: String(n), exp: store.get(k)?.exp }); return n; }
       case "EXPIRE": { const e = live(k); if (e && !e.exp) e.exp = Date.now() + Number(rest[0]) * 1000; return 1; }
-      case "EVAL": { const [, , , key, token] = a as [string, string, number, string, string]; return live(key)?.v === token ? (store.delete(key), 1) : 0; }
+      case "EVAL": {
+        if (String(k).includes("HMGET")) {
+          const [, , , key, rate, burst, now, cost, ttl] = a as [string, string, number, string, number, number, number, number, number];
+          const cur = bucket.get(key);
+          let n = cur?.n ?? Number(burst);
+          let t = cur?.t ?? Number(now);
+          n = Math.min(Number(burst), n + (Math.max(0, Number(now) - t) / 1000) * Number(rate));
+          t = Math.max(Number(now), t);
+          let ok = 0;
+          let retry = 0;
+          if (Number(cost) <= n) { n -= Number(cost); ok = 1; }
+          else if (Number(cost) > Number(burst)) retry = -1;
+          else retry = Math.ceil(((Number(cost) - n) / Number(rate)) * 1000);
+          bucket.set(key, { n, t });
+          void ttl;
+          return [ok, Math.floor(n * 1000), retry];
+        }
+        const [, , , key, token] = a as [string, string, number, string, string]; return live(key)?.v === token ? (store.delete(key), 1) : 0; }
       case "XADD": { const id = `${1000 + ++seq}-0`; const s = streams.get(k) ?? []; s.push([id, ["d", String(rest.at(-1))]]); streams.set(k, s); return id; }
       case "XRANGE": { const after = String(rest[0]).replace("(", ""); return (streams.get(k) ?? []).filter(([id]) => id > after).slice(0, Number(rest.at(-1))); }
       case "XREVRANGE": return (streams.get(k) ?? []).slice(-1);
@@ -170,6 +209,19 @@ describe("UpstashKv", () => {
     expect(kv.commands).toBeGreaterThan(8);
   });
 
+  it("sends the token bucket as one atomic EVAL with the arguments the script expects", async () => {
+    const fake = fakeUpstash();
+    vi.stubGlobal("fetch", fake.handler);
+    const kv = new UpstashKv("https://example.upstash.io", "tok");
+    const cfg = { ratePerSec: 0.5, burst: 2 };
+    expect(await kv.tokenBucket("k", cfg, 1, 5000)).toEqual({ allowed: true, remaining: 1, retryAfterMs: 0 });
+    expect(await kv.tokenBucket("k", cfg, 1, 5000)).toEqual({ allowed: true, remaining: 0, retryAfterMs: 0 });
+    expect(await kv.tokenBucket("k", cfg, 1, 5000)).toEqual({ allowed: false, remaining: 0, retryAfterMs: 2000 });
+    const call = fake.sent.filter((c) => c[0] === "EVAL").at(-1)!;
+    expect(call.slice(2)).toEqual([1, "tb:k", 0.5, 2, 5000, 1, 5]);
+    expect(String(call[1])).toContain("HMGET");
+  });
+
   it("rejects a wrong token and surfaces Redis errors", async () => {
     const fake = fakeUpstash();
     vi.stubGlobal("fetch", fake.handler);
@@ -199,22 +251,6 @@ describe("FallbackKv", () => {
     expect(await primary.get("k")).toBe("v");
     expect(await fallback.get("k")).toBeNull();
     expect(kv.fallbacks).toBe(0);
-  });
-});
-
-describe("rate limiting", () => {
-  it("allows the limit, then says how long to wait, then resets in the next window", async () => {
-    const kv = new MemoryKv();
-    const t = Date.parse("2026-10-05T10:00:10Z");
-    const limit = { max: 3, windowSec: 60 };
-    const incr = (k: string, ttl: number) => kv.incr(k, ttl);
-    expect(await checkLimit(incr, "x", limit, t)).toEqual({ ok: true, remaining: 2 });
-    await checkLimit(incr, "x", limit, t);
-    expect(await checkLimit(incr, "x", limit, t)).toEqual({ ok: true, remaining: 0 });
-    expect(await checkLimit(incr, "x", limit, t)).toEqual({ ok: false, retryAfterSec: 50 });
-    expect(windowKey("x", t, 60)).not.toBe(windowKey("x", t + 60_000, 60));
-    expect(await checkLimit(incr, "x", limit, t + 60_000)).toEqual({ ok: true, remaining: 2 });
-    expect(await checkLimit(incr, "y", limit, t)).toEqual({ ok: true, remaining: 2 });
   });
 });
 

@@ -4,6 +4,7 @@ import { connectDb } from "@/core/db";
 import { termsIn } from "@/modules/jobs/domain/ats";
 import { AGGREGATORS, postingKey, type Aggregator, type CareerSource, type NormalizedPosting } from "@/modules/jobs/domain/job-postings";
 import { dueSources, MAX_POSTINGS_TOTAL, nextHealth, selectPostings, START_NEW_UNTIL_LEFT_MS } from "@/modules/jobs/domain/job-sync";
+import { bumpVersion } from "@/core/cache";
 import { getKv } from "@/core/kv";
 import { defaultFetcher, fetchAggregator, fetchBoard, isAggregator, type Fetcher, type SourceResult } from "@/modules/jobs/lib/connectors";
 import { JobPosting, JobSource } from "@/core/models/job-postings";
@@ -158,6 +159,7 @@ export async function syncJobs(opts: SyncOptions = {}): Promise<SyncSummary> {
     );
     summary.remaining = queue.length;
     await trimPostings();
+    if (summary.added > 0 || summary.closed > 0 || summary.ok > 0) await bumpVersion("jobs");
     // One structured line per run, with an id to follow it by. Counts and source ids only: never page or description text.
     console.info(JSON.stringify({ evt: "job-sync", runId: token.slice(0, 8), sources: summary.sources, ok: summary.ok, unchanged: summary.unchanged, failed: summary.failed.map((f) => f.id), added: summary.added, closed: summary.closed, remaining: summary.remaining, ms: Date.now() - started }));
     if (opts.live !== false) {

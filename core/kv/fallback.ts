@@ -1,3 +1,4 @@
+import type { BucketConfig } from "@/core/domain/rate-limit";
 import type { KvEvent, KvStore } from "@/core/kv/types";
 
 /**
@@ -34,6 +35,7 @@ export class FallbackKv implements KvStore {
   incr = (key: string, ttlSec: number) => this.run((s) => s.incr(key, ttlSec));
   setNx = (key: string, token: string, ttlSec: number) => this.run((s) => s.setNx(key, token, ttlSec));
   releaseIfOwner = (key: string, token: string) => this.run((s) => s.releaseIfOwner(key, token));
+  tokenBucket = (key: string, cfg: BucketConfig, cost?: number, nowMs?: number) => this.run((s) => s.tokenBucket(key, cfg, cost, nowMs));
   eventsAppend = (channel: string, data: string) => this.run((s) => s.eventsAppend(channel, data));
   eventsRead = (channel: string, after: string, limit?: number): Promise<KvEvent[]> => this.run((s) => s.eventsRead(channel, after, limit));
   eventsLastId = (channel: string) => this.run((s) => s.eventsLastId(channel));

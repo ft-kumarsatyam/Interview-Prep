@@ -1,3 +1,5 @@
+import { bumpVersion, readThrough } from "@/core/cache";
+import { stableName } from "@/core/domain/cache";
 import { connectDb } from "@/core/db";
 import { termsIn } from "@/modules/jobs/domain/ats";
 import type { DateStr } from "@/core/domain/dates";
@@ -24,6 +26,7 @@ export async function saveJobPrefs(input: unknown): Promise<JobPrefs> {
   const prefs = jobPrefsSchema.parse(input);
   await connectDb();
   await JobPrefsDoc.updateOne({ _id: "prefs" }, { $set: { data: prefs } }, { upsert: true });
+  await bumpVersion("jobs");
   return prefs;
 }
 
@@ -74,7 +77,18 @@ export async function matchContext(now: Date) {
   return { prefs, resumeTerms: base ? new Set(termsIn(base.text)) : null, targetNames: targets.map((t) => t.name), now, hasResume: Boolean(base) };
 }
 
-export async function discoverJobs(filter: DiscoverFilter = {}, now = new Date()): Promise<{ items: DiscoverItem[]; matching: number; scanned: number; hasPrefs: boolean; hasResume: boolean }> {
+export type DiscoverResult = { items: DiscoverItem[]; matching: number; scanned: number; hasPrefs: boolean; hasResume: boolean };
+
+/**
+ * The scored Discover list, cached per filter (versioned scope "jobs": a sync, a dismiss, a save, new preferences or a
+ * new resume bump it). Passing `now` explicitly (tests) skips the cache so the clock stays under the caller's control.
+ */
+export async function discoverJobs(filter: DiscoverFilter = {}, now?: Date): Promise<DiscoverResult> {
+  if (now) return computeDiscover(filter, now);
+  return readThrough("jobs", `discover:${stableName({ ...filter })}`, () => computeDiscover(filter, new Date()), { ttlSec: 120, staleSec: 600 });
+}
+
+async function computeDiscover(filter: DiscoverFilter, now: Date): Promise<DiscoverResult> {
   await connectDb();
   const ctx = await matchContext(now);
   const where: Record<string, unknown> = { closedAt: null };
@@ -163,6 +177,7 @@ export async function setDismissed(id: string, dismissed: boolean): Promise<void
   if (!/^[a-f0-9]{24}$/i.test(id)) throw new Error("Unknown job");
   await connectDb();
   await JobPosting.updateOne({ _id: id }, { $set: { dismissed } });
+  await bumpVersion("jobs");
 }
 
 export type SaveResult = { ok: true; jobId: string; duplicate: boolean } | { ok: false; error: string };
@@ -175,6 +190,7 @@ export async function savePosting(id: string, today: DateStr): Promise<SaveResul
   const res = await addJob({ title: d.title, company: d.company, url: d.url, applyUrl: d.applyUrl, location: d.location.slice(0, 160) || undefined, jd: d.jd }, today);
   if (!res.ok) return res;
   await JobPosting.updateOne({ _id: id }, { $set: { savedJobId: res.job.id } });
+  await bumpVersion("jobs");
   return { ok: true, jobId: res.job.id, duplicate: res.duplicate };
 }
 
@@ -216,6 +232,7 @@ export async function listSources(now = new Date()): Promise<SourceRow[]> {
 export async function setSourceEnabled(id: string, enabled: boolean): Promise<void> {
   await connectDb();
   const res = await JobSource.updateOne({ _id: id }, { $set: { enabled, ...(enabled ? { cooldownUntil: null, consecutiveFailures: 0 } : {}) } });
+  await bumpVersion("jobs");
   if (res.matchedCount === 0) throw new Error("Unknown source");
 }
 
@@ -241,6 +258,7 @@ export async function removeCustomSource(id: string): Promise<void> {
   if (!src) throw new Error("Only companies you added can be removed. Switch built-in ones off instead");
   await JobSource.deleteOne({ _id: id });
   await JobPosting.deleteMany({ sourceId: id, savedJobId: null });
+  await bumpVersion("jobs");
 }
 
 /** Re-reads sources right now. With ids it forces just those; without, it does one normal rotation. */
