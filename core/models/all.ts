@@ -1,5 +1,6 @@
 /** Importing this registers every Mongoose model (migrations and the worker iterate `mongoose.models`). */
 import "@/core/models/ai";
+import "@/core/models/api-token";
 import "@/core/models/backlog";
 import "@/core/models/content";
 import "@/core/models/course";

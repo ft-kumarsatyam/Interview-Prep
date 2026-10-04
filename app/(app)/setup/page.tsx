@@ -80,6 +80,14 @@ export default async function SetupPage() {
         </p>
       </div>
 
+      <p className="mb-4 text-sm text-muted-foreground">
+        Connecting the Chrome extension or an automation?{" "}
+        <Link href="/settings/api-tokens" className="underline underline-offset-2 hover:text-foreground">
+          Create an API token
+        </Link>
+        .
+      </p>
+
       <HealthPanel results={slos} overall={overall(slos)} />
 
       <OutboxPanel broker={getBroker().name} stats={events} replay={replayDeadAction} />

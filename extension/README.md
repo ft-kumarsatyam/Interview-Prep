@@ -43,3 +43,13 @@ the page text instead, and PrepOS saves a read-only snapshot you can audit like 
 
 It never logs in, never clicks Apply and never sends anything except to your own PrepOS tab. Permissions
 added: `activeTab` and `storage`. Reload the extension at `chrome://extensions` after updating it.
+
+
+## Send without a PrepOS tab (API token)
+Open the extension's **Options** (right-click the icon > Options). Paste your PrepOS address and an API token
+that has the `capture:write` scope (PrepOS: Settings > API tokens), then Save. Chrome asks permission for that one
+address. From then on a click sends the page straight to `POST /api/v1/jobs` (or `/profiles`) with the token, so no PrepOS
+tab is needed. Each capture carries an `Idempotency-Key`, so a retry after a flaky connection never saves it twice. If the
+token is wrong or expired the badge shows `!` and the capture waits in the queue; if the network is down it also waits,
+and the open-tab path still works as before. Remove the token any time with **Remove**. It is stored only in this browser
+and is sent only to the address you entered. The API is described at `/api/v1/openapi.json`.

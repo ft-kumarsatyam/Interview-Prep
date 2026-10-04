@@ -95,6 +95,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 const APP_PATTERNS = ["http://localhost/*", "http://127.0.0.1/*", "https://*.vercel.app/*"];
 const QUEUE_KEY = "captures";
+const CONFIG_KEY = "apiConfig";
 const MAX_QUEUE = 20;
 
 /**
@@ -182,6 +183,52 @@ async function flash(text, color) {
   setTimeout(() => chrome.action.setBadgeText({ text: "" }), 4000);
 }
 
+/**
+ * Sends one queued capture straight to the PrepOS API with the token from the options page. Returns "sent" (stored, or
+ * already stored: the Idempotency-Key makes a retry safe), "auth" (the token is wrong or expired: the user must fix it)
+ * or "later" (offline or a server error: keep it queued). Nothing is sent anywhere else.
+ */
+async function sendViaApi(entry) {
+  const got = await chrome.storage.local.get(CONFIG_KEY);
+  const cfg = got[CONFIG_KEY];
+  if (!cfg || !cfg.base || !cfg.token) return "none";
+  const p = entry.payload;
+  const isProfile = p.kind === "profile";
+  const body = isProfile ? { title: p.title, url: p.url, text: p.text } : { title: p.title, company: p.company, url: p.url, location: p.location || undefined, jd: p.jd || "" };
+  try {
+    const res = await fetch(`${cfg.base}/api/v1/${isProfile ? "profiles" : "jobs"}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json", "idempotency-key": entry.id },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) return "sent";
+    if (res.status === 401 || res.status === 403) return "auth";
+    if (res.status === 422 || res.status === 413) return "sent"; // PrepOS refused the content itself: retrying cannot help, so drop it
+    return "later";
+  } catch {
+    return "later";
+  }
+}
+
+/** Tries every queued capture through the API. Returns how many were delivered and whether the token was refused. */
+async function flushViaApi() {
+  let sent = 0;
+  let auth = false;
+  for (const entry of await readQueue()) {
+    const r = await sendViaApi(entry);
+    if (r === "none") return { sent, auth, configured: false };
+    if (r === "auth") {
+      auth = true;
+      break;
+    }
+    if (r === "sent") {
+      await writeQueue((await readQueue()).filter((c) => c.id !== entry.id));
+      sent++;
+    }
+  }
+  return { sent, auth, configured: true };
+}
+
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.id || !/^https?:/.test(tab.url || "")) return flash("!", "#b45309");
   let payload;
@@ -195,7 +242,13 @@ chrome.action.onClicked.addListener(async (tab) => {
 
   const entry = { id: crypto.randomUUID(), payload };
   await writeQueue([...(await readQueue()), entry]);
-  // Hand it to an open PrepOS tab now; if there is none it stays queued until one opens and asks for it.
+  // With an API token set up, deliver without needing a PrepOS tab at all.
+  const viaApi = await flushViaApi();
+  if (viaApi.configured) {
+    if (viaApi.auth) return flash("!", "#b45309");
+    if ((await readQueue()).every((c) => c.id !== entry.id)) return flash("\u2713", "#16a34a");
+  }
+  // Otherwise (or if the API could not take it right now) hand it to an open PrepOS tab; if there is none it stays queued until one opens and asks for it.
   const apps = await chrome.tabs.query({ url: APP_PATTERNS });
   let delivered = false;
   for (const t of apps) {
