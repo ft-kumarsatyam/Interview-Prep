@@ -5,7 +5,8 @@ import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/core/auth/dal";
 import { DIFFICULTIES, type Difficulty } from "@/modules/quiz/lib/question";
-import { startPractice, submitPractice, type PracticeResult, type PracticeStart } from "@/modules/quiz/services/practice";
+import { generateMoreQuestions, generationTarget } from "@/modules/quiz/services/generated";
+import { resolvePracticeTarget, startPractice, submitPractice, type PracticeResult, type PracticeStart } from "@/modules/quiz/services/practice";
 
 function fail(err: unknown): { ok: false; error: string } {
   return { ok: false, error: err instanceof Error ? err.message : "Something went wrong, try again" };
@@ -47,4 +48,20 @@ export async function submitPracticeAction(input: z.input<typeof submitSchema>):
   } catch (err) {
     return fail(err);
   }
+}
+
+/** Asks the model for more questions at one level. For a topic they go to the subtopic that has the fewest at that level. */
+export async function generateQuestionsAction(ref: string, level: Difficulty): Promise<ActionResult<{ added: number; skippedDuplicates: number }>> {
+  await requireSession();
+  const parsedRef = refSchema.safeParse(ref);
+  const parsedLevel = z.enum(DIFFICULTIES).safeParse(level);
+  if (!parsedRef.success || !parsedLevel.success) return { ok: false, error: "Unknown topic or level" };
+  const target = resolvePracticeTarget(parsedRef.data);
+  if (!target || (target.scope !== "subtopic" && target.scope !== "topic")) return { ok: false, error: "Questions can be added to a subtopic or a topic" };
+  const subtopicId = target.scope === "subtopic" ? target.ref : await generationTarget(target.subtopicIds, parsedLevel.data);
+  if (!subtopicId) return { ok: false, error: "Unknown topic" };
+  const res = await generateMoreQuestions(subtopicId, parsedLevel.data);
+  if (!res.ok) return res;
+  refresh();
+  return { ok: true, added: res.added, skippedDuplicates: res.skippedDuplicates };
 }

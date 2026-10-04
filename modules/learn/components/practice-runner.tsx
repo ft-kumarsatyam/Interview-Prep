@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useState, useTransition } from "react";
 import { AlertCircle, ArrowLeft, ArrowRight, Award, Keyboard, ListChecks, Loader2, Play, RotateCcw, Target, Trophy } from "lucide-react";
 import { toast } from "sonner";
-import { startPracticeAction, submitPracticeAction } from "@/app/(app)/learn/practice/actions";
+import { generateQuestionsAction, startPracticeAction, submitPracticeAction } from "@/app/(app)/learn/practice/actions";
 import { DifficultyPicker } from "@/modules/quiz/components/difficulty-picker";
+import { LevelLadder } from "@/modules/quiz/components/level-ladder";
+import type { LevelProgress } from "@/modules/quiz/services/levels";
 import { QuizPlayer, type SubmitFn } from "@/modules/quiz/components/quiz-player";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -33,6 +35,7 @@ export function PracticeRunner({
   bestPct,
   back,
   next,
+  levels,
 }: {
   target: string;
   scope: PracticeScope;
@@ -41,12 +44,24 @@ export function PracticeRunner({
   bestPct: number | null;
   back: NextStep;
   next: NextStep | null;
+  /** The easy / medium / hard ladder for subtopic and topic runs. */
+  levels?: LevelProgress | null;
 }) {
   const [run, setRun] = useState<PracticeStart | null>(null);
   const [result, setResult] = useState<PracticeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
+  const [difficulty, setDifficulty] = useState<Difficulty | null>(levels?.recommended ?? null);
   const [pending, startTransition] = useTransition();
+
+  function addQuestions() {
+    if (pending || !difficulty) return;
+    const level = difficulty;
+    startTransition(async () => {
+      const res = await generateQuestionsAction(practiceRef, level);
+      if (!res.ok) return void toast.error(`${res.error}.`);
+      toast.success(`Added ${res.added} new ${level} question${res.added === 1 ? "" : "s"}${res.skippedDuplicates ? ` (${res.skippedDuplicates} repeats skipped)` : ""}.`);
+    });
+  }
 
   function start() {
     if (pending) return;
@@ -83,8 +98,13 @@ export function PracticeRunner({
           </p>
           {scope !== "mistakes" && (
             <div className="space-y-1.5">
-              <p className="text-xs font-medium text-muted-foreground">Difficulty</p>
-              <DifficultyPicker value={difficulty} onChange={setDifficulty} />
+              <p className="text-xs font-medium text-muted-foreground">{levels ? "Level: clear each one to move up" : "Difficulty"}</p>
+              {levels ? <LevelLadder rows={levels.rows} recommended={levels.recommended} value={difficulty} onChange={setDifficulty} passPct={levels.passPct} /> : <DifficultyPicker value={difficulty} onChange={setDifficulty} />}
+              {levels && difficulty && (
+                <Button type="button" variant="ghost" size="sm" onClick={addQuestions} disabled={pending}>
+                  Add 5 new {difficulty} questions with AI
+                </Button>
+              )}
             </div>
           )}
           <ul className="grid gap-2 text-sm sm:grid-cols-3">

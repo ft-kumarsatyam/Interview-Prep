@@ -12,6 +12,7 @@ import { topicById, topics, trackById } from "@/core/content";
 import { CASE_QUIZ_SIZE } from "@/modules/design/domain/case-quiz";
 import { SUBTOPIC_PRACTICE_SIZE, TOPIC_QUIZ_SIZE } from "@/modules/progress/domain/mastery";
 import { getMasteryMap } from "@/modules/progress/services/mastery";
+import { getLevelProgress } from "@/modules/quiz/services/levels";
 import { MISTAKES_QUIZ_SIZE, resolvePracticeTarget, topicQuizEligibility, type PracticeTarget } from "@/modules/quiz/services/practice";
 import { getSettings } from "@/modules/settings/services/settings";
 
@@ -40,10 +41,11 @@ export default async function PracticePage({ searchParams }: PageProps<"/learn/p
   if (!target) notFound();
   if (target.scope === "custom") redirect("/practice/quiz");
 
-  const [settings, mastery, eligibility] = await Promise.all([
+  const [settings, mastery, eligibility, levels] = await Promise.all([
     getSettings(),
     getMasteryMap(),
     target.scope === "topic" ? topicQuizEligibility(target) : Promise.resolve(null),
+    getLevelProgress(target.ref),
   ]);
   const m = mastery[target.ref];
   const trackInfo = trackById.get(target.track);
@@ -103,6 +105,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/learn/p
           bestPct={m?.attempts ? m.bestPct : null}
           back={back}
           next={nextStepFor(target)}
+          levels={levels}
         />
       )}
     </>

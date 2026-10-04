@@ -17,6 +17,7 @@ import { caseQuestions, caseTitle, learnMoreFor } from "@/modules/quiz/lib/case-
 import { seededRng, seedFrom, weightedSample, type Rng } from "@/core/domain/sampling";
 import { getLlm, type LlmProvider } from "@/core/llm";
 import { getStudied } from "@/modules/progress/services/studied";
+import { loadGenerated } from "@/modules/quiz/services/generated";
 import { Mastery, PracticeAttempt } from "@/core/models/learning";
 import { SubtopicProgress } from "@/core/models/progress";
 import { bank, questionWeight } from "@/modules/quiz/lib/bank";
@@ -119,7 +120,7 @@ function take(layers: QuizQuestion[][], n: number, ctx: PickContext): QuizQuesti
 }
 
 async function subtopicQuestions(target: PracticeTarget, llm: LlmProvider | null, ctx: PickContext): Promise<QuizQuestion[]> {
-  const own = bank().bySubtopic.get(target.ref) ?? [];
+  const own = [...(bank().bySubtopic.get(target.ref) ?? []), ...(await loadGenerated([target.ref]))];
   const n = SUBTOPIC_PRACTICE_SIZE;
   // Prefer the LLM only when the bank has little real material for this subtopic.
   if (llm && own.filter(real).length < n) {
@@ -132,16 +133,18 @@ async function subtopicQuestions(target: PracticeTarget, llm: LlmProvider | null
       console.warn(`[practice] LLM failed, using the bank: ${err instanceof Error ? err.message : err}`);
     }
   }
-  const siblings = subtopics.filter((s) => s.topicId === target.topicId && s.id !== target.ref).flatMap((s) => bank().bySubtopic.get(s.id) ?? []);
+  const siblingIds = subtopics.filter((s) => s.topicId === target.topicId && s.id !== target.ref).map((s) => s.id);
+  const siblings = [...siblingIds.flatMap((id) => bank().bySubtopic.get(id) ?? []), ...(await loadGenerated(siblingIds))];
   return take([own.filter(real), own, siblings.filter(real), siblings], n, ctx);
 }
 
 async function topicQuestions(target: PracticeTarget, ctx: PickContext): Promise<QuizQuestion[]> {
   const masteries = await Mastery.find({ ref: { $in: target.subtopicIds } }, { ref: 1, score: 1 }).lean();
   const scores = Object.fromEntries(masteries.map((m) => [m.ref, m.score ?? 0]));
+  const generated = await loadGenerated(target.subtopicIds);
   const bySubtopic = new Map(
     target.subtopicIds.map((id) => {
-      const all = bank().bySubtopic.get(id) ?? [];
+      const all = [...(bank().bySubtopic.get(id) ?? []), ...generated.filter((g) => g.source.ref === id)];
       const qs = all.filter(real).length >= 2 ? all.filter(real) : all;
       const matching = ctx.difficulty ? qs.filter((q) => q.difficulty === ctx.difficulty) : qs;
       return [id, matching.length >= 2 ? matching : qs];
@@ -248,6 +251,7 @@ export async function startPractice(ref: string, llm: LlmProvider | null = getLl
   const attempt = await PracticeAttempt.create({
     scope: target.scope,
     ref,
+    level: target.scope === "mistakes" ? null : (opts.difficulty ?? null),
     questions: questions.map((q) => ({
       id: q.id,
       prompt: q.prompt,

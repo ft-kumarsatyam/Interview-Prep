@@ -39,6 +39,8 @@ const practiceAttemptSchema = new Schema(
     /** Custom quizzes only: the subtopics the questions were drawn from. */
     refs: { type: [String], default: [] },
     questions: { type: [practiceQuestionSchema], default: [] },
+    /** The difficulty the run was started at; null for a mixed run. Feeds the easy/medium/hard ladder. */
+    level: { type: String, enum: ["easy", "medium", "hard"], default: null },
     answers: { type: [Number], default: [] },
     pct: { type: Number, default: null },
     submittedAt: { type: Date, default: null },
@@ -98,6 +100,24 @@ const practiceAnswerSchema = new Schema(
 );
 ownerScope(practiceAnswerSchema, [{ fields: { kind: 1, slug: 1 } }]);
 
+/** A question the model wrote for a subtopic at a level, kept so it joins practice runs. `qid` is stable; prompts are never shown as the answer key's source. */
+const generatedQuestionSchema = new Schema(
+  {
+    qid: { type: String, required: true },
+    ref: { type: String, required: true },
+    level: { type: String, enum: ["easy", "medium", "hard"], required: true },
+    prompt: { type: String, required: true, maxlength: 500 },
+    options: { type: [{ type: String, maxlength: 300 }], validate: (v: string[]) => v.length === 4 },
+    answerIndex: { type: Number, required: true, min: 0, max: 3 },
+    explanation: { type: String, required: true, maxlength: 600 },
+    provider: { type: String, default: null },
+    promptVersion: { type: String, default: "" },
+  },
+  { timestamps: true },
+);
+ownerScope(generatedQuestionSchema, [{ fields: { qid: 1 } }]);
+generatedQuestionSchema.index({ ref: 1, level: 1 });
+
 /** One aptitude drill or mock, rolled up per topic: how many answered, how many right, and the time taken. */
 const aptitudeSessionSchema = new Schema(
   {
@@ -131,4 +151,6 @@ export const PracticeAttempt: Model<PracticeAttemptDoc> =
 export const Mastery: Model<MasteryDoc> = models.Mastery ?? model("Mastery", masterySchema);
 export const Design: Model<DesignDoc> = models.Design ?? model("Design", designSchema);
 export const PracticeAnswer: Model<PracticeAnswerDoc> = models.PracticeAnswer ?? model("PracticeAnswer", practiceAnswerSchema);
+export type GeneratedQuestionDoc = InferSchemaType<typeof generatedQuestionSchema>;
+export const GeneratedQuestionRow: Model<GeneratedQuestionDoc> = models.GeneratedQuestionRow ?? model("GeneratedQuestionRow", generatedQuestionSchema);
 export const AptitudeSession: Model<AptitudeSessionDoc> = models.AptitudeSession ?? model("AptitudeSession", aptitudeSessionSchema);
