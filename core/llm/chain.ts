@@ -13,6 +13,7 @@ import {
   type PaidSettings,
   type ProviderState,
 } from "@/modules/ai/domain/llm-router";
+import { withSpan } from "@/core/observability/trace";
 import { estimateTokens } from "@/modules/ai/domain/ai-metrics";
 import { AllProvidersFailedError, LlmHttpError, LlmInvalidOutputError, PaidConfirmRequiredError } from "@/core/llm/errors";
 import { createLlm } from "@/core/llm/json-provider";
@@ -118,7 +119,7 @@ export function createChain(deps: ChainDeps): LlmProvider {
         if (!provider) continue;
         const callStart = clock();
         try {
-          const out = await provider.generateJson(prompt, schema);
+          const out = await withSpan("llm.generate", { "llm.provider": id, "llm.feature": deps.feature }, () => provider.generateJson(prompt, schema));
           if (state.status !== "closed" || state.fails > 0) await deps.store.saveState(id, afterSuccess());
           await deps.store.recordUsage({
             provider: id,

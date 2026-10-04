@@ -5,6 +5,8 @@ const nextConfig: NextConfig = {
   ...(process.env.BUILD_STANDALONE === "1" ? { output: "standalone" as const } : {}),
   // Pin the workspace root: a stray lockfile in the home directory would otherwise be picked up.
   turbopack: { root: process.cwd() },
+  // pino and the OpenTelemetry SDK are plain Node packages: load them from node_modules instead of bundling them.
+  serverExternalPackages: ["pino", "@opentelemetry/sdk-metrics", "@opentelemetry/exporter-metrics-otlp-http"],
   // Blocking metadata (no hidden streaming wrapper div). Avoids React hydration warnings when
   // browser extensions inject attributes (e.g. bis_skin_checked) into that div before hydrate.
   htmlLimitedBots: /.*/,

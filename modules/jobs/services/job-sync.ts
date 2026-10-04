@@ -5,6 +5,7 @@ import { termsIn } from "@/modules/jobs/domain/ats";
 import { AGGREGATORS, postingKey, type Aggregator, type CareerSource, type NormalizedPosting } from "@/modules/jobs/domain/job-postings";
 import { dueSources, MAX_POSTINGS_TOTAL, nextHealth, selectPostings, START_NEW_UNTIL_LEFT_MS } from "@/modules/jobs/domain/job-sync";
 import { bumpVersion } from "@/core/cache";
+import { logger } from "@/core/observability/log";
 import { getKv } from "@/core/kv";
 import { defaultFetcher, fetchAggregator, fetchBoard, isAggregator, type Fetcher, type SourceResult } from "@/modules/jobs/lib/connectors";
 import { JobPosting, JobSource } from "@/core/models/job-postings";
@@ -161,7 +162,7 @@ export async function syncJobs(opts: SyncOptions = {}): Promise<SyncSummary> {
     await trimPostings();
     if (summary.added > 0 || summary.closed > 0 || summary.ok > 0) await bumpVersion("jobs");
     // One structured line per run, with an id to follow it by. Counts and source ids only: never page or description text.
-    console.info(JSON.stringify({ evt: "job-sync", runId: token.slice(0, 8), sources: summary.sources, ok: summary.ok, unchanged: summary.unchanged, failed: summary.failed.map((f) => f.id), added: summary.added, closed: summary.closed, remaining: summary.remaining, ms: Date.now() - started }));
+    logger({ runId: token.slice(0, 8), module: "job-sync" }).info({ sources: summary.sources, ok: summary.ok, unchanged: summary.unchanged, failed: summary.failed.map((f) => f.id), added: summary.added, closed: summary.closed, remaining: summary.remaining, ms: Date.now() - started }, "job sync finished");
     if (opts.live !== false) {
       await publish({ type: "sync.done", ok: summary.ok + summary.unchanged, failed: summary.failed.length, added: summary.added });
       if (summary.added > 0) await publish({ type: "jobs.new", count: summary.added });

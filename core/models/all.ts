@@ -8,6 +8,7 @@ import "@/core/models/embedding";
 import "@/core/models/job-postings";
 import "@/core/models/jobs";
 import "@/core/models/kv";
+import "@/core/models/latency";
 import "@/core/models/lc";
 import "@/core/models/learning";
 import "@/core/models/migration";

@@ -1,6 +1,7 @@
 import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
+import noSensitiveLogging from "./eslint-rules/no-sensitive-logging.mjs";
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -62,6 +63,13 @@ const eslintConfig = defineConfig([
         { patterns: [{ group: ["@/core/models/*", "@/core/db"], message: "Pages call services, never Mongoose directly.", allowTypeImports: true }] },
       ],
     },
+  },
+  // Observability: never log resume, profile, job-description or prompt text. Log counts, ids and kinds instead.
+  {
+    files: ["**/*.{ts,tsx}"],
+    ignores: ["tests/**", "scripts/**"],
+    plugins: { prepos: { rules: { "no-sensitive-logging": noSensitiveLogging } } },
+    rules: { "prepos/no-sensitive-logging": "error" },
   },
 ]);
 

@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
+import { after } from "next/server";
 import { Suspense } from "react";
 import { currentSession } from "@/core/auth/dal";
 import { mainProblemCount } from "@/core/content";
 import { planClock } from "@/core/plan-clock";
+import { recordLatency, startTimer } from "@/core/observability/latency";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LeetCodeCard } from "@/modules/dsa/components/leetcode/leetcode-card";
 import { syncLeetCode } from "@/modules/dsa/services/leetcode-sync";
@@ -32,6 +34,7 @@ export const metadata: Metadata = { title: "Dashboard" };
 const CardSkeleton = ({ className = "h-32" }: { className?: string }) => <Skeleton className={`${className} rounded-xl`} aria-hidden />;
 
 export default async function DashboardPage() {
+  const elapsed = startTimer();
   // Throttled to once per 10 min; a LeetCode outage must never break the dashboard.
   await syncLeetCode().catch(() => null);
   const session = await currentSession();
@@ -46,6 +49,8 @@ export default async function DashboardPage() {
   const risk = streakRisk({ kind: day.kind, complete: day.complete, streak: data.streak, tokens: data.freezeTokens, now: new Date(), timeZone: settings.timezone, left: requirements.filter((r) => !r.done && !r.label.includes("bonus")).map((r) => r.label) });
   const hasBonus = data.bonus.problems.length + data.bonus.theory.length > 0;
   const showLeetCode = !settings.leetcodeUsername || data.needsDetails.length > 0;
+  // Server time of the work the page waits for (the streamed sections are separate). Feeds the dashboard SLO on /setup.
+  after(() => recordLatency("dashboard", elapsed(), { timeZone: settings.timezone }));
   const lastSyncLabel = settings.leetcodeLastSyncAt
     ? new Intl.DateTimeFormat("en-IN", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: settings.timezone }).format(settings.leetcodeLastSyncAt)
     : null;

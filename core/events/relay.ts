@@ -2,6 +2,8 @@ import { connectDb } from "@/core/db";
 import type { Broker } from "@/core/broker/types";
 import { DEFAULT_RETRY, onFailure, outboxLagMs, type RetryPolicy } from "@/core/domain/retry";
 import { Outbox } from "@/core/models/outbox";
+import { logger } from "@/core/observability/log";
+import { recordDelivery } from "@/core/observability/metrics";
 
 const LEASE_MS = 60_000;
 /** A row QStash accepted but never reported back on (lost callback) is retried after this long. */
@@ -43,16 +45,22 @@ async function claimOne(now: Date, eventId?: string) {
 async function processRow(row: { eventId: string; type: string; attempts?: number | null }, opts: Required<Omit<RelayOptions, "limit">>): Promise<keyof Omit<RelayResult, "claimed">> {
   try {
     const outcome = await opts.broker.dispatch(row.eventId, row.type);
-    if (outcome === "done") return "done"; // deliverEvent already marked it done
+    if (outcome === "done") {
+      recordDelivery(row.type, "done");
+      return "done"; // deliverEvent already marked it done
+    }
     await Outbox.updateOne({ eventId: row.eventId, status: "pending" }, { $set: { status: "published", leaseUntil: null, lastError: "" } });
+    recordDelivery(row.type, "published");
     return "published";
   } catch (err) {
     const permanent = (err as { permanent?: boolean }).permanent === true;
     const fail = permanent ? ({ status: "dead", attempts: (row.attempts ?? 0) + 1 } as const) : onFailure(row.attempts ?? 0, opts.now, opts.random(), opts.policy);
     const set = fail.status === "dead" ? { status: "dead" as const, attempts: fail.attempts } : { attempts: fail.attempts, nextAttemptAt: fail.nextAttemptAt };
     await Outbox.updateOne({ eventId: row.eventId }, { $set: { ...set, leaseUntil: null, lastError: short(err) } });
-    if (fail.status === "dead") console.error(`[outbox] ${row.type} ${row.eventId} dead-lettered: ${short(err)}`);
-    return fail.status === "dead" ? "dead" : "retried";
+    const outcome = fail.status === "dead" ? "dead" : "retried";
+    recordDelivery(row.type, outcome);
+    if (fail.status === "dead") logger({ eventId: row.eventId, module: "outbox" }).error({ type: row.type, attempts: fail.attempts, error: short(err) }, "event dead-lettered");
+    return outcome;
   }
 }
 

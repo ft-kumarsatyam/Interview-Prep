@@ -3,6 +3,7 @@ import { currentOwnerId } from "@/core/db/owner";
 import { classify, entryKey, lockKey, parseEntry, versionKey, type CacheEntry } from "@/core/domain/cache";
 import { getKv } from "@/core/kv";
 import type { KvStore } from "@/core/kv/types";
+import { recordCacheLookup } from "@/core/observability/metrics";
 
 export interface ReadThroughOptions {
   /** Served as-is for this long. */
@@ -70,10 +71,12 @@ export async function readThrough<T>(scope: string, name: string, compute: () =>
     const state = classify(entry, now(), opts.ttlSec, staleSec);
     if (entry && state === "fresh") {
       stats.hits++;
+      recordCacheLookup(scope, "hit");
       return entry.v;
     }
     if (entry && state === "stale") {
       stats.stale++;
+      recordCacheLookup(scope, "stale");
       const refresh = async () => void (await refreshEntry(kv, key, compute, now, opts.ttlSec + staleSec));
       (opts.background ?? ((job) => void job().catch(() => undefined)))(refresh);
       return entry.v;
@@ -84,6 +87,7 @@ export async function readThrough<T>(scope: string, name: string, compute: () =>
   }
 
   stats.misses++;
+  recordCacheLookup(scope, "miss");
   const token = randomUUID();
   let won = false;
   try {
@@ -100,6 +104,7 @@ export async function readThrough<T>(scope: string, name: string, compute: () =>
       const entry = parseEntry<T>(await kv.get(key).catch(() => null));
       if (entry && classify(entry, now(), opts.ttlSec, staleSec) !== "expired") {
         stats.coalesced++;
+        recordCacheLookup(scope, "coalesced");
         return entry.v;
       }
     }

@@ -2,6 +2,8 @@ import { connectDb } from "@/core/db";
 import { runAsOwner } from "@/core/db/owner";
 import { isEventType, parsePayload, type EventEnvelope, type EventType } from "@/core/events/schemas";
 import { Inbox, Outbox } from "@/core/models/outbox";
+import { logger } from "@/core/observability/log";
+import { withSpan } from "@/core/observability/trace";
 
 export type Handler = (event: EventEnvelope) => Promise<unknown>;
 
@@ -33,6 +35,15 @@ const short = (err: unknown) => (err instanceof Error ? err.message : String(err
  * retry runs it again, while handlers that succeeded stay done.
  */
 export async function deliverEvent(eventId: string): Promise<DeliverResult> {
+  return withSpan("event.deliver", { "event.id": eventId }, async (span) => {
+    const r = await deliverEventInner(eventId);
+    span.setAttribute("event.outcome", r.ok ? (r.duplicate ? "duplicate" : "done") : r.permanent ? "permanent-failure" : "failed");
+    if (!r.ok) logger({ eventId, module: "events" }).warn({ permanent: r.permanent, error: r.error }, "event handler failed");
+    return r;
+  });
+}
+
+async function deliverEventInner(eventId: string): Promise<DeliverResult> {
   await connectDb();
   const row = await Outbox.findOne({ eventId }).lean();
   if (!row) return { ok: false, permanent: true, error: "unknown event" };

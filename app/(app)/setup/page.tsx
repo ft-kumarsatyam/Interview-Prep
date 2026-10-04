@@ -8,6 +8,9 @@ import { Progress } from "@/components/ui/progress";
 import { currentSession } from "@/core/auth/dal";
 import { getSetupChecklist } from "@/modules/planner/services/setup";
 import { cn } from "@/core/utils";
+import { HealthPanel } from "@/core/components/events/health-panel";
+import { evaluateSlo, overall } from "@/core/domain/slo";
+import { getHealthSnapshot } from "@/core/services/health";
 import { OutboxPanel } from "@/core/components/events/outbox-panel";
 import { getBroker } from "@/core/broker";
 import { outboxStats } from "@/core/events/relay";
@@ -17,7 +20,8 @@ export const metadata: Metadata = { title: "Setup" };
 
 export default async function SetupPage() {
   const session = await currentSession();
-  const [checklist, events] = await Promise.all([getSetupChecklist({ live: true, remember: session.remember }), outboxStats()]);
+  const [checklist, events, snapshot] = await Promise.all([getSetupChecklist({ live: true, remember: session.remember }), outboxStats(), getHealthSnapshot()]);
+  const slos = evaluateSlo(snapshot);
   const pct = Math.round((checklist.done / checklist.total) * 100);
   const complete = checklist.requiredLeft === 0;
   const open = checklist.items.filter((i) => i.status !== "ok");
@@ -75,6 +79,8 @@ export default async function SetupPage() {
           .
         </p>
       </div>
+
+      <HealthPanel results={slos} overall={overall(slos)} />
 
       <OutboxPanel broker={getBroker().name} stats={events} replay={replayDeadAction} />
 

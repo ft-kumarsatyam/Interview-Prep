@@ -1,4 +1,5 @@
 import { connectDb } from "@/core/db";
+import { recordAiUsage } from "@/core/observability/metrics";
 import { toLocalDate } from "@/core/domain/dates";
 import { latencyBucket } from "@/modules/ai/domain/ai-metrics";
 import { PROVIDER_IDS, type ProviderId, type ProviderState } from "@/modules/ai/domain/llm-router";
@@ -51,6 +52,7 @@ export function mongoLlmStore(timeZone: string, now: () => Date = () => new Date
     },
 
     async recordUsage(delta: UsageDelta) {
+      recordAiUsage(delta);
       await connectDb();
       const date = today();
       await AiUsage.updateOne(
