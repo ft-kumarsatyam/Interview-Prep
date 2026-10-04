@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The Docker image runs the app (and the worker) outside Vercel; Vercel ignores this.
+  ...(process.env.BUILD_STANDALONE === "1" ? { output: "standalone" as const } : {}),
   // Pin the workspace root: a stray lockfile in the home directory would otherwise be picked up.
   turbopack: { root: process.cwd() },
   // Blocking metadata (no hidden streaming wrapper div). Avoids React hydration warnings when

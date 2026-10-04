@@ -1,3 +1,4 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 import { sortAtOf } from "@/modules/news/domain/news";
 import { DEFAULT_SETTINGS } from "@/modules/planner/domain/plan-config";
@@ -82,7 +83,7 @@ const settingsSchema = new Schema(
 /** RSS cache. Removed automatically 30 days after fetch. */
 const articleSchema = new Schema(
   {
-    urlHash: { type: String, required: true, unique: true },
+    urlHash: { type: String, required: true },
     url: { type: String, required: true },
     title: { type: String, required: true },
     sourceId: { type: String, required: true },
@@ -112,6 +113,7 @@ const articleSchema = new Schema(
   },
   { timestamps: false },
 );
+ownerScope(articleSchema, [{ fields: { urlHash: 1 } }]);
 articleSchema.index({ tags: 1 });
 articleSchema.index({ contentStatus: 1, category: 1 });
 articleSchema.index({ readOn: 1 });
@@ -147,13 +149,13 @@ const notificationSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(notificationSchema, [{ fields: { dedupeKey: 1 }, options: { partialFilterExpression: { dedupeKey: { $type: "string" } } } }]);
 notificationSchema.index({ read: 1, createdAt: -1 });
-notificationSchema.index({ dedupeKey: 1 }, { unique: true, sparse: true });
 
 /** One row per browser/device that turned on PWA notifications. Single user, so no owner field. */
 const pushSubscriptionSchema = new Schema(
   {
-    endpoint: { type: String, required: true, unique: true },
+    endpoint: { type: String, required: true },
     keys: {
       p256dh: { type: String, required: true },
       auth: { type: String, required: true },
@@ -164,6 +166,7 @@ const pushSubscriptionSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(pushSubscriptionSchema, [{ fields: { endpoint: 1 } }]);
 
 /** Failed logins, kept for 15 minutes for throttling. */
 const loginAttemptSchema = new Schema({

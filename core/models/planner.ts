@@ -1,3 +1,4 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 
 import { PLAN_CHANGE_TYPES } from "@/modules/planner/domain/plan-changes";
@@ -19,8 +20,8 @@ const planChangeSchema = new Schema(
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );
+ownerScope(planChangeSchema, [{ fields: { dedupeKey: 1 }, options: { partialFilterExpression: { dedupeKey: { $type: "string" } } } }]);
 planChangeSchema.index({ createdAt: -1 });
-planChangeSchema.index({ dedupeKey: 1 }, { unique: true, partialFilterExpression: { dedupeKey: { $type: "string" } } });
 
 
 /** Time you actually spent studying: the timer or a manual entry. Study time is measured here, never inferred from solves. */
@@ -34,6 +35,7 @@ const studySessionSchema = new Schema(
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );
+ownerScope(studySessionSchema);
 studySessionSchema.index({ date: 1 });
 
 export const PLANNER_INTAKE_ID = "planner-intake";
@@ -103,6 +105,7 @@ const plannerSnapshotSchema = new Schema(
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );
+ownerScope(plannerSnapshotSchema);
 plannerSnapshotSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 plannerSnapshotSchema.index({ createdAt: -1 });
 

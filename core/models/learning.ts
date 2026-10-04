@@ -1,3 +1,4 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 
 /** Saved Playground code. */
@@ -11,6 +12,7 @@ const snippetSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(snippetSchema);
 snippetSchema.index({ updatedAt: -1 });
 
 const practiceQuestionSchema = new Schema(
@@ -43,13 +45,14 @@ const practiceAttemptSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(practiceAttemptSchema);
 practiceAttemptSchema.index({ ref: 1, createdAt: -1 });
 practiceAttemptSchema.index({ submittedAt: -1 });
 
 /** Rolling mastery per subtopic or topic. `masteredOn` is set only by a passed topic quiz. */
 const masterySchema = new Schema(
   {
-    ref: { type: String, required: true, unique: true },
+    ref: { type: String, required: true },
     scope: { type: String, enum: ["subtopic", "topic", "case"], required: true },
     score: { type: Number, default: 0, min: 0, max: 100 },
     attempts: { type: Number, default: 0 },
@@ -58,11 +61,12 @@ const masterySchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(masterySchema, [{ fields: { ref: 1 } }]);
 
 /** Your System Design practice answer per case (`slug` from data/system-design.json). */
 const designSchema = new Schema(
   {
-    slug: { type: String, required: true, unique: true },
+    slug: { type: String, required: true },
     sections: {
       requirements: { type: String, maxlength: 20_000, default: "" },
       estimates: { type: String, maxlength: 20_000, default: "" },
@@ -77,6 +81,7 @@ const designSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(designSchema, [{ fields: { slug: 1 } }]);
 
 /** Your OS / DBMS "explain it" practice answer per case (`kind` + `slug` from data/os-dbms-cases.json). */
 const practiceAnswerSchema = new Schema(
@@ -91,7 +96,7 @@ const practiceAnswerSchema = new Schema(
   },
   { timestamps: true },
 );
-practiceAnswerSchema.index({ kind: 1, slug: 1 }, { unique: true });
+ownerScope(practiceAnswerSchema, [{ fields: { kind: 1, slug: 1 } }]);
 
 /** One aptitude drill or mock, rolled up per topic: how many answered, how many right, and the time taken. */
 const aptitudeSessionSchema = new Schema(
@@ -109,6 +114,7 @@ const aptitudeSessionSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(aptitudeSessionSchema);
 aptitudeSessionSchema.index({ topicId: 1, createdAt: -1 });
 aptitudeSessionSchema.index({ createdAt: -1 });
 

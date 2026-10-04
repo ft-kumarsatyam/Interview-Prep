@@ -1,9 +1,10 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 
 /** One row per problem you have touched. Dates are YYYY-MM-DD in APP_TIMEZONE. */
 const problemProgressSchema = new Schema(
   {
-    slug: { type: String, required: true, unique: true },
+    slug: { type: String, required: true },
     status: { type: String, enum: ["solved", "attempted"], required: true },
     firstSolvedOn: { type: String },
     lastSolvedOn: { type: String },
@@ -25,12 +26,13 @@ const problemProgressSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(problemProgressSchema, [{ fields: { slug: 1 } }]);
 problemProgressSchema.index({ nextReviewAt: 1 });
 problemProgressSchema.index({ solveDates: 1 });
 
 const subtopicProgressSchema = new Schema(
   {
-    subtopicId: { type: String, required: true, unique: true },
+    subtopicId: { type: String, required: true },
     topicId: { type: String, required: true },
     doneOn: { type: String, required: true },
     confidence: { type: Number, min: 1, max: 5 },
@@ -38,6 +40,7 @@ const subtopicProgressSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(subtopicProgressSchema, [{ fields: { subtopicId: 1 } }]);
 subtopicProgressSchema.index({ doneOn: 1 });
 
 export type ProblemProgressDoc = InferSchemaType<typeof problemProgressSchema>;

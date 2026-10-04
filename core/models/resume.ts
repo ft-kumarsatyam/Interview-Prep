@@ -1,3 +1,4 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 import { RESUME_TEXT_MAX } from "@/modules/resume/domain/resume";
 
@@ -17,6 +18,7 @@ const resumeSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(resumeSchema);
 resumeSchema.index({ kind: 1, updatedAt: -1 });
 
 export type ResumeRow = InferSchemaType<typeof resumeSchema>;

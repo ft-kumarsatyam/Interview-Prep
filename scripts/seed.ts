@@ -4,9 +4,12 @@
  * Usage: npm run seed   (reads MONGODB_URI from .env.local)
  */
 import mongoose from "mongoose";
+import { runMigrations } from "@/core/db/migrations/runner";
 import { seedContent } from "@/core/services/seed";
 
 async function main() {
+  const m = await runMigrations();
+  console.log(m.skipped ? "migrations: locked, skipped" : `migrations: ${m.applied.length ? m.applied.join(", ") : "up to date"}`);
   const r = await seedContent();
   console.log(`problems: ${r.problems.inserted} new, ${r.problems.updated} updated, ${r.problems.removed} removed`);
   console.log(`topics: ${r.topics.inserted} new, ${r.topics.updated} updated, ${r.topics.removed} removed`);

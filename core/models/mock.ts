@@ -1,3 +1,4 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { Schema, model, models, type InferSchemaType, type Model } from "mongoose";
 import { MOCK_TYPES } from "@/modules/mock/domain/mock";
 
@@ -24,6 +25,7 @@ const mockSessionSchema = new Schema(
   },
   { timestamps: true, minimize: false },
 );
+ownerScope(mockSessionSchema);
 mockSessionSchema.index({ status: 1, deadlineAt: 1 });
 mockSessionSchema.index({ date: -1 });
 

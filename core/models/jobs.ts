@@ -1,3 +1,4 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 import { JD_MAX, JOB_SOURCES, JOB_STATUSES } from "@/modules/jobs/domain/jobs";
 
@@ -8,7 +9,7 @@ const jobSchema = new Schema(
     company: { type: String, required: true, maxlength: 160 },
     source: { type: String, enum: JOB_SOURCES, default: "other" },
     url: { type: String, required: true, maxlength: 2000 },
-    canonicalKey: { type: String, required: true, unique: true, maxlength: 300 },
+    canonicalKey: { type: String, required: true, maxlength: 300 },
     location: { type: String, default: "", maxlength: 160 },
     jd: { type: String, default: "", maxlength: JD_MAX },
     applyUrl: { type: String, default: "", maxlength: 2000 },
@@ -27,6 +28,7 @@ const jobSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(jobSchema, [{ fields: { canonicalKey: 1 } }]);
 jobSchema.index({ status: 1, updatedAt: -1 });
 jobSchema.index({ followUpOn: 1 });
 jobSchema.index({ interviewOn: 1 });

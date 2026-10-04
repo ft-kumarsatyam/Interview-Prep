@@ -1,3 +1,4 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 import { PRIORITIES, TIER_IDS } from "@/modules/targets/domain/companies";
 
@@ -16,6 +17,7 @@ const targetSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(targetSchema);
 
 export type TargetDoc = InferSchemaType<typeof targetSchema>;
 export const Target: Model<TargetDoc> = models.Target ?? model("Target", targetSchema);

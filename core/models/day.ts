@@ -1,9 +1,10 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 
 /** Frozen at creation so targets don't move during the day. */
 const dailyPlanSchema = new Schema(
   {
-    date: { type: String, required: true, unique: true },
+    date: { type: String, required: true },
     weekNumber: { type: Number, required: true },
     kind: { type: String, enum: ["study", "sunday", "rest", "revision", "outside"], required: true },
     dsaTarget: { type: Number, required: true },
@@ -23,11 +24,12 @@ const dailyPlanSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(dailyPlanSchema, [{ fields: { date: 1 } }]);
 
 /** Streak source of truth: one per day. */
 const dayLogSchema = new Schema(
   {
-    date: { type: String, required: true, unique: true },
+    date: { type: String, required: true },
     dsaSolved: { type: Number, default: 0 },
     theoryDone: { type: Number, default: 0 },
     readings: { type: Number, default: 0 },
@@ -38,6 +40,7 @@ const dayLogSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(dayLogSchema, [{ fields: { date: 1 } }]);
 
 const quizQuestionSchema = new Schema(
   {
@@ -76,7 +79,7 @@ const quizSchema = new Schema(
   },
   { timestamps: true },
 );
-quizSchema.index({ date: 1, kind: 1 }, { unique: true });
+ownerScope(quizSchema, [{ fields: { date: 1, kind: 1 } }]);
 
 export type DailyPlanDoc = InferSchemaType<typeof dailyPlanSchema>;
 export type DayLogDoc = InferSchemaType<typeof dayLogSchema>;

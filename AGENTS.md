@@ -11,7 +11,7 @@ You are building **PrepOS**, a private single-user interview-prep web app. Befor
 Content data lives in `data/*.json`. **Do not edit those files** unless asked. The app seeds from them.
 
 ## Hard rules
-- **Single user, no sign-up.** Never add registration, password reset, OAuth providers or a users collection. Credentials come only from `ADMIN_EMAIL` and `ADMIN_PASSWORD_HASH_B64`.
+- **Single owner, no sign-up.** Never add registration, password reset, OAuth providers or a users collection. Credentials come only from `ADMIN_EMAIL` and `ADMIN_PASSWORD_HASH_B64`. User data is nevertheless **owner-scoped**: every user-data schema calls `ownerScope()` (`core/db/owner-scope.ts`), which adds `ownerId` and injects it into every query, and natural-key unique indexes are `{ ownerId, ... }`. New user-data collections must do the same. Schema changes that need a backfill or an index change are migrations in `core/db/migrations/` (`npm run migrate`; also run by `npm run seed` and at server start), never ad-hoc index creation.
 - **Free tier only:** Vercel Hobby, MongoDB Atlas M0, free LLM tier. No paid services and no Redis. **One explicit exception, opted into by the owner:** an optional paid LLM provider (`META_LLAMA_*`) that is only ever a last resort after every free provider is exhausted, never used by background jobs, and only after an in-app confirmation, with a daily call cap in Settings. Do not add any other paid dependency, and never put API keys in the repo, the DB or logs.
 - Every "day" is a calendar date in `APP_TIMEZONE` (`YYYY-MM-DD`). Never use `new Date().toDateString()` or server-local time for day logic. Use helpers in `core/domain/dates.ts`.
 - **The daily quiz is mandatory for streak completion** (ARCHITECTURE §7). Don't weaken this.
@@ -44,7 +44,10 @@ npm run build      # must pass before you say a phase is done
 npm run typecheck  # tsc --noEmit
 npx eslint .       # lint (next lint no longer exists)
 npm test           # vitest
-npm run seed       # upsert problems/topics/settings into MONGODB_URI
+npm run seed       # run migrations, then upsert problems/topics/settings into MONGODB_URI
+npm run migrate    # run pending database migrations only
+npm run knip       # dead code
+npm run depcruise  # layer rules
 npm run hash -- 'my-password'   # prints ADMIN_PASSWORD_HASH_B64
 ```
 

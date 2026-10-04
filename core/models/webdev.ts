@@ -1,15 +1,17 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 
 /** A finished web-dev lesson. Separate from SubtopicProgress so it never touches the plan. */
 const webLessonProgressSchema = new Schema(
-  { lessonId: { type: String, required: true, unique: true }, doneOn: { type: String, required: true }, bestScore: { type: Number, min: 0, max: 100, default: null } },
+  { lessonId: { type: String, required: true }, doneOn: { type: String, required: true }, bestScore: { type: Number, min: 0, max: 100, default: null } },
   { timestamps: true },
 );
+ownerScope(webLessonProgressSchema, [{ fields: { lessonId: 1 } }]);
 
 /** Where you are in a guided project. */
 const webProjectProgressSchema = new Schema(
   {
-    slug: { type: String, required: true, unique: true },
+    slug: { type: String, required: true },
     startedOn: { type: String, required: true },
     milestones: { type: [String], default: [] },
     repoUrl: { type: String, default: "", maxlength: 300 },
@@ -18,17 +20,19 @@ const webProjectProgressSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(webProjectProgressSchema, [{ fields: { slug: 1 } }]);
 
 /** Where you are with one web-dev interview question. A question with no row is "new". */
 const webInterviewProgressSchema = new Schema(
   {
-    qid: { type: String, required: true, unique: true },
+    qid: { type: String, required: true },
     status: { type: String, enum: ["review", "known"], required: true },
     updatedOn: { type: String, required: true },
     attempts: { type: Number, default: 1, min: 0 },
   },
   { timestamps: true },
 );
+ownerScope(webInterviewProgressSchema, [{ fields: { qid: 1 } }]);
 
 export type WebLessonProgressRow = InferSchemaType<typeof webLessonProgressSchema>;
 export type WebProjectProgressRow = InferSchemaType<typeof webProjectProgressSchema>;

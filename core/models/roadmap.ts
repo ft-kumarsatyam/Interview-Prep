@@ -1,10 +1,12 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 
 /** A roadmap you joined. */
 const roadmapEnrollmentSchema = new Schema(
-  { roadmapId: { type: String, required: true, unique: true }, joinedOn: { type: String, required: true } },
+  { roadmapId: { type: String, required: true }, joinedOn: { type: String, required: true } },
   { timestamps: true },
 );
+ownerScope(roadmapEnrollmentSchema, [{ fields: { roadmapId: 1 } }]);
 
 /** What you did on one roadmap node: links you opened, checklist items ticked and a manual tick. The rest is derived from other progress. */
 const roadmapNodeProgressSchema = new Schema(
@@ -17,7 +19,7 @@ const roadmapNodeProgressSchema = new Schema(
   },
   { timestamps: true },
 );
-roadmapNodeProgressSchema.index({ roadmapId: 1, nodeId: 1 }, { unique: true });
+ownerScope(roadmapNodeProgressSchema, [{ fields: { roadmapId: 1, nodeId: 1 } }]);
 
 export type RoadmapEnrollmentRow = InferSchemaType<typeof roadmapEnrollmentSchema>;
 export type RoadmapNodeProgressRow = InferSchemaType<typeof roadmapNodeProgressSchema>;

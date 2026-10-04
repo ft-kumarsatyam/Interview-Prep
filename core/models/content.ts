@@ -1,3 +1,4 @@
+import { ownerScope } from "@/core/db/owner-scope";
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
 
 /** Seeded from data/dsa-problems.json. Never edited by the app. */
@@ -50,7 +51,7 @@ topicSchema.index({ week: 1, position: 1 });
 /** A problem from outside the sheet (AI-generated or pasted); same runner shape as data/dsa-testcases.json. */
 const customProblemSchema = new Schema(
   {
-    slug: { type: String, required: true, unique: true },
+    slug: { type: String, required: true },
     title: { type: String, required: true, maxlength: 120 },
     source: { type: String, enum: ["ai", "pasted"], required: true },
     difficulty: { type: String, enum: ["Easy", "Medium", "Hard"], required: true },
@@ -69,6 +70,7 @@ const customProblemSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(customProblemSchema, [{ fields: { slug: 1 } }]);
 customProblemSchema.index({ createdAt: -1 });
 
 /** Accepted submissions of custom problems. Kept apart from ProblemProgress so they never touch the plan or streak. */
@@ -81,6 +83,7 @@ const customSolveSchema = new Schema(
   },
   { timestamps: true },
 );
+ownerScope(customSolveSchema);
 customSolveSchema.index({ slug: 1, createdAt: -1 });
 
 export type ProblemDoc = InferSchemaType<typeof problemSchema>;

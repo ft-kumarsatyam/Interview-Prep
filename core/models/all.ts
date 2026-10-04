@@ -1,0 +1,20 @@
+/** Importing this registers every Mongoose model (migrations and the worker iterate `mongoose.models`). */
+import "@/core/models/ai";
+import "@/core/models/backlog";
+import "@/core/models/content";
+import "@/core/models/course";
+import "@/core/models/day";
+import "@/core/models/job-postings";
+import "@/core/models/jobs";
+import "@/core/models/kv";
+import "@/core/models/lc";
+import "@/core/models/learning";
+import "@/core/models/migration";
+import "@/core/models/mock";
+import "@/core/models/planner";
+import "@/core/models/progress";
+import "@/core/models/resume";
+import "@/core/models/roadmap";
+import "@/core/models/system";
+import "@/core/models/targets";
+import "@/core/models/webdev";
