@@ -39,6 +39,15 @@ const aiUsageSchema = new Schema(
     calls: { type: Number, default: 0 },
     fails: { type: Number, default: 0 },
     cacheHits: { type: Number, default: 0 },
+    /** Calls that only succeeded after an earlier provider failed in the same request. */
+    failovers: { type: Number, default: 0 },
+    tokensIn: { type: Number, default: 0 },
+    tokensOut: { type: Number, default: 0 },
+    latCount: { type: Number, default: 0 },
+    latSumMs: { type: Number, default: 0 },
+    /** Latency and first-token histograms, one counter per bucket (see modules/ai/domain/ai-metrics.ts). */
+    ...Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`lat${i}`, { type: Number, default: 0 }])),
+    ...Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`ttft${i}`, { type: Number, default: 0 }])),
     expiresAt: { type: Date, required: true },
   },
   { timestamps: true },

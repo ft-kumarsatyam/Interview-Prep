@@ -22,6 +22,7 @@ Content data lives in `data/*.json`. **Do not edit those files** unless asked. T
 - Every Server Action and API route checks auth (`requireSession()`), except `/api/cron/*`, which checks `Bearer CRON_SECRET`.
 - Validate all inputs with zod. Treat LLM output as untrusted text: validate it and never render it with `dangerouslySetInnerHTML`.
 - Treat every AI answer as untrusted and cache only validated output (`modules/ai/services/ai-cache.ts`).
+- **Grounded answers (RAG):** `modules/ai/services/ask.ts` answers only from retrieved notes and saved articles (hybrid keyword + vector search, Atlas Vector Search when its index exists, an in-process scan otherwise) and must cite retrieved passages; the finished text is checked against them and only a grounded answer is cached. Retrieved text is untrusted data in the prompt. Prompts are versioned in `modules/ai/lib/prompts/` and judged by the golden set (`npm run ai:eval`); bump the version when a prompt changes. Embeddings use the free Gemini key and are optional (keyword search works without one). Never send resume or profile text to the index.
 - **Resumes are personal data:** resume AI features (`resume-roast`, `resume-tailor`) are `paid: "never"`, resume and profile text is never logged, and tailoring may never add a tool, number or employer that is not already in the resume (`validateTailor`). PrepOS never logs in to or applies on a job site; the extension only reads the page you click it on.
 - **Optional Redis (second owner-approved exception):** Upstash Redis (free tier, REST) is used only when `UPSTASH_REDIS_REST_URL` and `_TOKEN` are set, through the `KvStore` port in `core/kv/`. Every use (sync lock, rate limits, live-event log) has a MongoDB implementation and falls back to it on error, so the app never requires Redis. Do not use Redis for anything that has no Mongo fallback.
 - **Job sources:** only public job-board APIs (Greenhouse, Lever, Ashby, Workable, SmartRecruiters) and free remote-job feeds are read automatically, through `core/http-safe.ts` (SSRF checks, size and time caps). LinkedIn, Naukri, Indeed and Wellfound are never fetched by the server: they get search links and extension capture only.
@@ -47,6 +48,8 @@ npx eslint .       # lint (next lint no longer exists)
 npm test           # vitest
 npm run seed       # run migrations, then upsert problems/topics/settings into MONGODB_URI
 npm run migrate    # run pending database migrations only
+npm run ai:eval    # score the golden prompt set against every configured free provider
+npm run worker     # deliver outbox events by polling MongoDB (same handlers as the QStash route)
 npm run knip       # dead code
 npm run depcruise  # layer rules
 npm run hash -- 'my-password'   # prints ADMIN_PASSWORD_HASH_B64

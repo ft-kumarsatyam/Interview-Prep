@@ -7,6 +7,14 @@ export interface UsageDelta {
   calls?: number;
   fails?: number;
   cacheHits?: number;
+  /** Wall time of one provider call. */
+  latencyMs?: number;
+  /** Time to the first streamed token (streaming calls only). */
+  firstTokenMs?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  /** This call succeeded after an earlier provider failed in the same request. */
+  failover?: boolean;
 }
 
 /**

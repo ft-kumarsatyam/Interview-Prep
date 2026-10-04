@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { news as newsContent } from "@/core/content";
 import { connectDb } from "@/core/db";
+import { enqueueEvent } from "@/core/events/outbox";
 import {
   classifyTags,
   FULL_TEXT_MIN_WORDS,
@@ -328,6 +329,7 @@ export async function prefetchArticleContent(
     .lean<ExtractTarget[]>();
   const deadline = Date.now() + budgetMs;
   const counts = { tried: 0, extracted: 0, failed: 0 };
+  const ingested: string[] = [];
   type Op = { updateOne: { filter: Record<string, unknown>; update: { $set: Record<string, unknown> } } };
   let pending: Op[] = [];
   const flush = async () => {
@@ -349,6 +351,7 @@ export async function prefetchArticleContent(
         const { markdown, leadImage } = await extractor(a.url);
         record(a, outcomeFields(a, { markdown, leadImage }, new Date()));
         counts.extracted++;
+        ingested.push(String(a._id));
       } catch (err) {
         record(a, outcomeFields(a, { error: err instanceof Error ? err.message : String(err) }, new Date()));
         counts.failed++;
@@ -358,6 +361,8 @@ export async function prefetchArticleContent(
   }
   await Promise.all(Array.from({ length: concurrency }, worker));
   await flush();
+  // Tell the search index about the new article text. Best effort: a missed event only delays indexing.
+  for (const articleId of ingested) await enqueueEvent("ArticleIngested", { articleId }, { eventId: `article:${articleId}` }).catch(() => undefined);
   return counts;
 }
 

@@ -1,7 +1,7 @@
 import type { ZodType } from "zod";
-import { anthropic, gemini, openaiCompatible } from "@/core/llm/adapters";
+import { anthropic, anthropicStream, gemini, geminiStream, openaiCompatible, openaiCompatibleStream } from "@/core/llm/adapters";
 import { LlmHttpError, LlmInvalidOutputError } from "@/core/llm/errors";
-import type { CompleteFn, LlmConfig, LlmProvider } from "@/core/llm/types";
+import type { CompleteFn, LlmConfig, LlmProvider, StreamFn } from "@/core/llm/types";
 
 /** Pull the first JSON object out of a reply that may be wrapped in prose or ``` fences. */
 export function extractJson(text: string): unknown {
@@ -12,9 +12,10 @@ export function extractJson(text: string): unknown {
 }
 
 /** Parse + validate, retrying once with the validation error appended (ARCHITECTURE §8). */
-export function jsonProvider(name: string, complete: CompleteFn): LlmProvider {
+export function jsonProvider(name: string, complete: CompleteFn, stream?: StreamFn): LlmProvider {
   return {
     name,
+    ...(stream ? { streamText: stream } : {}),
     async generateJson<T>(prompt: string, schema: ZodType<T>): Promise<T> {
       let lastError = "";
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -41,10 +42,10 @@ export function createLlm(cfg: LlmConfig | null): LlmProvider | null {
   if (!cfg?.apiKey) return null;
   switch (cfg.provider) {
     case "anthropic":
-      return jsonProvider("anthropic", anthropic(cfg));
+      return jsonProvider("anthropic", anthropic(cfg), anthropicStream(cfg));
     case "openai-compatible":
-      return jsonProvider("openai-compatible", openaiCompatible(cfg));
+      return jsonProvider("openai-compatible", openaiCompatible(cfg), openaiCompatibleStream(cfg));
     default:
-      return jsonProvider("gemini", gemini(cfg));
+      return jsonProvider("gemini", gemini(cfg), geminiStream(cfg));
   }
 }

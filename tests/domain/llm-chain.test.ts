@@ -55,7 +55,7 @@ describe("chain: free providers", () => {
     const { c, store } = chain({ feature: "background" });
     expect(await c.generateJson("p", schema)).toEqual({ ok: true });
     expect(c.lastProvider).toBe("gemini");
-    expect(store.usage).toEqual([{ provider: "gemini", feature: "background", calls: 1 }]);
+    expect(store.usage).toEqual([{ provider: "gemini", feature: "background", calls: 1, latencyMs: expect.any(Number), tokensIn: expect.any(Number), tokensOut: expect.any(Number), failover: false }]);
   });
 
   it("honours a feature's preferred provider", async () => {
@@ -230,5 +230,96 @@ describe("chain: request deadline", () => {
     const { c } = chain({ feature: "background", script: { gemini: http(500, "server") }, calls, clock: () => 0 });
     expect(await c.generateJson("p", schema)).toEqual({ ok: true });
     expect(calls).toEqual(["gemini", "groq"]);
+  });
+});
+
+/* ----------------------------------------------- streaming ----------------------------------------------- */
+
+type StreamScript = Partial<Record<string, { chunks?: string[]; failBefore?: LlmHttpError; failAfter?: number; noStream?: boolean }>>;
+function fakeStream(script: StreamScript, calls: string[] = []) {
+  return (d: ProviderDef): LlmProvider => {
+    const b = script[d.id] ?? { chunks: ["hello ", "world"] };
+    return {
+      name: d.id,
+      async generateJson<T>(_p: string, s: z.ZodType<T>) {
+        return s.parse({ ok: true });
+      },
+      ...(b.noStream
+        ? {}
+        : {
+            async *streamText() {
+              calls.push(d.id);
+              if (b.failBefore) throw b.failBefore;
+              let n = 0;
+              for (const c of b.chunks ?? []) {
+                if (b.failAfter !== undefined && n === b.failAfter) throw http(500, "network");
+                n++;
+                yield c;
+              }
+            },
+          }),
+    };
+  };
+}
+
+function streamChain(script: StreamScript, extra: { at?: Date; store?: MemoryLlmStore; calls?: string[]; clock?: () => number } = {}) {
+  const store = extra.store ?? new MemoryLlmStore();
+  const calls = extra.calls ?? [];
+  const c = createChain({ defs: DEFS, store, feature: "code-review", paid: { ...DEFAULT_PAID_SETTINGS }, timeZone: "Asia/Kolkata", now: () => extra.at ?? NOW, make: fakeStream(script, calls), ...(extra.clock ? { clock: extra.clock } : {}) });
+  return { c, store, calls };
+}
+async function collect(it: AsyncGenerator<string>) {
+  let out = "";
+  for await (const x of it) out += x;
+  return out;
+}
+
+describe("chain: streaming", () => {
+  it("streams chunks from the first provider and records first-token latency, tokens and the provider", async () => {
+    let t = 0;
+    const { c, store } = streamChain({}, { clock: () => (t += 10) });
+    expect(await collect(c.streamText!("p"))).toBe("hello world");
+    expect(c.lastProvider).toBe("gemini");
+    expect(store.usage).toHaveLength(1);
+    expect(store.usage[0]).toMatchObject({ provider: "gemini", calls: 1, failover: false, firstTokenMs: expect.any(Number), tokensOut: 3 });
+  });
+
+  it("fails over before the first chunk, marking the failover", async () => {
+    const { c, store, calls } = streamChain({ gemini: { failBefore: http(429, "rate", 60) } });
+    expect(await collect(c.streamText!("p"))).toBe("hello world");
+    expect(calls).toEqual(["gemini", "groq"]);
+    expect(c.lastProvider).toBe("groq");
+    expect(store.usage.find((u) => u.provider === "groq")).toMatchObject({ failover: true });
+    expect(store.states.gemini?.status).toBe("cooldown");
+  });
+
+  it("does not switch provider after text has been sent: it records the failure and rethrows", async () => {
+    const { c, store, calls } = streamChain({ gemini: { chunks: ["a", "b", "c"], failAfter: 1 } });
+    const got: string[] = [];
+    await expect(
+      (async () => {
+        for await (const x of c.streamText!("p")) got.push(x);
+      })(),
+    ).rejects.toBeInstanceOf(LlmHttpError);
+    expect(got).toEqual(["a"]);
+    expect(calls).toEqual(["gemini"]);
+    expect(store.usage[0]).toMatchObject({ provider: "gemini", fails: 1 });
+  });
+
+  it("skips providers that cannot stream and treats an empty stream as a failure", async () => {
+    const { c, calls } = streamChain({ gemini: { noStream: true }, groq: { chunks: [] }, meta: { chunks: ["x"] } });
+    await expect(collect(c.streamText!("p"))).rejects.toBeInstanceOf(PaidConfirmRequiredError);
+    expect(calls).toEqual(["groq"]);
+  });
+
+  it("never reaches the paid provider without confirmation, and reports every attempt when all fail", async () => {
+    const { c } = streamChain({ gemini: { failBefore: http(500, "network") }, groq: { failBefore: http(500, "network") } });
+    await expect(collect(c.streamText!("p"))).rejects.toBeInstanceOf(PaidConfirmRequiredError);
+  });
+
+  it("raises AllProvidersFailedError when nothing can answer", async () => {
+    const store = new MemoryLlmStore();
+    const c = createChain({ defs: [def("gemini"), def("groq")], store, feature: "code-review", paid: { ...DEFAULT_PAID_SETTINGS }, timeZone: "Asia/Kolkata", now: () => NOW, make: fakeStream({ gemini: { failBefore: http(500, "network") }, groq: { noStream: true } }) });
+    await expect(collect(c.streamText!("p"))).rejects.toBeInstanceOf(AllProvidersFailedError);
   });
 });

@@ -1,3 +1,4 @@
+import { registerAiHandlers } from "@/modules/ai/services/event-handlers";
 import { registerJobHandlers } from "@/modules/jobs/services/event-handlers";
 import { registerNotificationHandlers } from "@/modules/notifications/services/event-handlers";
 
@@ -5,4 +6,5 @@ import { registerNotificationHandlers } from "@/modules/notifications/services/e
 export function ensureEventHandlers(): void {
   registerNotificationHandlers();
   registerJobHandlers();
+  registerAiHandlers();
 }

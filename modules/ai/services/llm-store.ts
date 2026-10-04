@@ -1,11 +1,27 @@
 import { connectDb } from "@/core/db";
 import { toLocalDate } from "@/core/domain/dates";
+import { latencyBucket } from "@/modules/ai/domain/ai-metrics";
 import { PROVIDER_IDS, type ProviderId, type ProviderState } from "@/modules/ai/domain/llm-router";
 import type { LlmStore, UsageDelta } from "@/core/llm/store";
 import { AiUsage, LlmState, PaidApproval, PaidCap } from "@/core/models/ai";
 
 const USAGE_TTL_MS = 90 * 86_400_000;
 const APPROVAL_TTL_MS = 3 * 86_400_000;
+
+/** The counters one call adds: calls, failures, tokens, failovers and its latency histogram buckets. */
+export function usageIncrements(delta: UsageDelta): Record<string, number> {
+  const inc: Record<string, number> = { calls: delta.calls ?? 0, fails: delta.fails ?? 0, cacheHits: delta.cacheHits ?? 0 };
+  if (delta.tokensIn) inc.tokensIn = delta.tokensIn;
+  if (delta.tokensOut) inc.tokensOut = delta.tokensOut;
+  if (delta.failover) inc.failovers = 1;
+  if (delta.latencyMs !== undefined) {
+    inc.latCount = 1;
+    inc.latSumMs = Math.round(delta.latencyMs);
+    inc[`lat${latencyBucket(delta.latencyMs)}`] = 1;
+  }
+  if (delta.firstTokenMs !== undefined) inc[`ttft${latencyBucket(delta.firstTokenMs)}`] = 1;
+  return inc;
+}
 
 export const usageId = (date: string, provider: string, feature: string) => `${date}|${provider}|${feature}`;
 
@@ -39,7 +55,7 @@ export function mongoLlmStore(timeZone: string, now: () => Date = () => new Date
       const date = today();
       await AiUsage.updateOne(
         { _id: usageId(date, delta.provider, delta.feature) },
-        { $inc: { calls: delta.calls ?? 0, fails: delta.fails ?? 0, cacheHits: delta.cacheHits ?? 0 }, $setOnInsert: { date, provider: delta.provider, feature: delta.feature, expiresAt: expiry(USAGE_TTL_MS) } },
+        { $inc: usageIncrements(delta), $setOnInsert: { date, provider: delta.provider, feature: delta.feature, expiresAt: expiry(USAGE_TTL_MS) } },
         { upsert: true },
       );
     },

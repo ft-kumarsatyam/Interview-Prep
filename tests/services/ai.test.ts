@@ -4,7 +4,7 @@ import { settingsInputSchema } from "@/modules/settings/domain/settings";
 import { resetEnvForTests } from "@/core/env";
 import { AiCache, AiUsage, LlmState } from "@/core/models/ai";
 import { Settings } from "@/core/models/system";
-import { approvePaidToday, runAi, usageToday } from "@/modules/ai/services/ai";
+import { aiMetricsToday, approvePaidToday, runAi, usageToday } from "@/modules/ai/services/ai";
 import { MAX_CACHED_BYTES, cacheKey, cachedAi } from "@/modules/ai/services/ai-cache";
 import { mongoLlmStore } from "@/modules/ai/services/llm-store";
 import { getSettings, saveSettings } from "@/modules/settings/services/settings";
@@ -263,6 +263,33 @@ describe("runAi through the real adapters", () => {
     vi.stubGlobal("fetch", vi.fn(async () => geminiOk({ hint: "h" })));
     await runAi("code-review", {}, async (llm) => llm.generateJson("p", hint));
     expect(await usageToday()).toEqual([{ provider: "gemini", feature: "code-review", calls: 1, fails: 0, cacheHits: 0 }]);
+  });
+});
+
+describe("latency, token and failover metrics", () => {
+  it("records latency, estimated tokens and a failover for the provider that answered after another failed", async () => {
+    useKeys();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown) => (hostOf(url).includes("google") ? fail(500, "boom") : chatOk({ hint: "h" }))),
+    );
+    await runAi("code-review", {}, async (llm) => llm.generateJson("a prompt of some length", hint));
+    const rows = await aiMetricsToday();
+    const answered = rows.find((r) => r.failovers === 1);
+    expect(answered).toBeDefined();
+    expect(answered!.calls).toBe(1);
+    expect(answered!.tokensIn).toBeGreaterThan(0);
+    expect(answered!.tokensOut).toBeGreaterThan(0);
+    expect(answered!.p50Ms).not.toBeNull();
+    expect(answered!.p95Ms).toBeGreaterThanOrEqual(answered!.p50Ms!);
+    expect(rows.reduce((a, r) => a + r.calls, 0)).toBeGreaterThanOrEqual(2);
+  });
+
+  it("increments the right histogram buckets", async () => {
+    const { usageIncrements } = await import("@/modules/ai/services/llm-store");
+    expect(usageIncrements({ provider: "gemini", feature: "hint", calls: 1, latencyMs: 700, firstTokenMs: 90, tokensIn: 10, tokensOut: 5, failover: true })).toEqual({
+      calls: 1, fails: 0, cacheHits: 0, tokensIn: 10, tokensOut: 5, failovers: 1, latCount: 1, latSumMs: 700, lat2: 1, ttft0: 1,
+    });
   });
 });
 

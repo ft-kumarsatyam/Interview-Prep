@@ -27,34 +27,30 @@ export function cacheKey(feature: AiFeature, version: string, input: string): st
   return createHash("sha256").update(`${feature}\u0000${version}\u0000${normalised}`).digest("hex");
 }
 
-/**
- * Serve a validated AI answer from Mongo when we have one, else compute and store it.
- * Failures are never cached and neither are prompts; only the validated output is, up to 8 KB.
- */
-export async function cachedAi<T>(
-  opts: CacheOptions<T>,
-  compute: () => Promise<{ value: T; provider?: string }>,
-): Promise<{ value: T; cached: boolean; provider?: string }> {
+/** A validated cached answer, or null. Counts the hit in today's usage. */
+export async function getCachedAi<T>(opts: CacheOptions<T>): Promise<{ value: T; provider?: string } | null> {
   await connectDb();
   const now = opts.now?.() ?? new Date();
   const key = cacheKey(opts.feature, opts.version, opts.input);
-
   const hit = await AiCache.findOne({ _id: key, expiresAt: { $gt: now } }).lean();
-  if (hit) {
-    const parsed = opts.schema.safeParse(hit.output);
-    if (parsed.success) {
-      await AiCache.updateOne({ _id: key }, { $inc: { hits: 1 } });
-      const date = toLocalDate(now, opts.timeZone ?? "UTC");
-      await AiUsage.updateOne(
-        { _id: usageId(date, "cache", opts.feature) },
-        { $inc: { cacheHits: 1 }, $setOnInsert: { date, provider: "cache", feature: opts.feature, expiresAt: new Date(now.getTime() + 90 * DAY_MS) } },
-        { upsert: true },
-      );
-      return { value: parsed.data, cached: true, provider: hit.provider ?? undefined };
-    }
-  }
+  if (!hit) return null;
+  const parsed = opts.schema.safeParse(hit.output);
+  if (!parsed.success) return null;
+  await AiCache.updateOne({ _id: key }, { $inc: { hits: 1 } });
+  const date = toLocalDate(now, opts.timeZone ?? "UTC");
+  await AiUsage.updateOne(
+    { _id: usageId(date, "cache", opts.feature) },
+    { $inc: { cacheHits: 1 }, $setOnInsert: { date, provider: "cache", feature: opts.feature, expiresAt: new Date(now.getTime() + 90 * DAY_MS) } },
+    { upsert: true },
+  );
+  return { value: parsed.data, provider: hit.provider ?? undefined };
+}
 
-  const { value, provider } = await compute();
+/** Stores a validated answer (up to 8 KB). Returns the validated value. */
+export async function putCachedAi<T>(opts: CacheOptions<T>, value: T, provider?: string): Promise<T> {
+  await connectDb();
+  const now = opts.now?.() ?? new Date();
+  const key = cacheKey(opts.feature, opts.version, opts.input);
   const validated = opts.schema.parse(value);
   if (Buffer.byteLength(JSON.stringify(validated)) <= MAX_CACHED_BYTES) {
     await AiCache.updateOne(
@@ -63,5 +59,19 @@ export async function cachedAi<T>(
       { upsert: true },
     );
   }
-  return { value: validated, cached: false, provider };
+  return validated;
+}
+
+/**
+ * Serve a validated AI answer from Mongo when we have one, else compute and store it.
+ * Failures are never cached and neither are prompts; only the validated output is, up to 8 KB.
+ */
+export async function cachedAi<T>(
+  opts: CacheOptions<T>,
+  compute: () => Promise<{ value: T; provider?: string }>,
+): Promise<{ value: T; cached: boolean; provider?: string }> {
+  const hit = await getCachedAi(opts);
+  if (hit) return { value: hit.value, cached: true, provider: hit.provider };
+  const { value, provider } = await compute();
+  return { value: await putCachedAi(opts, value, provider), cached: false, provider };
 }

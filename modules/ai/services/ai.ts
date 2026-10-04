@@ -1,4 +1,5 @@
 import { connectDb } from "@/core/db";
+import { LATENCY_BUCKETS, percentileMs } from "@/modules/ai/domain/ai-metrics";
 import { PAID_PROVIDER, type AiFeature } from "@/modules/ai/domain/llm-router";
 import { env } from "@/core/env";
 import { createChain } from "@/core/llm/chain";
@@ -60,6 +61,45 @@ export async function usageToday(): Promise<UsageRow[]> {
   await connectDb();
   const rows = await AiUsage.find({ date: toLocalDate(new Date(), env().APP_TIMEZONE) }).lean();
   return rows.map((r) => ({ provider: r.provider, feature: r.feature, calls: r.calls ?? 0, fails: r.fails ?? 0, cacheHits: r.cacheHits ?? 0 }));
+}
+
+export interface AiMetricsRow {
+  provider: string;
+  feature: string;
+  calls: number;
+  failovers: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** Bucketed (upper bound of the histogram bucket holding the percentile). */
+  p50Ms: number | null;
+  p95Ms: number | null;
+  firstTokenP50Ms: number | null;
+  avgMs: number | null;
+}
+
+/** Today's latency percentiles, token counts and failovers per provider and feature, for the health panel and OpenTelemetry. */
+export async function aiMetricsToday(now = new Date()): Promise<AiMetricsRow[]> {
+  const { AiUsage } = await import("@/core/models/ai");
+  const { toLocalDate } = await import("@/core/domain/dates");
+  await connectDb();
+  const rows = await AiUsage.find({ date: toLocalDate(now, env().APP_TIMEZONE), provider: { $ne: "cache" } }).lean();
+  return rows.map((r) => {
+    const get = (k: string) => ((r as unknown as Record<string, number | undefined>)[k] ?? 0);
+    const lat = Array.from({ length: LATENCY_BUCKETS }, (_, i) => get(`lat${i}`));
+    const ttft = Array.from({ length: LATENCY_BUCKETS }, (_, i) => get(`ttft${i}`));
+    return {
+      provider: r.provider,
+      feature: r.feature,
+      calls: r.calls ?? 0,
+      failovers: get("failovers"),
+      tokensIn: get("tokensIn"),
+      tokensOut: get("tokensOut"),
+      p50Ms: percentileMs(lat, 0.5),
+      p95Ms: percentileMs(lat, 0.95),
+      firstTokenP50Ms: percentileMs(ttft, 0.5),
+      avgMs: get("latCount") ? Math.round(get("latSumMs") / get("latCount")) : null,
+    };
+  });
 }
 
 export interface ProviderRow {

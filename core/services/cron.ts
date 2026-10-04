@@ -9,6 +9,9 @@ import { notify } from "@/modules/notifications/services/notifications";
 import { ensureToday } from "@/modules/planner/services/plan";
 import { proposeRebalance } from "@/modules/planner/services/rebalance";
 import { markRun } from "@/modules/settings/services/settings";
+import { getBroker } from "@/core/broker";
+import { relayOutbox } from "@/core/events/relay";
+import { ensureEventHandlers } from "@/core/services/event-handlers";
 
 type StepResult = { ok: true; detail: unknown } | { ok: false; error: string };
 
@@ -50,10 +53,15 @@ export async function runMorning(
     step(() => syncLeetCode({ force: true, now })),
   ]);
   const { news, articles } = newsChain;
+  // Deliver events queued by the steps above (article indexing) and any retries that are due.
+  const events = await step(async () => {
+    ensureEventHandlers();
+    return relayOutbox({ broker: getBroker(), limit: 50 });
+  });
   // The briefing needs fresh news, so it follows the refresh. The briefing job sends it too if this run slips.
   const briefing = await step(async () => sendBriefing(await ensureToday(now), now, channels));
   await markRun("lastMorningRunAt", now);
-  return { today, news, articles, plan, briefing, rebalance, leetcode };
+  return { today, news, articles, plan, briefing, rebalance, leetcode, events };
 }
 
 /**
