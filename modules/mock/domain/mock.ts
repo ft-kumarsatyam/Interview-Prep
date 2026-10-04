@@ -94,7 +94,7 @@ export const MOCK_CONFIG: Record<MockType, MockTypeConfig> = {
   hld: { label: "System design (HLD)", blurb: "One design case with the six-step framework and the full rubric.", range: "45–60 min", minutes: 60, rounds: [{ topic: "hld", minutes: 60, written: 1 }] },
   lld: { label: "LLD / OOP", blurb: "Design classes, relationships and key methods for one system.", range: "45–60 min", minutes: 50, rounds: [{ topic: "lld", minutes: 50, written: 1 }] },
   sql: { label: "SQL / database", blurb: "Write three queries against a given schema and explain them.", range: "30–45 min", minutes: 40, rounds: [{ topic: "sql", minutes: 40, written: 3 }] },
-  project: { label: "Project deep dive", blurb: "Questions about a project you've built: architecture, trade-offs, incidents.", range: "30–45 min", minutes: 40, rounds: [{ topic: "project", minutes: 40, written: 4 }] },
+  project: { label: "Project deep dive", blurb: "Technical and behavioral questions about a project you've built. Link its GitHub repo and site and the questions come from your actual code.", range: "40–50 min", minutes: 45, rounds: [{ topic: "project", minutes: 45, written: 5 }] },
   behavioral: { label: "Behavioral", blurb: "Three STAR stories: situation, task, action, result.", range: "30 min", minutes: 30, rounds: [{ topic: "behavioral", minutes: 30, written: 3 }] },
   full: {
     label: "Full mock",
@@ -249,8 +249,9 @@ export function pickCoding(pool: readonly CodingCandidate[], count: number, rng:
   return picked;
 }
 
-function writtenFrom(topic: Exclude<RoundTopic, "dsa" | "hld" | "sql">, p: BankPrompt, idx: number): WrittenQuestion {
-  return { kind: "written", id: `${topic}-${idx}-${p.id}`, prompt: p.prompt, sections: SECTIONS[topic], criteria: CRITERIA[topic], points: p.points };
+function writtenFrom(roundTopic: Exclude<RoundTopic, "dsa" | "hld" | "sql">, p: BankPrompt, idx: number): WrittenQuestion {
+  const topic = p.topic ?? roundTopic;
+  return { kind: "written", id: `${topic}-${idx}-${p.id}`, prompt: p.prompt, ...(p.context ? { context: p.context } : {}), sections: SECTIONS[topic], criteria: CRITERIA[topic], points: p.points };
 }
 
 export type BuildResult = { ok: true; rounds: MockRound[] } | { ok: false; error: string };

@@ -53,6 +53,8 @@ const schema = z.object({
   QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
   /** Shared secret for POST /api/webhooks/jobs (n8n, Zapier, Apify, scripts). Unset = the webhook answers 503. */
   JOBS_WEBHOOK_SECRET: z.string().min(16).optional(),
+  /** Optional GitHub token (no scopes needed) so reading a repo for a project interview isn't limited to 60 requests an hour. */
+  GITHUB_TOKEN: z.string().min(10).optional(),
   /** Public base URL used for links in emails, e.g. https://satyam-dev.in */
   APP_URL: z.url().optional(),
 });

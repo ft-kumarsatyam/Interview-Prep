@@ -9,6 +9,10 @@ export interface BankPrompt {
   prompt: string;
   /** What a strong answer covers. */
   points: string[];
+  /** Which rubric to grade with when a round mixes kinds (a project interview has technical and behavioral questions). */
+  topic?: "project" | "behavioral";
+  /** Shown under the question: what in the candidate's own project it is about. */
+  context?: string;
 }
 
 export interface SqlPrompt extends BankPrompt {

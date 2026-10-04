@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Braces, Code2, Database, Layers, Loader2, MessageSquare, Network, Play, Rocket, Server, Timer } from "lucide-react";
 import { toast } from "sonner";
-import { startMockAction } from "@/app/(app)/mock/actions";
+import { previewProjectAction, startMockAction, type ProjectPreview } from "@/app/(app)/mock/actions";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
@@ -32,6 +32,10 @@ export function MockPicker({ customCount, aiConfigured }: { customCount: number;
   const [source, setSource] = useState<"mixed" | "sheet" | "custom">("mixed");
   const [aiQuestions, setAiQuestions] = useState(aiConfigured);
   const [project, setProject] = useState("");
+  const [repo, setRepo] = useState("");
+  const [site, setSite] = useState("");
+  const [preview, setPreview] = useState<ProjectPreview | null>(null);
+  const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const config = chosen ? MOCK_CONFIG[chosen] : null;
@@ -42,7 +46,7 @@ export function MockPicker({ customCount, aiConfigured }: { customCount: number;
     if (!chosen || busy) return;
     setBusy(true);
     try {
-      const res = await startMockAction({ type: chosen, source: customCount ? source : "sheet", aiQuestions: aiQuestions && aiConfigured, project: chosen === "project" ? project : undefined });
+      const res = await startMockAction({ type: chosen, source: customCount ? source : "sheet", aiQuestions: aiQuestions && aiConfigured, project: chosen === "project" ? project : undefined, projectRepo: chosen === "project" && repo.trim() ? repo : undefined, projectSite: chosen === "project" && repo.trim() && site.trim() ? site : undefined });
       if (res.ok) return router.push(`/mock/${res.id}`);
       if ("resumeId" in res && res.resumeId) {
         toast.error(res.error, { action: { label: "Resume", onClick: () => router.push(`/mock/${res.resumeId}`) } });
@@ -51,6 +55,21 @@ export function MockPicker({ customCount, aiConfigured }: { customCount: number;
     } catch {
       setBusy(false);
       toast.error("Couldn't start the mock");
+    }
+  }
+
+  async function checkProject() {
+    if (checking || !repo.trim()) return;
+    setChecking(true);
+    setPreview(null);
+    try {
+      const res = await previewProjectAction({ repoUrl: repo, ...(site.trim() ? { siteUrl: site } : {}) });
+      if (res.ok) setPreview(res.preview);
+      else toast.error(`${res.error}.`);
+    } catch {
+      toast.error("Couldn't read the project");
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -123,9 +142,34 @@ export function MockPicker({ customCount, aiConfigured }: { customCount: number;
                 </label>
               )}
               {chosen === "project" && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="mock-project">Your project (optional)</Label>
-                  <Textarea id="mock-project" rows={4} maxLength={2000} value={project} onChange={(e) => setProject(e.target.value)} placeholder="What it does, the stack, your role, scale. The AI asks about this project specifically." />
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="mock-repo">GitHub repository (public)</Label>
+                    <input id="mock-repo" type="url" inputMode="url" autoComplete="off" value={repo} onChange={(e) => { setRepo(e.target.value); setPreview(null); }} placeholder="https://github.com/you/your-project" className={selectClass} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="mock-site">Live website (optional)</Label>
+                    <input id="mock-site" type="url" inputMode="url" autoComplete="off" value={site} onChange={(e) => { setSite(e.target.value); setPreview(null); }} placeholder="https://your-project.vercel.app" className={selectClass} />
+                  </div>
+                  {repo.trim() && (
+                    <Button type="button" variant="outline" size="sm" onClick={checkProject} disabled={checking}>
+                      {checking ? <Loader2 className="animate-spin motion-reduce:animate-none" /> : null}
+                      {checking ? "Reading your project…" : "Check what PrepOS can read"}
+                    </Button>
+                  )}
+                  {preview && (
+                    <div className="rounded-lg border bg-muted/40 p-3 text-xs" aria-live="polite">
+                      <p className="font-medium text-foreground">{preview.name}</p>
+                      <p className="mt-1 text-muted-foreground">Stack: {preview.stack.join(", ") || "not detected"}</p>
+                      <p className="mt-1 text-muted-foreground">Read {preview.filesRead.length} files: {preview.filesRead.slice(0, 6).join(", ")}{preview.filesRead.length > 6 ? ", …" : ""}</p>
+                      {preview.note && <p className="mt-1 text-warning">{preview.note}</p>}
+                      <p className="mt-1 text-muted-foreground">Secrets are stripped. The questions will be technical (about this code) and behavioral (about building it).</p>
+                    </div>
+                  )}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="mock-project">Or describe it in words (optional)</Label>
+                    <Textarea id="mock-project" rows={3} maxLength={2000} value={project} onChange={(e) => setProject(e.target.value)} placeholder="Used when there is no repository link: what it does, the stack, your role, scale." />
+                  </div>
                 </div>
               )}
               <DialogFooter>

@@ -33,6 +33,8 @@ import { resolveProviders } from "@/core/llm/providers";
 import { CustomProblem } from "@/core/models/content";
 import { MockSession } from "@/core/models/mock";
 import { bank } from "@/modules/quiz/lib/bank";
+import type { Get } from "@/modules/mock/lib/github";
+import { projectPrompts, readProject } from "@/modules/mock/services/project-interview";
 import { runAi } from "@/modules/ai/services/ai";
 import { cachedAi } from "@/modules/ai/services/ai-cache";
 import { todayIn } from "@/modules/planner/services/plan";
@@ -51,7 +53,15 @@ export interface MockSummary {
   deadlineAt: string;
 }
 
+export interface MockProject {
+  repo: string;
+  site: string | null;
+  stack: string[];
+}
+
 export interface MockDetail extends MockSummary {
+  /** The project a project interview is about, when its questions came from a repository. */
+  project: MockProject | null;
   startedAt: string;
   submittedAt: string | null;
   autoSubmitted: boolean;
@@ -136,8 +146,10 @@ export async function getMock(id: string, now = new Date()): Promise<MockDetail 
   }
   const rounds = (d.rounds ?? []) as MockRound[];
   const answers = (d.answers ?? {}) as Record<string, QuestionAnswer>;
+  const proj = (d as unknown as { project?: { repo?: string; site?: string; stack?: string[] } | null }).project;
   return {
     ...summary(d),
+    project: proj?.repo ? { repo: proj.repo, site: proj.site || null, stack: proj.stack ?? [] } : null,
     startedAt: d.startedAt.toISOString(),
     submittedAt: d.submittedAt?.toISOString() ?? null,
     autoSubmitted: !!d.autoSubmitted,
@@ -204,9 +216,12 @@ export interface StartOptions {
   source: ProblemSource;
   aiQuestions: boolean;
   project?: string;
+  /** A public GitHub repository (and optionally its live site): the questions are then written from the real code. */
+  projectRepo?: string;
+  projectSite?: string;
 }
 
-export async function startMock(opts: StartOptions, now = new Date()): Promise<{ ok: true; id: string } | { ok: false; error: string; resumeId?: string }> {
+export async function startMock(opts: StartOptions, now = new Date(), deps: { get?: Get } = {}): Promise<{ ok: true; id: string } | { ok: false; error: string; resumeId?: string }> {
   await connectDb();
   await settleExpired(now);
   const running = await MockSession.findOne({ status: "in_progress" }, { _id: 1 }).lean();
@@ -215,8 +230,18 @@ export async function startMock(opts: StartOptions, now = new Date()): Promise<{
   const config = MOCK_CONFIG[opts.type];
   const topics = new Set(config.rounds.map((r) => r.topic));
   const prompts: Partial<Record<AiTopic, BankPrompt[]>> = {};
+  let project: { repo: string; site?: string; stack: string[] } | undefined;
+  if (opts.type === "project" && opts.projectRepo) {
+    const read = await readProject({ repoUrl: opts.projectRepo, ...(opts.projectSite ? { siteUrl: opts.projectSite } : {}) }, deps);
+    if (!read.ok) return read;
+    const written = await projectPrompts(read.brief);
+    if (!written.ok) return written;
+    prompts.project = written.prompts;
+    project = { repo: read.brief.name, ...(opts.projectSite ? { site: opts.projectSite } : {}), stack: read.brief.stack };
+  }
   for (const r of config.rounds) {
     const t = r.topic;
+    if (prompts[t as AiTopic]) continue;
     if ((t === "node" || t === "lld" || t === "project" || t === "behavioral") && r.written && (opts.aiQuestions || (t === "project" && opts.project))) {
       prompts[t] = await aiPrompts(t, r.written, t === "project" ? opts.project : undefined);
     }
@@ -243,6 +268,7 @@ export async function startMock(opts: StartOptions, now = new Date()): Promise<{
     deadlineAt: deadlineOf(now, config.minutes),
     rounds: built.rounds,
     answers: {},
+    ...(project ? { project } : {}),
   });
   return { ok: true, id: String(doc._id) };
 }

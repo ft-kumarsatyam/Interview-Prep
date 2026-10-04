@@ -22,6 +22,8 @@ const mockSessionSchema = new Schema(
     totalScore: { type: Number, default: null },
     roundScores: { type: [Schema.Types.Mixed], default: [] },
     autoSubmitted: { type: Boolean, default: false },
+    /** What the session is about when it is more than a type: the project (repo name, site, stack) of a project interview. */
+    project: { type: new Schema({ repo: String, site: String, stack: [String] }, { _id: false }), default: null },
   },
   { timestamps: true, minimize: false },
 );
