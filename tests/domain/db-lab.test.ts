@@ -65,7 +65,7 @@ describe("SQL reference solutions", () => {
 });
 
 describe("Mongo reference solutions", () => {
-  for (const c of challengesFor("mongo", "shop")) {
+  for (const c of DB_CHALLENGES.filter((x) => x.mode === "mongo")) {
     it(`${c.id} runs and returns documents`, () => {
       const r = runMongo(c.solution, mongoDataset(c.dataset).collections);
       expect(r.ok, r.ok ? "" : r.error).toBe(true);

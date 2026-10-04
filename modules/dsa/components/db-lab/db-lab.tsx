@@ -14,8 +14,8 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import {
   MONGO_DATASETS,
   SQL_DATASETS,
+  DB_CHALLENGES,
   STARTERS,
-  challengesFor,
   compareRows,
   docsToRows,
   isBlankQuery,
@@ -24,7 +24,6 @@ import {
   type Cell,
   type DbChallenge,
   type DbMode,
-  type Difficulty,
   type Row,
 } from "@/modules/dsa/domain/db-lab";
 import { runMongo } from "@/modules/dsa/domain/mongo-query";
@@ -34,11 +33,12 @@ import { resetSqlDatabase, type SqlResultSet } from "@/core/sandbox/sql-run";
 import { cn } from "@/core/utils";
 import { QueryOutputView, VerdictBanner } from "@/modules/dsa/components/db-lab/query-output";
 import { MongoSchemaBrowser, SqlSchemaBrowser } from "@/modules/dsa/components/db-lab/schema-browser";
+import { ChallengeCatalog, type CatalogFilter } from "@/modules/dsa/components/db-lab/challenge-catalog";
+import { groupByTopic, nextUnsolved, topicLabel } from "@/modules/dsa/domain/db-lab-topics";
 
 type SideTab = "challenges" | "schema";
 type BottomTab = "result" | "expected" | "history";
 type MobilePane = "query" | "challenges" | "schema";
-type Filter = "all" | Difficulty;
 
 const SOLVED_KEY = "db-lab:solved";
 const HISTORY_MAX = 20;
@@ -97,17 +97,29 @@ function Lab() {
   const [sideTab, setSideTab] = useState<SideTab>("challenges");
   const [bottomTab, setBottomTab] = useState<BottomTab>("result");
   const [mobilePane, setMobilePane] = useState<MobilePane>("query");
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<CatalogFilter>("all");
+  const [query, setQuery] = useState("");
   const [solved, setSolved] = useState<Set<string>>(() => new Set(loadList(SOLVED_KEY)));
   const [history, setHistory] = useState<string[]>(() => loadList(`db-lab:history:${mode}`));
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const datasets = mode === "sql" ? SQL_DATASETS : MONGO_DATASETS;
-  const challenges = useMemo(() => challengesFor(mode, datasetId), [mode, datasetId]);
-  const visible = filter === "all" ? challenges : challenges.filter((c) => c.difficulty === filter);
+  // The catalogue spans every dataset of the language: picking a challenge switches to the data it runs on.
+  const challenges = useMemo(() => DB_CHALLENGES.filter((c) => c.mode === mode), [mode]);
+  const visible = useMemo(() => {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const label = (id: string) => datasets.find((d) => d.id === id)?.label ?? id;
+    return challenges.filter((c) => {
+      if (filter !== "all" && c.difficulty !== filter) return false;
+      if (terms.length === 0) return true;
+      const hay = `${c.title} ${topicLabel(mode, c.topic)} ${c.concepts.join(" ")} ${label(c.dataset)}`.toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
+  }, [challenges, filter, query, mode, datasets]);
+  const groups = useMemo(() => groupByTopic(mode, visible, solved), [mode, visible, solved]);
   const tables = useMemo(() => (mode === "sql" ? parseSchema(sqlDataset(datasetId).seed) : []), [mode, datasetId]);
   const collections = useMemo(() => (mode === "mongo" ? mongoDataset(datasetId).collections : {}), [mode, datasetId]);
-  const solvedHere = challenges.filter((c) => solved.has(c.id)).length;
+  const solvedHere = useMemo(() => challenges.filter((c) => solved.has(c.id)).length, [challenges, solved]);
   const blurb = datasets.find((d) => d.id === datasetId)?.blurb;
 
   function setCode(next: string) {
@@ -153,7 +165,11 @@ function Lab() {
   }
 
   function pick(c: DbChallenge) {
-    load(c, mode, datasetId);
+    if (c.dataset !== datasetId) {
+      setDatasetId(c.dataset);
+      writePref("db-lab:dataset", c.dataset);
+    }
+    load(c, mode, c.dataset);
     setMobilePane("query");
   }
 
@@ -235,9 +251,9 @@ function Lab() {
   }
 
   function nextChallenge() {
-    const from = active ? challenges.findIndex((c) => c.id === active.id) : -1;
-    const ordered = [...challenges.slice(from + 1), ...challenges.slice(0, from + 1)];
-    const next = ordered.find((c) => !solved.has(c.id) && c.id !== active?.id) ?? ordered[0];
+    // Teaching order (topic by topic, easy before hard), not the order the data was written in.
+    const sequence = groupByTopic(mode, challenges, solved).flatMap((g) => g.challenges);
+    const next = nextUnsolved(sequence, solved, active?.id ?? null);
     if (next) pick(next);
   }
 
@@ -253,63 +269,9 @@ function Lab() {
     toast.success("Database reset to its starting data");
   }
 
+  const datasetLabel = (id: string) => datasets.find((d) => d.id === id)?.label ?? id;
   const challengeList = (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1" role="group" aria-label="Filter by difficulty">
-        {(["all", "Easy", "Medium", "Hard"] as const).map((f) => (
-          <button
-            key={f}
-            type="button"
-            aria-pressed={filter === f}
-            onClick={() => setFilter(f)}
-            className={cn(
-              "h-7 rounded-full border px-2.5 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-              filter === f ? "border-primary/50 bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted",
-            )}
-          >
-            {f === "all" ? "All" : f}
-          </button>
-        ))}
-      </div>
-      <ul className="space-y-1.5">
-        {visible.map((c, i) => {
-          const isActive = active?.id === c.id;
-          const done = solved.has(c.id);
-          return (
-            <li key={c.id}>
-              <button
-                type="button"
-                onClick={() => pick(c)}
-                aria-current={isActive ? "true" : undefined}
-                className={cn(
-                  "group flex min-h-12 w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-                  isActive && "border-primary/50 bg-primary/5",
-                )}
-              >
-                <span
-                  className={cn("mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border font-mono text-2xs tabular", done ? "border-success/40 bg-success/10 text-success" : "text-muted-foreground")}
-                  aria-label={done ? "Solved" : undefined}
-                >
-                  {done ? <Check className="size-3" aria-hidden /> : i + 1}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block font-medium leading-snug">{c.title}</span>
-                  <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                    <DifficultyBadge difficulty={c.difficulty} />
-                    {c.concepts.slice(0, 2).map((k) => (
-                      <span key={k} className="rounded bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
-                        {k}
-                      </span>
-                    ))}
-                  </span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-        {visible.length === 0 && <li className="py-6 text-center text-sm text-muted-foreground">No {filter} challenges for this dataset.</li>}
-      </ul>
-    </div>
+    <ChallengeCatalog groups={groups} activeId={active?.id ?? null} solved={solved} filter={filter} onFilter={setFilter} query={query} onQuery={setQuery} onPick={pick} datasetLabel={datasetLabel} total={challenges.length} />
   );
 
   const schema = mode === "sql" ? <SqlSchemaBrowser tables={tables} onPreview={(t) => void preview(t)} /> : <MongoSchemaBrowser collections={collections} onPreview={(n) => void preview(n)} />;

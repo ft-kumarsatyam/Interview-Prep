@@ -4,6 +4,10 @@
  * checked by running the learner's query and a reference query on the same data and comparing rows.
  */
 import type { Collections } from "@/modules/dsa/domain/mongo-query";
+import { EXTRA_MONGO_CHALLENGES } from "@/modules/dsa/domain/db-lab-challenges-mongo";
+import { EXTRA_SQL_CHALLENGES } from "@/modules/dsa/domain/db-lab-challenges-sql";
+import { EXTRA_MONGO_DATASETS, EXTRA_SQL_DATASETS } from "@/modules/dsa/domain/db-lab-datasets";
+import type { DbTopic } from "@/modules/dsa/domain/db-lab-topics";
 
 export type DbMode = "sql" | "mongo";
 
@@ -15,7 +19,7 @@ export interface SqlDataset {
   seed: string;
 }
 
-export const SQL_DATASETS: readonly SqlDataset[] = [
+const BASE_SQL_DATASETS: readonly SqlDataset[] = [
   {
     id: "company",
     label: "Company",
@@ -63,7 +67,7 @@ export interface MongoDataset {
   collections: Collections;
 }
 
-export const MONGO_DATASETS: readonly MongoDataset[] = [
+const BASE_MONGO_DATASETS: readonly MongoDataset[] = [
   {
     id: "shop",
     label: "Online shop",
@@ -100,12 +104,17 @@ export const MONGO_DATASETS: readonly MongoDataset[] = [
   },
 ];
 
+export const SQL_DATASETS: readonly SqlDataset[] = [...BASE_SQL_DATASETS, ...EXTRA_SQL_DATASETS];
+export const MONGO_DATASETS: readonly MongoDataset[] = [...BASE_MONGO_DATASETS, ...EXTRA_MONGO_DATASETS];
+
 export type Difficulty = "Easy" | "Medium" | "Hard";
 
 export interface DbChallenge {
   id: string;
   mode: DbMode;
   dataset: string;
+  /** Where it sits in the catalogue (see db-lab-topics.ts). */
+  topic: DbTopic;
   title: string;
   difficulty: Difficulty;
   /** The question as an interviewer would ask it. */
@@ -118,11 +127,12 @@ export interface DbChallenge {
   concepts: string[];
 }
 
-export const DB_CHALLENGES: readonly DbChallenge[] = [
+const BASE_CHALLENGES: readonly DbChallenge[] = [
   {
     id: "sql-high-earners",
     mode: "sql",
     dataset: "company",
+    topic: "basics",
     title: "High earners",
     difficulty: "Easy",
     prompt: "List the name and salary of everyone who earns more than 100,000, highest salary first.",
@@ -135,6 +145,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-no-department",
     mode: "sql",
     dataset: "company",
+    topic: "nulls-sets",
     title: "Employees without a department",
     difficulty: "Easy",
     prompt: "Which employees have no department?",
@@ -147,6 +158,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-headcount",
     mode: "sql",
     dataset: "company",
+    topic: "joins",
     title: "Headcount per department",
     difficulty: "Easy",
     prompt: "Show each department's name and its number of employees, in department-name order. Include departments with nobody in them.",
@@ -160,6 +172,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-managers",
     mode: "sql",
     dataset: "company",
+    topic: "joins",
     title: "Employee and manager",
     difficulty: "Medium",
     prompt: "List every employee with their manager's name (NULL for the top boss), ordered by employee id.",
@@ -172,6 +185,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-second-highest",
     mode: "sql",
     dataset: "company",
+    topic: "subqueries",
     title: "Second-highest salary",
     difficulty: "Medium",
     prompt: "What is the second-highest distinct salary?",
@@ -184,6 +198,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-above-average",
     mode: "sql",
     dataset: "company",
+    topic: "subqueries",
     title: "Above their department's average",
     difficulty: "Medium",
     prompt: "Which employees earn more than the average salary of their own department? Order by name.",
@@ -197,6 +212,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-top-per-dept",
     mode: "sql",
     dataset: "company",
+    topic: "windows",
     title: "Top earner per department",
     difficulty: "Hard",
     prompt: "For each department, show the department name and its highest-paid employee (name, salary). Ignore people without a department. Order by department name.",
@@ -210,6 +226,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-project-hours",
     mode: "sql",
     dataset: "company",
+    topic: "aggregation",
     title: "Busy projects",
     difficulty: "Medium",
     prompt: "Which projects have at least 60 total assigned hours? Show name and total hours, most hours first, ties by name.",
@@ -223,6 +240,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-running-total",
     mode: "sql",
     dataset: "company",
+    topic: "windows",
     title: "Running payroll",
     difficulty: "Hard",
     prompt: "In hire-date order (ties by id), show name, hire_date, salary and the running total of salary so far.",
@@ -236,6 +254,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-all-reports",
     mode: "sql",
     dataset: "company",
+    topic: "patterns",
     title: "Everyone under Bob",
     difficulty: "Hard",
     prompt: "List everyone who reports to Bob (id 2), directly or indirectly, ordered by name.",
@@ -249,6 +268,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-no-orders",
     mode: "sql",
     dataset: "shop",
+    topic: "joins",
     title: "Customers who never ordered",
     difficulty: "Easy",
     prompt: "Which customers have not placed any order?",
@@ -261,6 +281,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-unsold-products",
     mode: "sql",
     dataset: "shop",
+    topic: "joins",
     title: "Products nobody bought",
     difficulty: "Easy",
     prompt: "Which products have never appeared in an order?",
@@ -273,6 +294,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-category-revenue",
     mode: "sql",
     dataset: "shop",
+    topic: "aggregation",
     title: "Revenue by category",
     difficulty: "Medium",
     prompt: "Revenue (price x quantity) per product category, ignoring cancelled orders, largest first.",
@@ -286,6 +308,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-monthly-orders",
     mode: "sql",
     dataset: "shop",
+    topic: "dates-strings",
     title: "Delivered orders per month",
     difficulty: "Medium",
     prompt: "Count delivered orders per month (as YYYY-MM), in month order.",
@@ -299,6 +322,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "sql-repeat-customers",
     mode: "sql",
     dataset: "shop",
+    topic: "aggregation",
     title: "Repeat customers",
     difficulty: "Medium",
     prompt: "Which customers placed more than one non-cancelled order? Show name and order count, most orders first, ties by name.",
@@ -313,6 +337,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "mongo-in-users",
     mode: "mongo",
     dataset: "shop",
+    topic: "find",
     title: "Users in India",
     difficulty: "Easy",
     prompt: "Find users whose country is IN. Show only name and age (no _id), ordered by name.",
@@ -325,6 +350,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "mongo-vip-tag",
     mode: "mongo",
     dataset: "shop",
+    topic: "arrays",
     title: "VIP users",
     difficulty: "Easy",
     prompt: "Which users have the tag 'vip'? Return just their names.",
@@ -337,6 +363,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "mongo-price-range",
     mode: "mongo",
     dataset: "shop",
+    topic: "find",
     title: "Mid-priced products",
     difficulty: "Easy",
     prompt: "Products priced from 50 to 300 inclusive: name and price, cheapest first.",
@@ -349,6 +376,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "mongo-orders-per-status",
     mode: "mongo",
     dataset: "shop",
+    topic: "aggregation",
     title: "Orders per status",
     difficulty: "Medium",
     prompt: "Count orders for each status. Sort by count descending, then status ascending.",
@@ -361,6 +389,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "mongo-revenue-per-user",
     mode: "mongo",
     dataset: "shop",
+    topic: "aggregation",
     title: "Revenue per user",
     difficulty: "Medium",
     prompt: "For non-cancelled orders, total revenue per userId (qty x price over all items), highest first.",
@@ -374,6 +403,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "mongo-top-products",
     mode: "mongo",
     dataset: "shop",
+    topic: "aggregation",
     title: "Top 3 products by units",
     difficulty: "Medium",
     prompt: "Across all orders, which 3 productIds sold the most units (sum of qty)?",
@@ -387,6 +417,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "mongo-order-with-user",
     mode: "mongo",
     dataset: "shop",
+    topic: "lookup",
     title: "Orders with the buyer's name",
     difficulty: "Hard",
     prompt: "List each order id with the name of the user who placed it, ordered by order id.",
@@ -400,6 +431,7 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     id: "mongo-no-orders",
     mode: "mongo",
     dataset: "shop",
+    topic: "lookup",
     title: "Users who never ordered",
     difficulty: "Hard",
     prompt: "Which users have no orders? Return their names.",
@@ -410,6 +442,9 @@ export const DB_CHALLENGES: readonly DbChallenge[] = [
     concepts: ["$lookup", "$size", "anti-join"],
   },
 ];
+
+/** The whole catalogue: the original challenges first, then the additions, so ids and positions already saved stay put. */
+export const DB_CHALLENGES: readonly DbChallenge[] = [...BASE_CHALLENGES, ...EXTRA_SQL_CHALLENGES, ...EXTRA_MONGO_CHALLENGES];
 
 export const challengesFor = (mode: DbMode, dataset: string) => DB_CHALLENGES.filter((c) => c.mode === mode && c.dataset === dataset);
 export const sqlDataset = (id: string) => SQL_DATASETS.find((d) => d.id === id) ?? SQL_DATASETS[0]!;
