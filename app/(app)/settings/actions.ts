@@ -10,7 +10,7 @@ import { lookupLeetCodeStats } from "@/modules/dsa/services/leetcode-sync";
 import { seedContent } from "@/core/services/seed";
 import { MAIL_KINDS } from "@/modules/notifications/domain/mail-prefs";
 import { ROAST_LEVELS, type RoastLevel } from "@/modules/resume/domain/roast";
-import { getSettings, saveSettings, setMailPref, setRoastLevel, setRoastMode } from "@/modules/settings/services/settings";
+import { getSettings, saveSettings, setMailPref, setRoastLevel } from "@/modules/settings/services/settings";
 import { pushSubscriptionSchema, removePushSubscription, savePushSubscription } from "@/modules/notifications/services/push-subscriptions";
 import { sendTestMail } from "@/modules/notifications/services/test-mail";
 
@@ -105,15 +105,6 @@ export async function testPushAction(kind: unknown = "morning"): Promise<ActionR
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Sending failed" };
   }
-}
-
-export async function setRoastModeAction(on: unknown): Promise<ActionResult<{ roastMode: boolean }>> {
-  await requireSession();
-  const parsed = z.boolean().safeParse(on);
-  if (!parsed.success) return { ok: false, error: "Expected on or off" };
-  await setRoastMode(parsed.data);
-  refresh();
-  return { ok: true, roastMode: parsed.data };
 }
 
 export async function reseedAction(): Promise<ActionResult<{ message: string }>> {

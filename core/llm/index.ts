@@ -5,7 +5,7 @@ import { createChain } from "@/core/llm/chain";
 import { resolveProviders } from "@/core/llm/providers";
 import type { LlmProvider } from "@/core/llm/types";
 
-export { createLlm, extractJson, jsonProvider } from "@/core/llm/json-provider";
+export { createLlm, jsonProvider } from "@/core/llm/json-provider";
 export type { LlmConfig, LlmProvider } from "@/core/llm/types";
 
 /**

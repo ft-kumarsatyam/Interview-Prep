@@ -71,13 +71,6 @@ export async function fetchWithPolicy(url: string | URL, policy: FetchPolicy): P
   }
 }
 
-/** fetchWithPolicy + JSON; throws on a non-2xx status. */
-export async function fetchJson(url: string | URL, policy: FetchPolicy): Promise<unknown> {
-  const res = await fetchWithPolicy(url, policy);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 /** Runs at most `n` tasks at a time; each call returns the task's own result. */
 export function pLimit(n: number): <T>(task: () => Promise<T>) => Promise<T> {
   let active = 0;
