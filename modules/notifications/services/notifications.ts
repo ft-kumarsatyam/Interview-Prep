@@ -3,7 +3,12 @@ import { Notification } from "@/core/models/system";
 import type { MailSpec } from "@/modules/notifications/domain/mail-html";
 import type { PushContent } from "@/modules/resume/domain/roast";
 import { publish } from "@/core/realtime";
-import { pushToChannels, type NotifyChannel } from "@/core/notify";
+import { configuredChannels, pushToChannels, type NotifyChannel } from "@/core/notify";
+import { inlineBroker } from "@/core/broker";
+import { enqueueEvent, inTransaction } from "@/core/events/outbox";
+import type { EventPayload } from "@/core/events/schemas";
+import { relayOne } from "@/core/events/relay";
+import { registerNotificationHandlers } from "@/modules/notifications/services/event-handlers";
 
 export type NotificationKind = "plan" | "reminder" | "recap" | "streak" | "milestone" | "sync" | "news";
 
@@ -36,23 +41,52 @@ export async function notify(
     ...(opts.pushContent?.spec ? { detail: opts.pushContent.spec } : {}),
     ...(opts.pushContent?.roast ? { roast: opts.pushContent.roast } : {}),
   };
-  let id: string;
-  if (input.dedupeKey) {
-    const res = await Notification.updateOne(
-      { dedupeKey: input.dedupeKey },
-      { $setOnInsert: { kind: input.kind, title: input.title, body: input.body, read: false, ...extra } },
-      { upsert: true },
-    );
-    if (res.upsertedCount === 0 || !res.upsertedId) return { created: false, pushed: [] };
-    id = String(res.upsertedId);
-  } else {
-    id = String((await Notification.create({ ...input, ...extra }))._id);
-  }
+  const content = opts.pushContent ?? { title: input.title, body: input.body };
+  // Explicit channels (tests, the Settings test button) are delivered directly. Normal sends go through the outbox.
+  const viaOutbox = !!opts.push && !opts.channels;
+  const names = viaOutbox ? configuredChannels().map((c) => c.name) : [];
+
+  const saved = await inTransaction(async (session) => {
+    let id: string;
+    if (input.dedupeKey) {
+      const res = await Notification.updateOne(
+        { dedupeKey: input.dedupeKey },
+        { $setOnInsert: { kind: input.kind, title: input.title, body: input.body, read: false, ...extra } },
+        { upsert: true, session },
+      );
+      if (res.upsertedCount === 0 || !res.upsertedId) return null;
+      id = String(res.upsertedId);
+    } else {
+      id = String((await Notification.create([{ ...input, ...extra }], { session }))[0]!._id);
+    }
+    // The notification and the events that deliver it commit together, so a crash cannot lose the delivery.
+    const eventIds: string[] = [];
+    for (const channel of names) {
+      const eventId = `notify:${id}:${channel}`;
+      await enqueueEvent(
+        "NotificationRequested",
+        { notificationId: id, channel, kind: input.kind, title: content.title, body: content.body, url: `/notifications/${id}`, tag: pushTag(input.kind, input.dedupeKey), content: content as unknown as EventPayload<"NotificationRequested">["content"] },
+        { eventId, session },
+      );
+      eventIds.push(eventId);
+    }
+    return { id, eventIds };
+  });
+  if (!saved) return { created: false, pushed: [] };
+  const { id, eventIds } = saved;
   // The bell in every open tab updates at once.
   await publish({ type: "notification", kind: input.kind });
-  const content = opts.pushContent ?? { title: input.title, body: input.body };
-  const meta = { content, url: `/notifications/${id}`, tag: pushTag(input.kind, input.dedupeKey) };
-  const pushed = opts.push ? (await pushToChannels(content.title, content.body, opts.channels, content.html, meta)).sent : [];
+
+  let pushed: string[] = [];
+  if (viaOutbox) {
+    // Deliver now for low latency; anything that fails stays in the outbox and the relay retries it with backoff.
+    registerNotificationHandlers();
+    const outcomes = await Promise.all(eventIds.map((eventId) => relayOne(eventId, { broker: inlineBroker() })));
+    pushed = names.filter((_, i) => outcomes[i] === "done");
+  } else if (opts.push) {
+    const meta = { content, url: `/notifications/${id}`, tag: pushTag(input.kind, input.dedupeKey) };
+    pushed = (await pushToChannels(content.title, content.body, opts.channels, content.html, meta)).sent;
+  }
   return { created: true, pushed };
 }
 

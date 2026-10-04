@@ -1,11 +1,22 @@
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet, MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 
-let mongod: MongoMemoryServer | undefined;
+let mongod: MongoMemoryServer | MongoMemoryReplSet | undefined;
 
 /** Spin up a throwaway MongoDB and point the app's env at it. */
 export async function startDb(): Promise<void> {
   mongod = await MongoMemoryServer.create();
+  await connect();
+}
+
+/** Like startDb, but a single-node replica set, which MongoDB needs for transactions. */
+export async function startReplDb(): Promise<void> {
+  mongod = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  await connect();
+}
+
+async function connect(): Promise<void> {
+  if (!mongod) throw new Error("no database");
   Object.assign(process.env, {
     MONGODB_URI: mongod.getUri("prepos-test"),
     AUTH_SECRET: "test-secret-test-secret-test-secret-123",

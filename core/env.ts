@@ -46,6 +46,11 @@ const schema = z.object({
   /** Optional Upstash Redis (REST) for locks, rate limits, caches and the live-event log. Without both, MongoDB does the same jobs. */
   UPSTASH_REDIS_REST_URL: z.url().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
+  /** Optional Upstash QStash message queue. With token + signing keys + APP_URL, the outbox relay publishes to QStash, which pushes to /api/queue/[topic]. Without them MongoDB polling delivers the same events. */
+  QSTASH_TOKEN: z.string().optional(),
+  QSTASH_URL: z.url().default("https://qstash.upstash.io"),
+  QSTASH_CURRENT_SIGNING_KEY: z.string().optional(),
+  QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
   /** Public base URL used for links in emails, e.g. https://satyam-dev.in */
   APP_URL: z.url().optional(),
 });

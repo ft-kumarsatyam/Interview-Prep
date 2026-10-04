@@ -11,6 +11,7 @@ import "@/core/models/lc";
 import "@/core/models/learning";
 import "@/core/models/migration";
 import "@/core/models/mock";
+import "@/core/models/outbox";
 import "@/core/models/planner";
 import "@/core/models/progress";
 import "@/core/models/resume";

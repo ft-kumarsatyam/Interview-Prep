@@ -8,12 +8,16 @@ import { Progress } from "@/components/ui/progress";
 import { currentSession } from "@/core/auth/dal";
 import { getSetupChecklist } from "@/modules/planner/services/setup";
 import { cn } from "@/core/utils";
+import { OutboxPanel } from "@/core/components/events/outbox-panel";
+import { getBroker } from "@/core/broker";
+import { outboxStats } from "@/core/events/relay";
+import { replayDeadAction } from "@/app/(app)/setup/actions";
 
 export const metadata: Metadata = { title: "Setup" };
 
 export default async function SetupPage() {
   const session = await currentSession();
-  const checklist = await getSetupChecklist({ live: true, remember: session.remember });
+  const [checklist, events] = await Promise.all([getSetupChecklist({ live: true, remember: session.remember }), outboxStats()]);
   const pct = Math.round((checklist.done / checklist.total) * 100);
   const complete = checklist.requiredLeft === 0;
   const open = checklist.items.filter((i) => i.status !== "ok");
@@ -71,6 +75,8 @@ export default async function SetupPage() {
           .
         </p>
       </div>
+
+      <OutboxPanel broker={getBroker().name} stats={events} replay={replayDeadAction} />
 
       <SetupChecklistView items={checklist.items} />
     </>
