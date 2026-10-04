@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { explainDay, reopenPlanned, type ExplainDayInput } from "@/lib/domain/explain-day";
-import { DEFAULT_SETTINGS as S } from "@/lib/domain/plan-config";
-import { buildDailyPlan, type ProblemState, type SubtopicState } from "@/lib/domain/planner";
+import { explainDay, reopenPlanned, type ExplainDayInput } from "@/modules/planner/domain/explain-day";
+import { DEFAULT_SETTINGS as S } from "@/modules/planner/domain/plan-config";
+import { buildDailyPlan, type ProblemState, type SubtopicState } from "@/modules/planner/domain/planner";
 
 const problems = (n: number, solved = 0): ProblemState[] =>
   Array.from({ length: n }, (_, i) => ({ slug: `p${i}`, track: "main" as const, order: i, solved: i < solved }));

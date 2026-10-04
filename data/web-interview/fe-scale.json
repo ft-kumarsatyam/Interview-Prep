@@ -1,0 +1,569 @@
+{
+  "track": {
+    "id": "fe-scale",
+    "name": "Frontend at scale",
+    "blurb": "Senior frontend interview questions on architecture at scale: rendering, state, design systems, monorepos, micro-frontends, performance, testing, releases and security.",
+    "area": "frontend"
+  },
+  "questions": [
+    {
+      "id": "fe-scale-choose-rendering-strategy",
+      "level": "mid",
+      "q": "How do you choose between CSR, SSR, SSG and ISR for different pages of the same product?",
+      "answer": "**I decide per page using three questions: how fresh must the data be, is the HTML the same for everyone, and does it need SEO and fast first paint. Shared and rarely changing content is static (SSG or ISR), per-request or per-query content is SSR (ideally streamed), and private, highly interactive app screens can be CSR or an SSR shell.**\n\n**The questions in practice:**\n- **Freshness**: changes on deploy (SSG), every few minutes (ISR or on-demand revalidation), every request (SSR), live (client fetch or streaming).\n- **Shared vs personal**: identical HTML for everyone can be cached at the CDN; personal HTML cannot be share-cached.\n- **SEO and first paint**: public pages need HTML from the server; a logged-in editor does not.\n- **Cost**: SSR costs CPU per request; static costs build time.\n\n**A typical e-commerce product:**\n\n| Page | Choice | Why |\n| --- | --- | --- |\n| Landing, docs | SSG | changes on deploy |\n| Product detail | ISR + streamed or client-fetched stock | copy is shared, stock is volatile |\n| Search | SSR with short edge TTL per query | infinite URL space, fresh results |\n| Cart, account | SSR shell, private, no shared cache | personal |\n| Admin tool | CSR | no SEO, long sessions |\n\n**Mixing inside a page** is the modern answer. With the Next.js App Router, the product description is a cached Server Component, stock sits in a `Suspense` boundary streamed with no caching, and only the \"Add to cart\" button is a client component. The page is mostly static yet the volatile part is fresh.\n\n**Invalidation**: time-based revalidation is simple but either stale or wasteful; on-demand revalidation by tag (the CMS webhook calls `revalidateTag(\"product-42\")`) is precise.\n\n**Trade-off to name**: every extra strategy is operational complexity. A small team may reasonably choose SSR with CDN caching everywhere and accept some cost for simplicity.",
+      "followUps": [
+        "Where would you put a product page that shows live stock?",
+        "What changes if the page is personalised per user?",
+        "How do you invalidate a static page when content changes?"
+      ],
+      "mistakes": [
+        "Picking one strategy for the whole app instead of per page.",
+        "Ignoring cost: SSR on every request for pages that could be static.",
+        "Not mentioning how personalisation affects caching."
+      ],
+      "lesson": "fes-rendering-strategies"
+    },
+    {
+      "id": "fe-scale-hydration-cost",
+      "level": "senior",
+      "q": "What is hydration, why is it expensive, and how do React Server Components and islands reduce it?",
+      "answer": "**Hydration is the browser downloading the JavaScript for server-rendered components, re-running them to rebuild the component tree and attaching event handlers to the existing HTML. It costs download, parse and execution proportional to everything that hydrates, so large pages are visible but unresponsive. Server Components and islands reduce it by never shipping or hydrating the parts that are not interactive.**\n\n**What happens step by step:**\n```text\nHTML arrives -> visible (good LCP)\nJS for every client component downloads + parses\nReact renders the tree again in memory, matches it to the DOM\nhandlers attached -> interactive\n```\nOn a mid-range Android phone a big page can produce long tasks of hundreds of milliseconds; taps during that window feel dead and show up as poor INP.\n\n**How the techniques help:**\n- **React Server Components** run only on the server. Their output is sent as a serialised payload; their code and dependencies (a markdown parser, a date library) never reach the browser. Only `\"use client\"` components hydrate. Keep client boundaries as low as possible: a client `Header` that wraps the page turns everything below into client code.\n- **Islands** (Astro and similar): the page is static HTML, and each interactive widget hydrates independently, often lazily (`client:visible`, `client:idle`).\n- **Selective hydration** with streaming SSR: each `Suspense` boundary hydrates independently, and React prioritises the boundary the user interacts with.\n- **Lazy hydration**: load below-the-fold widget code only when visible.\n\n**Mismatches**: if server and client render different output (`Date.now()`, `Math.random()`, `window` checks, locale formatting), React warns and may re-render the subtree on the client, wasting work. Render time-sensitive bits in an effect or on the client only.\n\n**When RSC helps little**: highly interactive apps (editors, dashboards with heavy client state) where most components need interactivity anyway. Then code splitting and lighter components matter more.",
+      "followUps": [
+        "What is selective hydration?",
+        "What causes hydration mismatches and how do you fix them?",
+        "When would RSC not help much?"
+      ],
+      "mistakes": [
+        "Thinking SSR alone makes a page interactive faster.",
+        "Believing Server Components still ship their code to the browser.",
+        "Not linking hydration to INP and long tasks."
+      ],
+      "lesson": "fes-rendering-strategies"
+    },
+    {
+      "id": "fe-scale-ssr-high-traffic-edge",
+      "level": "senior",
+      "q": "How would you serve SSR pages at high traffic, and how do you cache HTML at the edge safely?",
+      "answer": "**Avoid rendering the same HTML twice: put a CDN in front, cache shared HTML with `s-maxage` and `stale-while-revalidate`, purge by tag when content changes, and keep personal data out of cached HTML by splitting it into separately fetched fragments. The origin then only renders on cache misses and for genuinely personal pages, which you scale horizontally and keep fast with streaming and cached data calls.**\n\n**Layers:**\n```text\nuser -> CDN/edge (HTML cache, keyed by URL + few vary dims)\n          | miss\n        origin SSR (horizontally scaled, streams)\n          | data cache (Redis / framework data cache)\n        APIs / DB\n```\n\n**Caching HTML safely:**\n- Only cache responses that are identical for everyone who receives that key. If the render reads cookies or auth, either do not cache (`private, no-store`) or vary on a coarse dimension (country, logged in vs out) rather than the user.\n- `Cache-Control: public, s-maxage=60, stale-while-revalidate=600` keeps hits fast while refreshing in the background.\n- Tag responses (`Cache-Tag` / surrogate keys) so a product update purges every page showing it.\n- Strip `Set-Cookie` from cacheable responses; a cached `Set-Cookie` leaks one user's session to everyone.\n\n**95% shared, 5% personal**: cache the shared shell and fetch the personal part client-side, stream it from a dynamic boundary, or compose at the edge (edge middleware injects a small fragment). Next.js Partial Prerendering is this idea built in: a static shell with dynamic holes.\n\n**Stampede protection**: `stale-while-revalidate` means one background refresh instead of thousands of misses; CDNs also coalesce concurrent misses (request collapsing). For the data layer, use locks or jittered TTLs.\n\n**Origin failure**: `stale-if-error` serves the last good copy. Static fallbacks for key pages are cheap insurance.\n\n**Origin performance**: stream so TTFB does not wait on the slowest call, parallelise data fetches, cache data per entity, and set timeouts on every upstream so one slow service degrades a section rather than the page.",
+      "followUps": [
+        "How do you prevent a cache stampede when a popular page expires?",
+        "How would you handle a page that is 95% shared and 5% personalised?",
+        "What happens when the origin is down?"
+      ],
+      "mistakes": [
+        "Caching HTML that reads cookies without varying the cache key.",
+        "Rendering at the edge while the database lives in one region.",
+        "No plan for origin failure or stampedes."
+      ],
+      "lesson": "fes-rendering-strategies"
+    },
+    {
+      "id": "fe-scale-classify-state",
+      "level": "mid",
+      "q": "How do you classify state in a large React app, and where should each kind live?",
+      "answer": "**I split state by who owns the truth: server data is a cache (TanStack Query, SWR or Server Components), shareable view state lives in the URL, in-progress input lives in the form, ephemeral UI lives in the component, and only genuinely shared client state goes into context or a store. Once you do that, the global store is usually small.**\n\n| Kind | Example | Home |\n| --- | --- | --- |\n| Server cache | orders, user profile | query cache keyed by params |\n| URL | filters, sort, page, selected tab | search params / route |\n| Form | draft values, errors, dirty flags | React Hook Form, `useActionState`, local state |\n| Local UI | dropdown open, hover | `useState` in the component |\n| Shared client | theme, auth session info, editor selection, wizard progress | context (low churn) or Zustand / Jotai / Redux Toolkit |\n\n**Why it matters:**\n- Server data needs staleness, dedupe, retries and invalidation, which query libraries give you for free; a store makes you hand-roll them.\n- URL state survives refresh, back button and sharing.\n- Local state is automatically cleaned up when the component unmounts.\n\n**Derived state** should not be stored at all: compute `filteredItems` from `items` and `filter` during render (memoise if expensive), rather than syncing a second copy with `useEffect`.\n\n**At team scale:**\n- One server-state library across the app and query-key factories per domain (`orderKeys.list(filters)`).\n- Feature-owned stores or slices, not one shared bag; lint rules that block importing another feature's internals.\n- Review checklist question: \"who owns this data?\" before adding to a store.\n\n**Example**: a dashboard that kept everything in Redux had 40 actions just to mirror API responses. Moving server data to TanStack Query and filters to the URL left a slice for UI preferences and removed most of the sync bugs.",
+      "followUps": [
+        "Where does form draft state belong?",
+        "What still belongs in a global store after this?",
+        "How do you stop teams from dumping everything into the store?"
+      ],
+      "mistakes": [
+        "Treating all data as global client state.",
+        "Not mentioning the URL as a state container.",
+        "Copying server data into local state and syncing it with effects."
+      ],
+      "lesson": "fes-state-management"
+    },
+    {
+      "id": "fe-scale-query-vs-redux",
+      "level": "mid",
+      "q": "Why use TanStack Query or SWR instead of putting server data in Redux?",
+      "answer": "**Because server data is a cache of someone else's truth, not client state. A query library gives you caching by key, request deduplication, background refetch, stale-while-revalidate, retries, pagination, loading and error states and invalidation after mutations. Doing that in Redux means writing and maintaining all of it by hand, per endpoint.**\n\n**What you get from a query cache:**\n```tsx\nconst { data, isPending, error } = useQuery({\n  queryKey: [\"orders\", { status }],\n  queryFn: () => api.orders.list({ status }),\n  staleTime: 30_000,\n});\n```\n- Two components with the same key share one request and one entry.\n- `staleTime`: how long data is considered fresh (no refetch on mount or focus). `gcTime`: how long unused entries stay in memory before garbage collection.\n- Refetch on window focus or reconnect keeps tabs fresh.\n- `invalidateQueries({ queryKey: [\"orders\"] })` after a mutation marks matching entries stale and refetches active ones.\n- Built-in support for infinite queries, prefetching on hover and SSR hydration of prefetched data.\n\n**The Redux equivalent** is a slice per resource with `loading`/`error`/`data`, thunks, manual cache timestamps, manual dedupe and manual invalidation. Teams end up writing a worse query library.\n\n**When Redux still fits**: complex client-side state with many transitions (an editor, an offline-first app), when you want time-travel debugging and strict conventions. **RTK Query** gives query-cache semantics inside Redux, a good choice if the app is already on Redux Toolkit.\n\n**Limitation**: TanStack Query and SWR are not normalised; the same user in two lists is two copies. You either invalidate both keys or patch them with `setQueryData`. Apollo and Relay normalise automatically, which is a reason teams pick them for GraphQL-heavy apps.",
+      "followUps": [
+        "What is the difference between staleTime and gcTime?",
+        "When would RTK Query make sense instead?",
+        "How do query caches handle the same entity in two lists?"
+      ],
+      "mistakes": [
+        "Saying Redux is \"bad\" rather than explaining that server state is a cache.",
+        "Not knowing about deduplication and invalidation.",
+        "Using a query library but setting staleTime to 0 everywhere and refetching constantly."
+      ],
+      "lesson": "fes-state-management"
+    },
+    {
+      "id": "fe-scale-optimistic-update",
+      "level": "mid",
+      "q": "How do you implement an optimistic update and roll it back on failure?",
+      "answer": "**Update the cache immediately as if the server succeeded, keep a snapshot of the previous value, roll back to the snapshot if the request fails, and always refetch or invalidate when it settles so the UI matches the server. With TanStack Query that is `onMutate`, `onError` and `onSettled`.**\n\n```tsx\nconst qc = useQueryClient();\nconst like = useMutation({\n  mutationFn: (postId: string) => api.posts.like(postId),\n  onMutate: async (postId) => {\n    await qc.cancelQueries({ queryKey: [\"post\", postId] });\n    const previous = qc.getQueryData<Post>([\"post\", postId]);\n    qc.setQueryData<Post>([\"post\", postId], (p) => p && { ...p, liked: true, likes: p.likes + 1 });\n    return { previous };\n  },\n  onError: (_e, postId, ctx) => {\n    qc.setQueryData([\"post\", postId], ctx?.previous);\n    toast.error(\"Could not like the post\");\n  },\n  onSettled: (_d, _e, postId) => qc.invalidateQueries({ queryKey: [\"post\", postId] }),\n});\n```\n\n**Each step matters:**\n1. `cancelQueries`: a refetch started earlier would resolve with stale data and clobber the optimistic value.\n2. Snapshot: you need something to roll back to.\n3. Apply: the UI updates in the same frame as the click.\n4. Rollback plus a visible message on error; silently reverting confuses users.\n5. Invalidate: the server may have applied extra changes (counts from other users, server timestamps).\n\n**React 19 `useOptimistic`** holds an optimistic value while an action (often a Server Action) is pending and automatically reverts to the real state when it settles. Simpler for forms; less control over caches.\n\n**Overlapping mutations**: a quick like/unlike can interleave. Options: disable while pending, queue mutations per entity, or use a mutation scope so they run serially, and only invalidate when the last one settles.\n\n**When not to**: payments, sends to external parties, deletes without undo, or actions with a meaningful failure rate. Show a pending state instead.",
+      "followUps": [
+        "When should you not use optimistic UI?",
+        "How does React 19's useOptimistic differ?",
+        "What if two optimistic mutations overlap?"
+      ],
+      "mistakes": [
+        "Forgetting to cancel in-flight queries, so a refetch overwrites the optimistic value.",
+        "No rollback path, or no resync with the server afterwards.",
+        "Using optimistic UI for payments or irreversible actions."
+      ],
+      "lesson": "fes-state-management"
+    },
+    {
+      "id": "fe-scale-context-performance",
+      "level": "junior",
+      "q": "Why can React Context cause performance problems, and how do you avoid them?",
+      "answer": "**Every component that reads a context re-renders whenever the context value changes, and context has no selectors, so a big context that changes often re-renders many components that did not care about the change. Avoid it by splitting contexts by update frequency, memoising the value, or moving fast-changing state to a store with selector subscriptions.**\n\n**The trap:**\n```tsx\nfunction AppProvider({ children }: { children: ReactNode }) {\n  const [user, setUser] = useState<User | null>(null);\n  const [notifications, setNotifications] = useState<Note[]>([]);\n  // New object every render: every consumer re-renders on every provider render\n  return <AppCtx.Provider value={{ user, setUser, notifications }}>{children}</AppCtx.Provider>;\n}\n```\nA notification arriving every few seconds re-renders every component that only wanted `user`.\n\n**Fixes, cheapest first:**\n- `useMemo` the value so it only changes when its contents change.\n- **Split contexts**: `UserContext` (rarely changes) and `NotificationsContext` (changes often).\n- Separate **state and dispatch** contexts: components that only trigger actions read the stable dispatch and never re-render.\n- Move hot state to **Zustand or Jotai**, where `useStore((s) => s.unreadCount)` re-renders only when that slice changes.\n- Composition: pass components as `children` so intermediate components do not need the data at all.\n\n**When context is fine**: theme, locale, the current user, feature flags, dependency injection of services. They change rarely, so re-rendering consumers is cheap.\n\n**Note**: the React Compiler reduces unnecessary child re-renders but does not change the rule that consumers re-render when the context value changes.",
+      "followUps": [
+        "Why does passing an object literal as the value make it worse?",
+        "When is context perfectly fine?"
+      ],
+      "mistakes": [
+        "Thinking only components that use the changed field re-render.",
+        "Using context for high-frequency values like mouse position or a live feed."
+      ],
+      "lesson": "fes-state-management"
+    },
+    {
+      "id": "fe-scale-component-api-design",
+      "level": "senior",
+      "q": "How would you design the API of a reusable component like Select or Dialog for a design system?",
+      "answer": "**I start from behaviour and accessibility, built on a headless library like Radix or React Aria, then expose a compound-component API (`Dialog.Trigger`, `Dialog.Content`, `Dialog.Title`) that supports controlled and uncontrolled use, forwards refs, accepts `className` and composes with links and forms. Composition over configuration keeps the API stable as requirements grow.**\n\n**Behaviour first**: a Dialog must trap focus, return focus to the trigger on close, close on Escape, lock background scroll, label itself with `aria-labelledby`, and render in a portal. A Select needs listbox roles, typeahead and arrow-key navigation. These are where custom components fail audits, so I use a proven headless layer and own the styling.\n\n**API shape:**\n```tsx\n<Dialog open={open} onOpenChange={setOpen}>\n  <Dialog.Trigger asChild><Button>Delete project</Button></Dialog.Trigger>\n  <Dialog.Content>\n    <Dialog.Title>Delete project?</Dialog.Title>\n    <Dialog.Description>This cannot be undone.</Dialog.Description>\n    <Dialog.Close asChild><Button tone=\"neutral\">Cancel</Button></Dialog.Close>\n  </Dialog.Content>\n</Dialog>\n```\n\n**Principles:**\n- **Compound parts** instead of props like `title`, `footerButtons`, `showClose`: new needs become new parts.\n- **Controlled and uncontrolled**: `defaultOpen` or `open` + `onOpenChange`, implemented once with a `useControllableState` hook so every component behaves the same.\n- **Polymorphism** via `asChild` (Slot) so a trigger can be a router `Link`; it avoids the complex generic types an `as` prop needs.\n- **Escape hatches**: `className` merged, rest props spread to the root, refs forwarded, `data-state` attributes for styling.\n- **Accessible by default**: required `Title` (warn in development if missing).\n- **Consistent naming** across the system: `onValueChange`, `onOpenChange`, `disabled`, `size`, `tone`.\n\n**Validate the API** by writing stories and real usages before implementing, and get two product teams to review it. Once shipped, an API is expensive to change.",
+      "followUps": [
+        "How do you support both controlled and uncontrolled usage?",
+        "How do you type a polymorphic component?",
+        "What escape hatches do you provide?"
+      ],
+      "mistakes": [
+        "A mega-prop configuration API that grows forever.",
+        "Ignoring keyboard, focus and ARIA behaviour.",
+        "No way to integrate with forms or routers."
+      ],
+      "lesson": "fes-design-systems"
+    },
+    {
+      "id": "fe-scale-design-tokens",
+      "level": "junior",
+      "q": "What are design tokens and how do they enable theming?",
+      "answer": "**Design tokens are named design decisions (colours, spacing, typography, radii, shadows, motion) stored in one place and generated into code for every platform. Components use semantic tokens such as `color-bg-accent` instead of raw values, so a theme is just a different mapping from semantic tokens to raw values.**\n\n**Tiers:**\n```text\nprimitive:  blue-600 = #2563eb, blue-300 = #93c5fd\nsemantic:   color-bg-accent -> blue-600 (light) / blue-300 (dark)\ncomponent:  button-primary-bg -> color-bg-accent\n```\n\n**In the browser** tokens usually become CSS custom properties:\n```css\n:root { --color-bg-accent: #2563eb; --space-3: 0.75rem; }\n[data-theme=\"dark\"] { --color-bg-accent: #93c5fd; }\n.btn { background: var(--color-bg-accent); padding: var(--space-3); }\n```\nSwitching theme means changing one attribute; the browser recalculates styles and no React component re-renders.\n\n**Why this beats a JS theme object**: no re-render on theme change, works with server-rendered HTML, works in plain CSS and in any framework, and subtrees can be re-themed by setting the attribute on a wrapper.\n\n**Tooling**: tokens live in JSON (the W3C Design Tokens Community Group format is common) and tools like Style Dictionary generate CSS, a Tailwind theme, TypeScript constants, and iOS/Android values. Figma variables can be synced to the same source.\n\n**SSR flash**: store the theme in a cookie and set `data-theme` on `html` during server render, or run a tiny inline script before paint that reads the preference.\n\n**Benefits beyond dark mode**: white-label brands, high-contrast accessibility themes and consistent spacing scales across teams.",
+      "followUps": [
+        "Why use CSS variables rather than a JS theme object?",
+        "How do you avoid a flash of the wrong theme with SSR?"
+      ],
+      "mistakes": [
+        "Describing tokens as just a colour palette.",
+        "Having components use primitive values, which makes theming a rewrite."
+      ],
+      "lesson": "fes-design-systems"
+    },
+    {
+      "id": "fe-scale-design-system-breaking-change",
+      "level": "senior",
+      "q": "How do you roll out a breaking change in a design system used by many teams?",
+      "answer": "**Make it non-breaking first: ship the new API alongside the old one in a minor release, deprecate the old one with warnings, types and a migration guide, provide a codemod, measure remaining usage across repos, and only remove it in the next major once usage is near zero. The platform team should absorb as much of the migration cost as possible.**\n\n**Step by step:**\n1. **RFC**: explain why, show before/after, and get feedback from a few consuming teams before writing code.\n2. **Additive release (minor)**: support both `variant=\"danger\"` and `tone=\"critical\"`. The old path logs a development-only warning with a link, and the TypeScript type is marked `@deprecated` so editors strike it through.\n3. **Codemod**: a jscodeshift or ts-morph transform (`npx @acme/codemods button-tone`) handles the mechanical part. Test it on real apps; run it yourself and open PRs where you can.\n4. **Measure**: a script that scans repos (AST, not grep) and reports deprecated usages per team, or runtime telemetry from development warnings. Publish a dashboard.\n5. **Communicate**: changelog (Changesets), migration guide, office hours, a removal date.\n6. **Major release**: remove the old API. Semver signals it; Renovate opens upgrade PRs.\n\n**Visual changes**: a padding or font-size change can break layouts and screenshot tests downstream. Treat significant visual changes as breaking, or ship them behind a theme flag that teams opt into before it becomes default.\n\n**Teams that cannot upgrade**: support the previous major with security and critical fixes for a fixed window (for example six months), not forever. Large companies sometimes allow two majors side by side in a monorepo, but that doubles bundle size if both load on a page.\n\n**Concrete example**: moving from a mega-prop `Modal` to a compound `Dialog` typically runs as a new component next to the old one; the old one is reimplemented on top of the new primitives so both behave identically, then deprecated and removed after adoption crosses an agreed threshold.",
+      "followUps": [
+        "How do you know who is still using the old API?",
+        "Is a visual change a breaking change?",
+        "What if one team refuses to upgrade?"
+      ],
+      "mistakes": [
+        "Shipping breaking changes in minor versions.",
+        "Pushing all migration work onto product teams without codemods.",
+        "Removing the old API without measuring usage."
+      ],
+      "lesson": "fes-design-systems"
+    },
+    {
+      "id": "fe-scale-why-monorepo",
+      "level": "mid",
+      "q": "Why would a company put its frontends in a monorepo, and what does Turborepo or Nx add on top of workspaces?",
+      "answer": "**A monorepo lets many apps and shared packages change atomically in one PR, share one toolchain and one version of key dependencies, and refactor across boundaries without publishing. Workspaces link packages locally; Turborepo or Nx add a task graph, content-hash caching (local and remote), parallel execution and affected-only runs, which is what keeps the repo fast as it grows.**\n\n**Benefits:**\n- **Atomic changes**: change the design system and all its consumers in one reviewed PR, with CI proving nothing broke.\n- **One version policy**: one React, one TypeScript, shared lint and test config.\n- **Code sharing without publishing**: `\"@acme/ui\": \"workspace:*\"`.\n- **Visibility**: anyone can find usages and fix them.\n\n**What workspaces give you**: dependency installation and linking. pnpm additionally prevents **phantom dependencies** (importing a package you never declared because a sibling hoisted it).\n\n**What a task runner adds:**\n```json\n{ \"tasks\": { \"build\": { \"dependsOn\": [\"^build\"], \"outputs\": [\"dist/**\"] }, \"test\": { \"dependsOn\": [\"^build\"] } } }\n```\n- **Task graph**: build dependencies first, run independent tasks in parallel.\n- **Hashing and caching**: each task's inputs (files, deps, env, config) produce a hash; a match restores outputs and logs instead of running.\n- **Remote cache**: CI and teammates share results, so a PR touching one app does not rebuild twenty.\n- **Affected runs**: only test packages changed since `main` and their dependents.\n- Nx extra: generators, module boundary rules by tags, distributed task execution, project graph visualisation.\n\n**Costs**: tooling investment, coarser access control, a merge queue once many people land on `main`, and slower `git` operations at very large scale.\n\n**Polyrepo still wins** for genuinely independent products, open-source libraries with external contributors, or strict security separation.",
+      "followUps": [
+        "How does remote caching work?",
+        "What are phantom dependencies?",
+        "When is a polyrepo the better choice?"
+      ],
+      "mistakes": [
+        "Confusing a monorepo with a monolith.",
+        "Thinking workspaces alone make builds fast.",
+        "Not mentioning package boundaries."
+      ],
+      "lesson": "fes-monorepos-tooling"
+    },
+    {
+      "id": "fe-scale-fast-ci-monorepo",
+      "level": "senior",
+      "q": "How do you keep CI fast when a monorepo grows to hundreds of packages?",
+      "answer": "**Make CI proportional to the change, not to the repo: affected-only runs, content-hash caching shared through a remote cache, parallelism across tasks and machines, and separate cacheable tasks. Then treat CI duration and cache hit rate as product metrics with an owner.**\n\n**Techniques:**\n- **Affected detection**: `nx affected -t test` or `turbo run test --filter=...[origin/main]` runs only packages changed since the base and their dependents. Good package boundaries make the affected set small; a root-level util imported everywhere makes every PR affect everything.\n- **Remote caching**: builds, type-checks and tests that already ran on another branch or machine are restored, not re-run.\n- **Split tasks**: `typecheck`, `lint`, `test`, `build` as separate tasks with their own inputs, so a README change runs nothing and a test change does not rebuild.\n- **Parallelism**: run tasks concurrently and distribute them across agents (Nx distributed execution, or CI matrix sharding).\n- **Dependency install**: cache the pnpm store; use `--frozen-lockfile`.\n- **Faster tools**: SWC or esbuild for transpiling, Vitest instead of Jest where feasible, Rspack/Turbopack for builds, `tsc -b` with project references for incremental type-checking.\n- **E2E**: smoke subset on PRs, full sharded suite in the merge queue or post-merge, and quarantine flaky tests.\n- **Merge queue**: tests the combination of PRs before landing, so `main` stays green without every PR rebasing constantly.\n\n**Cache correctness**: undeclared env vars or non-deterministic outputs cause wrong cache hits, which is worse than slow CI. Declare env inputs, keep timestamps out of build output, and periodically run a no-cache build to compare.\n\n**Measure**: p50/p95 PR CI duration, cache hit rate, flaky failure rate, and queue time. Set targets (for example p95 under 15 minutes) and alert on regressions.",
+      "followUps": [
+        "How do you measure CI health?",
+        "What breaks caching most often?",
+        "How do you keep E2E tests from dominating CI time?"
+      ],
+      "mistakes": [
+        "Only adding bigger machines.",
+        "Running every test on every PR.",
+        "Not treating cache correctness as a risk."
+      ],
+      "lesson": "fes-monorepos-tooling"
+    },
+    {
+      "id": "fe-scale-incremental-migration",
+      "level": "senior",
+      "q": "How would you migrate a large CRA or webpack app to Vite or Next.js incrementally?",
+      "answer": "**Never big-bang it. For a build-tool swap (to Vite or Rspack), keep the app identical and change only the tooling, behind a branch that runs both builds in CI until parity. For a framework move (to Next.js), run the new app in front of the old one and move routes one at a time, proxying everything not yet migrated to the legacy app, so you ship features throughout.**\n\n**Path A: CRA/webpack to Vite (tooling swap)**\n- Move `index.html` to the project root as the entry point, with a module script tag pointing at `/src/main.tsx`.\n- Replace `process.env.REACT_APP_*` with `import.meta.env.VITE_*` (a codemod or a shim during transition).\n- Fix webpack-specific features: `require.context` to `import.meta.glob`, SVG-as-component loaders to `vite-plugin-svgr`, CommonJS-only deps (Vite pre-bundles them, but some need `optimizeDeps` config).\n- Swap Jest for Vitest gradually, or keep Jest with SWC.\n- Run both builds in CI, compare bundle output and run E2E against both, then switch the deploy.\n- If the webpack config is very custom, **Rspack** is a lower-risk step: largely compatible with webpack config and loaders, much faster.\n\n**Path B: SPA to Next.js (strangler fig)**\n```text\n            +--> /new-route/*  --> Next.js (migrated pages)\n user --> proxy / Next.js rewrites\n            +--> everything else --> legacy SPA (fallback rewrite)\n```\n- Next.js `rewrites` with a `fallback` entry can forward unmatched paths to the legacy app.\n- Extract shared code (design system, API client, auth helpers) into monorepo packages used by both.\n- Share auth via a same-site httpOnly cookie so users stay logged in across both.\n- Migrate leaf, high-value routes first (marketing and SEO pages benefit most from SSR), and the app shell last.\n- Track progress with a route inventory and delete legacy code as each route moves.\n\n**Risk control**: feature flags or percentage routing at the proxy to send a slice of traffic to the new route, Web Vitals and error rates compared per route, and an instant rollback path.",
+      "followUps": [
+        "What usually breaks when moving from webpack to Vite?",
+        "How do you share auth and layout between the old and new app during migration?",
+        "How do you decide the migration order of routes?"
+      ],
+      "mistakes": [
+        "Proposing a big-bang rewrite with a feature freeze.",
+        "Not having a way to run old and new side by side.",
+        "Ignoring env var, SVG and CommonJS differences."
+      ],
+      "lesson": "fes-monorepos-tooling"
+    },
+    {
+      "id": "fe-scale-bundler-vs-transpiler",
+      "level": "junior",
+      "q": "What is the difference between a bundler and a transpiler?",
+      "answer": "**A transpiler transforms code one file at a time, for example TypeScript and JSX to plain JavaScript or modern syntax to older syntax. A bundler starts from entry points, follows every import across the whole module graph, and outputs optimised files for the browser, doing resolution, tree shaking, code splitting, minification and asset handling. Bundlers use transpilers internally.**\n\n**Transpilers**: Babel (JavaScript, huge plugin ecosystem), SWC (Rust, used by Next.js), esbuild (Go, also a bundler), and `tsc`, which type-checks and can emit JS.\n\n**Bundlers**: webpack, Rspack (Rust, webpack-compatible), Rollup, Vite (dev server plus build), Turbopack (Rust, Next.js), esbuild, Parcel.\n\n**What a bundler does beyond transpiling:**\n```text\nentry.tsx -> resolve imports (node_modules, aliases, exports maps)\n          -> transpile each module (via SWC/esbuild/Babel)\n          -> build dependency graph\n          -> tree-shake unused exports\n          -> split into chunks at dynamic import()\n          -> minify, hash filenames, emit CSS/assets, source maps\n```\n\n**Why type-checking is separate**: SWC and esbuild strip types without checking them (that is why they are fast). Projects run `tsc --noEmit` as a separate CI task, often cached, so builds stay fast and type errors still fail CI.\n\n**Vite in development** does not bundle your source: the browser requests native ES modules and Vite transpiles each file on demand, so startup does not depend on app size. Dependencies are pre-bundled once with esbuild. Production builds are bundled, because thousands of separate module requests would be slow.\n\n**Practical example**: in a Next.js app, SWC transpiles TypeScript and JSX, Turbopack bundles, and `tsc` checks types in CI.",
+      "followUps": [
+        "Why do many setups run tsc --noEmit separately?",
+        "Why is Vite's dev server fast?"
+      ],
+      "mistakes": [
+        "Saying TypeScript's compiler is a bundler.",
+        "Not knowing which tools do which job in a typical stack."
+      ],
+      "lesson": "fes-monorepos-tooling"
+    },
+    {
+      "id": "fe-scale-mfe-when-not",
+      "level": "senior",
+      "q": "What problem do micro-frontends solve, and when should you not use them?",
+      "answer": "**Micro-frontends solve an organisational problem: several teams owning separate business domains of one product who need to build, test and deploy independently without a shared release train. You should not use them for a small number of teams, for performance, or when domains are not cleanly separable, because you pay in runtime complexity, duplicated dependencies and consistency work.**\n\n**Good fit:**\n- Five or more teams, each owning a domain (search, checkout, account) with its own roadmap and on-call.\n- Release coordination is the bottleneck: one team's bug blocks everyone's deploy.\n- Incremental migration from a legacy stack, section by section.\n- A platform where other organisations contribute parts.\n\n**Do not use them when:**\n- One to three teams: a modular monorepo with boundaries, CODEOWNERS, caching and a merge queue gives most of the autonomy.\n- The motivation is speed: federated apps add requests, duplicate code when versions drift, and complicate caching.\n- Features routinely span domains, so every change needs coordinated releases of several micro-frontends anyway (a distributed monolith).\n- You lack platform capacity to own the shell, shared dependencies, design system and tooling.\n\n**Cheaper alternatives, in order:**\n1. Modular monolith in a monorepo with enforced boundaries.\n2. Route-based split: separate apps per URL section behind a proxy or Next.js multi-zones. Independent deploys, almost no runtime coupling, at the cost of full page loads between sections.\n3. Runtime composition (Module Federation) only when one page must combine several teams' UI.\n\n**Signals it went wrong**: most PRs touch several micro-frontends, shared-version upgrades take quarters, users see inconsistent UI, and page weight rose noticeably after the split.\n\n**How I would say it in an interview**: \"I would start by asking how many teams, how independent their domains are and what is blocking releases today.\"",
+      "followUps": [
+        "What are cheaper alternatives that give team autonomy?",
+        "How many teams would you need before considering them?",
+        "What signals show a micro-frontend split was a mistake?"
+      ],
+      "mistakes": [
+        "Selling micro-frontends as a performance optimisation.",
+        "Recommending them for a single team.",
+        "Encouraging each team to use a different framework."
+      ],
+      "lesson": "fes-micro-frontends"
+    },
+    {
+      "id": "fe-scale-mfe-composition-styles",
+      "level": "senior",
+      "q": "Compare Module Federation, iframes, web components and server-side composition for micro-frontends.",
+      "answer": "**They trade isolation against integration and performance. Module Federation composes JS modules at runtime in one page, with good performance if dependencies are shared but weak isolation. iframes isolate fully but are heavy and awkward for UX. Web components give a framework-neutral boundary and style encapsulation but each still ships its own runtime. Server-side composition (route-based or fragment stitching) is the simplest and fastest but limits same-page mixing.**\n\n| | Module Federation | iframes | Web components | Server-side / route-based |\n| --- | --- | --- | --- | --- |\n| Independent deploys | yes | yes | yes | yes |\n| Isolation | low (one JS realm, global CSS leaks) | strongest | medium (Shadow DOM for styles) | high |\n| Same-page composition | yes | yes, clunky | yes | fragments only / no for routes |\n| Performance | good with shared singletons | poor: separate documents, duplicated runtimes | depends on contents | best: HTML from server, normal caching |\n| Main pain | version negotiation, runtime failures | sizing, focus, a11y, routing, deep links | SSR support, React interop, duplicate frameworks | full page loads between zones |\n\n**When to use which:**\n- **Module Federation**: one SPA experience where a page combines several teams' widgets (a dashboard), all on the same framework.\n- **iframes**: untrusted or third-party content (payment fields, embedded partner tools), where security isolation matters more than polish.\n- **Web components**: a boundary between different frameworks, or a widget distributed to many host sites.\n- **Server-side**: domains align with URL sections (`/checkout` vs `/account`). Next.js multi-zones, a reverse proxy, or edge-side includes for fragments.\n\n**SEO**: server-side composition is the most crawler-friendly; client-side federation depends on SSR support; iframe content is attributed to the iframe's URL, not the host page.\n\n**My default**: route-based split first, Module Federation only for pages that truly mix domains, iframes for third parties.",
+      "followUps": [
+        "Which would you choose for embedding a third-party widget?",
+        "How do Next.js multi-zones fit in?",
+        "How does each approach affect SEO?"
+      ],
+      "mistakes": [
+        "Not considering route-based server composition at all.",
+        "Ignoring the accessibility and UX cost of iframes.",
+        "Thinking web components remove the need to ship a framework."
+      ],
+      "lesson": "fes-micro-frontends"
+    },
+    {
+      "id": "fe-scale-mfe-sharing",
+      "level": "senior",
+      "q": "How do micro-frontends share dependencies, state and routing without coupling?",
+      "answer": "**Share as little as possible and make what is shared explicit: framework singletons and the design system through Module Federation's `shared` config under a version policy; state only through the URL, a small typed mount contract and events; routing split so the shell owns top-level paths and each micro-frontend owns its sub-routes on one shared history.**\n\n**Dependencies:**\n```js\nshared: {\n  react: { singleton: true, requiredVersion: \"^19.0.0\", strictVersion: true },\n  \"react-dom\": { singleton: true, requiredVersion: \"^19.0.0\" },\n  \"@acme/ui\": { singleton: true, requiredVersion: \"^4.0.0\" },\n}\n```\n- Singletons for anything with global state or context (React, router, design-system providers); two Reacts break hooks.\n- A version policy (same React major everywhere, coordinated upgrades) enforced by a CI check.\n- Everything else bundled per remote: duplication costs a few KB but keeps releases independent.\n\n**State:**\n- URL for anything shareable.\n- Mount contract from shell to remote: `{ user, locale, flags, navigate }`, versioned and additive.\n- Events for notifications: `window.dispatchEvent(new CustomEvent(\"cart:item-added\", { detail }))`, with event names and payload types in a tiny shared contracts package.\n- No shared store: it makes every remote depend on every other's state shape.\n- Server state stays per remote; if two remotes show the same entity, they each fetch it (HTTP caching helps).\n\n**Auth**: the shell owns login; an httpOnly same-site session cookie authenticates every remote's API calls, so no tokens are passed around.\n\n**Routing:**\n```text\nshell: /catalog/* -> catalog   /cart/* -> cart   /account/* -> account\ncatalog: /catalog/:id, /catalog/search (its own router, basename /catalog)\n```\nOne history instance (or the shell's `navigate`) keeps back/forward working; every deep URL must resolve on cold load.\n\n**Contract tests**: type-check remotes against the contracts package and run a shell-plus-remotes E2E smoke test on every remote deploy.",
+      "followUps": [
+        "What happens if two remotes need different React majors?",
+        "How do you share the logged-in user?",
+        "How do you test the contract between shell and remotes?"
+      ],
+      "mistakes": [
+        "A shared global store across micro-frontends.",
+        "Sharing many libraries, which recreates deploy coupling.",
+        "Not handling deep links on cold load."
+      ],
+      "lesson": "fes-micro-frontends"
+    },
+    {
+      "id": "fe-scale-cut-bundle-half",
+      "level": "senior",
+      "q": "How would you cut a production JavaScript bundle in half?",
+      "answer": "**Measure first-load JS per route with a bundle analyser, then attack the biggest items in order of cost to fix: remove or replace heavy dependencies, move code that is not needed on that route behind dynamic imports, fix tree shaking, move rendering work to the server, and drop unnecessary polyfills. Then verify with lab and field metrics and add CI budgets so it stays down.**\n\n**1. Measure**\n- Analyser treemap (`@next/bundle-analyzer`, `rollup-plugin-visualizer`, `source-map-explorer`) per route.\n- Chrome Coverage tab: how much loaded JS runs on initial load.\n- Field data: p75 INP and LCP by route, to choose which routes matter.\n\n**2. Usual big wins**\n- **Dependencies**: moment with locales, full lodash, a big chart library for one sparkline, several date or icon libraries doing the same job, duplicated versions (`pnpm why`). Replace with native `Intl`, smaller libraries, or per-function imports.\n- **Wrong route**: admin screens, editors, maps, charts, PDF export loaded on the landing page. `import()` them on navigation or on intent.\n- **Tree shaking failures**: CommonJS packages, barrel files, missing `sideEffects`. Switch to ESM builds, import from subpaths, use `optimizePackageImports`.\n- **Server work in the browser**: markdown parsing, syntax highlighting, i18n catalogues, data formatting. With Server Components these ship zero JS.\n- **Polyfills and transpilation** for browsers you do not support: update `browserslist`.\n- **Third-party scripts** (analytics, chat, A/B tools): load after interaction or idle, or remove.\n\n**3. Verify**: compare first-load JS per route, Lighthouse with mobile throttling, then field INP/LCP before and after the release.\n\n**4. Lock it in**: size-limit or bundlewatch budgets per route in CI, PR comments with size diffs, and a dependency review step for new packages.\n\n**Example numbers to aim for** (not universal): many teams target under roughly 150-200 KB compressed first-load JS on key mobile routes.",
+      "followUps": [
+        "How do you prove the change helped real users?",
+        "What would you do if most of the JS is your own application code?",
+        "How do you stop it from growing back?"
+      ],
+      "mistakes": [
+        "Jumping to micro-optimisations before measuring.",
+        "Optimising total size instead of first-load JS per route.",
+        "No plan to prevent regressions."
+      ],
+      "lesson": "fes-bundle-performance"
+    },
+    {
+      "id": "fe-scale-tree-shaking",
+      "level": "mid",
+      "q": "How does tree shaking work, and what stops it from working?",
+      "answer": "**Tree shaking is dead-code elimination based on static ES module imports and exports: the bundler builds the module graph, marks which exports are actually used, and the minifier drops the rest. It fails when the bundler cannot prove code is unused: CommonJS modules, modules with side effects on import, dynamic access to exports, and barrel files without `sideEffects` hints.**\n\n**How it works:**\n```ts\n// utils.ts\nexport function used() {}\nexport function unused() {}\n// app.ts\nimport { used } from \"./utils\"; // bundler marks `unused` as dead; minifier removes it\n```\nESM imports are static (top level, string literals), so the graph is known at build time.\n\n**What stops it:**\n- **CommonJS**: `module.exports` can be assigned dynamically, so bundlers usually include the whole module. Prefer packages that ship ESM builds.\n- **Side effects**: if importing a module runs code (sets globals, registers a polyfill, imports CSS), the bundler must keep it even if no export is used, unless the package declares otherwise.\n- **`sideEffects` field**: `\"sideEffects\": false` (or `[\"*.css\"]`) tells the bundler entire unused modules can be skipped. Lying here breaks apps (missing CSS or polyfills).\n- **Barrel files**: `export * from \"./Button\"` for hundreds of components. With good `sideEffects` hints bundlers handle it, but without them they may include everything, and dev servers still have to process every file. Import from subpaths or use `optimizePackageImports` in Next.js.\n- **Dynamic access**: `import * as icons from \"lib\"; icons[name]` keeps every icon.\n- **Class methods and object properties** are generally not shaken; only whole exports are.\n\n**How to verify**: check the analyser for a library's footprint after importing one function. If importing `debounce` pulls in all of lodash, use `lodash-es` or a per-function import.",
+      "followUps": [
+        "What is the difference between unused exports and unused modules?",
+        "Why can barrel files hurt?"
+      ],
+      "mistakes": [
+        "Thinking tree shaking works on CommonJS the same way.",
+        "Marking a package sideEffects: false when it has CSS imports or polyfills."
+      ],
+      "lesson": "fes-bundle-performance"
+    },
+    {
+      "id": "fe-scale-performance-budgets",
+      "level": "mid",
+      "q": "How do you enforce performance budgets so the app does not slowly get heavier?",
+      "answer": "**Set explicit budgets per key route (first-load JS, LCP, INP or TBT) and make CI fail when a PR exceeds them, with the size diff commented on the PR. Then back them with field monitoring that alerts when p75 Web Vitals regress after a deploy. Without enforcement, every PR adds a few KB and nobody notices until the app is slow.**\n\n**Build-time budgets:**\n```json\n[\n  { \"name\": \"checkout first load\", \"path\": \".next/static/chunks/app/checkout/**/*.js\", \"limit\": \"130 KB\" },\n  { \"name\": \"ui Button import\", \"path\": \"packages/ui/dist/index.js\", \"import\": \"{ Button }\", \"limit\": \"6 KB\" }\n]\n```\n- `size-limit` or `bundlewatch` compare against the limit and the base branch, failing the check and commenting the delta.\n- Budget compressed sizes, per route or per entry, not the sum of all chunks.\n\n**Lab budgets**: Lighthouse CI on preview deployments with assertions (for example LCP under 2.5 s and TBT under 200 ms with mobile throttling), run several times and take the median to reduce noise.\n\n**Field budgets**: RUM with `web-vitals` sending p75 LCP, INP and CLS per route and release. Alert on a regression after deploy and link it to the release.\n\n**Process:**\n- Owners per route or package, so a budget failure goes to the team that caused it.\n- A documented exception path: raise the budget with a reason in the PR, approved by the performance owner, ideally with a compensating cut elsewhere.\n- Dependency review for new packages above a size threshold.\n- A dashboard showing the trend over months, reviewed periodically.\n\n**Other budgets**: number of third-party scripts, image weight on key pages, font files, and hydration time.",
+      "followUps": [
+        "What do you budget besides JS size?",
+        "How do you handle a legitimate feature that must exceed the budget?"
+      ],
+      "mistakes": [
+        "Budgets that only produce warnings nobody reads.",
+        "Only lab budgets with no field monitoring."
+      ],
+      "lesson": "fes-bundle-performance"
+    },
+    {
+      "id": "fe-scale-render-10k-rows",
+      "level": "junior",
+      "q": "How would you render a list of 10,000 rows smoothly?",
+      "answer": "**Virtualise it: render only the rows visible in the viewport plus a small overscan, inside a container sized to the full list height, and swap rows as the user scrolls. The DOM then holds a few dozen rows instead of 10,000, so initial render, memory and scrolling stay fast. Libraries like TanStack Virtual, react-window or react-virtuoso do this.**\n\n**Why it is slow without virtualisation**: 10,000 rows with a few elements each is tens of thousands of DOM nodes. Initial render takes long, style and layout recalculations touch every node, and memory grows. `React.memo` reduces re-render work but not DOM size.\n\n**How it works:**\n```text\nscroll container (height 400px, overflow auto)\n  inner spacer (height = 10,000 * 36px)\n    rows 120..135 absolutely positioned at top = index * 36px\n```\n\n```tsx\nconst parentRef = useRef<HTMLDivElement>(null);\nconst v = useVirtualizer({ count: rows.length, getScrollElement: () => parentRef.current, estimateSize: () => 36, overscan: 8 });\n\nreturn (\n  <div ref={parentRef} style={{ height: 400, overflow: \"auto\" }}>\n    <div style={{ height: v.getTotalSize(), position: \"relative\" }}>\n      {v.getVirtualItems().map((item) => (\n        <div key={item.key} style={{ position: \"absolute\", top: 0, transform: `translateY(${item.start}px)`, height: item.size, width: \"100%\" }}>\n          <Row row={rows[item.index]} />\n        </div>\n      ))}\n    </div>\n  </div>\n);\n```\n\n**Trade-offs**: browser find-in-page cannot see off-screen rows, screen readers see only rendered rows (set `aria-rowcount` and `aria-rowindex` for grids), variable heights need measuring, and scroll restoration needs care.\n\n**Alternatives**: pagination or \"load more\" (often better UX for search results), or CSS `content-visibility: auto` for a few hundred rows, which skips rendering work for off-screen content while keeping it in the DOM.\n\n**Also**: keep row components cheap, give them stable keys, and do filtering and sorting outside render (memoised or on the server).",
+      "followUps": [
+        "What are the downsides of virtualisation?",
+        "How do you handle rows with variable height?"
+      ],
+      "mistakes": [
+        "Thinking React.memo alone solves it.",
+        "Ignoring accessibility and find-in-page trade-offs of virtualisation."
+      ],
+      "lesson": "fes-bundle-performance"
+    },
+    {
+      "id": "fe-scale-test-levels",
+      "level": "mid",
+      "q": "How do you decide what to cover with unit, integration and end-to-end tests in a frontend?",
+      "answer": "**I follow the testing trophy: static checks everywhere, unit tests for pure logic, most effort on integration tests that render a feature and interact with it like a user with the network mocked, and a small set of end-to-end tests for the critical journeys that make money or would be disastrous to break. The question for each test is how much confidence it buys per second of runtime and per hour of maintenance.**\n\n**By level:**\n- **Static** (TypeScript, ESLint, a11y lint): free, catches whole classes of bugs.\n- **Unit** (Vitest): formatters, reducers, validation schemas, date logic, pricing rules. Fast and precise.\n- **Integration** (React Testing Library plus MSW): a checkout form with its hooks, state and API calls, asserting what the user sees. This catches the bugs users actually hit, and survives refactors because it does not know about internals.\n- **E2E** (Playwright): sign-up, login, search to purchase, publishing. Real browser, real routing, ideally a real backend in a test environment.\n- **Visual regression**: design-system components and key pages, to catch CSS breakage no assertion would notice.\n\n**Rules of thumb:**\n- Test behaviour, not implementation: query by role and accessible name, assert on visible output.\n- Cover edge cases (validation errors, empty states, API failures) at integration level, where they run in milliseconds; MSW makes error responses trivial.\n- E2E covers happy paths and a few critical failures; if a test can be written lower, write it lower.\n- Each bug that escapes gets a test at the lowest level that would have caught it.\n\n**Example**: for a discount-code feature I would unit-test the price calculation, integration-test applying valid and invalid codes and an API error, and have one E2E checkout that includes a code.\n\n**Brittle tests** usually assert on structure (CSS classes, snapshot of a large tree, component names) or depend on timing; those are what break on refactor.",
+      "followUps": [
+        "What makes a test brittle?",
+        "Where do visual regression tests fit?",
+        "How many E2E tests is too many?"
+      ],
+      "mistakes": [
+        "Aiming for 100% unit coverage of components as the main goal.",
+        "Testing implementation details like internal state.",
+        "Covering edge cases with slow E2E tests instead of integration tests."
+      ],
+      "lesson": "fes-testing"
+    },
+    {
+      "id": "fe-scale-flaky-e2e",
+      "level": "senior",
+      "q": "How do you deal with flaky end-to-end tests in a large CI pipeline?",
+      "answer": "**Treat flakiness as a tracked defect with a process: detect flaky tests automatically from CI history, quarantine them out of the blocking path quickly with an owner and a deadline, fix the root cause (usually timing, shared state or external dependencies), and report \"passed on retry\" as flaky rather than green. A suite people do not trust is worse than a smaller suite they do.**\n\n**Detect**: record every test result with the commit. A test that both passes and fails on the same commit is flaky by definition. Playwright marks tests that passed on retry as flaky in its report; feed that into a dashboard with flake rate per test.\n\n**Quarantine**: automatically move tests above a flake threshold into a non-blocking job, open a ticket assigned to the owning team (from CODEOWNERS), and set a deadline after which the test is fixed or deleted. Keep running quarantined tests to know when they are fixed.\n\n**Common root causes and fixes:**\n- **Timing**: `waitForTimeout(2000)` races with real latency. Use web-first assertions that retry: `await expect(page.getByRole(\"alert\")).toHaveText(/saved/i)`.\n- **Shared state**: tests depending on order or on data another test created. Give each test its own data via API seeding with unique ids, and isolate browser contexts.\n- **Auth through the UI** in every test: slow and fragile. Log in once and reuse `storageState`.\n- **Real third parties** (payment sandboxes, maps): mock at the network layer with `page.route` or a test double service.\n- **Animations and transitions**: disable in test mode.\n- **Time and locale**: fix the clock and timezone.\n- **Environment drift**: run CI browsers in a pinned container.\n\n**Retries**: one retry in CI can keep the pipeline moving, but only if retried passes are surfaced as flaky. Silent retries hide real race conditions that also affect users.\n\n**Shape the suite**: fewer, higher-value E2E tests; push edge cases down to integration tests; shard across machines so duration does not tempt people to skip.",
+      "followUps": [
+        "Why are automatic retries dangerous?",
+        "What are the most common root causes you have seen?",
+        "How do you make test data safe for parallel runs?"
+      ],
+      "mistakes": [
+        "Just adding retries and moving on.",
+        "No ownership, so quarantined tests rot forever.",
+        "Using fixed sleeps instead of condition-based waits."
+      ],
+      "lesson": "fes-testing"
+    },
+    {
+      "id": "fe-scale-msw",
+      "level": "junior",
+      "q": "What is MSW and why is it better than mocking fetch in each test?",
+      "answer": "**MSW (Mock Service Worker) intercepts HTTP requests at the network level, with a Service Worker in the browser and request interception in Node, and answers them from handlers you define. Your components, data-fetching hooks and API client run exactly as in production; only the responses are fake. Mocking `fetch` or your API module per test skips that code and couples tests to implementation details.**\n\n**Setup:**\n```ts\nimport { http, HttpResponse } from \"msw\";\nimport { setupServer } from \"msw/node\";\n\nexport const server = setupServer(\n  http.get(\"/api/user\", () => HttpResponse.json({ id: \"u1\", name: \"Asha\" })),\n);\n// vitest.setup.ts\nbeforeAll(() => server.listen({ onUnhandledRequest: \"error\" }));\nafterEach(() => server.resetHandlers());\nafterAll(() => server.close());\n```\n\n**Per-test override for error states:**\n```ts\nserver.use(http.get(\"/api/user\", () => HttpResponse.json({ message: \"boom\" }, { status: 500 })));\nrender(<Profile />);\nexpect(await screen.findByRole(\"alert\")).toHaveTextContent(/could not load/i);\n```\n\n**Why it is better:**\n- Tests do not care whether you use `fetch`, axios, TanStack Query or SWR; switching libraries does not break them.\n- The real request is built, so wrong URLs, headers or bodies are caught.\n- One set of handlers is reused in unit tests, Storybook (via an addon) and local development without a backend.\n- `onUnhandledRequest: \"error\"` catches unexpected calls.\n\n**Caveat**: mocks can drift from the real API. Generate handlers or types from the OpenAPI schema, or add contract tests, so a backend change breaks the build rather than production.",
+      "followUps": [
+        "How do you test an error response for one test only?",
+        "Where else can the same handlers be reused?"
+      ],
+      "mistakes": [
+        "Thinking MSW only works in the browser.",
+        "Mocking your own API client module, so the data layer is never exercised."
+      ],
+      "lesson": "fes-testing"
+    },
+    {
+      "id": "fe-scale-rum-errors",
+      "level": "mid",
+      "q": "How do you measure real-user performance and errors in production?",
+      "answer": "**Collect Core Web Vitals from real sessions with the `web-vitals` library and send them to an analytics endpoint, segmented by route, device, country and release, and judged at p75. Capture errors (global handlers, unhandled rejections, error boundaries) with an error tracker that uses privately uploaded source maps per release. Then add business signals, because many broken features never throw.**\n\n**Performance (RUM):**\n```ts\nimport { onLCP, onINP, onCLS } from \"web-vitals/attribution\";\nconst report = (m: Metric) => navigator.sendBeacon(\"/rum\", JSON.stringify({\n  name: m.name, value: m.value, route: location.pathname, release: RELEASE,\n}));\nonLCP(report); onINP(report); onCLS(report);\n```\n- Thresholds: LCP under 2.5 s, INP under 200 ms, CLS under 0.1 at the 75th percentile (what CrUX and Google use).\n- p75 because averages hide the slow tail; also look at p95 for the worst users.\n- The attribution build tells you which element was the LCP and which interaction was slow.\n- Segment by release to catch regressions immediately after deploys.\n\n**Errors:**\n- Capture `window.onerror`, `unhandledrejection`, React error boundaries and failed API calls.\n- Upload source maps to the tracker in CI tagged with the release, and do not deploy them publicly, so stacks are readable without exposing code.\n- Tag events with release, route, browser, active feature flags; add breadcrumbs (navigations, clicks, failed requests).\n- Filter noise: extension errors, third-party scripts, bots, `ResizeObserver loop` warnings.\n- Scrub personal data before sending.\n\n**Business signals**: funnel conversion per release (checkout started vs completed). A button that silently does nothing shows up here first.\n\n**Alerting**: error rate per release and p75 vitals per route, compared to the previous release.",
+      "followUps": [
+        "Why the 75th percentile?",
+        "How do you keep source maps private?",
+        "What noise do you filter out of error tracking?"
+      ],
+      "mistakes": [
+        "Relying only on Lighthouse lab scores.",
+        "Looking at averages instead of percentiles and segments.",
+        "Not tagging data with release version."
+      ],
+      "lesson": "fes-observability"
+    },
+    {
+      "id": "fe-scale-feature-flags",
+      "level": "senior",
+      "q": "How would you design a feature flag system for a large frontend?",
+      "answer": "**A central flag service holds flag definitions and targeting rules, distributes them through a CDN or edge config, and SDKs evaluate them deterministically (hash of flag key and user id) on the server or at the edge, bootstrapping values into the page so the client never flickers. Every flag has a type, an owner and an expiry, evaluations emit exposure events for metrics, and the system fails safe to cached values or defaults.**\n\n**Architecture:**\n```text\nadmin UI -> flag service (rules, segments, % rollouts, audit log)\n              -> publishes config to CDN / edge store\nserver/edge SDK evaluates per request -> values embedded in HTML\nclient SDK hydrates with those values, subscribes to updates (SSE) for kill switches\nexposures + metrics -> analytics (experiments, rollout health)\n```\n\n**Key design points:**\n- **Deterministic bucketing**: `hash(flagKey + userId) % 100 < rolloutPercent`. Stable across sessions and devices, and independent across flags. Anonymous users get a stable id cookie.\n- **Server or edge evaluation** for anything rendered on first paint; client-only evaluation causes a flash of the old UI and layout shift.\n- **Flag types**: release (short-lived), experiment, operational/kill switch (long-lived), permission/entitlement. Different lifecycles and review rules.\n- **Typed flags**: generate TypeScript types from definitions so removed flags fail the build.\n- **Lifecycle**: owner and expiry on creation, stale-flag reports, lint rules that find references, cleanup tickets when a flag reaches 100%.\n- **Fail safe**: SDKs cache the last known config; defaults in code keep the app working if the service is unreachable.\n- **Performance**: do not ship all rules for all flags to the browser (it leaks unreleased features and adds bytes); send only evaluated values for this user.\n- **Testing**: test both states of a flag in CI for critical paths; limit concurrently active flags in one area to avoid combinatorial explosions.\n\n**Build vs buy**: LaunchDarkly, Statsig, Unleash, GrowthBook and Flagsmith exist; OpenFeature provides a vendor-neutral API. Building your own makes sense only with a dedicated platform team.",
+      "followUps": [
+        "How do you avoid flicker when flags are evaluated in the browser?",
+        "How do you keep flags from becoming permanent tech debt?",
+        "What happens if the flag service is down?"
+      ],
+      "mistakes": [
+        "Random bucketing on each page load.",
+        "Evaluating flags only client-side and causing UI flicker.",
+        "No ownership or expiry for flags."
+      ],
+      "lesson": "fes-observability"
+    },
+    {
+      "id": "fe-scale-safe-release",
+      "level": "senior",
+      "q": "How do you release a risky frontend change safely to millions of users?",
+      "answer": "**Separate deploy from release: ship the code dark behind a feature flag, enable it for internal users, then 1%, 5%, 25%, 50% and 100%, comparing the exposed cohort's error rate, Web Vitals and business metrics against control at each step, with automatic halt and rollback when thresholds are breached. Keep a kill switch, keep old assets available, and make every step reversible in seconds.**\n\n**The playbook:**\n1. **Pre-release**: tests, a preview deployment, a performance budget check, and a written rollback plan.\n2. **Dark launch**: code deployed with the flag off. Deploy problems surface separately from feature problems.\n3. **Dogfood**: employees first, with a feedback channel.\n4. **Percentage rollout**: deterministic bucketing so users have a consistent experience. Hold each step long enough to get signal (traffic-dependent).\n5. **Guardrail metrics** per cohort: JS error rate, API error rate, p75 INP and LCP, conversion or task completion. Define thresholds in advance.\n6. **Automatic halt**: if a guardrail regresses beyond the threshold, the rollout stops and the flag reverts.\n7. **Full release and cleanup**: remove the flag and old code path within a set period.\n\n**Two levers**: a **feature flag** switches behaviour inside one build; a **canary deploy** routes a percentage of traffic to a new build (via the CDN or platform). Use flags for features and canaries for risky dependency or framework upgrades that cannot be flagged.\n\n**Frontend-specific gotchas:**\n- Users keep old tabs open for days. Keep previous builds' hashed chunks available; catch `ChunkLoadError` and reload once.\n- API compatibility: the new frontend and the old frontend run at the same time, so backend changes must be backward compatible (expand, migrate, contract).\n- Service worker caches can pin users to an old version; have an update strategy.\n- Cached HTML at the CDN may reference old assets; purge or version carefully.\n\n**Kill switch**: a long-lived operational flag that disables the feature instantly, tested before launch.",
+      "followUps": [
+        "What metrics decide whether to continue a rollout?",
+        "How do you roll back a frontend that is already loaded in users' tabs?",
+        "What is the difference between a canary deploy and a feature-flag rollout?"
+      ],
+      "mistakes": [
+        "Big-bang releases with manual monitoring.",
+        "Deleting old assets on deploy and breaking open tabs.",
+        "No automatic stop condition."
+      ],
+      "lesson": "fes-observability"
+    },
+    {
+      "id": "fe-scale-prod-memory-leak",
+      "level": "senior",
+      "q": "How would you debug a memory leak that only happens in production?",
+      "answer": "**First get evidence from the field: correlate crashes, slowness or rising memory with session length, route, release, browser and feature flags. Then reproduce with a production build and the same flags and data, take heap snapshots before and after repeating the suspect action several times, compare them to find objects that keep growing, and follow the retainer path to the code that holds them.**\n\n**1. Confirm and narrow it down in production:**\n- Symptoms: tab crashes (\"Aw, Snap\"), INP getting worse the longer a session lasts, error reports of out-of-memory.\n- Sample `performance.memory.usedJSHeapSize` (Chromium-only, non-standard) or `performance.measureUserAgentSpecificMemory()` (needs cross-origin isolation) periodically and send it with session duration, route and release.\n- Look for a correlation: started with release X, only with flag Y on, only on the dashboard route, only with a certain third-party script.\n\n**2. Reproduce locally with production conditions:**\n- Production build (development mode has different code paths, StrictMode double effects, no minification), same flags, realistic data volume, and long sessions.\n- Production-only code: analytics, A/B tool scripts, error tracker breadcrumbs, service workers, real WebSocket traffic.\n\n**3. Heap snapshot technique:**\n```text\nsnapshot 1 (baseline) -> do action N times (open/close panel, navigate away and back)\n-> force GC -> snapshot 2 -> repeat -> snapshot 3\ncompare: objects allocated between 1 and 2 still alive in 3 = leak candidates\n```\nLook for growing counts of detached DOM nodes, closures, arrays, or component fibers, then inspect the **retainers** path to see what holds them.\n\n**Common culprits:**\n- Event listeners, intervals, `ResizeObserver` or subscriptions not removed in effect cleanup.\n- Global caches and maps without eviction (memoisation keyed by objects, an unbounded query cache, logs or breadcrumbs kept in memory).\n- Closures capturing large objects, stored in module-level variables.\n- WebSocket handlers appending messages forever.\n- Detached DOM held by a third-party library.\n\n**4. Fix and verify**: fix, repeat the snapshot test, add a regression check (a long-running Playwright test sampling heap size), and watch the field metric after release.",
+      "followUps": [
+        "What are the most common sources of leaks in React apps?",
+        "How do you read a heap snapshot comparison?",
+        "Why might the leak not reproduce in development?"
+      ],
+      "mistakes": [
+        "Only testing in development mode, where behaviour differs.",
+        "Guessing at causes without heap snapshots.",
+        "Ignoring third-party scripts and production-only code paths."
+      ],
+      "lesson": "fes-observability"
+    },
+    {
+      "id": "fe-scale-react-xss",
+      "level": "mid",
+      "q": "How does React protect against XSS, and where can XSS still happen?",
+      "answer": "**React escapes every string it renders as text or as an attribute value, so injected markup shows as text instead of executing. XSS still happens through `dangerouslySetInnerHTML` with unsanitised HTML, `javascript:` URLs in `href` or `src`, direct DOM writes through refs or third-party libraries, `eval`-like APIs, and server code that embeds data into HTML or inline scripts without escaping.**\n\n**What is safe:**\n```tsx\n<p>{comment}</p>            // a script tag in comment renders as text\n<input value={name} />      // attribute value escaped\n```\n\n**Where it breaks:**\n- **`dangerouslySetInnerHTML`**: the name is the warning. If you must render HTML (CMS content, rich text), sanitise with DOMPurify, preferably on the server and again on render, and never with homemade regexes.\n- **URLs**: `<a href={user.website}>` with `javascript:alert(document.cookie)` runs on click. Parse with `new URL()` and allow only `https:` (and maybe `mailto:`).\n- **Refs and libraries**: `ref.current.innerHTML = ...`, jQuery plugins, chart libraries with HTML tooltips, markdown renderers configured to allow raw HTML.\n- **`eval`, `new Function`, `setTimeout(string)`**.\n- **SSR data embedding**: serialising state into an inline script with `JSON.stringify` does not escape a closing script tag; use a serialiser that escapes `<` (or framework-provided mechanisms).\n- **Prop spreading**: `<div {...userControlledObject}>` can set `dangerouslySetInnerHTML` or event handlers.\n\n**Markdown**: render markdown to React elements (react-markdown without raw HTML plugins), so no HTML string is ever injected. Validate link URLs.\n\n**Defence in depth**: a strict CSP with nonces stops injected scripts from running even if a bug slips through; Trusted Types make DOM sinks reject raw strings; httpOnly cookies keep the session token out of reach of scripts.",
+      "followUps": [
+        "How would you safely render user-written markdown?",
+        "Why is a javascript: URL dangerous?"
+      ],
+      "mistakes": [
+        "Claiming React makes XSS impossible.",
+        "Using dangerouslySetInnerHTML with a regex-based sanitiser.",
+        "Forgetting URL attributes like href and src."
+      ],
+      "lesson": "fes-security"
+    },
+    {
+      "id": "fe-scale-token-storage",
+      "level": "mid",
+      "q": "Where should a web app store auth tokens: localStorage or httpOnly cookies?",
+      "answer": "**Prefer an httpOnly, Secure, SameSite cookie for the session or refresh token, because JavaScript (and therefore XSS) cannot read it, and add CSRF protection because the browser sends cookies automatically. If a SPA needs an access token for a different API, keep it short-lived and in memory, not in localStorage.**\n\n| | localStorage | httpOnly cookie | in-memory variable |\n| --- | --- | --- | --- |\n| XSS can read it | yes, and exfiltrate it | no | yes while page is open |\n| Survives reload | yes | yes | no (refresh via cookie) |\n| Sent automatically | no | yes (CSRF concern) | no |\n| Works with SSR | no | yes | no |\n\n**Recommended setup:**\n```text\nSet-Cookie: session=...; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=...\n```\n- Short session lifetime with sliding renewal, or a short access token plus refresh rotation.\n- CSRF: SameSite=Lax blocks most cross-site sends; also check `Origin` on mutations or use CSRF tokens, and never change state on GET.\n- Use the `__Host-` prefix where possible to bind the cookie to your exact host.\n\n**Honest nuance**: httpOnly does not make XSS harmless. A script on your page can still call your API with the user's cookie for as long as the page is open. What it prevents is token theft and reuse from elsewhere, long after the page closes. You still need to prevent XSS and deploy CSP.\n\n**BFF (backend-for-frontend)**: for OAuth with third-party APIs, the BFF holds access and refresh tokens server-side and the browser only has a session cookie for the BFF. This keeps every token out of the browser and is the approach most OAuth security guidance for browser apps now recommends.\n\n**When localStorage is acceptable**: low-value tokens or public API keys that are not secrets anyway.",
+      "followUps": [
+        "Does an httpOnly cookie make XSS harmless?",
+        "How does the BFF pattern change this?",
+        "What cookie attributes would you set?"
+      ],
+      "mistakes": [
+        "Saying httpOnly cookies have no downsides.",
+        "Ignoring CSRF when switching to cookies.",
+        "Long-lived tokens in localStorage."
+      ],
+      "lesson": "fes-security"
+    },
+    {
+      "id": "fe-scale-csp-nonces",
+      "level": "senior",
+      "q": "How does a Content-Security-Policy with nonces work?",
+      "answer": "**The server generates a fresh unguessable nonce for every response, sends it in the CSP header (`script-src 'nonce-abc123' 'strict-dynamic'`) and puts the same value on each script tag it renders. The browser only executes scripts carrying the matching nonce, so markup injected by an attacker, which cannot know the nonce, does not run. `'strict-dynamic'` lets those trusted scripts load further scripts such as code-split chunks.**\n\n**A strict policy:**\n```text\nContent-Security-Policy:\n  script-src 'nonce-{random}' 'strict-dynamic' https: 'unsafe-inline';\n  object-src 'none'; base-uri 'none'; frame-ancestors 'none';\n  report-to csp\n```\nIn browsers that support nonces and `'strict-dynamic'`, `https:` and `'unsafe-inline'` are ignored; they are only fallbacks for very old browsers. `base-uri 'none'` stops base-tag injection that would redirect relative script URLs.\n\n**Why not allowlists**: research by Google (the \"CSP is dead, long live CSP\" paper) showed most domain allowlist policies are bypassable because allowed hosts contain JSONP endpoints or script gadgets. Nonces tie trust to specific script tags instead of domains.\n\n**Implementation in a framework**: generate the nonce per request in middleware or the proxy, set the header, and pass the nonce to the renderer so framework-injected scripts carry it (Next.js reads the nonce from the CSP header for its own scripts). Inline event handlers and `eval` must go.\n\n**Rollout**:\n1. Deploy as `Content-Security-Policy-Report-Only` with a reporting endpoint.\n2. Fix violations: inline handlers, third-party snippets, `eval` in old libraries.\n3. Enforce, keep reporting, alert on spikes.\n\n**Trade-off**: nonces need per-request HTML, which conflicts with fully static or CDN-cached pages. Alternatives: hash-based CSP (`'sha256-...'`) for static pages, or edge functions that inject the nonce.\n\n**Pair it with Trusted Types** (`require-trusted-types-for 'script'`) to also block DOM-based XSS sinks.",
+      "followUps": [
+        "Why is a domain allowlist CSP weak?",
+        "How do you roll out CSP on an existing large app?",
+        "How do nonces interact with static or CDN-cached pages?"
+      ],
+      "mistakes": [
+        "Leaving unsafe-inline in the policy, which defeats it.",
+        "Reusing the same nonce across responses.",
+        "Enforcing on day one without report-only mode."
+      ],
+      "lesson": "fes-security"
+    },
+    {
+      "id": "fe-scale-csrf-samesite",
+      "level": "junior",
+      "q": "What is CSRF and how do SameSite cookies help?",
+      "answer": "**CSRF (cross-site request forgery) is when a malicious site makes the victim's browser send a request to your site, and the browser automatically attaches your cookies, so the request is authenticated as the victim. SameSite cookies tell the browser not to attach the cookie on cross-site requests: `Lax` blocks it on cross-site subrequests and form POSTs but allows top-level GET navigations, and `Strict` blocks it on all cross-site requests.**\n\n**The attack:**\n```text\nuser logged in to bank.example (session cookie)\nvisits evil.example, which auto-submits:\n  form POST https://bank.example/transfer  amount=1000 to=attacker\nbrowser attaches bank cookie -> bank sees an authenticated request\n```\n\n**SameSite values:**\n- `Strict`: never sent cross-site. Strongest, but users arriving from an external link look logged out on the first page.\n- `Lax`: sent on top-level GET navigations (clicking a link), not on cross-site POSTs, iframes, images or fetches. Chromium treats cookies without the attribute as `Lax` by default.\n- `None`: always sent (requires `Secure`); needed for genuine cross-site embeds.\n\n**Why other defences still matter:**\n- GET requests must never change state, because `Lax` allows them.\n- \"Same-site\" means same registrable domain, so `evil.example.com` attacking `app.example.com` is same-site; a compromised or user-content subdomain can still forge requests.\n- Defence in depth: check the `Origin` (or `Sec-Fetch-Site`) header on mutations, or use CSRF tokens (synchroniser or double-submit). Next.js Server Actions compare `Origin` to `Host`.\n\n**CORS does not stop CSRF**: CORS controls whether a script can read the response; a form POST is sent regardless.\n\n**Token-in-header APIs** (Authorization bearer from JS) are not vulnerable to classic CSRF because the browser does not attach them automatically, but they move the risk to XSS token theft.",
+      "followUps": [
+        "Why does SameSite=Lax still allow some cross-site requests?",
+        "Is same-site the same as same-origin?"
+      ],
+      "mistakes": [
+        "Thinking CORS prevents CSRF.",
+        "Believing SameSite alone removes the need to avoid state-changing GETs."
+      ],
+      "lesson": "fes-security"
+    },
+    {
+      "id": "fe-scale-50-engineers",
+      "level": "senior",
+      "q": "How do you keep 50 engineers shipping one frontend safely?",
+      "answer": "**Make ownership explicit, make the safe path the easy path through automation, and make every release small and reversible: clear module boundaries with CODEOWNERS, a monorepo with cached and affected-only CI, a merge queue that keeps main green, a shared design system and conventions enforced by lint, and trunk-based development with feature flags, preview deployments, canary rollouts and per-team observability.**\n\n**Ownership and boundaries:**\n- Organise code by business domain (`features/checkout`, `features/search`), each with an owning team in CODEOWNERS.\n- Enforce dependency rules (no importing another feature's internals) with Nx tags, `eslint-plugin-boundaries` or dependency-cruiser.\n- Shared packages (design system, API client, auth) owned by a platform team with semver and review.\n\n**Change safety:**\n- Trunk-based development with short-lived branches; unfinished work behind flags rather than long branches.\n- CI per PR: type-check, lint, unit and integration tests, bundle budgets, a11y and visual checks, all cached and affected-only so it stays under roughly 10-15 minutes.\n- Preview deployment per PR with a link for product and design review.\n- A merge queue that tests PR combinations before landing.\n\n**Release safety:**\n- Continuous deployment from main; each deploy is small.\n- Feature flags with percentage rollouts and kill switches.\n- Automatic rollback when error rate or Web Vitals regress for a release.\n- Keep old assets for open tabs; backward-compatible API changes.\n\n**Visibility:**\n- Errors and Web Vitals tagged by route and owning team, so alerts go to the right people.\n- Dashboards for CI health, flake rate, bundle size trend.\n\n**Culture and conventions:**\n- RFCs for cross-cutting changes, architecture decision records, a short engineering handbook.\n- Codemods for migrations so platform changes do not stall teams.\n\n**Micro-frontends?** At 50 engineers in perhaps six to eight teams, a well-run modular monorepo usually works. I would consider route-based splits only if release coordination remains the bottleneck after the above.",
+      "followUps": [
+        "What do you automate first?",
+        "How do you handle shared code that every team touches?",
+        "Would you split into micro-frontends at this size?"
+      ],
+      "mistakes": [
+        "Answering only with \"more code review\".",
+        "Jumping straight to micro-frontends.",
+        "No mention of ownership or release safety."
+      ]
+    },
+    {
+      "id": "fe-scale-caching-layers",
+      "level": "senior",
+      "q": "What caching layers exist between a user and your frontend's data, and how do you keep them consistent?",
+      "answer": "**From the user inward: in-memory client caches (React state, TanStack Query), the service worker cache, the browser HTTP cache, the CDN/edge cache for assets, HTML and API responses, the framework's server data cache, an application cache such as Redis, and the database's own caches. Consistency comes from choosing the right TTL per layer, versioning immutable assets, purging shared caches by tag on writes, and never putting personal data in shared caches.**\n\n```text\ncomponent state / query cache   (ms, per tab)\nservice worker cache            (offline, per device)\nbrowser HTTP cache              (Cache-Control, ETag)\nCDN / edge                      (s-maxage, tags, stale-while-revalidate)\nframework data cache / ISR      (revalidate by time or tag)\nRedis / app cache               (per entity)\ndatabase buffer cache\n```\n\n**Per layer:**\n- **Static assets**: content-hashed filenames with `Cache-Control: public, max-age=31536000, immutable`. Never invalidated, just replaced by new URLs.\n- **HTML**: short `s-maxage` with `stale-while-revalidate` at the CDN if shared; `private, no-store` if personal. HTML must not be cached long in browsers, or users get pages pointing to deleted assets.\n- **API responses**: `ETag` / `Last-Modified` for cheap revalidation (304s); CDN caching for public data.\n- **Query cache**: `staleTime` per query and invalidation after mutations.\n- **Service worker**: cache-first for hashed assets, network-first or stale-while-revalidate for data, versioned caches cleaned on activate.\n\n**Keeping consistency:**\n- **Write path purges**: when a product changes, the backend emits an event that revalidates tags (`product-42`) in the framework cache and purges CDN surrogate keys.\n- **Bounded staleness**: every layer has a TTL that matches how stale the data may be.\n- **Read-your-writes**: after a user's own mutation, update the client cache optimistically or refetch with `no-cache`, so they see their change even if shared caches are stale.\n- **Never share personal data**: vary keys carefully and strip `Set-Cookie` from cached responses.\n\n**Service worker pitfalls**: a buggy one can pin users to an old version indefinitely. Always ship an update path and a kill-switch worker that unregisters itself.",
+      "followUps": [
+        "How do you purge a product page everywhere after a price change?",
+        "What can go wrong with a service worker cache?",
+        "Which layer would you add first for a slow page?"
+      ],
+      "mistakes": [
+        "Listing layers without explaining invalidation.",
+        "Caching personalised responses in shared caches.",
+        "Forgetting the client-side query cache and service worker."
+      ]
+    }
+  ]
+}

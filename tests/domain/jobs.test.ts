@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalJobUrl, companyKey, dueFollowUps, followUpFor, htmlToPlain, jobCaptureSchema, matchTarget, pipelineCounts, profileCaptureSchema, sourceFromUrl } from "@/lib/domain/jobs";
+import { canonicalJobUrl, companyKey, dueFollowUps, followUpFor, htmlToPlain, jobCaptureSchema, matchTarget, pipelineCounts, profileCaptureSchema, sourceFromUrl } from "@/modules/jobs/domain/jobs";
 
 describe("sourceFromUrl", () => {
   it("recognises the four boards and everything else", () => {

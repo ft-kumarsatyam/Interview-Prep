@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstImage, htmlToMarkdown } from "@/lib/news/markdown";
+import { firstImage, htmlToMarkdown } from "@/modules/news/lib/markdown";
 
 const BASE = "https://blog.example.com/posts/caching";
 

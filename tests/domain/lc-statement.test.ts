@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { leetcodeHtmlToMarkdown, restrictImages } from "@/lib/leetcode/statement";
+import { leetcodeHtmlToMarkdown, restrictImages } from "@/modules/dsa/lib/leetcode/statement";
 
 const md = leetcodeHtmlToMarkdown;
 

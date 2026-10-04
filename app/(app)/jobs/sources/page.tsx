@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 import { Briefcase } from "lucide-react";
-import { LiveRefresh } from "@/components/live/live-refresh";
-import { JobsTabs } from "@/components/jobs/jobs-tabs";
-import { SourcesManager } from "@/components/jobs/sources-manager";
+import { LiveRefresh } from "@/core/components/live/live-refresh";
+import { JobsTabs } from "@/modules/jobs/components/jobs-tabs";
+import { SourcesManager } from "@/modules/jobs/components/sources-manager";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatTile } from "@/components/shared/stat-tile";
-import { careerDeepLinks, tierProfiles } from "@/lib/content";
-import { getKv } from "@/lib/kv";
-import { listSources } from "@/lib/services/job-discovery";
-import { listJobs } from "@/lib/services/jobs";
+import { careerDeepLinks, tierProfiles } from "@/core/content";
+import { getKv } from "@/core/kv";
+import { listSources } from "@/modules/jobs/services/job-discovery";
+import { listJobs } from "@/modules/jobs/services/jobs";
 
 export const metadata: Metadata = { title: "Job sources" };
 export const maxDuration = 60;

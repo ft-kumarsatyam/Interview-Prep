@@ -1,5 +1,5 @@
 import { AlertCircle, CheckCircle2, Circle, CircleDashed, CircleDot } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 /** Status as icon + colour + accessible label (never colour alone). */
 export type StatusKind = "done" | "partial" | "warn" | "todo" | "idle";

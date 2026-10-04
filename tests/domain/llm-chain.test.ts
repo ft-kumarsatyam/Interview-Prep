@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { DEFAULT_PAID_SETTINGS, type AiFeature } from "@/lib/domain/llm-router";
-import { createChain } from "@/lib/llm/chain";
-import { AllProvidersFailedError, LlmHttpError, LlmInvalidOutputError, PaidConfirmRequiredError } from "@/lib/llm/errors";
-import type { ProviderDef } from "@/lib/llm/providers";
-import { MemoryLlmStore } from "@/lib/llm/store";
-import type { LlmProvider } from "@/lib/llm/types";
+import { DEFAULT_PAID_SETTINGS, type AiFeature } from "@/modules/ai/domain/llm-router";
+import { createChain } from "@/core/llm/chain";
+import { AllProvidersFailedError, LlmHttpError, LlmInvalidOutputError, PaidConfirmRequiredError } from "@/core/llm/errors";
+import type { ProviderDef } from "@/core/llm/providers";
+import { MemoryLlmStore } from "@/core/llm/store";
+import type { LlmProvider } from "@/core/llm/types";
 
 const schema = z.object({ ok: z.literal(true) });
 const NOW = new Date("2026-10-05T10:00:00Z");

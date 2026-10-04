@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Sparkles } from "lucide-react";
-import { TailorWorkbench } from "@/components/resume/tailor-workbench";
+import { TailorWorkbench } from "@/modules/resume/components/tailor-workbench";
 import { BackLink } from "@/components/shared/back-link";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { getJob } from "@/lib/services/jobs";
-import { getBaseResume } from "@/lib/services/resume";
+import { getJob } from "@/modules/jobs/services/jobs";
+import { getBaseResume } from "@/modules/resume/services/resume";
 
 export const metadata: Metadata = { title: "Tailor resume" };
 

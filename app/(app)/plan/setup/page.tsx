@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import { Archive, Compass } from "lucide-react";
-import { IntakeWizard, type WizardTrack } from "@/components/planner/intake-wizard";
-import { PlanHistory, ResetPlannerButton } from "@/components/planner/plan-history";
+import { IntakeWizard, type WizardTrack } from "@/modules/planner/components/intake-wizard";
+import { PlanHistory, ResetPlannerButton } from "@/modules/planner/components/plan-history";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { orderedTopics, trackById, tracks } from "@/lib/content";
-import { formatDate } from "@/lib/plan-clock";
-import { getIntake } from "@/lib/services/planner-intake";
-import { listSnapshots } from "@/lib/services/planner-snapshot";
+import { orderedTopics, trackById, tracks } from "@/core/content";
+import { formatDate } from "@/core/plan-clock";
+import { getIntake } from "@/modules/planner/services/planner-intake";
+import { listSnapshots } from "@/modules/planner/services/planner-snapshot";
 
 export const metadata: Metadata = { title: "Plan setup" };
 

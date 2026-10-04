@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BRIDGE_MAX_PROMPT, buildAskRequest, parseAskRequest, parseBridgeReply, resultMessage } from "@/lib/domain/ask-bridge";
+import { BRIDGE_MAX_PROMPT, buildAskRequest, parseAskRequest, parseBridgeReply, resultMessage } from "@/modules/ai/domain/ask-bridge";
 
 const URL_OK = "https://gemini.google.com/app";
 

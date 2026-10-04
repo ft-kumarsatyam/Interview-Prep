@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { testcaseBySlug } from "@/lib/content";
-import { workerLib } from "@/lib/sandbox/worker-lib-node";
+import { testcaseBySlug } from "@/core/content";
+import { workerLib } from "@/core/sandbox/worker-lib-node";
 import { loadSolution } from "../../scripts/dsa-testcases/vm-runner";
 import { SOLUTIONS as set1 } from "../../scripts/dsa-verify/set1";
 import { SOLUTIONS as set2 } from "../../scripts/dsa-verify/set2";

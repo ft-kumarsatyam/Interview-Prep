@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { canTakeTopicQuiz, nextMasteryScore, passesTopicQuiz, pickTopicQuestions, subtopicWeight } from "@/lib/domain/mastery";
-import { seededRng, shuffle, weightedSample } from "@/lib/domain/sampling";
+import { canTakeTopicQuiz, nextMasteryScore, passesTopicQuiz, pickTopicQuestions, subtopicWeight } from "@/modules/progress/domain/mastery";
+import { seededRng, shuffle, weightedSample } from "@/core/domain/sampling";
 
 describe("sampling", () => {
   it("shuffles deterministically for a seed and keeps every item", () => {

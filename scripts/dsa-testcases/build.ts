@@ -3,8 +3,8 @@
  * running the reference solution; an independently written brute force must agree on every case and on 200
  * seeded random inputs, and the spec must pass the quality lint. Pure of file I/O so tests can reuse it.
  */
-import type { HintLevel, TestCase } from "@/lib/domain/dsa-runner";
-import { workerLib } from "@/lib/sandbox/worker-lib-node";
+import type { HintLevel, TestCase } from "@/modules/dsa/domain/dsa-runner";
+import { workerLib } from "@/core/sandbox/worker-lib-node";
 import { lintSpec } from "./lint";
 import type { ProblemSpec } from "./types";
 import { loadGenerator, loadSolution, mulberry32, seedFrom } from "./vm-runner";

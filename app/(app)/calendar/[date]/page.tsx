@@ -1,16 +1,21 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, Circle, Info, Timer } from "lucide-react";
-import { WhyThisPlan } from "@/components/planner/why-this-plan";
+import { ArrowLeft, Briefcase, CheckCheck, CheckCircle2, ChevronLeft, ChevronRight, Circle, CornerDownRight, Info, Timer } from "lucide-react";
+import { WhyThisPlan } from "@/modules/planner/components/why-this-plan";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { addDays, isDateStr } from "@/lib/domain/dates";
-import { formatDate } from "@/lib/plan-clock";
-import { getDayExplanation } from "@/lib/services/explain-day";
-import { getCalendarDay, type CalendarDayDetail, type PlanItem } from "@/lib/services/calendar";
-import { cn } from "@/lib/utils";
+import { addDays, isDateStr } from "@/core/domain/dates";
+import { formatDate } from "@/core/plan-clock";
+import { DayBacklog } from "@/modules/planner/components/calendar/day-backlog";
+import { isPullableDay } from "@/modules/planner/domain/pull-days";
+import { describeGap } from "@/modules/progress/domain/recap";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { getBacklogForDay } from "@/modules/progress/services/backlog";
+import { getDayExplanation } from "@/modules/planner/services/explain-day";
+import { getCalendarDay, type CalendarDayDetail, type PlanItem } from "@/modules/planner/services/calendar";
+import { cn } from "@/core/utils";
 
 export async function generateMetadata({ params }: PageProps<"/calendar/[date]">): Promise<Metadata> {
   const { date } = await params;
@@ -21,17 +26,37 @@ const KIND_COPY: Record<CalendarDayDetail["kind"], string> = {
   study: "Study day",
   revision: "Revision day",
   sunday: "Sunday · reviews and catch-up",
-  rest: "Rest day · counts as complete",
+  rest: "Rest day · keeps your streak",
   outside: "Outside your plan window",
 };
 
 function statusLine(d: CalendarDayDetail): string | null {
   if (d.date > d.today) return null;
-  if (d.log?.complete) return "Complete";
-  if (d.log?.freezeUsed) return "Covered by a freeze token";
-  if (d.date === d.today) return d.log?.quizPassed ? "Quiz passed, still in progress" : "In progress · the quiz is still needed to complete the day";
-  return d.log && (d.log.dsaSolved || d.log.theoryDone) ? "Partly done" : "Missed";
+  switch (d.state) {
+    case "complete":
+      return "Done";
+    case "freeze":
+      return "Covered by a freeze token";
+    case "caught-up":
+      return "Caught up. This day left work undone and you have since done it";
+    case "rest":
+      return "Planned rest day";
+    case "partial":
+      return d.date === d.today ? (d.log?.quizPassed ? "Quiz passed, still in progress" : "In progress. The quiz is still needed to complete the day") : "Something is left. It moved to the next days";
+    case "idle":
+      return "In progress. The quiz is still needed to complete the day";
+    default:
+      return "Missed. The work moved to the next days";
+  }
 }
+
+const STATE_PANEL: Partial<Record<CalendarDayDetail["state"], string>> = {
+  complete: "border-day-done-line bg-day-done",
+  "caught-up": "border-day-caught-line bg-day-caught",
+  partial: "border-day-left-line bg-day-left",
+  missed: "border-day-missed-line bg-day-missed",
+  rest: "border-day-rest-line bg-day-rest",
+};
 
 function Section({ title, items, showDone }: { title: string; items: PlanItem[]; showDone: boolean }) {
   if (items.length === 0) return null;
@@ -86,6 +111,10 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
   const { date } = await params;
   if (!isDateStr(date)) notFound();
   const d = await getCalendarDay(date);
+  const state = await ensureToday();
+  const pullable = isPullableDay(date, state.today, state.settings);
+  const dayBacklog = pullable || date === state.today ? await getBacklogForDay({ today: state.today, plan: state.plan, settings: state.settings }, date).catch(() => null) : null;
+  const dayLabel = formatDate(date, { weekday: "short", day: "numeric", month: "short" });
   const reasons = await getDayExplanation(date);
   const past = date <= d.today;
   const status = statusLine(d);
@@ -93,7 +122,7 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
 
   const prevDay = addDays(date, -1);
   const nextDay = addDays(date, 1);
-  const good = d.log?.complete || d.log?.freezeUsed;
+  const good = d.state === "complete" || d.state === "caught-up" || d.state === "freeze";
   const planDay = d.kind === "study" || d.kind === "revision" || d.kind === "sunday";
 
   return (
@@ -142,9 +171,9 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
         </p>
       )}
       {status && (
-        <div className={cn("space-y-3 rounded-xl border p-4", good ? "border-success/30 bg-success/5" : "bg-card")}>
+        <div className={cn("space-y-3 rounded-xl border p-4", STATE_PANEL[d.state] ?? "bg-card")}>
           <p className="flex items-center gap-2 text-sm font-medium">
-            {good ? <CheckCircle2 className="size-4 text-success" aria-hidden /> : <Circle className="size-4 text-muted-foreground" aria-hidden />}
+            {d.state === "caught-up" ? <CheckCheck className="size-4 text-day-caught-dot" aria-hidden /> : good ? <CheckCircle2 className="size-4 text-day-done-dot" aria-hidden /> : <Circle className="size-4 text-muted-foreground" aria-hidden />}
             {status}
           </p>
           {planDay && (
@@ -158,6 +187,97 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
             </dl>
           )}
         </div>
+      )}
+      {d.catchUp && past && date < d.today && (
+        <section aria-label="Left over from this day" className="space-y-2 rounded-xl border bg-card p-4 text-sm">
+          {d.catchUp.caughtUp ? (
+            <p className="flex items-start gap-2">
+              <CheckCheck className="mt-0.5 size-4 shrink-0 text-day-caught-dot" aria-hidden />
+              <span>
+                This day left {describeGap(d.catchUp.gap).join(", ")} undone. It is made up now
+                {d.catchUp.paidBy.length > 0 && `: ${d.catchUp.paidBy.map((p) => `${formatDate(p.date, { weekday: "short", day: "numeric", month: "short" })}${p.dsa || p.theory ? ` (${[p.dsa ? `${p.dsa} DSA` : "", p.theory ? `${p.theory} theory` : ""].filter(Boolean).join(", ")})` : ""}`).join(", ")}`}
+                . The original miss stays in your history and streak.
+              </span>
+            </p>
+          ) : (
+            <>
+              <p className="font-medium">Still owed from this day: {describeGap(d.catchUp.remaining).join(", ")}.</p>
+              <p className="text-muted-foreground">It is already part of the days ahead. Do extra work, or finish items from your backlog, and this day turns to &ldquo;caught up&rdquo;.{d.catchUp.remaining.quiz ? " The daily quiz can only be taken on its own day, so a missed quiz is made up with a practice quiz on that day's topics." : ""}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button asChild size="sm" variant="outline">
+                  <Link href="/backlog">Open the backlog</Link>
+                </Button>
+                {d.catchUp.remaining.quiz && d.theory[0] && (
+                  <Button asChild size="sm" variant="outline">
+                    <Link href={`/learn/practice?ref=${encodeURIComponent(d.theory[0].id)}`}>Take a catch-up quiz</Link>
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </section>
+      )}
+      {d.interviews.length > 0 && (
+        <ul className="space-y-2" aria-label="Job interviews">
+          {d.interviews.map((i) => (
+            <li key={i.id}>
+              <Link href={`/jobs/${i.id}`} className="flex min-h-11 items-center gap-3 rounded-lg border border-info/30 bg-info/5 p-3 text-sm hover:bg-info/10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+                <Briefcase className="size-4 shrink-0 text-info" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="font-medium">Interview: {i.title} at {i.company}</span>
+                  {i.round && <span className="text-muted-foreground"> · {i.round}</span>}
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      {d.lessons.length > 0 && (
+        <section aria-label="Lessons finished" className="rounded-xl border bg-card p-4 text-sm">
+          <h2 className="mb-1.5 text-sm font-semibold">Course lessons finished</h2>
+          <ul className="space-y-0.5">
+            {d.lessons.map((l) => (
+              <li key={l.key}>
+                <Link href={l.href} className="inline-flex min-h-9 items-center text-primary underline-offset-2 hover:underline">
+                  {l.title}
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs text-muted-foreground">Reading counts as study. It completes a plan topic only when you confirm it on the lesson.</p>
+        </section>
+      )}
+      {d.hours != null && d.estMinutes != null && d.date >= d.today && d.estMinutes > d.hours * 60 + 15 && (
+        <p className="flex items-start gap-2 rounded-lg border border-day-left-line bg-day-left p-3 text-sm">
+          <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            About {Math.round(d.estMinutes / 30) / 2} h of work is planned for {d.hours} h. Do what fits; the rest moves to the next days on its own. You can change your hours in{" "}
+            <Link href="/plan" className="text-primary underline-offset-2 hover:underline">
+              the planner
+            </Link>
+            .
+          </span>
+        </p>
+      )}
+      {d.carriedIn.length > 0 && (
+        <p className="flex items-start gap-2 rounded-lg border border-day-left-line bg-day-left p-3 text-sm">
+          <CornerDownRight className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            Carried in from earlier days:{" "}
+            {d.carriedIn.map((c) => `${formatDate(c.date, { weekday: "short", day: "numeric", month: "short" })} (${describeGap(c.remaining).join(", ")})`).join("; ")}. The plan is spread over the days you have left, up to your interview date.
+          </span>
+        </p>
+      )}
+      {dayBacklog && (
+        <DayBacklog
+          date={date}
+          dayLabel={dayLabel}
+          queued={dayBacklog.queued.map((i) => ({ key: i.key, title: i.title, path: i.path, minutes: i.minutes }))}
+          done={dayBacklog.done}
+          available={dayBacklog.available.map((i) => ({ key: i.key, title: i.title, path: i.path, minutes: i.minutes }))}
+          canAdd={pullable}
+        />
       )}
       <WhyThisPlan reasons={reasons} />
       {d.mocks.length > 0 && (

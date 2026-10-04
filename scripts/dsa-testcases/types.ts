@@ -1,5 +1,5 @@
-import type { ArgType, CompareMode, ReturnKind } from "@/lib/domain/dsa-runner";
-import type { EdgeId } from "@/lib/domain/edge-cases";
+import type { ArgType, CompareMode, ReturnKind } from "@/modules/dsa/domain/dsa-runner";
+import type { EdgeId } from "@/modules/dsa/domain/edge-cases";
 
 export interface RawCase {
   /** One entry per argument, in the LeetCode encodings (arrays for lists, level order for trees). */

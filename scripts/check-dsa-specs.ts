@@ -6,7 +6,7 @@
  * Prints every problem's errors (reference/brute disagreement, fuzz mismatch, lint) and a one-line summary.
  */
 import path from "node:path";
-import { problemBySlug } from "../lib/content";
+import { problemBySlug } from "@/core/content";
 import { buildEntry } from "./dsa-testcases/build";
 import type { ProblemSpec } from "./dsa-testcases/types";
 

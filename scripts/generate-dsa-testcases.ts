@@ -9,7 +9,7 @@
  */
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { problemBySlug } from "../lib/content";
+import { problemBySlug } from "@/core/content";
 import { buildEntry, type TestcaseEntryV2 } from "./dsa-testcases/build";
 import { ALL_SPECS } from "./dsa-testcases/specs";
 

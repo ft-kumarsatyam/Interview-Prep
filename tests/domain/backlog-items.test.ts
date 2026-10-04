@@ -15,7 +15,7 @@ import {
   topicQuizItems,
   type BacklogItem,
   type BacklogUserState,
-} from "@/lib/domain/backlog-items";
+} from "@/modules/progress/domain/backlog-items";
 
 const today = "2026-10-20";
 const none = new Map<string, BacklogUserState>();

@@ -1,0 +1,308 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "sql-joins-advanced",
+      "track": "sql",
+      "title": "Joins in depth: algorithms, semi/anti joins and CTEs",
+      "minutes": 18,
+      "summary": "Nested loop, hash and merge joins and when each wins, semi- and anti-joins with the NOT IN trap, LATERAL, CTE inlining and recursive CTEs.",
+      "body": "## The core idea\nA `JOIN` in SQL says **what** rows you want combined; the planner decides **how** to combine them. PostgreSQL (and every serious database) has three physical join algorithms, and the right one depends on how many rows each side has, whether there is a useful index, and whether the inputs are already sorted. Most \"why is this join slow?\" problems come down to the planner picking an algorithm based on a wrong row estimate.\n\nOn top of the algorithms sit the logical shapes interviewers love: **semi-joins** (\"rows that have a match\"), **anti-joins** (\"rows that have no match\"), **LATERAL** joins (a per-row subquery), and **CTEs**, including recursive ones for trees and graphs.\n\nMarkus Winand's *Use The Index, Luke* chapter on joins is the clearest outside explanation of the algorithms; the PostgreSQL docs on `WITH` queries cover CTEs.\n\n## The three join algorithms\n```text\nNESTED LOOP                 HASH JOIN                   MERGE JOIN\nfor each outer row:         build: hash the smaller     both inputs sorted on key\n  find matching inner rows    side into memory          walk both like a zipper\n  (ideally via an index)    probe: scan the other side  emit matches as keys align\n                              and look up each row\ncost ~ outer x lookup       cost ~ build + probe        cost ~ sort(s) + one pass\nbest: small outer +         best: large unsorted        best: inputs already sorted\n      indexed inner               equality joins              (index order) or huge\n```\n\n**Nested loop.** For each row of the outer input, search the inner input. Without an index on the inner join key that is O(N x M) and catastrophic. With an index it is an **index nested loop**: O(N x log M), and the best plan when the outer side is small (for example \"the 20 orders on this page and their customers\"). It is also the only algorithm that works for non-equality conditions like `a.ts BETWEEN b.start AND b.end`.\n\n**Hash join.** Read the smaller input (the build side), put it in an in-memory hash table keyed by the join column, then stream the larger input (the probe side) and look each row up. O(N + M), no index needed, equality conditions only. If the hash table does not fit in `work_mem`, Postgres splits it into batches written to temporary files; `EXPLAIN (ANALYZE)` shows `Batches: 8` and the join gets much slower. Raising `work_mem` for that session or query often fixes it, but remember `work_mem` is per operation per connection, so a global increase multiplies.\n\n**Merge join.** Both inputs sorted on the join key, walked in step. Great when both sides come out of an index already in key order, or when both are huge and a hash table would spill. Needs a sort if the order is not already there.\n\nReading a plan:\n```sql\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT o.id, c.name\nFROM orders o JOIN customers c ON c.id = o.customer_id\nWHERE o.created_at >= now() - interval '1 day';\n```\n```text\nHash Join  (cost=... rows=4100) (actual time=3.1..41.7 rows=52310 loops=1)\n  Hash Cond: (o.customer_id = c.id)\n  ->  Index Scan using orders_created_at_idx on orders o (rows=4100) (actual rows=52310)\n  ->  Hash  (actual rows=200000)  Buckets: 262144  Batches: 1  Memory Usage: 14000kB\n        ->  Seq Scan on customers c\n```\nThe estimate (4,100) is off by more than 10x from actual (52,310). When estimates are badly wrong the planner may choose a nested loop that runs 50,000 index lookups instead of one hash join. Fixes: `ANALYZE` the table, raise the column's statistics target, or create extended statistics for correlated columns (`CREATE STATISTICS ... (dependencies)`).\n\n## Semi-joins: \"has at least one match\"\n\"Customers who placed an order this month.\" You want each customer once, no matter how many orders.\n\n```sql\n-- Semi-join: EXISTS stops at the first match per customer\nSELECT c.*\nFROM customers c\nWHERE EXISTS (\n  SELECT 1 FROM orders o\n  WHERE o.customer_id = c.id AND o.created_at >= date_trunc('month', now())\n);\n```\n\nA plain `JOIN` here returns one row per order, and people \"fix\" it with `DISTINCT`, which forces a sort or hash of the whole result. `EXISTS` and `IN (subquery)` express the intent, and Postgres plans them as a **Semi Join** (hash, merge or nested loop) that never duplicates rows.\n\n## Anti-joins: \"has no match\", and the NOT IN trap\n\"Customers who never ordered.\"\n\n```sql\n-- Correct and planned as an Anti Join\nSELECT c.* FROM customers c\nWHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);\n\n-- Equivalent\nSELECT c.* FROM customers c\nLEFT JOIN orders o ON o.customer_id = c.id\nWHERE o.customer_id IS NULL;\n\n-- Dangerous\nSELECT c.* FROM customers c\nWHERE c.id NOT IN (SELECT customer_id FROM orders);\n```\n\nThe `NOT IN` version returns **zero rows** if any `orders.customer_id` is `NULL`. SQL uses three-valued logic: `5 NOT IN (1, NULL)` is `5 <> 1 AND 5 <> NULL`, which is `TRUE AND UNKNOWN`, which is `UNKNOWN`, and `WHERE` keeps only `TRUE`. Postgres also cannot turn `NOT IN` into an efficient anti-join in general, because of exactly that NULL semantics. Use `NOT EXISTS` by default.\n\n## LATERAL: a subquery per row\n\"For each customer, their three most recent orders.\" A plain join cannot limit per group; `LATERAL` lets the subquery refer to the outer row.\n\n```sql\nSELECT c.id, c.name, o.id AS order_id, o.created_at\nFROM customers c\nCROSS JOIN LATERAL (\n  SELECT id, created_at FROM orders\n  WHERE customer_id = c.id\n  ORDER BY created_at DESC\n  LIMIT 3\n) o;\n```\nWith an index on `orders (customer_id, created_at DESC)` this is a nested loop of tiny index scans: very fast when you want top-N for a modest number of outer rows. (The window-function version, `ROW_NUMBER() OVER (PARTITION BY ...)`, is better when you need it for every group in a big table.)\n\n## CTEs: naming steps\nA common table expression (`WITH`) names a subquery so a long query reads top to bottom.\n\n```sql\nWITH recent AS (\n  SELECT customer_id, sum(total) AS spend\n  FROM orders\n  WHERE created_at >= now() - interval '30 days'\n  GROUP BY customer_id\n)\nSELECT c.email, r.spend\nFROM recent r JOIN customers c ON c.id = r.customer_id\nWHERE r.spend > 1000;\n```\n\n**Optimisation fence history.** Before PostgreSQL 12, every CTE was materialised: computed once, in full, and the outer query's filters could not be pushed into it. Since 12, a non-recursive, side-effect-free CTE referenced once is **inlined** like a subquery. You can force either behaviour: `WITH x AS MATERIALIZED (...)` (compute once, useful when referenced several times or to stop a bad plan) or `AS NOT MATERIALIZED`.\n\nData-modifying CTEs let you chain writes atomically:\n```sql\nWITH moved AS (\n  DELETE FROM jobs WHERE status = 'done' AND finished_at < now() - interval '7 days'\n  RETURNING *\n)\nINSERT INTO jobs_archive SELECT * FROM moved;\n```\n\n## Recursive CTEs: trees and graphs\nA recursive CTE has an **anchor** (the starting rows) and a **recursive term** that references the CTE itself. Postgres evaluates it iteratively: run the anchor, then repeatedly run the recursive term against only the rows produced in the previous step, until a step produces nothing.\n\n```sql\n-- All reports (direct and indirect) under manager 42, with depth and path\nWITH RECURSIVE org AS (\n  SELECT id, manager_id, name, 1 AS depth, ARRAY[id] AS path\n  FROM employees\n  WHERE manager_id = 42                       -- anchor\n  UNION ALL\n  SELECT e.id, e.manager_id, e.name, org.depth + 1, org.path || e.id\n  FROM employees e\n  JOIN org ON e.manager_id = org.id           -- recursive term\n  WHERE NOT e.id = ANY(org.path)              -- cycle guard\n    AND org.depth < 20                        -- depth guard\n)\nSELECT * FROM org ORDER BY path;\n```\n\n```text\niteration 0 (anchor): direct reports of 42        -> rows A\niteration 1: employees whose manager is in A      -> rows B\niteration 2: employees whose manager is in B      -> rows C\n... until an iteration returns no rows\n```\n\nDetails that matter:\n- `UNION ALL` keeps duplicates and is faster; `UNION` removes duplicates each iteration, which also stops some cycles but costs a hash per step.\n- Bad data with a cycle (A manages B manages A) loops forever under `UNION ALL`. Guard with a visited path array, a depth limit, or the `CYCLE` clause (PostgreSQL 14+), which marks and stops cycles for you. PostgreSQL 14 also added `SEARCH DEPTH FIRST / BREADTH FIRST` for ordering.\n- Index the join column (`employees(manager_id)`), since every iteration is a join against it.\n- For deep, frequently read hierarchies, consider alternatives: a materialised path column, the `ltree` extension, or a closure table.\n\nTypical uses: org charts, category trees, threaded comments, bill of materials, graph reachability with a small number of hops, and generating series of dates.\n\n## Trade-offs and when not to use these\n- Do not use recursive CTEs as a graph database. Many-hop traversals over millions of edges belong in a specialised store or precomputed tables.\n- `LATERAL` with a large outer side is N index scans; at some point a hash join plus window function wins.\n- Planner hints do not exist in core Postgres. You influence plans with statistics, indexes and query shape, not by forcing an algorithm (the `enable_*` settings are for diagnosis only).\n\n## Common mistakes and debugging\n- `DISTINCT` to undo join duplication instead of writing a semi-join.\n- `NOT IN` with a nullable subquery column.\n- Missing index on the foreign key side, turning nested loops into repeated sequential scans. Postgres does not index foreign keys automatically.\n- Filtering a `LEFT JOIN`'s right table in `WHERE` (`WHERE o.status = 'paid'`), which silently turns it into an inner join; put the condition in `ON`.\n- Trusting `EXPLAIN` without `ANALYZE`: estimates are not reality. Compare `rows=` estimated and actual at each node; the first big mismatch is usually the root cause.\n\n## In the interview\n**What they probe:** do you know the physical algorithms and when each wins, can you write semi- and anti-joins correctly (NULL semantics), and can you handle hierarchical data with a recursive CTE safely?\n\n**A 60-second answer outline:**\n1. Nested loop for small outer sides with an indexed inner, hash join for large unsorted equality joins (watch `work_mem` batches), merge join for pre-sorted or huge inputs.\n2. The planner chooses from row estimates, so bad statistics cause bad joins; check estimated vs actual rows.\n3. Semi-join with `EXISTS`, anti-join with `NOT EXISTS` (never `NOT IN` on nullable columns).\n4. CTEs name steps and are inlined since Postgres 12 unless `MATERIALIZED`; recursive CTEs iterate anchor plus recursive term, guarded against cycles.\n\n**Follow-ups to expect:**\n- Why does `NOT IN` return nothing when the subquery contains a NULL?\n- What does `Batches: 16` on a hash node mean?\n- How would you fetch the top 3 orders per customer?\n- How do you stop a recursive CTE from looping forever?",
+      "keyPoints": [
+        "Nested loop wins for small outer sides with an indexed inner; hash join for large equality joins; merge join for sorted inputs",
+        "The planner picks algorithms from row estimates; compare estimated and actual rows to find the root cause",
+        "Use EXISTS for semi-joins and NOT EXISTS for anti-joins; NOT IN returns nothing if the subquery has a NULL",
+        "Since PostgreSQL 12 single-use CTEs are inlined unless marked MATERIALIZED",
+        "Recursive CTEs iterate anchor then recursive term; guard against cycles with a path array, depth limit or CYCLE"
+      ],
+      "interview": [
+        "Explain nested loop, hash and merge joins and when the planner picks each.",
+        "Why can NOT IN return no rows, and how do you write an anti-join safely?",
+        "How would you query an org chart or category tree of unknown depth in SQL?"
+      ],
+      "check": [
+        {
+          "q": "SELECT * FROM customers WHERE id NOT IN (SELECT customer_id FROM orders) returns zero rows, though some customers never ordered. Why?",
+          "options": [
+            "NOT IN cannot use indexes",
+            "Some orders.customer_id values are NULL, making every NOT IN comparison UNKNOWN",
+            "The subquery returns too many rows",
+            "NOT IN only works on text columns"
+          ],
+          "answer": 1,
+          "why": "x NOT IN (..., NULL) evaluates to UNKNOWN, and WHERE keeps only TRUE rows. NOT EXISTS has no such trap."
+        },
+        {
+          "q": "EXPLAIN ANALYZE shows a Hash node with Batches: 32. What does it indicate?",
+          "options": [
+            "The query ran on 32 parallel workers",
+            "The hash table used 32 buckets",
+            "The table has 32 partitions",
+            "The hash table did not fit in work_mem and spilled to temporary files in batches"
+          ],
+          "answer": 3,
+          "why": "Batches above 1 means the build side exceeded work_mem, so Postgres partitioned it on disk, which is much slower."
+        },
+        {
+          "q": "You need the 3 latest orders for each of 50 customers shown on a page, with an index on orders(customer_id, created_at DESC). Which shape is usually best?",
+          "options": [
+            "A CROSS JOIN LATERAL subquery with ORDER BY created_at DESC LIMIT 3",
+            "A full join of customers and orders followed by DISTINCT",
+            "A recursive CTE over orders",
+            "SELECT all orders and filter in application code"
+          ],
+          "answer": 0,
+          "why": "LATERAL runs a tiny index scan per customer that stops after 3 rows, ideal for a small outer set."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Use The Index, Luke: The Join Operation",
+          "url": "https://use-the-index-luke.com/sql/join"
+        },
+        {
+          "title": "PostgreSQL docs: WITH queries (CTEs)",
+          "url": "https://www.postgresql.org/docs/current/queries-with.html"
+        },
+        {
+          "title": "PostgreSQL docs: Planner/Optimizer",
+          "url": "https://www.postgresql.org/docs/current/planner-optimizer.html"
+        },
+        {
+          "title": "PostgreSQL docs: Using EXPLAIN",
+          "url": "https://www.postgresql.org/docs/current/using-explain.html"
+        }
+      ]
+    },
+    {
+      "id": "sql-window-functions",
+      "track": "sql",
+      "title": "Window functions: ranking, LAG/LEAD, running totals and frames",
+      "minutes": 17,
+      "summary": "How OVER, PARTITION BY and frames work, ranking functions, top-N per group, LAG/LEAD, running totals, gaps and islands, and the frame traps.",
+      "body": "## The core idea\n`GROUP BY` collapses rows: ten orders for a customer become one row with a sum. A **window function** computes across a set of related rows but **keeps every row**: each order stays, and next to it you can show the customer's total, the order's rank within that customer, the previous order's date, or a running balance.\n\nThe set of related rows is the **window**, described by the `OVER (...)` clause:\n\n```sql\nfunction(...) OVER (\n  PARTITION BY ...   -- which rows belong together (like GROUP BY, without collapsing)\n  ORDER BY ...       -- order inside each partition\n  ROWS|RANGE|GROUPS BETWEEN ... AND ...  -- the frame: which rows around the current one\n)\n```\n\nWindow functions are where many analytics, reporting and \"dedupe the latest row\" problems become one readable query instead of self-joins or application loops. They are a standard interview topic for backend and data-heavy roles because they test whether you think in sets.\n\n## How it is evaluated\nWindow functions run **after** `FROM`, `WHERE`, `GROUP BY` and `HAVING`, and **before** the final `ORDER BY` and `LIMIT`:\n\n```text\nFROM / JOIN -> WHERE -> GROUP BY -> HAVING -> WINDOW functions -> SELECT list\n            -> DISTINCT -> ORDER BY -> LIMIT\n```\n\nTwo consequences:\n1. You **cannot** filter on a window function in `WHERE` (it does not exist yet). Wrap the query in a subquery or CTE and filter outside.\n2. You **can** use a window over aggregated results: `rank() OVER (ORDER BY sum(total) DESC)` in a grouped query.\n\nPhysically, Postgres sorts the input by `PARTITION BY` + `ORDER BY` columns (or uses an index that provides that order), then walks the sorted rows once, maintaining state per partition. A `WindowAgg` node in `EXPLAIN` sits above a `Sort` or `Index Scan`. The sort is usually the expensive part; an index matching `(partition cols, order cols)` can remove it.\n\n## The ranking family\nGiven scores 100, 90, 90, 80 in one partition:\n\n| function | result | meaning |\n|---|---|---|\n| `row_number()` | 1, 2, 3, 4 | unique sequence; ties broken arbitrarily unless ORDER BY is unique |\n| `rank()` | 1, 2, 2, 4 | ties share a rank, then a gap |\n| `dense_rank()` | 1, 2, 2, 3 | ties share a rank, no gap |\n| `ntile(2)` | 1, 1, 2, 2 | split into N buckets |\n| `percent_rank()` | 0, 0.33, 0.33, 1 | (rank - 1) / (rows - 1) |\n\nChoose deliberately: \"top 3 products per category\" with `row_number` gives exactly 3 rows even with ties; with `rank` or `dense_rank` it can give more. Say which one the business wants.\n\n**Make `row_number` deterministic** by adding a tiebreaker: `ORDER BY created_at DESC, id DESC`. Otherwise two runs can pick different rows, which causes flaky tests and inconsistent pagination.\n\n## Top-N per group\nThe most common interview query: latest order per customer.\n\n```sql\nSELECT *\nFROM (\n  SELECT o.*,\n         row_number() OVER (PARTITION BY customer_id ORDER BY created_at DESC, id DESC) AS rn\n  FROM orders o\n) t\nWHERE rn = 1;\n```\n\nAlternatives worth knowing:\n- **`DISTINCT ON`** (PostgreSQL only), concise and often fast:\n```sql\nSELECT DISTINCT ON (customer_id) *\nFROM orders\nORDER BY customer_id, created_at DESC, id DESC;\n```\n- **`LATERAL` + `LIMIT`** when you need it for a small set of customers and have an index on `(customer_id, created_at DESC)`: an index probe per customer instead of sorting the whole table.\n\nRule of thumb: window or `DISTINCT ON` for \"every group in a big table\", `LATERAL` for \"a few groups\".\n\n## LAG and LEAD: comparing with neighbours\n`lag(x, n, default)` reads `x` from n rows earlier in the window order; `lead` reads later.\n\n```sql\n-- Days between consecutive orders per customer, and month-over-month revenue change\nSELECT customer_id, created_at,\n       created_at - lag(created_at) OVER w AS gap\nFROM orders\nWINDOW w AS (PARTITION BY customer_id ORDER BY created_at);\n\nSELECT month, revenue,\n       revenue - lag(revenue) OVER (ORDER BY month) AS delta,\n       round(100.0 * (revenue - lag(revenue) OVER (ORDER BY month))\n             / nullif(lag(revenue) OVER (ORDER BY month), 0), 1) AS pct\nFROM monthly_revenue;\n```\n\nThe named `WINDOW w AS (...)` clause avoids repeating the same definition. `nullif(..., 0)` avoids division by zero.\n\n**Gaps and islands** (finding streaks) is a classic built on this: consecutive dates minus their `row_number` give the same value for each streak.\n\n```sql\n-- Longest streak of consecutive active days per user\nWITH d AS (\n  SELECT user_id, day,\n         day - (row_number() OVER (PARTITION BY user_id ORDER BY day))::int AS grp\n  FROM (SELECT DISTINCT user_id, day FROM activity) x\n)\nSELECT user_id, count(*) AS streak_days, min(day) AS from_day, max(day) AS to_day\nFROM d\nGROUP BY user_id, grp\nORDER BY streak_days DESC;\n```\n\n## Aggregates as windows and running totals\nAny aggregate (`sum`, `avg`, `count`, `min`, `max`) becomes a window function with `OVER`.\n\n```sql\nSELECT id, account_id, created_at, amount,\n       sum(amount) OVER (PARTITION BY account_id ORDER BY created_at, id) AS balance,\n       sum(amount) OVER (PARTITION BY account_id)                       AS account_total,\n       amount / sum(amount) OVER (PARTITION BY account_id)              AS share\nFROM ledger_entries;\n```\n\nWith `ORDER BY` inside `OVER`, the aggregate becomes cumulative (a running total). Without it, it covers the whole partition.\n\n## Frames: the part everyone gets wrong\nWhen a window has `ORDER BY`, the default frame is:\n\n```text\nRANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n```\n\n`RANGE` treats rows with **equal ORDER BY values as peers** and includes all of them. If two ledger entries have the same `created_at`, a running total ordered only by `created_at` gives both rows the same balance (the sum including both), which looks like a bug. Fixes: make the order unique (`ORDER BY created_at, id`) or use `ROWS`:\n\n```sql\nsum(amount) OVER (PARTITION BY account_id ORDER BY created_at\n                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\n```\n\nFrame modes:\n- **`ROWS`**: physical rows. `ROWS BETWEEN 6 PRECEDING AND CURRENT ROW` is a 7-row moving window.\n- **`RANGE`**: by value of the single ORDER BY column. `RANGE BETWEEN interval '7 days' PRECEDING AND CURRENT ROW` is a true 7-day window, correct even when some days have no rows (PostgreSQL 11+ supports offsets with RANGE).\n- **`GROUPS`**: by peer groups (PostgreSQL 11+).\n\n```sql\n-- 7-day rolling revenue by calendar time, not by row count\nSELECT day, revenue,\n       sum(revenue) OVER (ORDER BY day RANGE BETWEEN interval '6 days' PRECEDING AND CURRENT ROW)\n         AS rolling_7d\nFROM daily_revenue;\n```\n\nAnother frame trap: `last_value(x) OVER (ORDER BY t)` returns the **current row's** value, because the default frame ends at the current row. Use `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`, or `first_value` with descending order.\n\n## Performance\n- Each distinct window definition (different partition or order) may need its own sort. Reuse one definition where possible.\n- An index on `(partition_col, order_col)` lets Postgres skip the sort; check `EXPLAIN` for `Sort` under `WindowAgg`.\n- Filtering `rn = 1` from a subquery still computes the window for all rows in the partitions you read; filter partitions early (`WHERE` inside the subquery) to reduce work.\n- For huge tables, precompute rollups (materialised views, summary tables) instead of running windows over a billion rows per dashboard load.\n\n## Trade-offs and when not to use them\n- In OLTP request paths, a window over a large table per request is usually a sign you should store the derived value (for example a running balance column updated transactionally) or precompute.\n- Window functions are not allowed in `UPDATE ... SET` directly; compute them in a CTE or subquery and join.\n- Readability: a five-window query is still clearer than five self-joins, but name windows and comment the frame choice.\n\n## Common mistakes and debugging\n- Filtering on a window result in `WHERE` (error: window functions are not allowed in WHERE).\n- Non-deterministic `row_number()` because the order has ties.\n- Running totals that jump because of the default `RANGE` frame with duplicate timestamps.\n- `last_value` returning the current row.\n- Using `rank` when the requirement said \"exactly N\".\n- Confusing `count(*) OVER ()` (total rows in the result, handy for pagination totals) with `count(*)` grouped.\n\n## In the interview\n**What they probe:** can you solve top-N-per-group, running totals, period-over-period and streak problems in SQL, and do you understand frames and evaluation order?\n\n**A 60-second answer outline:**\n1. Window functions compute across related rows without collapsing them: `OVER (PARTITION BY ... ORDER BY ... frame)`.\n2. They run after `WHERE`/`GROUP BY`/`HAVING`, so filter on them in an outer query.\n3. Ranking: `row_number` (unique), `rank` (gaps), `dense_rank` (no gaps). Top-N per group: `row_number` in a subquery, `DISTINCT ON`, or `LATERAL` for few groups.\n4. `lag`/`lead` for comparisons with previous or next rows; aggregates with `ORDER BY` become running totals.\n5. Default frame is `RANGE ... CURRENT ROW`, which includes ties; use `ROWS` or a unique order.\n\n**Follow-ups to expect:**\n- Difference between `rank` and `dense_rank`, with an example.\n- Why does a running total give the same value on two rows?\n- How would you compute a 7-day rolling average when some days have no data?\n- How would you find each user's longest streak of active days?",
+      "keyPoints": [
+        "Window functions compute across related rows without collapsing them, after WHERE, GROUP BY and HAVING",
+        "row_number gives unique positions, rank leaves gaps after ties, dense_rank does not; add a tiebreaker for determinism",
+        "Top-N per group: row_number in a subquery, DISTINCT ON in Postgres, or LATERAL for a few groups",
+        "With ORDER BY the default frame is RANGE UNBOUNDED PRECEDING to CURRENT ROW, which includes peers with equal values",
+        "An index on (partition, order) columns can remove the sort under WindowAgg"
+      ],
+      "interview": [
+        "How do you return the latest row per group in SQL?",
+        "What is the difference between ROW_NUMBER, RANK and DENSE_RANK?",
+        "How do you compute a running total or a 7-day rolling sum in SQL, and what is a window frame?"
+      ],
+      "check": [
+        {
+          "q": "Scores in a partition are 50, 40, 40, 30. What does dense_rank() OVER (ORDER BY score DESC) return?",
+          "options": [
+            "1, 2, 3, 4",
+            "1, 2, 2, 4",
+            "1, 2, 2, 3",
+            "1, 1, 2, 3"
+          ],
+          "answer": 2,
+          "why": "Ties share a rank and dense_rank leaves no gap afterwards; rank would give 1, 2, 2, 4."
+        },
+        {
+          "q": "A running total sum(amount) OVER (ORDER BY created_at) shows the same balance on two rows. Why?",
+          "options": [
+            "The two rows have equal created_at, and the default RANGE frame includes all peers",
+            "sum ignores rows with equal amounts",
+            "Window functions round results",
+            "The query needs GROUP BY created_at"
+          ],
+          "answer": 0,
+          "why": "RANGE treats rows with equal ORDER BY values as peers. Use ROWS or add a unique tiebreaker like id."
+        },
+        {
+          "q": "Why does WHERE row_number() OVER (...) = 1 fail?",
+          "options": [
+            "row_number requires PARTITION BY",
+            "Window functions are evaluated after WHERE, so they cannot be referenced there",
+            "row_number only works with LIMIT",
+            "WHERE cannot compare integers"
+          ],
+          "answer": 1,
+          "why": "Compute the window in a subquery or CTE and filter on its alias in the outer query."
+        }
+      ],
+      "resources": [
+        {
+          "title": "PostgreSQL tutorial: Window Functions",
+          "url": "https://www.postgresql.org/docs/current/tutorial-window.html"
+        },
+        {
+          "title": "PostgreSQL docs: Window Functions reference",
+          "url": "https://www.postgresql.org/docs/current/functions-window.html"
+        },
+        {
+          "title": "PostgreSQL docs: SELECT (WINDOW clause and DISTINCT ON)",
+          "url": "https://www.postgresql.org/docs/current/sql-select.html"
+        }
+      ]
+    },
+    {
+      "id": "sql-isolation-locking",
+      "track": "sql",
+      "title": "Isolation and locking in depth: MVCC, write skew and deadlocks",
+      "minutes": 19,
+      "summary": "How PostgreSQL implements isolation with MVCC and SSI, write skew, row lock modes, SKIP LOCKED, deadlocks, lock queues and optimistic locking.",
+      "body": "## The core idea\nTwo transactions that run at the same time can see and overwrite each other's work in surprising ways. **Isolation levels** are the database's promise about which of those surprises (anomalies) can happen. **Locks** and **MVCC** (multi-version concurrency control) are how it keeps the promise. Your job as a backend engineer is to know which anomalies your code is exposed to at the level you run, and to close the gaps with the right tool: a stronger level, an explicit row lock, a constraint, or an optimistic version check.\n\nThe earlier transactions lesson introduced the levels. This one goes into the mechanics: how PostgreSQL actually implements each level, what write skew is, how row locks and lock queues behave, why deadlocks happen, and how optimistic locking compares. Martin Kleppmann's *Designing Data-Intensive Applications* chapter 7 and the Jepsen consistency map are the best outside references; the paper \"A Critique of ANSI SQL Isolation Levels\" (Berenson et al., 1995) is where snapshot isolation and its anomalies were first described formally.\n\n## The anomalies, precisely\n| Anomaly | What happens |\n|---|---|\n| Dirty read | T1 reads T2's uncommitted write; T2 rolls back |\n| Non-repeatable read | T1 reads a row twice and gets different values because T2 committed in between |\n| Phantom | T1 runs the same `WHERE` twice and gets a different set of rows |\n| Lost update | T1 and T2 both read x=10, both write x+1; result 11, not 12 |\n| Write skew | T1 and T2 read an overlapping set, each writes a *different* row based on what it read; together they break an invariant neither broke alone |\n\nWrite skew is the one that surprises people. The classic example: a hospital requires at least one doctor on call.\n\n```text\non_call: alice on_duty=true, bob on_duty=true\nT1 (alice): SELECT count(*) FROM on_call WHERE on_duty  -> 2, OK to leave\nT2 (bob):   SELECT count(*) FROM on_call WHERE on_duty  -> 2, OK to leave\nT1: UPDATE on_call SET on_duty=false WHERE doctor='alice'; COMMIT\nT2: UPDATE on_call SET on_duty=false WHERE doctor='bob';   COMMIT\nresult: nobody on call. No row was written twice, so no write conflict was detected.\n```\n\nReal examples: double-booking a meeting room (two inserts that each checked \"no overlapping booking\"), overspending across two accounts with a combined limit, claiming the same username in two tables.\n\n## How PostgreSQL implements each level\nPostgreSQL uses **MVCC**: an `UPDATE` writes a new row version and marks the old one as expired, tagged with transaction ids. Each statement or transaction reads from a **snapshot**: the set of transactions committed at the moment it was taken. Readers never block writers and writers never block readers.\n\n```text\nlevel              snapshot taken           write-write conflict      extra\nREAD COMMITTED     per statement            wait, then re-check row   (default)\nREPEATABLE READ    once, at first statement  error 40001 on conflict   = snapshot isolation\nSERIALIZABLE       once                      error 40001               + SSI predicate tracking\n```\n\n- **READ UNCOMMITTED** is accepted but behaves as READ COMMITTED; Postgres never shows dirty reads.\n- **READ COMMITTED**: each statement sees data committed before *that statement* began. If an `UPDATE` finds a row locked by another transaction, it waits; when that transaction commits, it re-evaluates the `WHERE` on the newest version and updates it. That is why `UPDATE accounts SET balance = balance - 10 WHERE id = 1` is safe here (no lost update), while read-then-write in application code (`SELECT balance` ... `UPDATE SET balance = 90`) is not.\n- **REPEATABLE READ** is **snapshot isolation**: the whole transaction sees one snapshot, so no non-repeatable reads and, in Postgres, no phantoms either (stronger than the SQL standard requires). If you try to update a row that someone else changed after your snapshot, you get `ERROR: could not serialize access due to concurrent update` (SQLSTATE `40001`) and must retry. Write skew is still possible because the doctors updated different rows.\n- **SERIALIZABLE** is **Serializable Snapshot Isolation (SSI)**: snapshot isolation plus tracking of read/write dependencies between concurrent transactions (via non-blocking `SIReadLock` predicate locks). If a dangerous cycle forms, one transaction is aborted with `40001`. It prevents write skew, but you must retry, and it has overhead and some false positives.\n\n**MySQL InnoDB is different**: default is REPEATABLE READ, plain `SELECT`s are consistent snapshot reads, but locking reads and writes use the latest data and take next-key (gap) locks to block phantoms. Do not assume Postgres behaviour carries over; interviewers sometimes check this.\n\n## Explicit row locks\nWhen you need read-then-write correctness at READ COMMITTED, lock the rows you read:\n\n```sql\nBEGIN;\nSELECT balance FROM accounts WHERE id = $1 FOR UPDATE;   -- others wait here\n-- application checks balance >= amount\nUPDATE accounts SET balance = balance - $2 WHERE id = $1;\nCOMMIT;\n```\n\nLock strengths in Postgres, strongest first:\n| Clause | Blocks | Use |\n|---|---|---|\n| `FOR UPDATE` | all other row locks and updates | you will update or delete the row |\n| `FOR NO KEY UPDATE` | same, except `FOR KEY SHARE` | updates that do not change the key (what plain `UPDATE` takes) |\n| `FOR SHARE` | updates and deletes | read must stay valid, others may also read-lock |\n| `FOR KEY SHARE` | deletes and key changes | what foreign key checks take |\n\nModifiers:\n- `NOWAIT`: error immediately if locked (good for \"someone else is editing this\").\n- `SKIP LOCKED`: silently skip locked rows; the basis of Postgres job queues where many workers each claim different rows.\n\n**Write skew needs more than row locks** when the conflicting row does not exist yet (the double booking). Options: `SERIALIZABLE` with retries; lock a parent row that represents the resource (`SELECT ... FROM rooms WHERE id = $1 FOR UPDATE` before checking bookings); or make the invariant a **constraint** the database enforces:\n\n```sql\n-- No overlapping bookings per room, enforced by the database\nCREATE EXTENSION IF NOT EXISTS btree_gist;\nALTER TABLE bookings ADD CONSTRAINT no_overlap\n  EXCLUDE USING gist (room_id WITH =, tstzrange(starts_at, ends_at) WITH &&);\n```\n\nConstraints (unique, exclusion, check, foreign keys) are the most robust answer because they hold no matter which code path writes.\n\n## Deadlocks\nA deadlock is a cycle: T1 holds lock A and waits for B; T2 holds B and waits for A. Postgres checks for cycles after a lock wait exceeds `deadlock_timeout` (1 second by default), aborts one transaction with `ERROR: deadlock detected` (`40P01`) and lets the other continue.\n\n```text\nT1: UPDATE accounts ... WHERE id = 1   (locks row 1)\nT2: UPDATE accounts ... WHERE id = 2   (locks row 2)\nT1: UPDATE accounts ... WHERE id = 2   waits for T2\nT2: UPDATE accounts ... WHERE id = 1   waits for T1  -> cycle -> one is aborted\n```\n\nPrevention:\n- **Lock in a consistent order**: for transfers, always lock the lower account id first (`SELECT ... WHERE id IN ($1,$2) ORDER BY id FOR UPDATE`).\n- **Keep transactions short**; never wait on network calls (payment APIs, emails) inside one.\n- Bulk updates: process rows in a stable order (`ORDER BY id`) so two batch jobs do not interleave locks.\n- Retry `40P01` and `40001` in the application with jittered backoff; they are expected, not exceptional.\n\n## The lock queue trap\nLocks are granted in queue order. A migration running `ALTER TABLE orders ADD COLUMN ...` needs an `ACCESS EXCLUSIVE` lock. If a long-running query holds even a weak lock on `orders`, the `ALTER` waits, and **every new query on `orders` queues behind the `ALTER`**. The table is effectively down until the long query finishes.\n\n```sql\nSET lock_timeout = '3s';   -- give up instead of blocking the world; retry later\nALTER TABLE orders ADD COLUMN note text;\n```\n\nAlways set `lock_timeout` for DDL in production, and `statement_timeout` / `idle_in_transaction_session_timeout` to kill forgotten transactions. `pg_stat_activity` and `pg_locks` (or `pg_blocking_pids(pid)`) show who blocks whom.\n\n## Optimistic locking\nInstead of holding locks while a user thinks, read a version, and make the write conditional:\n\n```sql\n-- read: SELECT id, title, body, version FROM docs WHERE id = 7;  -> version = 12\nUPDATE docs\nSET title = $1, body = $2, version = version + 1\nWHERE id = 7 AND version = 12;\n-- 1 row updated: success. 0 rows: someone else saved first -> reload, merge or show a conflict\n```\n\nOver HTTP this maps to `ETag` / `If-Match` headers and a `412 Precondition Failed` response.\n\n| | Pessimistic (`FOR UPDATE`) | Optimistic (version check) |\n|---|---|---|\n| Conflict cost | waiting | retry or user-facing conflict |\n| Best when | conflicts frequent, short critical sections | conflicts rare, long think time |\n| Risk | deadlocks, blocked connections | starvation under heavy contention |\n\n## Advisory locks\n`pg_advisory_xact_lock(key)` locks an application-defined number, released at transaction end. Useful for \"only one worker may run this job\" or serialising work per tenant without a real row to lock. Session-level advisory locks survive the transaction and break with transaction-mode PgBouncer; prefer the `_xact_` variants.\n\n## Common mistakes and debugging\n- Read-modify-write in application code at READ COMMITTED with no lock or version check.\n- Assuming REPEATABLE READ prevents write skew.\n- Running SERIALIZABLE without a retry loop, so users see random 500s.\n- Holding a transaction open across an HTTP call.\n- Running DDL without `lock_timeout`.\n- Debugging: log SQLSTATE codes (`40001`, `40P01`, `55P03` lock not available), enable `log_lock_waits`, and inspect `pg_locks` joined to `pg_stat_activity` during incidents.\n\n## In the interview\n**What they probe:** exact anomaly definitions (especially write skew), how Postgres implements levels with MVCC and SSI, when to use row locks vs constraints vs optimistic concurrency, and operational awareness (deadlocks, lock queues, retries).\n\n**A 60-second answer outline:**\n1. Anomalies: dirty read, non-repeatable read, phantom, lost update, write skew.\n2. Postgres: MVCC snapshots. READ COMMITTED snapshots per statement; REPEATABLE READ is snapshot isolation and still allows write skew; SERIALIZABLE (SSI) prevents it by aborting with 40001.\n3. Close gaps with atomic `UPDATE ... SET x = x + 1`, `SELECT ... FOR UPDATE`, constraints (unique, exclusion), or a version column.\n4. Deadlocks: consistent lock order, short transactions, retry 40P01. DDL: `lock_timeout`.\n\n**Follow-ups to expect:**\n- Give a write skew example and two ways to prevent it.\n- When would you choose optimistic over pessimistic locking?\n- What does `SKIP LOCKED` do and where is it useful?\n- Why can adding a column take a whole table offline?",
+      "keyPoints": [
+        "Write skew: two transactions read overlapping data and update different rows, breaking an invariant; snapshot isolation allows it",
+        "Postgres READ COMMITTED snapshots per statement, REPEATABLE READ is snapshot isolation, SERIALIZABLE is SSI and aborts with 40001",
+        "Close gaps with atomic updates, SELECT FOR UPDATE, constraints such as exclusion constraints, or version checks",
+        "Prevent deadlocks with a consistent lock order and short transactions, and retry 40P01 and 40001",
+        "DDL waits in the lock queue and blocks everything behind it; always set lock_timeout"
+      ],
+      "interview": [
+        "What is write skew, and how do you prevent it in PostgreSQL?",
+        "When would you use optimistic locking instead of SELECT FOR UPDATE?",
+        "How does PostgreSQL implement REPEATABLE READ and SERIALIZABLE?",
+        "Why can a simple ALTER TABLE take a busy table offline, and how do you avoid it?"
+      ],
+      "check": [
+        {
+          "q": "Two transactions at REPEATABLE READ each check that two doctors are on call, then each sets a different doctor off call. Both commit. What happened?",
+          "options": [
+            "A dirty read",
+            "A lost update",
+            "Write skew, which snapshot isolation does not prevent",
+            "A deadlock that Postgres resolved"
+          ],
+          "answer": 2,
+          "why": "They wrote different rows, so there was no write-write conflict to detect. SERIALIZABLE, a lock on a shared row, or a constraint is needed."
+        },
+        {
+          "q": "What does SELECT ... FOR UPDATE SKIP LOCKED do?",
+          "options": [
+            "Locks rows without waiting for the transaction to commit",
+            "Returns only rows not currently locked by others and locks them",
+            "Skips the MVCC snapshot and reads the latest versions",
+            "Locks the whole table but skips index updates"
+          ],
+          "answer": 1,
+          "why": "Locked rows are silently excluded, so many workers can each claim different rows, the basis of Postgres job queues."
+        },
+        {
+          "q": "A migration's ALTER TABLE hangs and all queries on the table start timing out. What is the most likely cause?",
+          "options": [
+            "The ALTER is waiting for ACCESS EXCLUSIVE behind a long transaction, and new queries queue behind the ALTER",
+            "VACUUM is running on the table",
+            "The table has too many indexes",
+            "autocommit is disabled"
+          ],
+          "answer": 0,
+          "why": "Lock requests are queued in order. Set lock_timeout so DDL gives up quickly and retry later."
+        }
+      ],
+      "resources": [
+        {
+          "title": "PostgreSQL docs: Transaction Isolation",
+          "url": "https://www.postgresql.org/docs/current/transaction-iso.html"
+        },
+        {
+          "title": "PostgreSQL docs: Explicit Locking",
+          "url": "https://www.postgresql.org/docs/current/explicit-locking.html"
+        },
+        {
+          "title": "A Critique of ANSI SQL Isolation Levels (Berenson et al.)",
+          "url": "https://arxiv.org/abs/cs/0701157"
+        },
+        {
+          "title": "Jepsen: Consistency Models",
+          "url": "https://jepsen.io/consistency"
+        },
+        {
+          "title": "PostgreSQL docs: Introduction to MVCC",
+          "url": "https://www.postgresql.org/docs/current/mvcc-intro.html"
+        }
+      ]
+    },
+    {
+      "id": "sql-postgres-internals",
+      "track": "sql",
+      "title": "PostgreSQL internals: heap, WAL, VACUUM, TOAST, pooling, partitioning",
+      "minutes": 20,
+      "summary": "The internal mechanisms behind most Postgres incidents: heap pages and HOT updates, WAL, VACUUM and bloat, wraparound, TOAST, PgBouncer and partitioning.",
+      "body": "## The core idea\nMost PostgreSQL production problems that are not \"missing index\" come from a handful of internal mechanisms: how rows are stored in the **heap**, how every change is first written to the **WAL**, how old row versions are cleaned up by **VACUUM** (and what happens when it falls behind), how large values are stored with **TOAST**, why each connection is an operating-system **process**, and how **partitioning** splits big tables. You do not need to read the source code, but you need a working model of each, because interviewers for senior backend roles ask \"what would you check?\" questions that only make sense with that model.\n\nThe PostgreSQL manual chapters on storage, WAL and routine vacuuming are unusually readable; Brandur Leach's post on Postgres connections explains the process-per-connection cost well.\n\n## The heap: how rows are stored\nA table is a set of files split into **8 KB pages**. Each page holds a header, an array of line pointers, and the row versions (**tuples**) themselves, filled from the end of the page backwards.\n\n```text\n 8 KB page\n +--------------------------------------------------+\n | header | lp1 | lp2 | lp3 | ...  free space ...   |\n |                     ... | tuple3 | tuple2 | tuple1|\n +--------------------------------------------------+\n tuple header: xmin (creating txid), xmax (deleting txid), ctid, flags\n ctid = (page, line pointer) = physical address used by indexes\n```\n\nThere is no clustered index by default: indexes point at `ctid`s in the heap, and rows are stored roughly in insertion order. (`CLUSTER` reorders once; it is not maintained.)\n\n**MVCC lives in the tuple header.** An `UPDATE` does not modify a row in place; it writes a **new tuple** with `xmin` = the updating transaction and sets the old tuple's `xmax`. A `DELETE` just sets `xmax`. Each query decides which version it can see by comparing `xmin`/`xmax` with its snapshot. Old versions stay on disk until VACUUM removes them.\n\n**HOT updates (heap-only tuples).** If an update changes no indexed column and the new version fits on the same page, Postgres skips updating every index and chains the versions inside the page. HOT updates are much cheaper. Leaving free space with a lower `fillfactor` (for example 80-90 on frequently updated tables) increases the chance, and every extra index on a frequently updated column destroys it. `pg_stat_user_tables.n_tup_hot_upd` vs `n_tup_upd` tells you the ratio.\n\nThe **visibility map** tracks pages where all tuples are visible to everyone; it lets VACUUM skip pages and lets **index-only scans** avoid visiting the heap. Index-only scans are only fast on tables that are vacuumed regularly.\n\n## WAL: write-ahead logging\nRule: **a change is durable once its WAL record is on disk**, not when the data page is. On `COMMIT`, Postgres writes and `fsync`s the WAL records for the transaction (sequential appends, fast); the modified data pages stay in shared buffers and are written later.\n\n```text\n client: UPDATE ... COMMIT\n   -> change page in shared_buffers (memory)\n   -> append WAL record -> fsync WAL -> \"COMMIT\" returned\n later: checkpointer / background writer flush dirty pages to data files\n crash: replay WAL from the last checkpoint -> consistent state\n```\n\nWhat hangs off the WAL:\n- **Crash recovery**: replay from the last checkpoint. Checkpoints (every `checkpoint_timeout`, 5 minutes by default, or when `max_wal_size` is reached) bound recovery time. After each checkpoint the first change to a page writes a **full page image** to the WAL (protection against torn pages), so very frequent checkpoints inflate WAL volume.\n- **Replication**: streaming replicas receive and replay WAL. Logical replication and CDC tools (Debezium) decode it into row changes.\n- **Point-in-time recovery**: base backup plus archived WAL lets you restore to any moment.\n- **`synchronous_commit`**: `off` returns before the WAL is flushed, trading the last few hundred milliseconds of commits on crash for lower latency (no corruption, just lost recent transactions). It can be set per transaction, for example for analytics events.\n\nOperational smells: WAL disk filling up because an inactive **replication slot** retains WAL forever, or because archiving is failing. Monitor `pg_replication_slots` and disk.\n\n## VACUUM, bloat and wraparound\nBecause updates and deletes leave dead tuples behind, something must reclaim them. That is VACUUM:\n\n- Plain `VACUUM` marks dead tuples' space reusable inside the table, updates the visibility map and freezes old tuples. It runs alongside normal traffic and does **not** usually shrink the file.\n- `VACUUM FULL` rewrites the table compactly but takes an `ACCESS EXCLUSIVE` lock for the whole time: the table is unavailable. `pg_repack` does the same online in most cases.\n- **autovacuum** triggers per table when dead tuples exceed `autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor * rows` (50 + 20% by default). On a 500-million-row table that means 100 million dead rows before it starts, so big, hot tables need per-table settings:\n\n```sql\nALTER TABLE events SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_cost_limit = 2000);\n```\n\n**Bloat** is space occupied by dead tuples or empty pages. Symptoms: table and index sizes growing while row count is flat, sequential scans getting slower, cache hit ratio dropping. Causes:\n1. **Long-running transactions** (or `idle in transaction` sessions, or abandoned replication slots, or old prepared transactions). VACUUM cannot remove any tuple that some open snapshot might still need, so one forgotten transaction open for six hours stops cleanup database-wide.\n2. autovacuum too slow for the update rate (cost limits too low, too few workers).\n3. Update-heavy patterns: a \"last_seen\" column updated on every request.\n\nCheck: `pg_stat_user_tables` (`n_dead_tup`, `last_autovacuum`), `pg_stat_activity` for old `xact_start`, and the `pgstattuple` extension for exact bloat.\n\n**Transaction ID wraparound.** Transaction ids are 32-bit, so comparisons are modulo about 4 billion with roughly 2 billion \"in the past\". VACUUM **freezes** old tuples so they are visible forever regardless of id. If freezing falls too far behind, Postgres forces aggressive anti-wraparound vacuums and, as a last resort, refuses new transactions to protect data. Several well-known outages (Sentry and Mailchimp's Mandrill both wrote public postmortems) were wraparound. Monitor `age(datfrozenxid)` per database.\n\n## TOAST: large values\nA tuple must fit in a page, so Postgres handles large values with **TOAST** (The Oversized-Attribute Storage Technique). When a row exceeds about 2 KB, variable-length values (`text`, `jsonb`, `bytea`) are first **compressed** (pglz, or `lz4` since PostgreSQL 14) and, if still too big, moved **out of line** into a separate TOAST table in chunks, leaving a pointer in the main tuple. A single value can be up to 1 GB.\n\nPractical consequences:\n- `SELECT *` on a table with large `jsonb` documents fetches and decompresses all of them; select only the columns you need.\n- Updating a small column leaves unchanged toasted values alone (they are not rewritten), but **updating a big jsonb field rewrites the whole value**, even to change one key. Hot, frequently patched blobs belong in narrower tables.\n- `pg_total_relation_size` includes TOAST; `pg_relation_size` does not. People miss where the gigabytes went.\n\n## Connections and pooling\nEach client connection is a **separate OS process** forked from the postmaster, with its own memory (a few MB at rest, much more when sorting with `work_mem`). Thousands of connections mean thousands of processes, context switching and snapshot overhead; throughput typically peaks at a modest multiple of CPU cores and then declines. `max_connections` defaults to 100.\n\nServerless functions and horizontally scaled services make this worse: 50 instances with a pool of 20 each is 1,000 connections. The fix is a **pooler** between app and database. **PgBouncer** modes:\n\n| Mode | Server connection held for | Breaks |\n|---|---|---|\n| session | whole client session | nothing, but little sharing |\n| transaction | one transaction | session state: `SET`, session advisory locks, `LISTEN`, temp tables, `WITH HOLD` cursors |\n| statement | one statement | multi-statement transactions |\n\nTransaction mode is the usual choice: hundreds of app connections share a few dozen server connections. Protocol-level prepared statements historically broke in transaction mode; PgBouncer 1.21 added support (`max_prepared_statements`), so check your version and driver. Managed alternatives: RDS Proxy, Supavisor, Neon's built-in pooler. Pool size rule of thumb: start near a small multiple of database cores and measure; bigger is not better.\n\n## Partitioning\nDeclarative partitioning splits one logical table into child tables by a key:\n\n```sql\nCREATE TABLE events (\n  id bigint GENERATED ALWAYS AS IDENTITY,\n  tenant_id bigint NOT NULL,\n  created_at timestamptz NOT NULL,\n  payload jsonb,\n  PRIMARY KEY (id, created_at)          -- unique keys must include the partition key\n) PARTITION BY RANGE (created_at);\n\nCREATE TABLE events_2026_10 PARTITION OF events\n  FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');\n```\n\nBenefits:\n- **Partition pruning**: a query with `created_at >= '2026-10-01'` only touches matching partitions.\n- **Cheap retention**: `DROP TABLE events_2025_01` (or `DETACH PARTITION ... CONCURRENTLY`) instead of a massive `DELETE` that creates bloat and WAL.\n- **Smaller indexes and per-partition vacuum.**\n\nCosts: queries without the partition key scan every partition; global unique constraints are impossible unless they include the key; too many partitions (thousands) slow planning; you must create future partitions (pg_partman or a scheduled job). Types: `RANGE` (time), `LIST` (region, tenant tier), `HASH` (spread evenly). Partition when a table is large enough that retention, vacuum or index size hurts, typically hundreds of millions of rows, not as a default.\n\n## Common mistakes\n- Treating `VACUUM FULL` as routine maintenance on a live table.\n- Ignoring `idle in transaction` sessions; set `idle_in_transaction_session_timeout`.\n- Adding indexes on frequently updated columns and losing HOT updates.\n- Huge `jsonb` blobs updated field by field.\n- Hundreds of direct connections from serverless functions.\n- Partitioning by a key queries do not filter on.\n\n## In the interview\n**What they probe:** whether you can connect symptoms (bloat, slow scans, connection errors, disk filling, wraparound warnings) to mechanisms and name the checks and fixes.\n\n**A 60-second answer outline:**\n1. Rows live in 8 KB heap pages; updates write new versions (MVCC), HOT avoids index updates.\n2. WAL makes commits durable and drives recovery, replication and PITR.\n3. VACUUM reclaims dead tuples and freezes old ones; long transactions and default autovacuum thresholds cause bloat; wraparound must be monitored.\n4. TOAST compresses and moves large values out of line.\n5. Connections are processes, so pool with PgBouncer in transaction mode; partition big time-series tables for pruning and cheap retention.\n\n**Follow-ups to expect:**\n- Why does one idle transaction cause bloat across the database?\n- What breaks in PgBouncer transaction mode?\n- What is a HOT update and how do you encourage it?\n- Why might the WAL disk fill up on a primary?",
+      "keyPoints": [
+        "Updates write new tuple versions in 8 KB heap pages; HOT updates skip index maintenance when no indexed column changes",
+        "A commit is durable once its WAL is flushed; WAL also drives recovery, replication and point-in-time restore",
+        "VACUUM reclaims dead tuples and freezes old ones; long transactions and default autovacuum thresholds cause bloat",
+        "TOAST compresses and moves large values out of line; updating a big jsonb rewrites the whole value",
+        "Connections are processes: pool with PgBouncer in transaction mode; partition big time-series tables for pruning and retention"
+      ],
+      "interview": [
+        "What is table bloat in PostgreSQL, what causes it and how do you fix it?",
+        "What is the write-ahead log and what depends on it?",
+        "How does PgBouncer transaction pooling work, and what breaks under it?",
+        "What is a HOT update in PostgreSQL and why does it matter?"
+      ],
+      "check": [
+        {
+          "q": "Dead tuples keep growing on many tables although autovacuum runs. pg_stat_activity shows a session idle in transaction for 9 hours. Why does that matter?",
+          "options": [
+            "Idle sessions consume autovacuum workers",
+            "It holds an ACCESS EXCLUSIVE lock on every table",
+            "VACUUM cannot remove tuples that an open snapshot might still need, so cleanup stalls",
+            "Idle transactions disable WAL archiving"
+          ],
+          "answer": 2,
+          "why": "The oldest open transaction sets the horizon for what VACUUM may remove; kill it and set idle_in_transaction_session_timeout."
+        },
+        {
+          "q": "Which feature breaks when an app moves from direct connections to PgBouncer in transaction mode?",
+          "options": [
+            "Multi-statement transactions",
+            "Session-level SET commands and session advisory locks",
+            "Foreign keys",
+            "Indexes on jsonb columns"
+          ],
+          "answer": 1,
+          "why": "Consecutive transactions may run on different server connections, so session state does not persist. Transactions themselves are fine."
+        },
+        {
+          "q": "Why is dropping a monthly partition better than DELETE FROM events WHERE created_at < cutoff?",
+          "options": [
+            "DELETE cannot use indexes",
+            "DROP is transactional and DELETE is not",
+            "Partitions are stored in memory",
+            "DROP removes files instantly, avoiding dead tuples, bloat, WAL volume and long vacuums"
+          ],
+          "answer": 3,
+          "why": "A huge DELETE marks millions of tuples dead and writes WAL for each; dropping or detaching a partition is a metadata operation."
+        }
+      ],
+      "resources": [
+        {
+          "title": "PostgreSQL docs: Routine Vacuuming",
+          "url": "https://www.postgresql.org/docs/current/routine-vacuuming.html"
+        },
+        {
+          "title": "PostgreSQL docs: Write-Ahead Logging",
+          "url": "https://www.postgresql.org/docs/current/wal-intro.html"
+        },
+        {
+          "title": "PostgreSQL docs: TOAST",
+          "url": "https://www.postgresql.org/docs/current/storage-toast.html"
+        },
+        {
+          "title": "PgBouncer features and pooling modes",
+          "url": "https://www.pgbouncer.org/features.html"
+        },
+        {
+          "title": "Brandur: How to Manage Connections Efficiently in Postgres",
+          "url": "https://brandur.org/postgres-connections"
+        },
+        {
+          "title": "PostgreSQL docs: Table Partitioning",
+          "url": "https://www.postgresql.org/docs/current/ddl-partitioning.html"
+        }
+      ]
+    }
+  ],
+  "projects": []
+}

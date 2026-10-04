@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickRoast, ROAST_LINES, withRoast } from "@/lib/domain/roast";
+import { pickRoast, ROAST_LINES, withRoast } from "@/modules/resume/domain/roast";
 
 describe("pickRoast", () => {
   it("is stable for the same slot and date, so a retried job sends the same line", () => {
@@ -34,7 +34,7 @@ describe("withRoast", () => {
   });
 });
 
-import { ROAST_LEVELS, effectiveRoastLevel, roastFor, roastSituation, type RoastContext } from "@/lib/domain/roast";
+import { ROAST_LEVELS, effectiveRoastLevel, roastFor, roastSituation, type RoastContext } from "@/modules/resume/domain/roast";
 
 describe("effectiveRoastLevel", () => {
   it("prefers the explicit level and maps the old on/off switch", () => {

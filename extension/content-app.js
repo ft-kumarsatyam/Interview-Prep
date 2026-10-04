@@ -1,5 +1,5 @@
 // Runs on the PrepOS page. Relays "ask-gemini" requests to the background worker and reports back.
-// Mirrors lib/domain/ask-bridge.ts: keep the constants and checks in sync.
+// Mirrors modules/ai/domain/ask-bridge.ts: keep the constants and checks in sync.
 const SOURCE_APP = "prepos-app";
 const SOURCE_EXT = "prepos-ext";
 const ATTR = "data-prepos-ext";
@@ -48,7 +48,7 @@ if (!arm()) {
 }
 
 // Job and profile captures: background -> this script -> the page (which validates and saves them).
-// Mirrors lib/domain/capture-bridge.ts.
+// Mirrors modules/jobs/domain/capture-bridge.ts.
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type !== "capture" || !document.documentElement.hasAttribute(ATTR)) return;
   reply({ type: "capture", id: msg.id, payload: msg.payload });

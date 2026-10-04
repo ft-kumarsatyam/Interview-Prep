@@ -10,8 +10,8 @@ import {
   slugifyTitle,
   toRunnable,
   validateCustomProblem,
-} from "@/lib/domain/custom-problem";
-import { problemTopics } from "@/lib/domain/problem-topics";
+} from "@/modules/dsa/domain/custom-problem";
+import { problemTopics } from "@/modules/progress/domain/problem-topics";
 
 const base = {
   title: "Two Sum",

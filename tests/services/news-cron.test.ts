@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { RawItem } from "@/lib/domain/news";
-import { DayLog } from "@/lib/models/day";
-import { Article, Notification, Settings } from "@/lib/models/system";
-import type { FeedFetcher } from "@/lib/news/fetch";
-import type { NotifyChannel } from "@/lib/notify";
-import { runBriefingTick } from "@/lib/services/briefing";
-import { runEvening, runMorning, runReminder } from "@/lib/services/cron";
-import type { Extractor } from "@/lib/news/extract";
+import type { RawItem } from "@/modules/news/domain/news";
+import { DayLog } from "@/core/models/day";
+import { Article, Notification, Settings } from "@/core/models/system";
+import type { FeedFetcher } from "@/modules/news/lib/fetch";
+import type { NotifyChannel } from "@/core/notify";
+import { runBriefingTick } from "@/modules/progress/services/briefing";
+import { runEvening, runMorning, runReminder } from "@/core/services/cron";
+import type { Extractor } from "@/modules/news/lib/extract";
 import {
   ensureArticleContent,
   getArticle,
@@ -17,10 +17,10 @@ import {
   refreshNews,
   retryArticleContent,
   setBookmark,
-} from "@/lib/services/news";
-import { notify } from "@/lib/services/notifications";
-import { invalidateSettings } from "@/lib/services/settings";
-import { getSetupChecklist } from "@/lib/services/setup";
+} from "@/modules/news/services/news";
+import { notify } from "@/modules/notifications/services/notifications";
+import { invalidateSettings } from "@/modules/settings/services/settings";
+import { getSetupChecklist } from "@/modules/planner/services/setup";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 process.env.CRON_SECRET = "cron-secret-cron-secret";

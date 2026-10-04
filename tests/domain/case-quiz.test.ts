@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { CASE_ANCHORS, MIN_QUESTIONS_PER_CASE, casePath, caseRef, parseCaseRef, pickCaseQuestions } from "@/lib/domain/case-quiz";
-import { buildCaseQuestions, type AuthoredCaseQuestion } from "@/lib/domain/case-quiz-build";
-import { seededRng } from "@/lib/domain/sampling";
-import { askSubjectForRef } from "@/lib/quiz/subject";
+import { CASE_ANCHORS, MIN_QUESTIONS_PER_CASE, casePath, caseRef, parseCaseRef, pickCaseQuestions } from "@/modules/design/domain/case-quiz";
+import { buildCaseQuestions, type AuthoredCaseQuestion } from "@/modules/design/domain/case-quiz-build";
+import { seededRng } from "@/core/domain/sampling";
+import { askSubjectForRef } from "@/modules/quiz/lib/subject";
 
 describe("case refs", () => {
   it("round-trips and rejects anything else", () => {

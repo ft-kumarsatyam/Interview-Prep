@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { aptitudeBank } from "@/lib/content";
-import { bankDifficultyCounts, bankKey, buildTopicQuestions, maxQuestions, questionIdentity } from "@/lib/domain/aptitude";
-import { pickCaseQuestions } from "@/lib/domain/case-quiz";
-import { pickTopicQuestions } from "@/lib/domain/mastery";
-import { buildHistory, mistakeWeight, outstandingMistakes, rotationWeight, ROTATION_RECOVERY_DAYS, seenSets } from "@/lib/domain/question-history";
-import { difficultyLayers, parseDifficulty } from "@/lib/domain/quiz";
-import { seededRng } from "@/lib/domain/sampling";
+import { aptitudeBank } from "@/core/content";
+import { bankDifficultyCounts, bankKey, buildTopicQuestions, maxQuestions, questionIdentity } from "@/modules/aptitude/domain/aptitude";
+import { pickCaseQuestions } from "@/modules/design/domain/case-quiz";
+import { pickTopicQuestions } from "@/modules/progress/domain/mastery";
+import { buildHistory, mistakeWeight, outstandingMistakes, rotationWeight, ROTATION_RECOVERY_DAYS, seenSets } from "@/modules/quiz/domain/question-history";
+import { difficultyLayers, parseDifficulty } from "@/modules/quiz/domain/quiz";
+import { seededRng } from "@/core/domain/sampling";
 
 const DAY = 86_400_000;
 

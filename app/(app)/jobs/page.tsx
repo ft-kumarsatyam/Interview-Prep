@@ -1,18 +1,22 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Briefcase, Compass } from "lucide-react";
-import { DiscoverFilters } from "@/components/jobs/discover-filters";
-import { LiveJobsBanner } from "@/components/live/live-jobs-banner";
-import { JobsTabs } from "@/components/jobs/jobs-tabs";
-import { PostingCard } from "@/components/jobs/posting-card";
-import { PrefsForm } from "@/components/jobs/prefs-form";
+import { DiscoverFilters } from "@/modules/jobs/components/discover-filters";
+import { LiveJobsBanner } from "@/core/components/live/live-jobs-banner";
+import { JobsTabs } from "@/modules/jobs/components/jobs-tabs";
+import { PostingCard } from "@/modules/jobs/components/posting-card";
+import { PrefsForm } from "@/modules/jobs/components/prefs-form";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { tierProfiles } from "@/lib/content";
-import { discoverJobs, getJobPrefs, listSources } from "@/lib/services/job-discovery";
-import { listJobs } from "@/lib/services/jobs";
-import { RefreshButton } from "@/components/jobs/refresh-button";
+import { tierProfiles } from "@/core/content";
+import { discoverJobs, getJobPrefs, listSources } from "@/modules/jobs/services/job-discovery";
+import { listJobs } from "@/modules/jobs/services/jobs";
+import { NextStep } from "@/modules/jobs/components/next-step";
+import { getJobOverview } from "@/modules/jobs/services/job-overview";
+import { todayIn } from "@/modules/planner/services/plan";
+import { getSettings } from "@/modules/settings/services/settings";
+import { RefreshButton } from "@/modules/jobs/components/refresh-button";
 
 export const metadata: Metadata = { title: "Jobs" };
 /** The Refresh button reads company boards in a Server Action, which needs the full minute. */
@@ -29,6 +33,7 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
   const kind = one(sp.kind);
   const now = new Date();
   const pageSize = Math.min(150, Math.max(30, num(sp.n) ?? 30));
+  const overview = await getJobOverview(todayIn(await getSettings()));
   const [prefs, found, sources, tracked] = await Promise.all([
     getJobPrefs(),
     discoverJobs({ q: one(sp.q), kind: kind === "boards" || kind === "remote" ? kind : "all", tier: one(sp.tier) || undefined, remote: one(sp.remote) === "1", days: num(sp.days), min: num(sp.min), showDismissed: one(sp.dismissed) === "1", limit: pageSize }, now),
@@ -46,6 +51,7 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
         <RefreshButton />
       </PageHeader>
       <JobsTabs active="discover" trackerCount={tracked.length} />
+      <NextStep next={overview.next} />
 
       <div className="space-y-5">
         <LiveJobsBanner />

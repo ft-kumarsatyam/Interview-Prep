@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { BacklogPull } from "@/lib/models/backlog";
-import { Settings } from "@/lib/models/system";
+import { BacklogPull } from "@/core/models/backlog";
+import { Settings } from "@/core/models/system";
 import {
   dismissBacklogItem,
   ensureBacklogQueue,
   getBacklog,
+  getBacklogForDay,
   getBacklogMail,
+  listPulledDates,
   loadBacklogItems,
   loadBacklogMail,
   pullBacklogItem,
@@ -13,10 +15,10 @@ import {
   restoreBacklogItem,
   snoozeBacklogItem,
   unpullBacklogItem,
-} from "@/lib/services/backlog";
-import { ensureToday } from "@/lib/services/plan";
-import { invalidateSettings, setBacklogBudget } from "@/lib/services/settings";
-import { addTarget, getTargetDetail, getTargetsOverview, listTargets, loadCompanyGaps, removeTarget, setPinned, updateTarget, MAX_TARGETS } from "@/lib/services/targets";
+} from "@/modules/progress/services/backlog";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { invalidateSettings, setBacklogBudget } from "@/modules/settings/services/settings";
+import { addTarget, getTargetDetail, getTargetsOverview, listTargets, loadCompanyGaps, removeTarget, setPinned, updateTarget, MAX_TARGETS } from "@/modules/targets/services/targets";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);
@@ -122,6 +124,45 @@ describe("the daily queue", () => {
     expect(mail.budget).toBe(2);
     expect(mail.groups.reduce((n, g) => n + g.total, 0)).toBe(mail.total);
     expect(mail.groups.every((g) => g.items.length <= g.total)).toBe(true);
+  });
+});
+
+describe("placing items on days", () => {
+  it("a pull for a later day shows on that day only, and can be taken back", async () => {
+    const c = await ctx();
+    const item = (await getBacklog(c)).open[0]!;
+    const later = "2026-10-23";
+    await pullBacklogItem(item.key, later);
+
+    expect((await getBacklog(c)).queue.map((i) => i.key)).not.toContain(item.key); // not today
+    expect((await listPulledDates(c.today)).get(item.key)).toEqual([later]);
+
+    const day = await getBacklogForDay(c, later);
+    expect(day.queued.map((i) => i.key)).toEqual([item.key]);
+    expect(day.available.map((i) => i.key)).not.toContain(item.key);
+    expect(day.available.length).toBeGreaterThan(0);
+
+    await unpullBacklogItem(item.key, later);
+    expect((await getBacklogForDay(c, later)).queued).toEqual([]);
+    expect((await listPulledDates(c.today)).has(item.key)).toBe(false);
+  });
+
+  it("an item placed on two days appears on both, in date order", async () => {
+    const c = await ctx();
+    const item = (await getBacklog(c)).open[0]!;
+    await pullBacklogItem(item.key, "2026-10-25");
+    await pullBacklogItem(item.key, "2026-10-22");
+    expect((await listPulledDates(c.today)).get(item.key)).toEqual(["2026-10-22", "2026-10-25"]);
+  });
+
+  it("a dismissed item is not offered for a day", async () => {
+    const c = await ctx();
+    const item = (await getBacklog(c)).open[0]!;
+    await pullBacklogItem(item.key, "2026-10-23");
+    await dismissBacklogItem(item.key);
+    const day = await getBacklogForDay(c, "2026-10-23");
+    expect(day.queued).toEqual([]);
+    expect(day.available.map((i) => i.key)).not.toContain(item.key);
   });
 });
 

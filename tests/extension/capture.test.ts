@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { captureAck, drainRequest, parseCapture } from "@/lib/domain/capture-bridge";
-import { jobCaptureSchema } from "@/lib/domain/jobs";
+import { captureAck, drainRequest, parseCapture } from "@/modules/jobs/domain/capture-bridge";
+import { jobCaptureSchema } from "@/modules/jobs/domain/jobs";
 
 /** Pulls `extractPage` out of the extension's background.js so the real function is what gets tested. */
 function loadExtractor(): (html: string, url: string) => unknown {

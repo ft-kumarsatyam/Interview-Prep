@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { shouldRenew } from "@/lib/domain/session-policy";
-import { renewSessionOn, SESSION_COOKIE, verifySession } from "@/lib/auth/session";
+import { shouldRenew } from "@/core/domain/session-policy";
+import { renewSessionOn, SESSION_COOKIE, verifySession } from "@/core/auth/session";
 
 /**
  * Optimistic gate: bounce signed-out visitors to /login and signed-in ones away

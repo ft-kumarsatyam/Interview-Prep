@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { problems, subtopics } from "@/lib/content";
-import { DailyPlan, DayLog, Quiz } from "@/lib/models/day";
-import { ProblemProgress } from "@/lib/models/progress";
-import { Notification, Settings } from "@/lib/models/system";
-import { recomputeDay } from "@/lib/services/day";
-import { ensureToday } from "@/lib/services/plan";
-import { recordSolve, toggleSubtopic } from "@/lib/services/progress";
+import { problems, subtopics } from "@/core/content";
+import { DailyPlan, DayLog, Quiz } from "@/core/models/day";
+import { ProblemProgress } from "@/core/models/progress";
+import { Notification, Settings } from "@/core/models/system";
+import { recomputeDay } from "@/modules/planner/services/day";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { recordSolve, toggleSubtopic } from "@/modules/progress/services/progress";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

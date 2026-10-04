@@ -1,9 +1,9 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { CopyAndOpen } from "@/components/dsa/copy-and-open";
-import { ProblemStatement, ProblemStatementSkeleton } from "@/components/dsa/problem-statement";
-import { LcProblemCache } from "@/lib/models/lc";
+import { CopyAndOpen } from "@/modules/dsa/components/copy-and-open";
+import { ProblemStatement, ProblemStatementSkeleton } from "@/modules/dsa/components/problem-statement-section";
+import { LcProblemCache } from "@/core/models/lc";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

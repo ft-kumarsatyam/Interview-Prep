@@ -4,12 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useReducer, useState } from "react";
 import { Check, ChevronDown, Flame, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import { readPref, useHydrated, writePref } from "@/components/ide/use-client-prefs";
-import { useModKey } from "@/components/playground/use-mod-key";
+import { readPref, useHydrated, writePref } from "@/modules/dsa/components/ide/use-client-prefs";
+import { useModKey } from "@/modules/dsa/components/playground/use-mod-key";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { NavBadges, NavToday } from "@/lib/services/nav";
-import { cn } from "@/lib/utils";
+import type { NavBadges, NavToday } from "@/core/services/nav";
+import { cn } from "@/core/utils";
 import { BadgeMark, PendingBar, TodayMiniCard, badgeLabel, hubBadge, pageBadge, todayRows, type Badge } from "./app-nav";
 import { NAV_HUBS, OPEN_HUBS_KEY, SIDEBAR_COOKIE, hubFor, pageFor, parseOpenHubs, toggleHub, type NavHub, type NavPage } from "./nav-items";
 

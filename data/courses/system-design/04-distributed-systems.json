@@ -1,0 +1,462 @@
+{
+  "chapter": {
+    "id": "distributed-systems",
+    "title": "Distributed systems fundamentals",
+    "summary": "Consensus with Raft, transactions across shards and services (2PC, sagas, outbox), and CAP, PACELC and the consistency models that decide what users can observe."
+  },
+  "lessons": [
+    {
+      "id": "consensus-raft",
+      "title": "Consensus and Raft",
+      "minutes": 40,
+      "summary": "Replicated state machines, majority quorums, Raft leader election, log replication and its safety rules, linearizable reads, membership changes and how etcd, CockroachDB and Kafka use it.",
+      "parts": [
+        {
+          "id": "why-election",
+          "label": "Why and election",
+          "body": "## The problem consensus solves\n\nYou want a piece of state (a configuration, a lock owner, a database's committed log) that survives machine failures. So you keep copies on several machines. Now the copies must **agree**: on which writes happened, and in what order, even when machines crash, restart and messages are delayed or lost. Getting a group of machines to agree on a single value (or a sequence of values) despite failures is the **consensus** problem.\n\nThe standard trick is the **replicated state machine**: if every replica starts in the same state and applies the same commands in the same order, deterministically, every replica ends in the same state. So the whole job reduces to agreeing on an ordered **log** of commands. etcd (the store behind Kubernetes), Consul, CockroachDB, TiKV, YugabyteDB and Kafka's KRaft mode all do exactly this with Raft.\n\nAn analogy: a committee keeps minutes. Only the chair writes entries; an entry becomes official once a majority of members have a copy in their notebooks; if the chair disappears, the members elect a new chair, and the rules guarantee no official entry is ever lost or reordered.\n\n## Why majorities\n\nRaft (like Paxos) uses **majority quorums**. With `N = 2f + 1` servers, the cluster tolerates `f` crashed servers:\n\n| Cluster size | Majority | Failures tolerated |\n|---|---|---|\n| 3 | 2 | 1 |\n| 5 | 3 | 2 |\n| 7 | 4 | 3 |\n\nAny two majorities overlap in at least one server. That overlap is the whole safety argument: anything committed by one majority is seen by every later majority (for example, the one that elects the next leader). It is also why 4 servers tolerate no more failures than 3 (majority 3, tolerate 1), and why even sizes are pointless. More servers means more fault tolerance but slower writes, since each write waits for more acknowledgements; 3 or 5 is the norm.\n\n## What consensus cannot do\n\n- **The FLP result** (Fischer, Lynch, Paterson, 1985) proves that in a fully asynchronous network no deterministic algorithm can guarantee consensus terminates if even one process may crash. Practical algorithms keep **safety always** (never disagree) and rely on timeouts for **liveness** (make progress when the network behaves reasonably). Raft can stall during pathological timing, but it never returns two different answers.\n- Raft tolerates **crash faults**, not **Byzantine** (lying or malicious) nodes. Blockchains and some aerospace systems need BFT protocols such as PBFT; normal datacentre infrastructure does not.\n- A minority partition **cannot** make progress. That is a feature: it is precisely what keeps the two sides from diverging.\n\n## Why Raft exists\n\nPaxos (Lamport) was correct but famously hard to understand and to turn into a complete system. Diego Ongaro and John Ousterhout designed Raft (USENIX ATC 2014, \"In Search of an Understandable Consensus Algorithm\") with **understandability** as the main goal. They split the problem into three mostly independent pieces: **leader election**, **log replication** and **safety**, and they reduced the state space (for example, logs never have holes). The raft.github.io site has the paper, a visualisation you can click through, and a list of implementations.\n\n## Roles and terms\n\nEvery server is in one of three states:\n\n- **Follower**: passive, responds to requests from leaders and candidates.\n- **Candidate**: trying to become leader.\n- **Leader**: handles all client writes, replicates the log, sends heartbeats.\n\nTime is divided into **terms**, numbered consecutively. Each term begins with an election; at most one leader can win in a term. Terms act as a **logical clock**: every message carries the sender's term; a server that sees a higher term immediately updates its own and steps down to follower; a request with a stale term is rejected. This is how an old leader that was partitioned away discovers it has been replaced.\n\n## Leader election step by step\n\n1. A follower hears nothing from a leader for its **election timeout** (randomised; the paper suggests something like 150-300 ms).\n2. It increments its term, becomes a candidate, votes for itself, and sends `RequestVote(term, candidateId, lastLogIndex, lastLogTerm)` to all others.\n3. Each server grants **at most one vote per term**, first come first served, and only if the candidate's log is **at least as up-to-date** as its own: compare last entry terms first; if equal, the longer log wins. This is the **election restriction**, and it is what guarantees a new leader already holds every committed entry.\n4. A candidate with votes from a majority becomes leader and immediately sends heartbeats (empty `AppendEntries`) to assert authority and stop new elections.\n5. If two candidates split the vote, nobody wins; their timeouts expire at different random times, and one usually starts the next term first and wins.\n\nRandomised timeouts are the simple trick that makes split votes rare without any extra protocol. The paper's guidance on timing is `broadcastTime << electionTimeout << MTBF`: heartbeats must be much faster than the timeout, and the timeout much shorter than the time between failures.\n\n## Worked example: 5 servers, leader S1 crashes\n\n- Term 3, S1 is leader. S1 crashes.\n- S4's timer fires first (say at 180 ms). S4 moves to term 4, votes for itself, asks S2, S3, S5.\n- S2 and S3 have logs no newer than S4's: they vote yes. S4 has 3 of 5 votes, becomes leader for term 4.\n- S5's timer had fired at 210 ms, but it received S4's heartbeat with term 4 first, so it stays a follower.\n- S1 restarts with term 3, receives a heartbeat with term 4, and becomes a follower. Its uncommitted entries (if any) will be overwritten by S4's log.\n\n## Interview angle\n\nInterviewers usually do not want the full protocol; they want to see that you know *why* it works: majorities overlap, terms fence off stale leaders, randomised timeouts avoid split votes, and the election restriction keeps committed data. Be ready for: \"Why an odd number of nodes?\", \"What happens during a network partition?\" (the majority side elects a leader and continues; the minority side cannot commit), and \"Why not just use a primary with async replication?\" (failover can lose acknowledged writes or create two primaries).",
+          "diagrams": [
+            {
+              "title": "Raft server roles",
+              "code": "stateDiagram-v2\n  [*] --> Follower\n  Follower --> Candidate: election timeout, no heartbeat\n  Candidate --> Candidate: split vote, new term after timeout\n  Candidate --> Leader: votes from a majority\n  Candidate --> Follower: sees current leader or higher term\n  Leader --> Follower: sees higher term"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "replication-safety",
+          "label": "Replication and safety",
+          "body": "## Log replication\n\nOnce elected, the leader serves all writes:\n\n1. A client sends a command (`SET x = 5`). The leader appends it to its own log as entry `(index, term, command)`.\n2. The leader sends `AppendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries[], leaderCommit)` to every follower, in parallel.\n3. A follower accepts only if its log has an entry at `prevLogIndex` with term `prevLogTerm`. That **consistency check** works like induction: if each append matches the previous entry, the follower's log is identical to the leader's up to that point.\n4. When the entry is stored on a **majority** (leader included), the leader marks it **committed**, applies it to its state machine and replies to the client.\n5. Followers learn the new commit index from `leaderCommit` in the next `AppendEntries` (or heartbeat) and apply entries up to it.\n\nFor a 5-node cluster, a write is acknowledged after the leader plus 2 followers have it on durable storage: one network round trip plus an fsync on the critical path, which is why consensus writes typically cost a few milliseconds in one region and tens to hundreds of milliseconds across regions.\n\n## Repairing divergent logs\n\nAfter crashes and leader changes, a follower's log can be missing entries or contain extra uncommitted entries from an old term. The leader fixes this without any special recovery mode:\n\n- The leader keeps `nextIndex[follower]`, initially its own last index + 1.\n- If `AppendEntries` fails the consistency check, the leader decrements `nextIndex` and retries with an earlier `prevLogIndex`.\n- Eventually they find the last matching entry; the follower **deletes everything after it** and appends the leader's entries.\n\nLeaders never overwrite or delete their own entries (the **leader append-only** property); only followers' conflicting tails are replaced. Implementations speed up the backtracking by having the follower return the conflicting term and its first index, so the leader can skip a whole term at once.\n\n## The safety properties\n\nThe paper lists the guarantees Raft maintains at all times:\n\n| Property | Meaning |\n|---|---|\n| Election safety | At most one leader per term |\n| Leader append-only | A leader never overwrites or deletes entries in its log |\n| Log matching | If two logs have an entry with the same index and term, the logs are identical up to that index |\n| Leader completeness | A committed entry appears in the logs of all future leaders |\n| State machine safety | If a server applies an entry at an index, no server ever applies a different entry at that index |\n\n## The subtle rule: commit only current-term entries by counting\n\nHere is the trap that Figure 8 of the Raft paper illustrates. Suppose a leader in term 2 replicated an entry to a minority, crashed, and a later leader in term 4 sees that old term-2 entry now stored on a majority. It is **not safe** to declare it committed just because a majority has it: a different server could still win an election (with a log from term 3 that is \"more up to date\") and overwrite it.\n\nRaft's fix: a leader only commits entries **from its own current term** by counting replicas. Once a current-term entry is committed, all earlier entries are committed indirectly by the log matching property. That is also why a new leader appends a **no-op entry** at the start of its term: it lets the leader commit quickly and learn exactly what is committed.\n\n## Reads are not free\n\nA naive \"read from the leader's state\" can be stale: a deposed leader that has not yet noticed a new election could return old data. Options:\n\n- **Log reads**: put the read through the log like a write. Linearizable, but costs a full consensus round.\n- **ReadIndex**: the leader records its current commit index, confirms it is still leader with a round of heartbeats to a majority, waits until it has applied up to that index, then serves the read locally. Linearizable with one round trip and no disk write.\n- **Lease reads**: after a successful heartbeat round, the leader assumes nobody else can be elected for slightly less than the election timeout and serves reads locally without further messages. Fast, but relies on bounded clock drift.\n- **Follower reads**: serve from followers, possibly stale; fine for many use cases if you state the staleness bound (CockroachDB's follower reads and etcd's serializable reads are examples).\n\n## Cluster membership changes\n\nSwitching directly from configuration `{A,B,C}` to `{A,B,C,D,E}` is dangerous: during the transition, `{A,B}` could be a majority of the old config while `{C,D,E}` is a majority of the new one, giving two leaders. Raft offers:\n\n- **Joint consensus** (original paper): a transitional configuration requiring majorities of both old and new sets.\n- **Single-server changes** (Ongaro's thesis): add or remove one server at a time; any majority of the old and new configs then overlap automatically. Most implementations use this, often with **learner** (non-voting) members that catch up on the log before getting a vote, so adding a node does not reduce availability.\n\n## Log compaction\n\nThe log cannot grow forever. Each server periodically takes a **snapshot** of its state machine at some applied index and discards log entries up to that index. A follower that has fallen too far behind receives the snapshot via `InstallSnapshot` instead of individual entries.\n\n## Interview angle\n\nThe interviewer may ask \"how does Raft decide a write is durable?\" or \"can a committed write be lost if the leader crashes?\". Answer: committed means stored on a majority; any future leader must win votes from a majority, which overlaps the one holding the entry, and the election restriction refuses votes to candidates with less up-to-date logs, so the entry survives. Then mention the current-term commit rule as the subtle part; it shows you have read the paper rather than a summary.",
+          "diagrams": [
+            {
+              "title": "Committing one write in a 3-node cluster",
+              "code": "sequenceDiagram\n  participant C as Client\n  participant L as Leader S1\n  participant F2 as Follower S2\n  participant F3 as Follower S3\n  C->>L: SET x = 5\n  L->>L: append entry (index 7, term 4)\n  par replicate\n    L->>F2: AppendEntries(prev 6/4, entry 7)\n    L->>F3: AppendEntries(prev 6/4, entry 7)\n  end\n  F2-->>L: success (fsynced)\n  Note over L: leader + S2 = majority of 3, commit index 7\n  L->>L: apply to state machine\n  L-->>C: OK\n  F3-->>L: success (late, fine)\n  L->>F2: heartbeat with leaderCommit 7"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "production-lld",
+          "label": "Production and LLD",
+          "body": "## Where Raft shows up in real systems\n\nYou will rarely implement Raft at work, but you will constantly design on top of it:\n\n| System | What Raft protects |\n|---|---|\n| etcd | The whole key-value store; Kubernetes keeps all cluster state here |\n| Consul | Service catalogue and KV in the server cluster |\n| CockroachDB, TiKV, YugabyteDB | Each data **range** (tens to hundreds of MB) is its own Raft group, so a cluster runs thousands of groups (multi-Raft) |\n| Kafka (KRaft) | Cluster metadata, replacing ZooKeeper since Kafka 4.0 removed ZooKeeper mode |\n| HashiCorp Vault (integrated storage), RabbitMQ quorum queues | Durable replicated state |\n\nNotice the pattern: consensus is used for **small, critical, strongly consistent state** (metadata, configuration, locks, leases) or applied per shard so that the cost scales out. Nobody runs one Raft group over a petabyte; they partition data into ranges and run one group per range.\n\n## What consensus gives you as a building block\n\n- **Leader election / single active instance.** \"Only one scheduler may run at a time.\" Use an etcd lease or a Consul session; the holder must renew it, and if it dies the lease expires.\n- **Distributed locks, done carefully.** A lock service on consensus is better than an ad hoc Redis lock, but a process can still pause (GC, VM migration) past its lease and then act. Martin Kleppmann's analysis of Redlock makes the point: protect the resource with a **fencing token**, a monotonically increasing number (etcd's revision works) that the storage layer checks, so a stale lock holder's writes are rejected.\n- **Configuration and service discovery** with watch notifications.\n- **Strongly consistent metadata** for larger systems: which shard lives where, which node owns which partition.\n\n## Performance and operational numbers\n\n- **Write latency** is at least one round trip from leader to the fastest majority plus a durable disk write. Within one region that is a few ms on SSDs; across regions it is bounded below by the speed of light between the closest majority (for example ~60-80 ms round trip between US East and US West).\n- **Throughput** is limited by the single leader. Batching (many entries per `AppendEntries`, one fsync per batch) and pipelining (do not wait for one round before sending the next) are standard. To scale further, shard into many Raft groups.\n- **etcd** recommends small values and a modest total database size; its default storage quota is 2 GB, configurable up to a suggested maximum of 8 GB. It is a coordination store, not a general database.\n- **Disk latency matters**: slow fsync on the leader directly slows every write, and on followers it can trigger elections. etcd's docs specifically warn about this and recommend fast SSDs.\n- **Election timeouts** are a trade-off: too short and GC pauses or network blips cause needless elections (unavailable for the duration); too long and real failures take longer to detect.\n\n## Failure scenarios to reason through\n\n1. **Leader crashes.** Followers time out, elect a new leader within roughly one to two election timeouts. Writes in flight that were not committed may be lost; clients must retry (idempotently).\n2. **Network partition 2 | 3 in a 5-node cluster.** The 3-side elects a leader (if the old one was on the 2-side) and continues. The old leader on the 2-side cannot commit anything; once it hears a higher term it steps down. Clients connected to the minority side see errors or timeouts.\n3. **Flapping follower** with a partially broken network keeps starting elections with higher terms and disrupting a healthy leader. Fix: **PreVote** (a candidate first checks whether it *could* win before incrementing its term) and **CheckQuorum** (a leader steps down if it cannot reach a majority). etcd supports both.\n4. **Slow disk on the leader.** All writes slow; consider leadership transfer to a healthier node.\n5. **Losing a majority permanently.** The cluster cannot make progress and must be recovered manually from a snapshot, accepting possible data loss. Back up regularly and spread members across failure domains (three availability zones for a 3- or 5-node cluster).\n\n## LLD: the core RPC handlers\n\nAn interview may ask you to sketch the RequestVote and AppendEntries handlers. The Go code below follows Figure 2 of the paper (persisted state: `currentTerm`, `votedFor`, `log`), leaving out networking, persistence and timers. Notice how little code the core rules take; most of the difficulty in production Raft is in everything around it (persistence ordering, snapshots, membership changes, flow control).\n\nPoints to call out while writing:\n\n- Persist `currentTerm`, `votedFor` and log entries **before** replying; otherwise a crash could let a server vote twice in a term.\n- Step down whenever any message has a higher term.\n- The up-to-date comparison is on the **last log term first**, then length.\n- Truncate the follower's log only on an actual conflict, not on every append (an old, reordered `AppendEntries` must not delete newer entries).\n\n## Interview angle\n\nA good system design answer uses consensus surgically: \"The shard map and leader leases live in etcd (Raft, 3 nodes across 3 AZs). Data itself is sharded; each shard has its own Raft group so writes scale with the number of shards. Reads that must be fresh go through ReadIndex; dashboards use follower reads.\" Follow-ups: \"What happens to writes during an election?\" (unavailable for up to a few hundred ms, clients retry), \"Why not 2PC instead?\" (2PC is atomic commitment across different data, consensus is replication of the same data; Spanner and CockroachDB use both), \"How do you avoid a stale lock holder corrupting data?\" (fencing tokens).",
+          "diagrams": [
+            {
+              "title": "A 2 | 3 partition in a 5-node cluster",
+              "code": "flowchart LR\n  subgraph majority[\"Majority side: S3, S4, S5\"]\n    s3[\"S3\"]\n    s4[\"S4 new leader, term 5\"]\n    s5[\"S5\"]\n  end\n  subgraph minority[\"Minority side: S1, S2\"]\n    s1[\"S1 old leader, term 4\"]\n    s2[\"S2\"]\n  end\n  clientA[\"Client A\"] --> s4\n  clientB[\"Client B\"] --> s1\n  s1 -.->|\"cannot reach majority, commits nothing\"| s2"
+            }
+          ],
+          "code": [
+            {
+              "lang": "go",
+              "source": "package raft\n\nimport \"sync\"\n\ntype Entry struct {\n\tTerm    int\n\tCommand []byte\n}\n\ntype Role int\n\nconst (\n\tFollower Role = iota\n\tCandidate\n\tLeader\n)\n\ntype Node struct {\n\tmu          sync.Mutex\n\tid          int\n\trole        Role\n\tcurrentTerm int     // persisted\n\tvotedFor    int     // persisted, -1 = none\n\tlog         []Entry // persisted; log[0] is a sentinel {Term: 0} so indexes start at 1\n\tcommitIndex int\n\tpersist     func() // must fsync term, vote and log before we reply\n\tresetTimer  func() // restart the randomised election timeout\n}\n\ntype RequestVoteArgs struct{ Term, CandidateID, LastLogIndex, LastLogTerm int }\ntype RequestVoteReply struct {\n\tTerm        int\n\tVoteGranted bool\n}\n\nfunc (n *Node) lastIndexTerm() (int, int) {\n\ti := len(n.log) - 1\n\treturn i, n.log[i].Term\n}\n\nfunc (n *Node) stepDownIfStale(term int) {\n\tif term > n.currentTerm {\n\t\tn.currentTerm, n.votedFor, n.role = term, -1, Follower\n\t}\n}\n\nfunc (n *Node) RequestVote(a RequestVoteArgs) RequestVoteReply {\n\tn.mu.Lock()\n\tdefer n.mu.Unlock()\n\tn.stepDownIfStale(a.Term)\n\tif a.Term < n.currentTerm {\n\t\treturn RequestVoteReply{Term: n.currentTerm}\n\t}\n\tmyIdx, myTerm := n.lastIndexTerm()\n\t// Election restriction: candidate's log must be at least as up to date (last term first, then length).\n\tupToDate := a.LastLogTerm > myTerm || (a.LastLogTerm == myTerm && a.LastLogIndex >= myIdx)\n\tif (n.votedFor == -1 || n.votedFor == a.CandidateID) && upToDate {\n\t\tn.votedFor = a.CandidateID\n\t\tn.persist() // never vote twice in one term, even across a crash\n\t\tn.resetTimer()\n\t\treturn RequestVoteReply{Term: n.currentTerm, VoteGranted: true}\n\t}\n\tn.persist()\n\treturn RequestVoteReply{Term: n.currentTerm}\n}\n\ntype AppendEntriesArgs struct {\n\tTerm, LeaderID, PrevLogIndex, PrevLogTerm, LeaderCommit int\n\tEntries                                                 []Entry\n}\ntype AppendEntriesReply struct {\n\tTerm    int\n\tSuccess bool\n}\n\nfunc (n *Node) AppendEntries(a AppendEntriesArgs) AppendEntriesReply {\n\tn.mu.Lock()\n\tdefer n.mu.Unlock()\n\tn.stepDownIfStale(a.Term)\n\tif a.Term < n.currentTerm {\n\t\treturn AppendEntriesReply{Term: n.currentTerm} // stale leader: it will step down\n\t}\n\tn.role = Follower // a candidate that hears from the current-term leader steps back\n\tn.resetTimer()\n\n\t// Consistency check: we must hold the entry the leader's new entries follow.\n\tif a.PrevLogIndex >= len(n.log) || n.log[a.PrevLogIndex].Term != a.PrevLogTerm {\n\t\treturn AppendEntriesReply{Term: n.currentTerm}\n\t}\n\t// Append, truncating only on a real conflict so a delayed, older RPC cannot erase newer entries.\n\tfor i, e := range a.Entries {\n\t\tidx := a.PrevLogIndex + 1 + i\n\t\tif idx < len(n.log) {\n\t\t\tif n.log[idx].Term == e.Term {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tn.log = n.log[:idx]\n\t\t}\n\t\tn.log = append(n.log, a.Entries[i:]...)\n\t\tbreak\n\t}\n\tn.persist()\n\tif a.LeaderCommit > n.commitIndex {\n\t\tn.commitIndex = min(a.LeaderCommit, a.PrevLogIndex+len(a.Entries))\n\t}\n\treturn AppendEntriesReply{Term: n.currentTerm, Success: true}\n}\n\n// Leader side: an index is committed when a majority stores it AND it is from the current term.\nfunc (n *Node) advanceCommit(matchIndex []int) {\n\tfor idx := len(n.log) - 1; idx > n.commitIndex; idx-- {\n\t\tif n.log[idx].Term != n.currentTerm {\n\t\t\tbreak // Figure 8: never commit an older-term entry by counting replicas\n\t\t}\n\t\tcount := 1 // the leader itself\n\t\tfor peer, m := range matchIndex {\n\t\t\tif peer != n.id && m >= idx {\n\t\t\t\tcount++\n\t\t\t}\n\t\t}\n\t\tif count > len(matchIndex)/2 {\n\t\t\tn.commitIndex = idx\n\t\t\treturn\n\t\t}\n\t}\n}"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Commit a write (single region)",
+          "time": "1 RTT + fsync, a few ms",
+          "space": "-"
+        },
+        {
+          "op": "Commit a write (multi-region)",
+          "time": "RTT to nearest majority, tens of ms+",
+          "space": "-"
+        },
+        {
+          "op": "ReadIndex read",
+          "time": "1 heartbeat round, no fsync",
+          "space": "-"
+        },
+        {
+          "op": "Lease read",
+          "time": "local, no messages",
+          "space": "-"
+        },
+        {
+          "op": "Failover",
+          "time": "~1-2 election timeouts",
+          "space": "-"
+        },
+        {
+          "op": "Fault tolerance with N = 2f + 1",
+          "time": "f failures",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Consensus agrees on an ordered log; replicas applying the same log deterministically end in the same state.",
+        "Majority quorums overlap, so anything committed is seen by every future leader; use 3 or 5 nodes.",
+        "Terms are a logical clock that fences stale leaders; randomised election timeouts make split votes rare.",
+        "The election restriction only elects candidates whose log is at least as up to date, so committed entries survive.",
+        "Leaders commit only current-term entries by counting replicas; older entries commit indirectly (Figure 8).",
+        "Plain leader reads can be stale; use ReadIndex, leases or log reads for linearizable reads.",
+        "Use consensus for small critical state or per shard (multi-Raft); protect resources with fencing tokens."
+      ],
+      "problems": [],
+      "practiceRef": "hld-consistency:2",
+      "check": [
+        {
+          "q": "Why does a 4-node Raft cluster tolerate no more failures than a 3-node cluster?",
+          "options": [
+            "Raft only supports odd sizes",
+            "A majority of 4 is 3, so it still survives only 1 failure while adding write latency",
+            "The fourth node is always a learner",
+            "Elections cannot complete with an even number of nodes"
+          ],
+          "answer": 1,
+          "why": "Tolerated failures = N minus majority. For 3 that is 3 - 2 = 1; for 4 it is 4 - 3 = 1. The extra node only adds another replica to wait for."
+        },
+        {
+          "q": "A follower refuses to vote for a candidate in a new term even though it has not voted yet. What is the most likely reason?",
+          "options": [
+            "The candidate's log is less up to date than the follower's",
+            "The candidate's term is higher",
+            "The follower is in a minority partition",
+            "The candidate already has a majority"
+          ],
+          "answer": 0,
+          "why": "The election restriction denies votes to candidates whose last log term is lower, or equal with a shorter log, so no leader can be missing committed entries."
+        },
+        {
+          "q": "Why can a deposed leader serving reads straight from its own state return stale data?",
+          "options": [
+            "Its state machine applies entries out of order",
+            "Followers forward writes to it",
+            "A new leader may have been elected and committed writes it has not seen yet",
+            "Raft logs are eventually consistent"
+          ],
+          "answer": 2,
+          "why": "Until it hears a higher term, the old leader believes it still leads. ReadIndex (confirm leadership with a majority) or leases prevent serving those stale reads."
+        }
+      ],
+      "sources": [
+        {
+          "title": "The Raft consensus algorithm (site, visualisation, implementations)",
+          "url": "https://raft.github.io/"
+        },
+        {
+          "title": "Ongaro and Ousterhout: In Search of an Understandable Consensus Algorithm",
+          "url": "https://raft.github.io/raft.pdf"
+        },
+        {
+          "title": "Designing Data-Intensive Applications (Kleppmann)",
+          "url": "https://dataintensive.net/"
+        },
+        {
+          "title": "etcd-io/raft: the Raft library used by etcd and others",
+          "url": "https://github.com/etcd-io/raft"
+        },
+        {
+          "title": "Martin Kleppmann: How to do distributed locking",
+          "url": "https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"
+        },
+        {
+          "title": "etcd docs: hardware recommendations",
+          "url": "https://etcd.io/docs/v3.5/op-guide/hardware/"
+        }
+      ]
+    },
+    {
+      "id": "distributed-transactions",
+      "title": "Distributed transactions: 2PC, sagas and the outbox",
+      "minutes": 40,
+      "summary": "Keeping data consistent across shards and services: how two-phase commit works and blocks, sagas with compensations and pivots, and the transactional outbox for reliable events.",
+      "parts": [
+        {
+          "id": "two-phase-commit",
+          "label": "Two-phase commit",
+          "body": "## The problem\n\nInside one database, a transaction gives you **atomicity**: either all of \"debit Alice, credit Bob\" happens or none of it does. The moment the data lives in two places (two shards, two services with their own databases, a database plus a message broker) there is no single transaction log to make that promise. You need a protocol, or a different way of thinking about consistency.\n\nThree tools cover almost every interview and real-world case:\n\n- **Two-phase commit (2PC)**: true atomic commit across participants, at the price of blocking and coupling.\n- **Sagas**: a sequence of local transactions with compensating actions; no global atomicity, but no global locks either.\n- **Transactional outbox**: the fix for the \"dual write\" problem of updating a database and publishing an event.\n\n## Two-phase commit, step by step\n\nOne node is the **coordinator**; the databases or services involved are **participants**.\n\n**Phase 1: prepare (voting).**\n\n1. The coordinator sends `PREPARE` to every participant.\n2. Each participant does all the work needed to be able to commit: writes changes to its durable log, takes locks, checks constraints. If it can guarantee a commit later even after a crash, it replies `YES` and is now **prepared** (also called *in doubt*). Otherwise it replies `NO` and aborts locally.\n\n**Phase 2: commit or abort.**\n\n3. If every participant voted `YES`, the coordinator durably writes `COMMIT` to its own log (this is the **commit point**), then sends `COMMIT` to all. If any voted `NO` or timed out, it sends `ABORT`.\n4. Participants apply the decision, release locks and acknowledge. The coordinator retries until every participant acknowledges.\n\nThe key insight is the **promise**: a participant that voted `YES` gave up its right to abort on its own. Martin Kleppmann's *Designing Data-Intensive Applications* (chapter 9) frames 2PC as two points of no return: the participant's `YES` vote and the coordinator's decision.\n\n## The blocking problem\n\nWhat if the coordinator crashes **after** participants voted `YES` but **before** they learned the decision?\n\n- A prepared participant cannot commit (maybe someone else voted `NO`) and cannot abort (maybe the coordinator already decided commit and another participant applied it).\n- It must **wait**, holding its locks, until the coordinator recovers and reads its log.\n\nThat is why 2PC is called a **blocking** protocol. Rows locked by in-doubt transactions can stall unrelated traffic for as long as the coordinator is down, and operators sometimes have to resolve them manually (heuristic commit or abort, which risks breaking atomicity).\n\nThree-phase commit tries to remove blocking but assumes bounded network delays, which real networks do not provide, so it is rarely used. The practical fix is to make the **coordinator itself highly available by replicating its decision log with consensus**. Google Spanner does exactly this: each participant is a Paxos group, and the coordinator is the leader of one of them, so a single machine failure does not leave transactions in doubt. CockroachDB similarly runs its commit protocol on top of Raft-replicated ranges with a transaction record.\n\n## Costs of 2PC\n\n| Cost | Why |\n|---|---|\n| Latency | At least two round trips plus durable log writes at each participant and the coordinator |\n| Locks held across the network | Participants hold locks from prepare until the decision arrives |\n| Availability | Every participant must be up to commit; availability multiplies (three services at 99.9% each give about 99.7%) |\n| Coupling | All participants must speak the same protocol (XA for classic databases and message brokers) |\n\n## Where 2PC is a good choice\n\n- **Inside one distributed database** (Spanner, CockroachDB, YugabyteDB, TiDB, sharded Postgres with Citus): the database runs a well-engineered, consensus-backed commit protocol for you and you just write `BEGIN ... COMMIT`. This is the best answer when all the data can live in one such database.\n- **Short, low-contention transactions within one trust boundary and one team.**\n\n## Where it is a poor choice\n\n- Across **microservices owned by different teams**, or across external APIs (a payment provider will not take part in your XA transaction).\n- Long-running business processes (hotel + flight + car booking that may take minutes): holding locks that long destroys throughput.\n- High-contention hot rows, where lock hold time directly limits throughput.\n\n## Worked example: transfer across two shards\n\nAlice's account is on shard A, Bob's on shard B. Transfer 100:\n\n1. Coordinator: `PREPARE debit(Alice, 100)` to A, `PREPARE credit(Bob, 100)` to B.\n2. A checks the balance is at least 100, writes the debit to its log, locks Alice's row, votes `YES`. B writes the credit, locks Bob's row, votes `YES`.\n3. Coordinator writes `COMMIT T42` durably, then tells A and B. Both apply and unlock.\n4. If A had replied `NO` (insufficient funds), the coordinator sends `ABORT` and B discards its prepared credit.\n\nIf the coordinator dies between steps 2 and 3, both rows stay locked until it recovers. With a consensus-replicated coordinator, another replica takes over within an election timeout and finishes the protocol.\n\n## Interview angle\n\nDo not say \"2PC does not scale, use sagas\" as a reflex. Say what 2PC guarantees (atomic commit), its precise weakness (blocking on coordinator failure while participants hold locks), how modern databases mitigate it (consensus-replicated coordinators), and when you would still avoid it (cross-service, cross-company, long-running). That nuance is what interviewers listen for.",
+          "diagrams": [
+            {
+              "title": "2PC transfer across two shards",
+              "code": "sequenceDiagram\n  participant Co as Coordinator\n  participant A as Shard A\n  participant B as Shard B\n  Co->>A: PREPARE debit Alice 100\n  Co->>B: PREPARE credit Bob 100\n  A-->>Co: YES (logged, row locked)\n  B-->>Co: YES (logged, row locked)\n  Note over Co: write COMMIT T42 to durable log (commit point)\n  Co->>A: COMMIT\n  Co->>B: COMMIT\n  A-->>Co: ACK, locks released\n  B-->>Co: ACK, locks released"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "sagas",
+          "label": "Sagas",
+          "body": "## Sagas: the idea\n\nHector Garcia-Molina and Kenneth Salem described **sagas** in 1987 for long-lived transactions: instead of one big transaction holding locks for minutes, run a sequence of **local transactions** `T1, T2, ..., Tn`, each committing immediately in its own database. If step `Tk` fails, run **compensating transactions** `Ck-1, ..., C1` that semantically undo the earlier steps. Chris Richardson's microservices.io catalogue made sagas the standard answer for consistency across microservices.\n\nAn analogy: booking a holiday. You book the flight, then the hotel, then the car. If the car is unavailable, you do not \"roll back time\"; you cancel the hotel and cancel the flight, possibly paying a fee. Compensation is a new business action, not an undo button.\n\n## What you give up\n\nA saga is **ACD without I**: it is atomic in the eventual sense (all steps complete or all completed steps are compensated), consistent and durable, but **not isolated**. Between steps, other transactions can see intermediate states: the order exists but payment has not happened yet. You must design for this:\n\n- **Semantic locks**: mark records as `PENDING` (an order in `APPROVAL_PENDING` state) so other operations know it is in flight.\n- **Commutative updates**: design operations whose order does not matter (increment and decrement).\n- **Reread values** before acting, or use version checks.\n- **Pessimistic ordering**: put the riskiest or least compensable step last.\n\n## Orchestration vs choreography\n\n| | Orchestration | Choreography |\n|---|---|---|\n| Who drives | A central orchestrator (state machine) tells each service what to do | Each service reacts to events and emits its own |\n| Visibility | Whole flow in one place, easy to monitor and change | Flow is implicit, spread across services |\n| Coupling | Orchestrator knows every participant | Services know only events, but the overall flow is harder to reason about |\n| Failure handling | Orchestrator runs compensations explicitly | Each service must listen for failure events and compensate |\n| Good for | Flows with more than 3-4 steps, complex branching | Simple flows with 2-3 steps |\n\nDurable workflow engines (Temporal, AWS Step Functions, Azure Durable Functions, and similar) are popular orchestrators because they persist the saga's state after every step, retry activities and survive orchestrator crashes, so you do not hand-roll a state machine with database flags.\n\n## Step types\n\nRichardson's framing is useful in interviews:\n\n- **Compensatable transactions**: can be undone by a compensating action (reserve inventory, then release it).\n- **Pivot transaction**: the go/no-go point; once it commits, the saga will run to completion (charging the card is often the pivot).\n- **Retriable transactions**: steps after the pivot that are guaranteed to succeed eventually if retried (send confirmation email, update read model). They must be idempotent.\n\nOrder steps as: compensatable steps first, then the pivot, then retriable steps.\n\n## Worked example: order checkout saga (orchestrated)\n\n1. `Orders`: create order in state `PENDING` (compensation: mark `CANCELLED`).\n2. `Inventory`: reserve items (compensation: release reservation).\n3. `Payments`: charge card (**pivot**; compensation, if ever needed, is a refund, which is a new business action).\n4. `Orders`: mark order `CONFIRMED` (retriable).\n5. `Notifications`: send email (retriable).\n\nIf step 3 fails with \"card declined\": the orchestrator runs release reservation, then cancels the order. The user sees \"payment failed\". If the orchestrator crashes after step 2, the workflow engine resumes it from its persisted state and continues with step 3.\n\n## Making sagas robust\n\n- **Every step and every compensation must be idempotent**, because messages and activity retries can be delivered more than once. Carry a saga id and step id, and store processed ids (an **inbox** or dedup table).\n- **Compensations must not fail permanently.** Retry them; if business rules can reject them (refund window closed), escalate to a human queue.\n- **Timeouts per step**, with a clear policy: retry, compensate, or park for manual review.\n- **Observability**: one trace or correlation id across all steps; a dashboard of sagas by state shows stuck ones.\n- **Reliable messaging between steps**, which is exactly the dual-write problem solved by the outbox in the next part.\n\n## Sagas vs 2PC at a glance\n\n| | 2PC | Saga |\n|---|---|---|\n| Atomicity | Yes, all or nothing at commit | Eventually, via compensation |\n| Isolation | Yes, locks | No: intermediate states visible |\n| Blocking | Yes, on coordinator failure | No global locks |\n| Latency per step | Two round trips plus locks | Local commits, asynchronous |\n| Works across companies and APIs | No | Yes |\n| Complexity lives in | The protocol and infrastructure | Your business logic (compensations, semantic locks) |\n\n## Interview angle\n\nWhen the interviewer says \"place an order across inventory, payment and shipping services\", propose an orchestrated saga, list the steps with compensations, identify the pivot, and explain how you handle the lack of isolation (pending states, idempotent handlers). Then expect: \"What if the compensation fails?\", \"What if the same message arrives twice?\", \"How does the orchestrator survive a crash?\" and \"How do you publish the event reliably after the local commit?\" (outbox).",
+          "diagrams": [
+            {
+              "title": "Checkout saga with compensations",
+              "code": "flowchart LR\n  start[\"Create order PENDING\"] --> reserve[\"Reserve stock\"]\n  reserve --> charge[\"Charge card (pivot)\"]\n  charge --> confirm[\"Confirm order\"]\n  confirm --> email[\"Send email\"]\n  reserve -.->|\"fails\"| cancelOrder[\"Compensate: cancel order\"]\n  charge -.->|\"declined\"| release[\"Compensate: release stock\"]\n  release -.-> cancelOrder"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Minimal orchestrated saga. A workflow engine (Temporal, Step Functions) would persist `state` after every\n# step so the saga resumes after a crash; here a repository stands in for that.\nfrom dataclasses import dataclass, field\nfrom typing import Callable\n\n\nclass StepFailed(Exception):\n    pass\n\n\n@dataclass\nclass Step:\n    name: str\n    action: Callable[[dict], None]       # must be idempotent (keyed by saga id + step name)\n    compensate: Callable[[dict], None] | None = None  # None for retriable steps after the pivot\n    pivot: bool = False\n\n\n@dataclass\nclass SagaState:\n    saga_id: str\n    ctx: dict\n    completed: list[str] = field(default_factory=list)\n    status: str = \"RUNNING\"  # RUNNING | COMPLETED | COMPENSATING | COMPENSATED | NEEDS_HUMAN\n\n\nclass Orchestrator:\n    def __init__(self, steps: list[Step], repo):\n        self.steps, self.repo = steps, repo\n\n    def run(self, state: SagaState) -> SagaState:\n        past_pivot = any(s.pivot and s.name in state.completed for s in self.steps)\n        for step in self.steps:\n            if step.name in state.completed:\n                continue  # resumed after a crash\n            try:\n                step.action(state.ctx | {\"idempotency_key\": f\"{state.saga_id}:{step.name}\"})\n            except StepFailed:\n                if past_pivot:\n                    raise  # after the pivot we only retry forward; the caller schedules a retry\n                return self._compensate(state)\n            state.completed.append(step.name)\n            past_pivot = past_pivot or step.pivot\n            self.repo.save(state)\n        state.status = \"COMPLETED\"\n        self.repo.save(state)\n        return state\n\n    def _compensate(self, state: SagaState) -> SagaState:\n        state.status = \"COMPENSATING\"\n        self.repo.save(state)\n        by_name = {s.name: s for s in self.steps}\n        for name in reversed(state.completed):\n            step = by_name[name]\n            if step.compensate is None:\n                continue\n            try:\n                step.compensate(state.ctx | {\"idempotency_key\": f\"{state.saga_id}:{name}:undo\"})\n            except Exception:\n                state.status = \"NEEDS_HUMAN\"  # compensations are retried; persistent failure is escalated\n                self.repo.save(state)\n                return state\n        state.status = \"COMPENSATED\"\n        self.repo.save(state)\n        return state\n\n\n# checkout = Orchestrator([\n#     Step(\"create_order\", orders.create_pending, orders.cancel),\n#     Step(\"reserve_stock\", inventory.reserve, inventory.release),\n#     Step(\"charge_card\", payments.charge, payments.refund, pivot=True),\n#     Step(\"confirm_order\", orders.confirm),\n#     Step(\"send_email\", notifications.send_confirmation),\n# ], repo)"
+            }
+          ]
+        },
+        {
+          "id": "outbox",
+          "label": "Outbox and LLD",
+          "body": "## The dual-write problem\n\nA service updates its database and must tell the rest of the world via a message broker (Kafka, RabbitMQ, SNS):\n\n```text\nBEGIN; INSERT INTO orders ...; COMMIT;\nkafka.publish(\"order.created\", ...)\n```\n\nEvery ordering of those two writes has a failure window:\n\n- **Commit, then publish**: crash between them and the order exists but nobody hears about it. Inventory is never reserved.\n- **Publish, then commit**: the commit fails (constraint violation, crash) and the world hears about an order that does not exist.\n- **Publish inside the transaction**: the broker is not part of the transaction; a rollback does not un-send the message, and a slow broker holds database locks.\n\nYou cannot atomically write to two systems without a distributed commit. The **transactional outbox** avoids the need for one.\n\n## The transactional outbox\n\nWrite the event into an **outbox table in the same database, in the same local transaction** as the business change. Then a separate process moves rows from the outbox to the broker.\n\n```text\nBEGIN;\n  INSERT INTO orders (id, status, ...) VALUES (...);\n  INSERT INTO outbox (id, aggregate_id, type, payload, created_at) VALUES (...);\nCOMMIT;   -- both or neither, guaranteed by the local database\n```\n\nThe relay then publishes. Two ways to build it:\n\n1. **Polling publisher**: a worker repeatedly selects unpublished rows in order, publishes them, marks them published (or deletes them). Simple, works anywhere; adds polling load and some latency. In Postgres, `SELECT ... FOR UPDATE SKIP LOCKED` lets several relay workers share the table without double-claiming rows.\n2. **Change data capture (CDC) / log tailing**: a connector such as **Debezium** reads the database's replication log (Postgres WAL, MySQL binlog) and turns outbox inserts into broker messages. Lower latency, no polling queries, preserves commit order; you operate Kafka Connect or similar. Debezium ships an **outbox event router** that routes outbox rows to topics by aggregate type and uses the aggregate id as the message key.\n\n## What the outbox guarantees, and what it does not\n\n- **At-least-once delivery**: a relay can crash after publishing but before marking the row, so the event is published again on restart. Duplicates are normal.\n- **Ordering per aggregate**, if you publish with the aggregate id as the partition key and the relay preserves order for that key.\n- It does **not** give exactly-once processing. Consumers must be **idempotent**.\n\n## The consumer side: idempotency and the inbox\n\nWays to make handlers safe under duplicates:\n\n- **Natural idempotency**: `SET status = 'SHIPPED'` is idempotent; `balance = balance - 10` is not.\n- **Dedup table (inbox)**: in the same transaction as the side effect, insert the message id into `processed_messages` with a unique constraint; a duplicate violates the constraint and is skipped.\n- **Version checks**: apply an event only if `event.version = current_version + 1`.\n\nCombining an outbox on the producer with an inbox on the consumer gives you **effectively-once** processing end to end, which is what people usually mean when they say \"exactly once\" in business systems. Kafka's transactions give exactly-once semantics for read-process-write *within Kafka*, but any external side effect (an email, a card charge) still needs idempotency.\n\n## Related patterns\n\n- **Event sourcing**: the event log *is* the source of truth, so there is no dual write at all; state is derived by replaying events. More powerful and more complex; covered with CQRS elsewhere.\n- **Listen to yourself**: publish first to the log, and have the service consume its own event to update its database. Works with Kafka as the source of truth.\n- **CDC without an outbox table**: stream raw table changes. Leaks your internal schema to consumers; the outbox lets you publish a deliberate, versioned event contract instead.\n\n## Operational details that come up\n\n- **Outbox growth**: delete or archive published rows on a schedule, or partition the table by day and drop old partitions.\n- **Ordering vs parallelism**: a single relay preserves global order but limits throughput; partition by aggregate id to parallelise while keeping per-aggregate order.\n- **Poison messages**: a consumer that keeps failing on one event should move it to a **dead-letter queue** after N attempts so the partition is not blocked forever.\n- **Schema evolution**: version event payloads (`type: \"order.created.v2\"`) or use a schema registry; consumers must tolerate unknown fields.\n- **Latency budget**: polling relays typically add from tens of milliseconds to around a second, depending on the poll interval; CDC usually adds less.\n\n## LLD: outbox write, relay and idempotent consumer\n\nThe TypeScript below uses a Postgres-style client. It shows the three pieces an interviewer wants: the atomic business-plus-outbox write, a relay that claims rows safely with `SKIP LOCKED`, and a consumer that deduplicates with a unique constraint.\n\n## Interview angle\n\nA crisp answer to \"how do you update the database and publish an event reliably?\": \"I write the event to an outbox table in the same transaction, a relay (Debezium CDC or a polling worker with SKIP LOCKED) publishes it keyed by aggregate id, delivery is at-least-once, so consumers dedupe with a processed-messages table in the same transaction as their side effect.\" Expect follow-ups on ordering (\"partition key = aggregate id\"), duplicates (\"inbox table\"), outbox cleanup, and \"why not just use Kafka transactions?\" (they do not cover your database or external side effects).",
+          "diagrams": [
+            {
+              "title": "Transactional outbox end to end",
+              "code": "flowchart LR\n  svc[\"Order service\"] -->|\"one local transaction\"| db[(\"orders + outbox tables\")]\n  db -->|\"WAL via CDC or polling\"| relay[\"Relay: Debezium or worker\"]\n  relay -->|\"key = order id\"| broker[\"Kafka topic order-events\"]\n  broker --> consumer[\"Inventory consumer\"]\n  consumer -->|\"dedup + side effect in one transaction\"| invdb[(\"processed_messages + reservations\")]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "import { randomUUID } from \"node:crypto\";\n\ninterface Tx { query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> }\ninterface Db { transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> }\ninterface Broker { publish(topic: string, key: string, value: string, headers: Record<string, string>): Promise<void> }\n\n// 1. Business change and event commit together, or not at all.\nexport async function placeOrder(db: Db, customerId: string, items: { sku: string; qty: number }[]) {\n  return db.transaction(async (tx) => {\n    const orderId = randomUUID();\n    await tx.query(\"INSERT INTO orders (id, customer_id, status) VALUES ($1, $2, 'PENDING')\", [orderId, customerId]);\n    await tx.query(\n      \"INSERT INTO outbox (id, aggregate_type, aggregate_id, type, payload) VALUES ($1, 'order', $2, 'order.created.v1', $3)\",\n      [randomUUID(), orderId, JSON.stringify({ orderId, customerId, items })],\n    );\n    return orderId;\n  });\n}\n\n// 2. Relay: several workers can run; SKIP LOCKED stops them claiming the same rows.\n// Ordering holds per aggregate because the broker partitions by key; a single worker per key range keeps it strict.\nexport async function relayOnce(db: Db, broker: Broker, batch = 100): Promise<number> {\n  return db.transaction(async (tx) => {\n    const { rows } = await tx.query<{ id: string; aggregate_type: string; aggregate_id: string; type: string; payload: string }>(\n      `SELECT id, aggregate_type, aggregate_id, type, payload FROM outbox\n        WHERE published_at IS NULL ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED`,\n      [batch],\n    );\n    for (const r of rows) {\n      // A crash after publish but before commit republishes on restart: at-least-once.\n      await broker.publish(`${r.aggregate_type}-events`, r.aggregate_id, r.payload, { \"message-id\": r.id, type: r.type });\n    }\n    if (rows.length > 0) {\n      await tx.query(\"UPDATE outbox SET published_at = now() WHERE id = ANY($1)\", [rows.map((r) => r.id)]);\n    }\n    return rows.length;\n  });\n}\n\n// 3. Consumer: the dedup insert and the side effect share one transaction, so a duplicate is a no-op.\nexport async function onOrderCreated(db: Db, messageId: string, payload: { orderId: string; items: { sku: string; qty: number }[] }) {\n  await db.transaction(async (tx) => {\n    const { rows } = await tx.query(\n      \"INSERT INTO processed_messages (consumer, message_id) VALUES ('inventory', $1) ON CONFLICT DO NOTHING RETURNING message_id\",\n      [messageId],\n    );\n    if (rows.length === 0) return; // already handled\n    for (const { sku, qty } of payload.items) {\n      await tx.query(\"INSERT INTO reservations (order_id, sku, qty) VALUES ($1, $2, $3)\", [payload.orderId, sku, qty]);\n    }\n  });\n}"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        {
+          "op": "2PC commit",
+          "time": "2 round trips + durable logs",
+          "space": "-"
+        },
+        {
+          "op": "2PC lock hold time",
+          "time": "prepare until decision arrives",
+          "space": "-"
+        },
+        {
+          "op": "Saga step",
+          "time": "1 local commit, async hand-off",
+          "space": "-"
+        },
+        {
+          "op": "Outbox polling relay delay",
+          "time": "~poll interval (tens of ms to ~1 s)",
+          "space": "-"
+        },
+        {
+          "op": "Outbox delivery guarantee",
+          "time": "at-least-once",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "2PC gives atomic commit: participants vote after making the commit durable, and a YES vote is a promise they cannot take back.",
+        "2PC blocks if the coordinator fails after votes; modern databases replicate the coordinator's decision with consensus.",
+        "Prefer a distributed SQL database's built-in transactions when all the data fits in it; avoid 2PC across teams and external APIs.",
+        "A saga is a chain of local transactions with compensations: atomic eventually, but not isolated, so use pending states.",
+        "Order saga steps as compensatable, then the pivot, then retriable; make every step and compensation idempotent.",
+        "The outbox writes the event in the same local transaction; a relay publishes it at-least-once; consumers dedupe."
+      ],
+      "problems": [],
+      "practiceRef": "hld-consistency:4",
+      "check": [
+        {
+          "q": "In 2PC, the coordinator crashes after both participants voted YES but before sending the decision. What do the participants do?",
+          "options": [
+            "Commit, since everyone voted YES",
+            "Abort after a timeout",
+            "Wait with locks held until the coordinator recovers or another replica of it takes over",
+            "Elect one participant as the new coordinator and commit"
+          ],
+          "answer": 2,
+          "why": "A prepared participant cannot know whether the coordinator decided commit or abort, so acting alone could break atomicity. It blocks; this is the core weakness of 2PC."
+        },
+        {
+          "q": "Why is a saga said to lack isolation?",
+          "options": [
+            "Its steps run in separate threads",
+            "Other transactions can observe intermediate states between local commits",
+            "It cannot be retried",
+            "Compensations run before the actions"
+          ],
+          "answer": 1,
+          "why": "Each step commits immediately in its own database, so for a while the order exists without payment, for example. Designs use pending states and semantic locks to cope."
+        },
+        {
+          "q": "A service commits an order, then publishes order.created to Kafka, and occasionally events go missing. What fixes it?",
+          "options": [
+            "Publish before committing",
+            "Write the event to an outbox table in the same transaction and let a relay publish it",
+            "Use a longer Kafka producer timeout",
+            "Wrap both calls in a try/catch and retry the publish"
+          ],
+          "answer": 1,
+          "why": "A crash between commit and publish loses the event whatever the retry logic. The outbox makes the event part of the local transaction; the relay then guarantees at-least-once delivery."
+        }
+      ],
+      "sources": [
+        {
+          "title": "microservices.io: Pattern: Saga",
+          "url": "https://microservices.io/patterns/data/saga.html"
+        },
+        {
+          "title": "microservices.io: Pattern: Transactional outbox",
+          "url": "https://microservices.io/patterns/data/transactional-outbox.html"
+        },
+        {
+          "title": "Debezium: Outbox Event Router",
+          "url": "https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html"
+        },
+        {
+          "title": "Garcia-Molina and Salem: Sagas (1987)",
+          "url": "https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf"
+        },
+        {
+          "title": "Designing Data-Intensive Applications (Kleppmann)",
+          "url": "https://dataintensive.net/"
+        },
+        {
+          "title": "Corbett et al.: Spanner, Google's Globally-Distributed Database (OSDI 2012)",
+          "url": "https://www.usenix.org/conference/osdi12/technical-sessions/presentation/corbett"
+        }
+      ]
+    },
+    {
+      "id": "cap-pacelc",
+      "title": "CAP, PACELC and consistency models",
+      "minutes": 35,
+      "summary": "CAP as actually proven, why CP/AP labels mislead, PACELC's latency trade-off, quorum tuning, and the consistency ladder from linearizable to eventual with the bugs each level prevents.",
+      "parts": [
+        {
+          "id": "cap",
+          "label": "CAP stated correctly",
+          "body": "## The popular version is wrong\n\n\"Consistency, Availability, Partition tolerance: pick two\" is the most quoted and most misunderstood idea in distributed systems. You cannot \"pick CA\" for a system that runs on more than one machine, because you do not get to choose whether the network partitions; it will. The useful statement is narrower and more precise.\n\n## CAP, stated correctly\n\nEric Brewer proposed the conjecture in 2000; Seth Gilbert and Nancy Lynch proved a formal version in 2002. In their proof the three words have specific meanings:\n\n- **C = linearizability.** The system behaves as if there were a single copy of the data and every operation took effect atomically at some instant between its start and its end. Once a write completes, every later read (anywhere) sees it or something newer.\n- **A = every request received by a non-failing node gets a (non-error) response.** Not \"99.99% uptime\"; a much stronger, all-or-nothing property: no node that is up may refuse or hang.\n- **P = the network may lose arbitrarily many messages between nodes** (a partition).\n\nThe theorem: **when a partition happens, a system cannot be both linearizable and available** in that sense. A node cut off from the others, receiving a write or a read, must either answer (possibly with stale or conflicting data: give up C) or refuse/wait (give up A).\n\nSo the real choice is **during a partition, do you prefer consistency or availability?** When there is no partition you can have both. Brewer's own retrospective, \"CAP Twelve Years Later\" (2012), makes this point and argues the choice can even be made per operation and per piece of data, not once for the whole system.\n\n## A two-replica thought experiment\n\nReplica X in Mumbai and replica Y in Singapore hold `balance = 100`. The link between them fails.\n\n- A client in Mumbai writes `balance = 50` to X.\n- A client in Singapore reads from Y.\n\nY has two options:\n\n1. **Answer `100`.** Available, not linearizable: the read misses a completed write.\n2. **Refuse or block until the link heals.** Linearizable, not available.\n\nThere is no clever third option: Y has no way to learn about the write. That is the entire proof in intuition form.\n\n## Why \"CP\" and \"AP\" labels mislead\n\nMartin Kleppmann's essay \"Please stop calling databases CP or AP\" points out several problems:\n\n- Most real systems are **neither** in the strict theorem sense. A single-leader database with asynchronous replicas is not linearizable (replica reads are stale) and not available (writes fail when the leader is unreachable).\n- Many systems are **configurable per request**: Cassandra's consistency level, DynamoDB's `ConsistentRead`, MongoDB's read and write concerns. The label depends on the settings.\n- CAP considers only one kind of fault (partitions) and one consistency model (linearizability). It says nothing about latency, which is what you trade every day, with or without partitions.\n\nBetter than a label: describe what happens to reads and writes on each side of a partition, and what consistency guarantee clients get in normal operation.\n\n## What \"partition\" looks like in practice\n\nPartitions are not just cut cables:\n\n- A switch or top-of-rack failure isolates a group of machines.\n- A misconfigured firewall or security group drops traffic one way only.\n- A long GC pause or VM freeze makes a node *look* partitioned, then it comes back and acts on stale beliefs.\n- Cross-region links degrade, so messages are delayed long enough to trip timeouts.\n\nKyle Kingsbury's Jepsen analyses (jepsen.io) repeatedly show databases losing acknowledged writes or returning stale reads under exactly these conditions, often contradicting their marketing. Treat consistency claims as hypotheses until tested.\n\n## What each choice looks like\n\n| Choose C (refuse on the minority side) | Choose A (answer on both sides) |\n|---|---|\n| Consensus-based stores: etcd, ZooKeeper, Spanner, CockroachDB | Dynamo-style stores with low quorum settings: Cassandra at `ONE`, Riak |\n| Minority side returns errors or times out | Both sides accept writes; conflicts resolved later (last-write-wins, vector clocks, CRDTs) |\n| Good for: money, inventory counts, locks, uniqueness constraints | Good for: shopping carts, likes, presence, metrics, session data |\n| Cost: unavailability for some clients during partitions | Cost: stale reads, conflicts, possible lost updates with naive LWW |\n\nAmazon's 2007 Dynamo paper is the classic example of choosing availability: the shopping cart must always accept \"add to cart\", so conflicting versions are kept and merged, occasionally resurrecting a deleted item, which Amazon judged better than refusing a customer.\n\n## Interview angle\n\nWhen an interviewer asks \"is your design CP or AP?\", say: \"CAP only forces a choice during a partition. For the payment ledger I'd refuse writes on the minority side (consistency); for the like counter I'd accept writes everywhere and merge (availability). In normal operation the more frequent trade-off is latency versus consistency, which is what PACELC adds.\" That answer shows you know the precise theorem and why it is a per-feature decision.",
+          "diagrams": [
+            {
+              "title": "The partition dilemma with two replicas",
+              "code": "sequenceDiagram\n  participant M as Client Mumbai\n  participant X as Replica X\n  participant Y as Replica Y\n  participant S as Client Singapore\n  Note over X,Y: link between X and Y is down\n  M->>X: write balance = 50\n  X-->>M: OK\n  S->>Y: read balance\n  alt choose availability\n    Y-->>S: 100 (stale, not linearizable)\n  else choose consistency\n    Y-->>S: error or wait (not available)\n  end"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "pacelc",
+          "label": "PACELC and quorums",
+          "body": "## PACELC: the everyday trade-off\n\nDaniel Abadi (2010 blog post, 2012 IEEE Computer paper \"Consistency Tradeoffs in Modern Distributed Database System Design\") observed that partitions are rare, but replication forces a trade-off **all the time**:\n\n> **If** there is a **P**artition, choose **A**vailability or **C**onsistency; **E**lse (normal operation), choose **L**atency or **C**onsistency.\n\nWhy \"else latency\"? To give strong consistency, a write must reach several replicas (or a majority) before it is acknowledged, and a read must be confirmed as current. That means waiting for network round trips, possibly across regions. To be fast, you acknowledge after one replica and read from the nearest one, accepting staleness.\n\n## Classifying real systems (with care)\n\nThese are typical defaults; most are configurable, so always state the settings.\n\n| System | Partition | Else | Notes |\n|---|---|---|---|\n| Spanner, CockroachDB | PC | EC | Consensus per shard; Spanner uses TrueTime for externally consistent transactions; both pay cross-replica latency on writes |\n| etcd, ZooKeeper | PC | EC | Coordination stores, majority writes |\n| DynamoDB | PA by default | EL by default | Eventually consistent reads by default; `ConsistentRead=true` gives strongly consistent reads from the leader replica of a partition; global tables replicate asynchronously across regions (with a newer multi-region strong consistency option) |\n| Cassandra, ScyllaDB | PA | EL | Tunable: `QUORUM` reads and writes trade latency for stronger guarantees |\n| MongoDB | PC (writes need the primary) | EC or EL | `w: \"majority\"` + `readConcern: \"majority\"` / linearizable vs reading from secondaries |\n| Postgres primary + async replicas | PC for writes | EL for replica reads | Replica reads can lag; synchronous replication moves it toward EC |\n\n## Quorums: the tuning knob\n\nIn Dynamo-style systems with `N` replicas per key, a write waits for `W` acknowledgements and a read queries `R` replicas.\n\n- If `R + W > N`, every read quorum overlaps every write quorum, so a read contacts at least one replica with the latest acknowledged write (DDIA chapter 5 explains the details).\n- `N=3, W=2, R=2` is the common balanced setting. `W=1, R=1` is fastest and weakest. `W=3` makes writes fail if any replica is down.\n\nEven with `R + W > N`, Dynamo-style quorums are **not automatically linearizable**: concurrent writes with last-write-wins can lose data, a write that failed on some replicas may still be partially visible, and sloppy quorums with hinted handoff break the overlap guarantee during failures. Read repair and anti-entropy (Merkle trees) bring replicas back in sync over time.\n\n## Latency numbers that drive the choice\n\n| Path | Rough round-trip time |\n|---|---|\n| Same availability zone | well under 1 ms |\n| Across AZs in one region | ~1-2 ms |\n| US East to US West | ~60-80 ms |\n| US East to Europe | ~70-90 ms |\n| US East to India or Singapore | ~180-250 ms |\n\nA linearizable write across three continents costs at least the round trip to the second-closest replica. That is why global strongly consistent databases place a majority of replicas in one geography for latency-sensitive data (CockroachDB's regional tables, Spanner's leader placement) and why many products choose per-region consistency with asynchronous cross-region replication.\n\n## Per-feature decisions: an e-commerce example\n\n| Data | Choice | Why |\n|---|---|---|\n| Payments, orders, inventory decrement | PC/EC | Double-selling or double-charging costs real money |\n| Product catalogue, prices for browsing | PA/EL with short staleness | Slightly stale reads are fine; re-check at checkout |\n| Shopping cart | PA/EL, merge conflicts | Never refuse \"add to cart\" (the Dynamo lesson) |\n| Like and view counters | PA/EL, CRDT counters | Approximate is fine, availability matters |\n| Username uniqueness | PC/EC | A uniqueness constraint needs linearizability |\n\nNotice the pattern: anything that enforces an **invariant across concurrent users** (uniqueness, non-negative balance, limited stock) needs consensus-level consistency at the moment the invariant is checked; everything else can usually relax.\n\n## Techniques for having it both ways (mostly)\n\n- **Read-your-writes via session stickiness or version tokens**: after a write, the client carries the write's version and reads only from replicas that have caught up to it.\n- **Check strongly at the critical moment**: browse from cached, eventually consistent data; validate stock and price in a strongly consistent transaction at checkout.\n- **CRDTs** (conflict-free replicated data types): counters, sets and maps that merge deterministically, giving strong eventual consistency without coordination. Used in collaborative editors and some databases (Riak, Redis Enterprise active-active).\n- **Escrow / reservations**: split a stock count between regions so each can sell its share without coordinating, and rebalance in the background.\n\n## Interview angle\n\nUse PACELC to sound precise: \"Normal operation is EL for the feed (read the nearest replica, stale by a second at most) and EC for the ledger (majority writes, a few ms in-region). During a partition the ledger's minority side rejects writes; the feed keeps serving.\" Then quantify with latency numbers. Interviewers are checking that you connect the abstract trade-off to concrete settings (quorum sizes, read concerns, replica placement) and to user-visible behaviour.",
+          "diagrams": [
+            {
+              "title": "PACELC decision",
+              "code": "flowchart TD\n  q{\"Network partition?\"}\n  q -->|yes| pa{\"Prefer availability or consistency?\"}\n  q -->|\"no (else)\"| el{\"Prefer latency or consistency?\"}\n  pa -->|A| paEx[\"Answer on both sides, merge later: Cassandra at ONE, Dynamo carts\"]\n  pa -->|C| pcEx[\"Minority side refuses: etcd, Spanner, CockroachDB\"]\n  el -->|L| elEx[\"Ack after one replica, read nearest: async replicas\"]\n  el -->|C| ecEx[\"Wait for majority, confirm reads: consensus stores\"]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "consistency-models",
+          "label": "Consistency models",
+          "body": "## Consistency models: a ladder, not a switch\n\n\"Strong vs eventual\" is too coarse. There is a hierarchy of models, each a promise about which values a read may return. Jepsen's consistency-models map (jepsen.io/consistency) is the best single picture; DDIA chapters 5 and 9 explain them with examples. From strongest to weakest for single-object operations:\n\n| Model | Promise | Costs |\n|---|---|---|\n| **Linearizable** | Behaves like one copy; once a write completes, every later read sees it; operations appear in real-time order | Coordination on every operation; unavailable during partitions |\n| **Sequential** | All clients see operations in the same order, consistent with each client's program order, but not necessarily real time | Still needs a global order |\n| **Causal** | Operations that are causally related (a reply after the message it answers) are seen in that order by everyone; concurrent operations may be seen in different orders | Track dependencies (vector clocks, version vectors); available under partition |\n| **PRAM / session guarantees** | Per-client promises: read-your-writes, monotonic reads, monotonic writes, writes-follow-reads | Sticky sessions or version tokens |\n| **Eventual** | If writes stop, replicas eventually converge | Nothing during convergence: reads may go backwards |\n\nA key result: causal consistency is about the **strongest model that can stay available during partitions**. Mahajan, Alvisi and Dahlin (2011) showed a real-time variant of causal consistency is the strongest achievable by an always-available, convergent system; Jepsen's map adds that it needs clients to stick to one replica (\"sticky available\"). That is why causal models attract geo-distributed designs. Linearizability and sequential consistency cannot stay available.\n\n## Session guarantees with concrete bugs they prevent\n\n- **Read-your-writes**: you post a comment, refresh, and it is gone because the refresh hit a lagging replica. Fix: read your own recent writes from the leader, or pass the write's version and wait for a replica that has it.\n- **Monotonic reads**: you see a comment, refresh, it disappears, refresh again, it is back. Your reads hit replicas at different lags. Fix: pin a user's reads to one replica, or carry a \"seen up to\" version.\n- **Consistent prefix**: you see an answer before the question because two partitions replicated at different speeds. Fix: keep causally related writes in the same partition or track causal dependencies.\n\n## Linearizability vs serializability\n\nThese two words are confused constantly, and interviewers know it.\n\n- **Serializability** is about **transactions over multiple objects**: the result is as if transactions ran one at a time in *some* order. That order need not match real time.\n- **Linearizability** is about **single operations on single objects**: each takes effect at an instant between its start and end, in real-time order.\n- **Strict serializability** (Spanner calls it external consistency) is both: transactions appear to run one at a time in an order consistent with real time.\n\nPostgres's `SERIALIZABLE` isolation gives serializability on a single node; Spanner and (with caveats documented by the vendor) CockroachDB aim higher. Snapshot isolation, the default \"repeatable read\" in many databases, is weaker than serializable and permits write skew.\n\n## How systems implement the stronger models\n\n- **Single leader + synchronous majority replication + leader reads with ReadIndex/lease**: linearizable (etcd, CockroachDB per range).\n- **TrueTime commit wait**: Spanner assigns commit timestamps using GPS- and atomic-clock-backed time with a bounded uncertainty and waits out that uncertainty before acknowledging, giving external consistency across the globe.\n- **Hybrid logical clocks** (CockroachDB, YugabyteDB) combine physical time and logical counters for ordering without special hardware, with uncertainty intervals handling clock skew.\n- **Version vectors / dotted version vectors**: detect concurrent writes for causal or eventual systems so conflicts are surfaced rather than silently overwritten.\n\n## LLD: simulating quorums\n\nThe Python below simulates `N` replicas with `W` and `R` quorums and shows the overlap rule in action. It is a handy way to reason about \"what if one replica is lagging?\" in an interview, and to explain why `R + W > N` returns the newest acknowledged value while `R + W <= N` can return stale data.\n\n## Common mistakes\n\n- Saying \"we use MongoDB/Cassandra so we are AP\" without stating the read and write settings.\n- Claiming \"eventual consistency\" is fine without saying how long convergence takes in practice and what the user sees meanwhile.\n- Using last-write-wins with wall-clock timestamps for data where concurrent updates matter; clock skew silently drops writes.\n- Assuming a cache in front of a strongly consistent database preserves linearizability (it does not; you need invalidation and accept staleness).\n- Mixing up linearizable and serializable.\n\n## Interview angle\n\nA 60-second model answer to \"what consistency does this system need?\":\n\n1. Name the invariants (unique usernames, non-negative stock, ledger balances) and give those linearizable or strictly serializable operations, accepting the latency.\n2. Give user-facing reads session guarantees (read-your-writes, monotonic reads) via version tokens or sticky routing, so the product feels correct.\n3. Let everything else be eventually consistent with a known lag (seconds), and state what the UI does during that lag.\n4. Under partition: invariant-holding data refuses writes on the minority side; the rest stays available and merges.\n\nFollow-ups to expect: \"How would you implement read-your-writes with read replicas?\", \"What is the difference between linearizable and serializable?\", \"Why is last-write-wins dangerous?\", \"How does Spanner give global strong consistency?\".",
+          "diagrams": [
+            {
+              "title": "Consistency ladder (stronger at the top)",
+              "code": "flowchart TD\n  strict[\"Strict serializable\"] --> lin[\"Linearizable\"]\n  strict --> ser[\"Serializable\"]\n  lin --> seq[\"Sequential\"]\n  seq --> causal[\"Causal\"]\n  causal --> session[\"Session guarantees: read-your-writes, monotonic reads\"]\n  session --> eventual[\"Eventual\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "\"\"\"Dynamo-style quorum simulation: N replicas, writes wait for W acks, reads ask R replicas.\n\nR + W > N  -> every read set overlaps every write set, so the newest acknowledged version is seen.\nR + W <= N -> a read can land entirely on replicas that missed the write.\n(Overlap alone is not linearizability: concurrent writes, partial failures and sloppy quorums still bite.)\n\"\"\"\nimport random\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass Versioned:\n    version: int\n    value: str\n\n\nclass Cluster:\n    def __init__(self, n: int, w: int, r: int, seed: int = 7):\n        self.n, self.w, self.r = n, w, r\n        self.replicas: list[Versioned] = [Versioned(0, \"init\") for _ in range(n)]\n        self.version = 0\n        self.rng = random.Random(seed)\n\n    def write(self, value: str, reachable: set[int] | None = None) -> bool:\n        reachable = reachable if reachable is not None else set(range(self.n))\n        if len(reachable) < self.w:\n            return False  # cannot reach a write quorum: refuse (consistency over availability)\n        self.version += 1\n        # Only W replicas get it before we ack; the rest lag (async repair would catch them up later).\n        for i in self.rng.sample(sorted(reachable), self.w):\n            self.replicas[i] = Versioned(self.version, value)\n        return True\n\n    def read(self) -> Versioned:\n        asked = self.rng.sample(range(self.n), self.r)\n        newest = max((self.replicas[i] for i in asked), key=lambda v: v.version)\n        # Read repair: push the newest version to the stale replicas we touched.\n        for i in asked:\n            if self.replicas[i].version < newest.version:\n                self.replicas[i] = newest\n        return newest\n\n\ndef stale_read_rate(n: int, w: int, r: int, trials: int = 10_000) -> float:\n    stale = 0\n    for t in range(trials):\n        c = Cluster(n, w, r, seed=t)\n        c.write(\"v1\")\n        stale += c.read().version != 1\n    return stale / trials\n\n\nif __name__ == \"__main__\":\n    for n, w, r in [(3, 2, 2), (3, 1, 1), (5, 3, 3), (5, 2, 2), (3, 3, 1)]:\n        tag = \"overlap\" if r + w > n else \"no overlap\"\n        print(f\"N={n} W={w} R={r} ({tag}): stale reads {stale_read_rate(n, w, r):.1%}\")\n    # N=3 W=1 R=1 is stale about 2 times in 3; N=5 W=2 R=2 about 3 times in 10; overlapping settings never."
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Cross-AZ round trip",
+          "time": "~1-2 ms",
+          "space": "-"
+        },
+        {
+          "op": "US East to US West round trip",
+          "time": "~60-80 ms",
+          "space": "-"
+        },
+        {
+          "op": "US East to Singapore or India round trip",
+          "time": "~180-250 ms",
+          "space": "-"
+        },
+        {
+          "op": "Quorum N=3, W=1, R=1",
+          "time": "fastest, stale reads likely",
+          "space": "-"
+        },
+        {
+          "op": "Quorum N=3, W=2, R=2",
+          "time": "read and write sets overlap",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "CAP: during a network partition a system cannot be both linearizable and answer every request on every live node.",
+        "Partitions are not optional, so 'CA' is not a real choice for a distributed system; the choice happens only during a partition.",
+        "PACELC adds the everyday trade-off: without a partition you still trade latency against consistency.",
+        "Describe behaviour and settings (quorums, read concerns, replica placement) instead of labelling a database CP or AP.",
+        "R + W > N makes read and write quorums overlap, but is not linearizable on its own.",
+        "Consistency is a ladder: linearizable, sequential, causal, session guarantees, eventual.",
+        "Linearizability is about single objects in real time; serializability is about multi-object transactions in some order."
+      ],
+      "problems": [],
+      "practiceRef": "hld-consistency:0",
+      "check": [
+        {
+          "q": "In the Gilbert and Lynch proof of CAP, what does C mean?",
+          "options": [
+            "ACID consistency: constraints hold after each transaction",
+            "Linearizability: the system behaves like a single copy with real-time ordering",
+            "Eventual convergence of replicas",
+            "Causal ordering of related writes"
+          ],
+          "answer": 1,
+          "why": "CAP's C is linearizability. It is unrelated to the C in ACID, which is about application invariants."
+        },
+        {
+          "q": "A user updates their profile and the next page load shows the old profile because it read from a lagging replica. Which guarantee is missing?",
+          "options": [
+            "Monotonic writes",
+            "Linearizability across all users",
+            "Read-your-writes",
+            "Consistent prefix"
+          ],
+          "answer": 2,
+          "why": "Read-your-writes promises a client sees its own completed writes. It can be provided with leader reads after a write or version tokens, without full linearizability."
+        },
+        {
+          "q": "Which statement about PACELC is correct?",
+          "options": [
+            "It replaces CAP and says partitions never happen",
+            "It says that even without a partition, replicated systems trade latency for consistency",
+            "It only applies to single-node databases",
+            "It proves causal consistency is impossible"
+          ],
+          "answer": 1,
+          "why": "PACELC keeps CAP's partition case and adds the else case: strong consistency needs coordination round trips, which cost latency in normal operation."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Eric Brewer: CAP Twelve Years Later: How the Rules Have Changed",
+          "url": "https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/"
+        },
+        {
+          "title": "Martin Kleppmann: Please stop calling databases CP or AP",
+          "url": "https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html"
+        },
+        {
+          "title": "Jepsen: Consistency Models",
+          "url": "https://jepsen.io/consistency"
+        },
+        {
+          "title": "Daniel Abadi: Consistency Tradeoffs in Modern Distributed Database System Design (PACELC)",
+          "url": "https://www.cs.umd.edu/~abadi/papers/abadi-pacelc.pdf"
+        },
+        {
+          "title": "Designing Data-Intensive Applications (Kleppmann)",
+          "url": "https://dataintensive.net/"
+        },
+        {
+          "title": "Amazon: Dynamo: Amazon's Highly Available Key-value Store",
+          "url": "https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf"
+        }
+      ]
+    }
+  ]
+}

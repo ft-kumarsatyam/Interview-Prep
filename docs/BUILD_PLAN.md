@@ -23,7 +23,7 @@ Every prompt assumes the agent has read `AGENTS.md`, which `CLAUDE.md` and `.cur
 | 9c · `/setup` checklist + dashboard "Finish setup" card, job run tracking | ✅ done |
 | 9d · In-app news reader (feed full text, Readability extraction behind an SSRF guard, tags, picks rail, new system design and tech feeds) | ✅ done |
 | 9e · System Design studio (`/design`: 17 cases, diagrams, building blocks, 45-min mock with rubric, related articles) | ✅ done (191 tests) |
-| 10 · Shared Web Worker sandbox (`lib/sandbox/`) + in-app DSA runner (Code tab, Run/Submit, hints, `data/dsa-testcases.json`) | ✅ done: 15 of the 151 core problems seeded |
+| 10 · Shared Web Worker sandbox (`core/sandbox/`) + in-app DSA runner (Code tab, Run/Submit, hints, `data/dsa-testcases.json`) | ✅ done: 15 of the 151 core problems seeded |
 | 11 · DSA sheet view (step-ordered, tick-mark progress, `step` field, `sort-an-array`, `relative-sort-array`) | ✅ done |
 | 12 · OS track: 5 new topics (processes/scheduling, memory, synchronization/deadlocks, file systems/I/O, security) | ✅ done |
 | 13 · DBMS track: `dbms-distributed`, `dbms-ops-security`, two more indexing subtopics | ✅ done |
@@ -37,7 +37,7 @@ Every prompt assumes the agent has read `AGENTS.md`, which `CLAUDE.md` and `.cur
 | 21 · LeetCode content (statement, official hints, examples fetched lazily and cached in Mongo only), "Copy code + open LeetCode" with auto-detect of the Accepted submission | ✅ done |
 | 22 · Runner v2 (Worker list/tree support, `compare` modes, named edge cases + Edge cases tab, three-step hint ladder, one-time hidden-case reveal, spec-based generator with brute-force and fuzz cross-checks, 15 problems migrated) | ✅ done |
 | 23 · 83 runnable problems (arrays, strings, two pointers, sliding window, stack, binary search, DP, greedy, bits, linked lists, trees), each with a reference, an independent brute force, 200 fuzz inputs and a blind third solution | ✅ done |
-| 24 · Learn redesign (`/learn` index with Continue card and cross-track search, focused `/learn/[topicId]` page, `lib/domain/learn.ts`), OS case quizzes, `satyam-dev.in` on Vercel, AI keys synced to production | ✅ done; GitHub auto-deploy waits on a Vercel GitHub login connection |
+| 24 · Learn redesign (`/learn` index with Continue card and cross-track search, focused `/learn/[topicId]` page, `modules/learn/domain/learn.ts`), OS case quizzes, `satyam-dev.in` on Vercel, AI keys synced to production | ✅ done; GitHub auto-deploy waits on a Vercel GitHub login connection |
 | 25A · IDE shell (`components/ide/`: resizable problem and editor panes sized for a laptop, editable and custom test cases, Result and Console tabs, full screen, mobile tabs) on `/dsa/[slug]` | ✅ done |
 | 25B · Multi-language runner: JavaScript, TypeScript and Python (Pyodide in its own Worker, same harness and `compare` modes), per-language starters and drafts, Python in the Playground | ✅ done |
 | 25C · Questions from anywhere (`/problems`: AI-generated or pasted problems, cases verified against a reference solution in the browser before saving, `customproblems`/`customsolves`, never in the plan) | ✅ done |
@@ -52,7 +52,7 @@ Known gaps:
 - Some sites block article extraction (OpenAI's blog returns 403, Quastor and Uber block feed fetches). Those articles show the snippet and an "Open original" link.
 - The System Design studio has no LLD templates yet; the HLD "Design template" in topic notes on `/learn/[topicId]` still covers quick notes. LLD mock rounds are written answers graded on a rubric.
 - The DSA runner covers 83 of the 606 main problems; the rest fall back to LeetCode. "Design" problems (class-based APIs) are not runnable yet, in the sheet or as custom problems. Custom problems fill some of the gap for practice and mocks.
-- Mock prompts live in `lib/domain/mock-bank.ts` rather than `data/`, so the content files stay untouched.
+- Mock prompts live in `modules/mock/domain/mock-bank.ts` rather than `data/`, so the content files stay untouched.
 - Python needs a one-time Pyodide download (about 10 MB from the jsDelivr CDN) on first run, and doesn't work offline until it's cached.
 - The Playground's TS mode strips types and reports syntax errors; it does not type-check.
 - Phases 10-17 were verified with typecheck, ESLint, Vitest, `next build`, server-side rendering of the new pages' components and a Node `vm` simulation of the Web Worker, but were not click-tested in a browser.
@@ -85,14 +85,14 @@ Known gaps:
 > 6. **Command palette:** add ⌘K (shadcn Command) to jump to any problem or topic.
 
 ### Phase 5 — Quiz engine
-> Implement `lib/llm` (a provider interface plus Gemini, Anthropic and OpenAI-compatible implementations selected by LLM_PROVIDER, using fetch, no heavy SDKs required) and `lib/services/quiz.ts` per ARCHITECTURE §8: context from today, zod-validated JSON, one retry, and a fallback to `data/quiz-bank.json`.
+> Implement `core/llm` (a provider interface plus Gemini, Anthropic and OpenAI-compatible implementations selected by LLM_PROVIDER, using fetch, no heavy SDKs required) and `modules/quiz/services/quiz.ts` per ARCHITECTURE §8: context from today, zod-validated JSON, one retry, and a fallback to `data/quiz-bank.json`.
 >
 > Add `scripts/generate-quiz-bank.ts` (about 8 MCQs per DSA pattern and per subtopic, including JS output-prediction questions).
 >
 > Build `/quiz` (locked → player → results with explanations, retake reshuffled) and `/quiz/history`. Passing sets `DayLog.quizPassed` and re-evaluates the day. Add the Sunday weekly quiz.
 
 ### Phase 6 — News, notifications, cron
-> Implement `lib/news/fetch.ts` per ARCHITECTURE §10 using rss-parser. Include the Google News keyword feeds from `settings.googleNewsQueries`, falling back to the defaults in `data/news-sources.json`. Dedupe by URL hash and title.
+> Implement `modules/news/lib/fetch.ts` per ARCHITECTURE §10 using rss-parser. Include the Google News keyword feeds from `settings.googleNewsQueries`, falling back to the defaults in `data/news-sources.json`. Dedupe by URL hash and title.
 >
 > Turn `/news` into a reader (category pills, keyword chips, unread/bookmarked filters, mark read on click). Reading counts toward today's `readings`.
 >
@@ -123,8 +123,8 @@ Known gaps:
 - **B. Tailoring**: JD tailoring as a fact-checked patch, saved versions, PDF/DOCX/TXT download. Routes `/resume/tailor`, `/api/resume/[id]/download`.
 - **C. Jobs**: tracker with pipeline and follow-ups (in the daily briefing), extension capture of job and profile pages, profile audit. Routes `/jobs`, `/jobs/[id]`, extension `activeTab` button.
 - **D. Web dev**: lessons and guided projects outside the syllabus (see ARCHITECTURE §12). Routes `/web`, `/projects`.
-- **E1. Ports and optional Redis**: `KvStore` (Mongo default, optional Upstash with fallback), rate limiter, `lib/http-safe.ts`.
+- **E1. Ports and optional Redis**: `KvStore` (Mongo default, optional Upstash with fallback), rate limiter, `core/http-safe.ts`.
 - **E2. Career sources and sync**: `data/careers.json`, connectors, `jobpostings`, `syncJobs`, `/api/cron/jobs`, `jobs-sync.yml`, `careers:verify`.
 - **E3. Discovery**: preferences, deterministic match, Discover/Sources/Search links, posting page with inline tailoring and apply prompt, alerts and briefing section.
-- **E4. Live updates**: `/api/events` (SSE), `lib/realtime`, client provider with backoff and polling fallback.
+- **E4. Live updates**: `/api/events` (SSE), `core/realtime`, client provider with backoff and polling fallback.
 - **E5. Hardening**: rate limits, structured sync log with run id, docs and budgets.

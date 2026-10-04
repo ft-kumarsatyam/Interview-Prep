@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { cleanSnippet, googleNewsFeeds, mergeFeeds, retryExtractWaitSec, safeUrl, sortAtOf, timeAgo, titleKey, UNDATED_PENALTY_MS, type RawItem } from "@/lib/domain/news";
-import { eveningReminder, joinList, morningPlanMessage, remainingWork } from "@/lib/domain/reminders";
-import type { DayProgress } from "@/lib/domain/streak";
+import { cleanSnippet, googleNewsFeeds, mergeFeeds, retryExtractWaitSec, safeUrl, sortAtOf, timeAgo, titleKey, UNDATED_PENALTY_MS, type RawItem } from "@/modules/news/domain/news";
+import { eveningReminder, joinList, morningPlanMessage, remainingWork } from "@/modules/notifications/domain/reminders";
+import type { DayProgress } from "@/modules/progress/domain/streak";
 
 const item = (url: string, title: string, iso = "2026-10-05T00:00:00Z"): RawItem => ({ url, title, publishedAt: new Date(iso), snippet: "" });
 const src = (id: string) => ({ id, name: id, category: "ai-news", url: `https://x/${id}` });

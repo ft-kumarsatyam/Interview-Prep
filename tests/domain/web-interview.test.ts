@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { filterQuestions, interviewProblems, interviewStats, practiceOrder, type InterviewFile, type InterviewStatus } from "@/lib/domain/web-interview";
+import { filterQuestions, interviewProblems, interviewStats, practiceOrder, type InterviewFile, type InterviewStatus } from "@/modules/learn/domain/web-interview";
 
 const answer = "**Short answer.** " + "Detail. ".repeat(50);
 const q = (id: string, level: "junior" | "mid" | "senior", text: string, extra: Partial<InterviewFile["questions"][number]> = {}) => ({ id, level, q: text, answer, followUps: [], mistakes: ["m"], ...extra });
 
 describe("interviewProblems", () => {
-  const file = (id: string, questions: InterviewFile["questions"]): InterviewFile => ({ track: { id, name: id, blurb: "a track blurb" }, questions });
+  const file = (id: string, questions: InterviewFile["questions"]): InterviewFile => ({ track: { id, name: id, blurb: "a track blurb", area: "frontend" }, questions });
 
   it("is empty for a consistent bank", () => {
     expect(interviewProblems([file("a", [q("a-1", "junior", "What is one?", { lesson: "l1" })]), file("b", [q("b-1", "mid", "What is one?")])], new Set(["l1"]))).toEqual([]);

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth/dal";
-import { problems, topics } from "@/lib/content";
+import { requireSession } from "@/core/auth/dal";
+import { problems, topics } from "@/core/content";
 
 /** Search index for the ⌘K palette, loaded lazily on first open. */
 export async function GET() {

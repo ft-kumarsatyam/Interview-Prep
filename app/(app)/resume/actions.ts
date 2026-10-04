@@ -3,14 +3,14 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { RESUME_TEXT_MAX } from "@/lib/domain/resume";
-import type { ResumeRoast } from "@/lib/domain/resume-ai";
-import type { Change, Rejected } from "@/lib/domain/resume-tailor";
-import { scoreResume } from "@/lib/domain/ats";
-import { attachResumeToJob } from "@/lib/services/jobs";
-import { limited } from "@/lib/services/rate-limit";
-import { createVersion, deleteVersion, roastBaseResume, saveBaseResume, tailorBaseResume } from "@/lib/services/resume";
+import { requireSession } from "@/core/auth/dal";
+import { RESUME_TEXT_MAX } from "@/modules/resume/domain/resume";
+import type { ResumeRoast } from "@/modules/resume/domain/resume-ai";
+import type { Change, Rejected } from "@/modules/resume/domain/resume-tailor";
+import { scoreResume } from "@/modules/jobs/domain/ats";
+import { attachResumeToJob } from "@/modules/jobs/services/jobs";
+import { limited } from "@/core/services/rate-limit";
+import { createVersion, deleteVersion, roastBaseResume, saveBaseResume, tailorBaseResume } from "@/modules/resume/services/resume";
 
 export async function saveResumeAction(input: unknown): Promise<ActionResult> {
   await requireSession();

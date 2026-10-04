@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Job } from "@/lib/models/jobs";
-import { Settings } from "@/lib/models/system";
-import { Target } from "@/lib/models/targets";
-import { buildBriefing } from "@/lib/services/briefing";
-import { addJob, attachResumeToJob, deleteJob, getJob, jobsDueForFollowUp, listJobs, saveJobNotes, setJobStatus } from "@/lib/services/jobs";
-import { ensureToday } from "@/lib/services/plan";
-import { createVersion, listProfiles, MAX_PROFILES, saveBaseResume, saveProfileSnapshot } from "@/lib/services/resume";
-import { invalidateSettings } from "@/lib/services/settings";
+import { Job } from "@/core/models/jobs";
+import { Settings } from "@/core/models/system";
+import { Target } from "@/core/models/targets";
+import { buildBriefing } from "@/modules/progress/services/briefing";
+import { addJob, attachResumeToJob, deleteJob, getJob, jobsDueForFollowUp, interviewsBetween, listJobs, saveJobNotes, setFollowUp, setInterview, setJobStatus } from "@/modules/jobs/services/jobs";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { createVersion, listProfiles, MAX_PROFILES, saveBaseResume, saveProfileSnapshot } from "@/modules/resume/services/resume";
+import { invalidateSettings } from "@/modules/settings/services/settings";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);
@@ -94,5 +94,57 @@ describe("daily briefing and job follow-ups", () => {
     const mail = await buildBriefing(state, now);
     expect(mail?.spec.sections.some((s) => s.heading === "Applications to follow up")).toBe(true);
     expect(mail?.text).toContain("Backend Engineer at Razorpay Software Pvt Ltd");
+  });
+});
+
+describe("follow-ups you can act on", () => {
+  it("snoozes, reschedules, clears and records a follow-up, and never accepts a past or invalid day", async () => {
+    const added = await addJob(JOB, "2026-10-05");
+    if (!added.ok) throw new Error("add failed");
+    const id = added.job.id;
+    await setJobStatus(id, "applied", "2026-10-05");
+    expect((await getJob(id))!.followUpOn).toBe("2026-10-12");
+
+    await setFollowUp(id, { date: "2026-10-15" }, "2026-10-12");
+    expect((await getJob(id))!.followUpOn).toBe("2026-10-15");
+
+    await setFollowUp(id, { followedUp: true }, "2026-10-15");
+    expect((await getJob(id))!.followUpOn).toBe("2026-10-22");
+
+    await setFollowUp(id, { date: null }, "2026-10-15");
+    expect((await getJob(id))!.followUpOn).toBeNull();
+    expect(await jobsDueForFollowUp("2026-11-30")).toEqual([]);
+
+    await expect(setFollowUp(id, { date: "2026-10-01" }, "2026-10-15")).rejects.toThrow(/today or a later day/);
+    await expect(setFollowUp(id, { date: "not-a-date" }, "2026-10-15")).rejects.toThrow();
+    await expect(setFollowUp("0".repeat(24), { date: null }, "2026-10-15")).rejects.toThrow(/Unknown job/);
+  });
+
+  it("a finished job stops asking after you mark it followed up", async () => {
+    const added = await addJob({ ...JOB, url: "https://example.com/jobs/9" }, "2026-10-05");
+    if (!added.ok) throw new Error("add failed");
+    await setJobStatus(added.job.id, "rejected", "2026-10-06");
+    await setFollowUp(added.job.id, { followedUp: true }, "2026-10-07");
+    expect((await getJob(added.job.id))!.followUpOn).toBeNull();
+  });
+});
+
+describe("interviews", () => {
+  it("saves the next interview, lists it on its day for live jobs only, and rejects past days", async () => {
+    const added = await addJob(JOB, "2026-10-05");
+    if (!added.ok) throw new Error("add failed");
+    const id = added.job.id;
+    await setJobStatus(id, "interview", "2026-10-05");
+    await setInterview(id, { date: "2026-10-14", round: "System design", contact: "Asha" }, "2026-10-05");
+    expect(await getJob(id)).toMatchObject({ interviewOn: "2026-10-14", interviewRound: "System design", contact: "Asha" });
+    expect(await interviewsBetween("2026-10-01", "2026-10-31")).toEqual([{ id, title: "Backend Engineer", company: "Razorpay Software Pvt Ltd", round: "System design", date: "2026-10-14" }]);
+    expect(await interviewsBetween("2026-10-15", "2026-10-31")).toEqual([]);
+
+    await setJobStatus(id, "rejected", "2026-10-10");
+    expect(await interviewsBetween("2026-10-01", "2026-10-31")).toEqual([]);
+
+    await expect(setInterview(id, { date: "2026-10-01", round: "", contact: "" }, "2026-10-05")).rejects.toThrow(/today or a later day/);
+    await setInterview(id, { date: null, round: "", contact: "" }, "2026-10-05");
+    expect((await getJob(id))!.interviewOn).toBeNull();
   });
 });

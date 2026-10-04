@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DESIGN_CATEGORIES, designBlockById, subtopicById, systemDesign, topicById } from "@/lib/content";
+import { DESIGN_CATEGORIES, designBlockById, subtopicById, systemDesign, topicById } from "@/core/content";
 import {
   DESIGN_SECTION_IDS,
   PRACTICE_MINUTES,
@@ -9,7 +9,7 @@ import {
   relatedArticles,
   rubricScore,
   sectionsAttempted,
-} from "@/lib/domain/design";
+} from "@/modules/design/domain/design";
 
 const words = (n: number) => Array(n).fill("word").join(" ");
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ContentProblem, ContentSheet } from "@/lib/content";
-import { nextInSheet, sheetProgress, sheetSections, sheetVideos } from "@/lib/domain/dsa-sheets";
+import type { ContentProblem, ContentSheet } from "@/core/content";
+import { nextInSheet, sheetProgress, sheetSections, sheetVideos } from "@/modules/dsa/domain/dsa-sheets";
 
 const prob = (slug: string) => ({ slug, title: slug, order: 1 }) as ContentProblem;
 const bySlug = new Map(["a", "b", "c", "d"].map((s) => [s, prob(s)]));

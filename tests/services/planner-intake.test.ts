@@ -1,14 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { topics } from "@/lib/content";
-import { PlannerIntake } from "@/lib/models/planner";
-import { Notification, Settings } from "@/lib/models/system";
-import { diagnosticCandidates, startDiagnostic, submitDiagnostic } from "@/lib/services/diagnostic";
-import { listSnapshots, resetPlanner, restoreSnapshot, takeSnapshot } from "@/lib/services/planner-snapshot";
-import { loadPersonalisation } from "@/lib/services/intake-weights";
-import { loadPlanInputs } from "@/lib/services/plan";
-import { listPlanChanges } from "@/lib/services/plan-log";
-import { applyProposal, proposeRebalance } from "@/lib/services/rebalance";
-import { completeIntake, getFeasibility, getIntake, saveIntakeStep } from "@/lib/services/planner-intake";
+import { topics } from "@/core/content";
+import { PlannerIntake } from "@/core/models/planner";
+import { Notification, Settings } from "@/core/models/system";
+import { diagnosticCandidates, startDiagnostic, submitDiagnostic } from "@/modules/progress/services/diagnostic";
+import { listSnapshots, resetPlanner, restoreSnapshot, takeSnapshot } from "@/modules/planner/services/planner-snapshot";
+import { loadPersonalisation } from "@/modules/planner/services/intake-weights";
+import { loadPlanInputs } from "@/modules/planner/services/plan";
+import { listPlanChanges } from "@/modules/planner/services/plan-log";
+import { applyProposal, proposeRebalance } from "@/modules/planner/services/rebalance";
+import { completeIntake, getFeasibility, getIntake, saveIntakeStep } from "@/modules/planner/services/planner-intake";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

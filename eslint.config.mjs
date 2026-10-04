@@ -17,6 +17,52 @@ const eslintConfig = defineConfig([
     // Vendored third-party build (sql.js).
     "public/vendor/**",
   ]),
+  // Architecture boundary: domain code is pure (no I/O, models, UI or framework).
+  {
+    files: ["modules/*/domain/**/*.ts", "core/domain/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            { group: ["@/modules/*/services/*", "@/core/services/*", "@/core/models/*", "@/core/db"], message: "domain/ is pure: do I/O in services/." },
+            { group: ["@/modules/*/components/*", "@/components/*", "@/app/*"], message: "domain/ must not import UI." },
+            { group: ["mongoose", "next", "next/*", "react", "react-dom"], message: "domain/ must stay framework-free." },
+          ],
+        },
+      ],
+    },
+  },
+  // Architecture boundary: UI components are presentational. Data comes in as props. The only files that may call
+  // services or models are the async server "sections" (`*-section.tsx`), pages and layouts. Type imports are fine.
+  {
+    files: ["modules/*/components/**/*.{ts,tsx}", "components/**/*.{ts,tsx}", "core/components/**/*.{ts,tsx}"],
+    ignores: ["**/*-section.tsx"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@/modules/*/services/*", "@/core/services/*", "@/core/models/*", "@/core/db"],
+              message: "Components are presentational: pass data in as props. A component that must load data is an async server section named *-section.tsx.",
+              allowTypeImports: true,
+            },
+          ],
+        },
+      ],
+    },
+  },
+  // Pages and layouts read through services, never through Mongoose models.
+  {
+    files: ["app/**/page.tsx", "app/**/layout.tsx"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        { patterns: [{ group: ["@/core/models/*", "@/core/db"], message: "Pages call services, never Mongoose directly.", allowTypeImports: true }] },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

@@ -9,7 +9,7 @@ import {
   startOfNextLocalDayMs,
   toLocalDate,
   weekNumber,
-} from "@/lib/domain/dates";
+} from "@/core/domain/dates";
 
 describe("toLocalDate", () => {
   it("uses the app timezone, not UTC, around midnight IST", () => {

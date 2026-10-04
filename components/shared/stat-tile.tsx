@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 /** Tone for an icon or value: one of the semantic tokens, never a raw colour. */
 export type Tone = "neutral" | "primary" | "success" | "warning" | "danger" | "info" | "streak";

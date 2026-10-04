@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseArgs, parseShell, runMongo, type Collections } from "@/lib/domain/mongo-query";
+import { parseArgs, parseShell, runMongo, type Collections } from "@/modules/dsa/domain/mongo-query";
 
 const data: Collections = {
   users: [

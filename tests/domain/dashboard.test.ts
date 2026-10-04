@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { heatmapCells } from "@/lib/domain/heatmap";
-import { idealSolvedBy, pace } from "@/lib/domain/pace";
-import { DEFAULT_SETTINGS } from "@/lib/domain/plan-config";
-import { applySolve } from "@/lib/domain/progress";
+import { heatmapCells } from "@/modules/progress/domain/heatmap";
+import { idealSolvedBy, pace } from "@/modules/planner/domain/pace";
+import { DEFAULT_SETTINGS } from "@/modules/planner/domain/plan-config";
+import { applySolve } from "@/modules/progress/domain/progress";
 
 const s = DEFAULT_SETTINGS;
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS as S, type PlanSettings } from "@/lib/domain/plan-config";
-import { buildDailyPlan, type ProblemState, type SubtopicState } from "@/lib/domain/planner";
+import { DEFAULT_SETTINGS as S, type PlanSettings } from "@/modules/planner/domain/plan-config";
+import { buildDailyPlan, type ProblemState, type SubtopicState } from "@/modules/planner/domain/planner";
 import {
   DEFAULT_COSTS,
   DEFAULT_HOURS,
@@ -12,7 +12,7 @@ import {
   scaleCount,
   sundayBonus,
   type BudgetItems,
-} from "@/lib/domain/time-budget";
+} from "@/modules/planner/domain/time-budget";
 
 const MON_W1 = "2026-10-05";
 const SAT_W1 = "2026-10-10";

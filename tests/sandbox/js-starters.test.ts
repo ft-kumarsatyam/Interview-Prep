@@ -1,8 +1,8 @@
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import { problems } from "@/lib/content";
-import { JS_STARTERS, jsStarterCode } from "@/lib/domain/js-starters";
-import { WORKER_SOURCE } from "@/lib/sandbox/worker-source";
+import { problems } from "@/core/content";
+import { JS_STARTERS, jsStarterCode } from "@/modules/dsa/domain/js-starters";
+import { WORKER_SOURCE } from "@/core/sandbox/worker-source";
 
 type Message = { type: string; level?: string; text?: string };
 

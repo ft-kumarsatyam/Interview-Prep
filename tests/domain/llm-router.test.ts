@@ -10,7 +10,7 @@ import {
   paidDecision,
   planOrder,
   type ProviderState,
-} from "@/lib/domain/llm-router";
+} from "@/modules/ai/domain/llm-router";
 
 const NOW = 1_000_000;
 const NEXT_DAY = NOW + 5 * 3_600_000;

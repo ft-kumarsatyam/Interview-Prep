@@ -1,0 +1,470 @@
+{
+  "chapter": {
+    "id": "reliability-and-scale",
+    "title": "Reliability and scale",
+    "summary": "CDNs and the edge, observability with SLOs and error budgets, and the resilience patterns that stop one failure from taking down a whole system."
+  },
+  "lessons": [
+    {
+      "id": "cdn-edge",
+      "title": "CDNs and edge computing",
+      "minutes": 35,
+      "summary": "How CDNs cut latency and origin load: PoPs, anycast, tiered caching, cache keys, Cache-Control, invalidation by tag, and what to run in edge functions.",
+      "parts": [
+        {
+          "id": "how-cdns-work",
+          "label": "How CDNs work",
+          "body": "## The idea in one picture\n\nLight in fibre covers roughly 200 km per millisecond. A user in Bengaluru talking to a server in Virginia is about 14,000 km away, so even a perfect network costs ~70 ms one way and ~140 ms per round trip. A TLS 1.3 connection plus the first request needs at least two round trips before the first byte of HTML arrives. No amount of backend tuning removes physics; the only fix is to **move the bytes closer to the user**.\n\nA **Content Delivery Network (CDN)** is a fleet of caching reverse proxies placed in hundreds of **Points of Presence (PoPs)** around the world, inside or next to the networks where users live. The user connects to a nearby PoP; if the PoP has the response cached it answers in a few milliseconds, and if not it fetches from your **origin** once and keeps the copy for everyone else in that region.\n\nAn analogy: the origin is a central warehouse, the PoPs are neighbourhood shops. Popular items sit on the shop shelf. A rare item is ordered from the warehouse the first time someone asks, then stays on the shelf for a while.\n\n```text\nuser (Bengaluru) --5 ms--> PoP Chennai --(miss only)--> shield PoP Mumbai --(miss only)--> origin (us-east-1)\n                  <-- hit: served from PoP memory/SSD\n```\n\n## What a CDN actually does for you\n\n1. **Latency.** TCP and TLS handshakes terminate at the PoP, a few ms away, instead of across an ocean. Even uncacheable (dynamic) requests get faster, because the PoP keeps warm, long-lived, already-tuned connections to the origin over the provider's backbone.\n2. **Offload.** If 95% of requests are hits, the origin sees 5% of the traffic. At 100,000 requests per second that is the difference between needing a fleet and needing a handful of servers. Hit ratio is the single most important CDN number.\n3. **Absorbing spikes and attacks.** A CDN has terabits of edge capacity. A viral launch or a volumetric DDoS lands on the edge, not on your origin. Most CDNs bundle a WAF, bot management and rate limiting at the edge for this reason.\n4. **Protocol and payload work.** HTTP/2 and HTTP/3 (QUIC) to the browser, Brotli/gzip compression, image resizing and format negotiation (AVIF/WebP), TLS certificate management.\n\n## How a user reaches the right PoP\n\nThere are two common routing techniques, and big CDNs mix them.\n\n**DNS-based routing.** The CDN's authoritative DNS sees the request from the user's resolver (and, with EDNS Client Subnet, a prefix of the user's IP) and answers with the IP of a nearby, healthy PoP. Pros: fine-grained control and load awareness. Cons: you only see the resolver, which may be far from the user (public resolvers), and DNS answers are cached for their TTL, so steering is slow to react.\n\n**Anycast.** Every PoP announces the **same IP prefix** over BGP. The internet's routing naturally carries each packet to the topologically nearest announcement. If a PoP goes down it withdraws the route and traffic flows to the next nearest within the time BGP takes to converge. This is also why CDNs like Cloudflare rely on anycast to soak up DDoS: attack traffic is spread across every PoP instead of concentrating on one. The catch: \"nearest\" means fewest network hops per BGP policy, not lowest latency, and a route change mid-connection can move a TCP flow to another PoP (rare in practice; providers engineer around it, and QUIC's connection IDs help).\n\n## Tiers: edge, shield, origin\n\nA naive CDN with 300 PoPs could send 300 separate misses to your origin for the same new object. Providers solve this with **tiered caching**: edge PoPs that miss ask a regional (or single) **shield / upper-tier** PoP, and only the shield goes to origin. Combined with **request collapsing** (many concurrent misses for the same key wait on one origin fetch), a cold object costs the origin one request instead of hundreds.\n\n## Push vs pull\n\n| | Pull (origin pull) | Push |\n|---|---|---|\n| How content gets there | Fetched on first miss, kept for its TTL | You upload ahead of time to CDN storage |\n| Good for | Websites, APIs, most traffic | Large, known files: game patches, video catalogues, release binaries |\n| Cost of a cold object | First user pays origin latency | No cold miss, but you pay storage and manage uploads |\n| Operational effort | Low, set headers correctly | Higher, you manage what is where |\n\nNetflix's **Open Connect** is the extreme version of push: Netflix places its own cache appliances inside ISP networks and fills them overnight with what it predicts each region will watch the next day, so peak-time streaming barely touches the wider internet.\n\n## Latency and hit-ratio intuition\n\n| Path | Typical added latency |\n|---|---|\n| Edge hit (object in PoP memory or SSD) | low single-digit ms plus the user's last mile |\n| Edge miss, shield hit | + one regional round trip, often 10-40 ms |\n| Full miss to a distant origin | + intercontinental round trips and origin time, often 100-300 ms |\n\nEffective latency is a weighted average: with a 95% hit ratio and 5 ms hits vs 200 ms misses, the mean is about 15 ms, but your p99 is dominated by misses. That is why people watch **origin offload** and **miss latency**, not just averages.\n\n## When a CDN does not help (much)\n\n- Truly personalised responses (a logged-in feed) cannot be shared, so cache hits are impossible; you still gain connection termination and DDoS protection.\n- Low-traffic long-tail content: each PoP sees too few requests to keep the object warm, so hit ratio is poor. Tiered caching and longer TTLs help.\n- Writes. A CDN accelerates reads; writes still go to origin (though edge compute can validate and queue them).\n\n## Interview angle\n\nWhen a design has static assets, media, or any read-heavy public content, say \"put it behind a CDN\" early and then be concrete: what is cacheable, for how long, how the cache key is formed, how you invalidate on change, and what the origin offload does to your capacity estimate. Interviewers are testing whether you know that a CDN is a *cache with its own consistency problem*, not a magic speed button.",
+          "diagrams": [
+            {
+              "title": "Edge, shield and origin tiers",
+              "code": "flowchart LR\n  user[\"User browser\"] --> dns[\"DNS returns anycast IP\"]\n  dns --> edge[\"Nearest edge PoP\"]\n  edge -->|hit| user\n  edge -->|miss| shield[\"Shield / upper-tier PoP\"]\n  shield -->|\"miss (collapsed)\"| origin[\"Origin servers\"]\n  origin --> shield\n  shield --> edge"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "cache-keys-invalidation",
+          "label": "Keys and invalidation",
+          "body": "## The cache key decides everything\n\nA CDN stores responses under a **cache key**. By default it is roughly `scheme + host + path + query string`. Two requests with the same key share one cached object; two with different keys never do. Most CDN bugs are cache-key bugs, and they come in two flavours:\n\n- **Key too wide (fragmentation).** `?utm_source=twitter` and `?utm_source=email` produce two copies of the same page, so the hit ratio collapses. Fix: strip or ignore tracking parameters, sort query parameters, lowercase the host, drop irrelevant headers.\n- **Key too narrow (leakage).** If the response depends on something that is *not* in the key (a cookie, the `Accept-Language` header, the user's country) then user A's response is served to user B. At best that is the wrong language; at worst it is someone else's account page. This is how \"web cache deception\" and personal-data leaks via CDN happen.\n\n## How HTTP tells the CDN what to do\n\nThe rules live in response headers, standardised in RFC 9111 (HTTP Caching). MDN's `Cache-Control` reference is the best day-to-day guide.\n\n| Directive | Meaning |\n|---|---|\n| `public` / `private` | `private` means only the browser may cache it, never a shared cache like a CDN |\n| `max-age=N` | Fresh for N seconds (browser and shared caches) |\n| `s-maxage=N` | Overrides `max-age` for shared caches only, so the CDN can keep it longer than browsers |\n| `no-cache` | May store, but must revalidate with the origin before every use |\n| `no-store` | Never store anywhere: use for sensitive responses |\n| `stale-while-revalidate=N` | After expiry, serve the stale copy for up to N s while refreshing in the background (RFC 5861) |\n| `stale-if-error=N` | If the origin errors, keep serving stale for up to N s |\n| `immutable` | The resource will never change at this URL; browsers skip revalidation |\n\n**Validators** make revalidation cheap: the origin returns `ETag` (a version token) or `Last-Modified`; the cache later asks `If-None-Match` / `If-Modified-Since` and gets a tiny `304 Not Modified` if nothing changed.\n\n**`Vary`** tells caches which request headers become part of the key. `Vary: Accept-Encoding` is normal (gzip vs Brotli copies). `Vary: Cookie` or `Vary: User-Agent` explode the key space and usually mean \"effectively uncacheable\"; normalise instead (for example, classify the user agent into `mobile`/`desktop` at the edge and vary on that small value).\n\n## A concrete policy for a typical web app\n\n```text\n/assets/app.3f9a1c.js      Cache-Control: public, max-age=31536000, immutable\n/images/hero.avif          Cache-Control: public, max-age=86400, s-maxage=604800\n/blog/how-we-scaled        Cache-Control: public, max-age=60, s-maxage=600, stale-while-revalidate=86400\n/api/products?page=2       Cache-Control: public, s-maxage=30, stale-while-revalidate=60\n/api/me                    Cache-Control: private, no-store\n```\n\nThe big idea is **content-addressed (fingerprinted) URLs** for build assets: the file name contains a hash of its contents, so a new build produces a new URL. You can cache \"forever\" because you never need to invalidate; you just stop referencing the old URL. The HTML that references them gets a short TTL.\n\n## Invalidation: the hard part\n\nPhil Karlton's joke (\"two hard things: cache invalidation and naming things\") is about exactly this. Your options, roughly from best to worst:\n\n1. **Versioned URLs.** Change the URL when content changes (fingerprints, `?v=42`, `/v2/`). No purge needed, perfectly consistent, works with browser caches too. Use this whenever you control the URL.\n2. **Short TTL plus `stale-while-revalidate`.** Accept bounded staleness (\"up to 60 s old\") and let the CDN refresh in the background. Users almost always get a hit and the origin sees one refresh per key per TTL per PoP (or per shield).\n3. **Purge by tag / surrogate key.** The origin labels responses (`Surrogate-Key: product-123 category-shoes` on Fastly, `Cache-Tag` on Cloudflare) and, when product 123 changes, calls the purge API for that tag. Every page that showed product 123 is evicted, whatever its URL. This is how large e-commerce and news sites get near-real-time freshness with long TTLs.\n4. **Purge by URL or prefix.** Fine for one-off fixes; brittle if many URLs render the same data.\n5. **Purge everything.** An emergency lever. It sends a thundering herd to your origin, so protect origin with shielding and request collapsing first.\n\nImportant properties of purges: they are asynchronous and eventually consistent across PoPs (fast on modern CDNs, but not a transaction), they do not touch browser caches (which is why browser TTLs on mutable content should be short), and they can be rate limited by the provider. **Soft purge** (mark stale rather than delete) pairs well with `stale-while-revalidate`: users keep getting fast responses while the edge refetches.\n\n## Failure modes worth naming\n\n- **Thundering herd on expiry or purge.** Many PoPs miss at once. Mitigations: tiered caching, request collapsing, jittered TTLs, `stale-while-revalidate`.\n- **Caching errors.** A `500` or an empty `200` cached for an hour. Set short TTLs for error codes and never let the origin return `200` for failures.\n- **Caching personalised responses.** A login page with `Set-Cookie` cached publicly. Most CDNs refuse to cache responses with `Set-Cookie` by default; do not override that casually.\n- **Cache poisoning.** An attacker sends an unkeyed header (say `X-Forwarded-Host`) that changes the response, and the poisoned version is cached for everyone. Fix: key on every input that affects the response, or strip those headers at the edge.\n- **Origin outage.** With `stale-if-error`, your site degrades to \"slightly old\" instead of \"down\".\n\n## Interview angle\n\nA strong answer on invalidation sounds like: \"Static assets are fingerprinted and immutable, so they never need purging. Product pages are cached at the edge for 10 minutes with `stale-while-revalidate`, tagged by product id, and the catalogue service publishes a purge-by-tag event when a price changes, so staleness is normally seconds and bounded at 10 minutes even if a purge is lost.\" That covers freshness, the failure case and the cost, which is what the interviewer is listening for.",
+          "diagrams": [
+            {
+              "title": "Hit, stale-while-revalidate and miss",
+              "code": "sequenceDiagram\n  participant B as Browser\n  participant E as Edge PoP\n  participant O as Origin\n  B->>E: GET /blog/post\n  E->>E: Key = host + path + normalised query\n  alt fresh in cache\n    E-->>B: 200 (HIT)\n  else stale, within stale-while-revalidate\n    E-->>B: 200 stale copy (STALE)\n    E->>O: GET with If-None-Match\n    O-->>E: 304 Not Modified (refresh TTL)\n  else not cached\n    E->>O: GET /blog/post\n    O-->>E: 200 + Cache-Control + ETag\n    E-->>B: 200 (MISS)\n  end"
+            },
+            {
+              "title": "Reliable purge by tag",
+              "code": "flowchart TD\n  change[\"Price change committed\"] --> outbox[\"Outbox row in same transaction\"]\n  outbox --> relay[\"Relay publishes cdn.purge event\"]\n  relay --> purge[\"Purge API: tag product-123\"]\n  purge --> pops[\"All PoPs mark tagged objects stale\"]\n  pops --> refetch[\"Next request refetches from origin\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Origin side: tag responses by the data they render, purge by tag when that data changes.\n# The CDN client is abstract; Fastly (Surrogate-Key) and Cloudflare (Cache-Tag) both offer purge-by-tag APIs.\nfrom dataclasses import dataclass\nfrom typing import Protocol\n\n\nclass CdnClient(Protocol):\n    def purge_tags(self, tags: list[str], soft: bool = True) -> None: ...\n\n\n@dataclass\nclass Product:\n    id: int\n    category: str\n    price_cents: int\n\n\ndef product_page_headers(p: Product) -> dict[str, str]:\n    return {\n        # Browsers: short. CDN: long, because we purge on change. Serve stale while refetching.\n        \"Cache-Control\": \"public, max-age=60, s-maxage=86400, stale-while-revalidate=300, stale-if-error=86400\",\n        \"Surrogate-Key\": f\"product-{p.id} category-{p.category}\",\n    }\n\n\nclass CatalogService:\n    def __init__(self, repo, cdn: CdnClient, outbox):\n        self.repo, self.cdn, self.outbox = repo, cdn, outbox\n\n    def update_price(self, product_id: int, price_cents: int) -> None:\n        with self.repo.transaction() as tx:\n            p = tx.get_product(product_id)\n            p.price_cents = price_cents\n            tx.save(p)\n            # Record the purge in the same transaction so a crash cannot lose it.\n            self.outbox.add(tx, \"cdn.purge\", {\"tags\": [f\"product-{p.id}\", f\"category-{p.category}\"]})\n\n    def on_outbox_event(self, payload: dict) -> None:\n        # Soft purge marks stale instead of deleting: users keep getting fast (slightly old) hits\n        # while the edge refetches, which avoids a thundering herd on the origin.\n        self.cdn.purge_tags(payload[\"tags\"], soft=True)"
+            }
+          ]
+        },
+        {
+          "id": "edge-compute",
+          "label": "Edge compute",
+          "body": "## From cache to compute\n\nOnce you have hundreds of PoPs already terminating TLS and parsing HTTP, the next step is obvious: run **your code** there. Edge compute lets you handle (part of) a request within a few milliseconds of the user, without a round trip to your region.\n\nThe main platforms in 2026:\n\n| Platform | Runtime model | Notes |\n|---|---|---|\n| Cloudflare Workers | V8 isolates, JS/TS and Wasm | Isolates start in milliseconds, so cold starts are negligible; KV, Durable Objects, D1, R2 as edge-side storage |\n| Fastly Compute | WebAssembly | Compile Rust, Go, JS to Wasm; very fast instantiation |\n| AWS CloudFront Functions | Lightweight JS | Sub-millisecond header and URL manipulation, very constrained |\n| AWS Lambda@Edge | Node.js / Python in regional edge caches | More capable, slower to start, runs in fewer locations |\n| Vercel / Netlify edge functions | Built on isolate-style runtimes | Integrated with framework routing (Next.js `proxy.ts`, edge route handlers) |\n\nThe isolate model matters: instead of a container or VM per function, many tenants share one process, each in its own V8 isolate with a memory limit and no raw filesystem or arbitrary sockets. That is what makes per-request startup cheap, and also why edge runtimes expose a Web-standard API (`fetch`, `Request`, `Response`, `crypto.subtle`) rather than all of Node.js.\n\n## What belongs at the edge\n\nGood fits are things that are **stateless or read-mostly, latency-sensitive and small**:\n\n- Request routing and rewriting: A/B test bucketing, canary routing, locale or device redirects, legacy URL rewrites.\n- Cache-key normalisation: strip tracking params, collapse headers into small buckets, so the cache hit ratio goes up.\n- Auth gates: verify a signed JWT or session cookie and reject unauthenticated requests before they cost origin capacity. (Verification only needs a public key; issuing sessions still belongs at origin.)\n- Security: bot scoring, rate limiting, geo-blocking, WAF rules.\n- Personalisation of cached pages: serve a cached shell and inject a small personalised fragment, or choose between a few cached variants.\n- Image and response transforms: resizing, format negotiation, adding security headers.\n\nPoor fits are anything that needs **strongly consistent shared state or heavy data access**. If your edge function calls a database in us-east-1 on every request, you have added a hop and moved compute far from the data, which is often slower than just running in the region. Rule of thumb: compute should live next to the data it talks to most. Edge KV stores are typically eventually consistent (writes propagate over seconds), so they suit config, feature flags and lookup tables, not account balances. Cloudflare's Durable Objects are the exception that proves the rule: they give single-writer strong consistency by routing all requests for one object to one location.\n\n## Worked example: an edge function that raises the hit ratio\n\nThe code below (a Cloudflare Worker style handler in TypeScript) normalises the cache key, buckets devices, bypasses cache for logged-in users and serves stale on origin errors. It shows the three decisions you always make at the edge: what is in the key, who bypasses, and what happens when origin fails.\n\n## Anycast plus edge compute: the full request path\n\n1. DNS returns an anycast IP; BGP routes the user's packets to the nearest PoP.\n2. The PoP terminates TLS (HTTP/3 if supported).\n3. Edge function runs: auth check, routing, cache-key normalisation.\n4. Cache lookup on the normalised key: hit returns immediately.\n5. Miss goes to the shield tier, then to origin over a warm connection; response is stored according to `Cache-Control`.\n6. Edge function can post-process the response (add headers, inject a fragment) before it returns.\n\n## Trade-offs and operational reality\n\n- **Debuggability.** Logic now runs in 300 places with a different runtime from your backend. Invest in structured edge logs and tracing headers (`traceparent`) that propagate to origin.\n- **Vendor lock-in.** Edge APIs are converging on Web standards (the WinterTC effort), but storage products (KV, Durable Objects) are proprietary.\n- **Limits.** CPU time per request, memory per isolate and bundle size are capped; you cannot run a large ORM or a native module.\n- **Consistency.** Config you push to the edge takes time to propagate. Design rollouts to tolerate a mix of old and new versions for a short window.\n- **Cost model.** Usually per request plus CPU time. Cheap for light logic, but a chatty function on every asset request adds up; scope routes carefully.\n\n## Interview angle\n\nExpect questions like \"How would you serve a mostly static product page with a personalised cart count globally under 100 ms?\" A strong answer: cache the page at the edge keyed on locale and device bucket, fetch the cart count client-side from a regional API (or inject it at the edge from a signed cookie), purge by product tag on price change, and fall back to stale on origin errors. Then name the limits: edge KV is eventually consistent, so do not put inventory counts there, and anything transactional goes to the region that owns the data.\n\nTypical follow-ups: \"What if the purge is lost?\" (TTL bounds staleness), \"How do you stop cache poisoning?\" (key on every input that affects the response, strip unknown headers), \"Why not run everything at the edge?\" (data gravity: compute next to the database wins for chatty, consistent workloads).",
+          "diagrams": [
+            {
+              "title": "Decisions an edge function makes",
+              "code": "flowchart TD\n  req[\"Request at PoP\"] --> fn[\"Edge function\"]\n  fn --> auth{\"Valid session cookie?\"}\n  auth -->|yes| bypass[\"Bypass cache, forward to regional API\"]\n  auth -->|no| norm[\"Normalise cache key\"]\n  norm --> lookup{\"Cache hit?\"}\n  lookup -->|yes| respond[\"Return cached response\"]\n  lookup -->|no| fetchOrigin[\"Fetch origin with timeout\"]\n  fetchOrigin --> ok{\"Origin OK?\"}\n  ok -->|yes| store[\"Store and return\"]\n  ok -->|no| stale[\"Serve fallback copy or 503\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// Cloudflare Workers style edge handler: normalise the cache key, bypass for sessions, serve stale on error.\nconst TRACKING = new Set([\"utm_source\", \"utm_medium\", \"utm_campaign\", \"utm_term\", \"utm_content\", \"gclid\", \"fbclid\"]);\n\nfunction deviceBucket(ua: string | null): \"mobile\" | \"desktop\" {\n  return ua && /Mobi|Android|iPhone/i.test(ua) ? \"mobile\" : \"desktop\";\n}\n\nfunction cacheKey(req: Request): Request {\n  const url = new URL(req.url);\n  url.hostname = url.hostname.toLowerCase();\n  const kept = [...url.searchParams.entries()]\n    .filter(([k]) => !TRACKING.has(k.toLowerCase()))\n    .sort(([a], [b]) => a.localeCompare(b));\n  url.search = new URLSearchParams(kept).toString();\n  // Put the small, bounded variant into the key instead of Vary: User-Agent.\n  url.searchParams.set(\"__d\", deviceBucket(req.headers.get(\"user-agent\")));\n  return new Request(url.toString(), { method: \"GET\" });\n}\n\nexport default {\n  async fetch(req: Request, _env: unknown, ctx: ExecutionContext): Promise<Response> {\n    if (req.method !== \"GET\" || req.headers.get(\"cookie\")?.includes(\"session=\")) {\n      return fetch(req); // personalised or write: never shared-cached\n    }\n    const cache = caches.default;\n    const key = cacheKey(req);\n\n    // Long-lived copy used only when origin fails: the Cache API itself never returns expired entries.\n    const fallbackKey = new Request(`${key.url}&__fallback=1`);\n\n    const hit = await cache.match(key);\n    if (hit) return hit;\n\n    try {\n      const origin = await fetch(req, { signal: AbortSignal.timeout(3000) });\n      if (origin.status >= 500) throw new Error(`origin ${origin.status}`);\n      if (origin.ok && !origin.headers.has(\"set-cookie\")) {\n        const backup = new Response(origin.clone().body, origin);\n        backup.headers.set(\"cache-control\", \"public, max-age=86400\");\n        // Store without delaying the user.\n        ctx.waitUntil(Promise.all([cache.put(key, origin.clone()), cache.put(fallbackKey, backup)]));\n      }\n      return origin;\n    } catch {\n      const stale = await cache.match(fallbackKey);\n      return stale ?? new Response(\"Service unavailable\", { status: 503, headers: { \"retry-after\": \"30\" } });\n    }\n  },\n};"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Edge hit",
+          "time": "~1-10 ms + last mile",
+          "space": "-"
+        },
+        {
+          "op": "Edge miss, shield hit",
+          "time": "+10-40 ms",
+          "space": "-"
+        },
+        {
+          "op": "Full miss to distant origin",
+          "time": "+100-300 ms",
+          "space": "-"
+        },
+        {
+          "op": "Purge by tag propagation",
+          "time": "sub-second to seconds",
+          "space": "-"
+        },
+        {
+          "op": "Origin load at 95% hit ratio",
+          "time": "5% of requests",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "A CDN is a geographically distributed cache: it cuts latency by terminating connections near users and cuts origin load by serving hits.",
+        "Anycast announces one IP from every PoP so BGP routes users to the nearest one and spreads DDoS traffic.",
+        "Tiered caching plus request collapsing turns hundreds of PoP misses into one origin request.",
+        "The cache key decides correctness: too wide wrecks hit ratio, too narrow leaks one user's response to another.",
+        "Prefer fingerprinted immutable URLs; otherwise short TTLs with stale-while-revalidate and purge by tag.",
+        "Edge functions suit stateless, latency-sensitive logic; keep chatty, strongly consistent work next to the data."
+      ],
+      "problems": [],
+      "practiceRef": "hld-building-blocks:2",
+      "check": [
+        {
+          "q": "A marketing page has 40 URL variants because of utm_* parameters and its CDN hit ratio is 30%. What is the best fix?",
+          "options": [
+            "Lower the TTL so variants expire faster",
+            "Strip tracking parameters from the cache key at the edge",
+            "Add Vary: User-Agent",
+            "Purge the cache every hour"
+          ],
+          "answer": 1,
+          "why": "The parameters do not change the response, so removing them from the key collapses 40 copies into one and raises the hit ratio. The other options either do nothing for fragmentation or make it worse."
+        },
+        {
+          "q": "Why can build assets such as app.3f9a1c.js be cached with max-age=31536000, immutable?",
+          "options": [
+            "Because CDNs ignore max-age for JavaScript",
+            "Because browsers never re-download JavaScript",
+            "Because the file name changes whenever the content changes, so the old URL never needs invalidating"
+          ],
+          "answer": 2,
+          "why": "Content-addressed names make every version a new URL. The HTML points at the new file and the old one simply stops being requested, so no purge is needed."
+        },
+        {
+          "q": "Which header combination lets the CDN keep a page for a day but serve a slightly old copy instantly while it refetches after expiry?",
+          "options": [
+            "Cache-Control: private, max-age=86400",
+            "Cache-Control: no-cache",
+            "Cache-Control: public, s-maxage=86400, stale-while-revalidate=300",
+            "Cache-Control: no-store, max-age=86400"
+          ],
+          "answer": 2,
+          "why": "s-maxage sets the shared-cache lifetime and stale-while-revalidate allows serving the stale copy while a background refresh runs. private and no-store forbid CDN caching; no-cache forces revalidation before every use."
+        }
+      ],
+      "sources": [
+        {
+          "title": "MDN glossary: CDN",
+          "url": "https://developer.mozilla.org/en-US/docs/Glossary/CDN"
+        },
+        {
+          "title": "Anycast (overview and routing behaviour)",
+          "url": "https://en.wikipedia.org/wiki/Anycast"
+        },
+        {
+          "title": "MDN: Cache-Control",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control"
+        },
+        {
+          "title": "RFC 9111: HTTP Caching",
+          "url": "https://datatracker.ietf.org/doc/html/rfc9111"
+        },
+        {
+          "title": "web.dev: Prevent unnecessary network requests with the HTTP Cache",
+          "url": "https://web.dev/articles/http-cache"
+        },
+        {
+          "title": "Netflix Open Connect",
+          "url": "https://openconnect.netflix.com/en/"
+        }
+      ]
+    },
+    {
+      "id": "observability-slos",
+      "title": "Observability, SLOs and error budgets",
+      "minutes": 35,
+      "summary": "Metrics, logs and traces with OpenTelemetry, choosing SLIs and SLOs, error budgets as a release policy, and burn-rate alerting that pages only when users hurt.",
+      "parts": [
+        {
+          "id": "signals",
+          "label": "Metrics, logs, traces",
+          "body": "## Monitoring vs observability\n\n**Monitoring** answers questions you knew to ask in advance: \"Is CPU above 90%?\", \"Is the error rate above 1%?\". **Observability** is the ability to answer questions you did *not* anticipate, from the outside, using the telemetry the system already emits: \"Why are checkout requests from Android users in Germany slow only since the 14:05 deploy?\". In a distributed system most incidents are new combinations of old parts, so you need both.\n\nAn analogy: monitoring is the dashboard warning lights in a car; observability is the mechanic's diagnostic port that lets you ask the engine anything.\n\n## The three signals (and why each exists)\n\n| Signal | What it is | Strength | Weakness |\n|---|---|---|---|\n| **Metrics** | Numeric time series: counters, gauges, histograms, with labels | Cheap to store and query, perfect for dashboards and alerts | Aggregated: tells you *that* something is wrong, rarely *why* |\n| **Logs** | Timestamped records of discrete events, ideally structured JSON | Full detail of one event, great for debugging | Expensive at volume, hard to correlate across services |\n| **Traces** | A tree of timed **spans** following one request across services | Shows *where* time goes and which hop failed | Usually sampled; needs propagation through every hop |\n\nModern stacks add **profiles** (continuous CPU/memory profiling) and treat **events** (wide structured records per request) as a superset of logs. **OpenTelemetry (OTel)** is the vendor-neutral standard for producing all of these: one SDK and wire protocol (OTLP), a Collector that receives, processes and exports to whatever backend you use (Prometheus, Grafana Tempo/Loki, Jaeger, Datadog, Honeycomb and others).\n\n## Metrics in practice\n\nFour metric types cover almost everything:\n\n- **Counter**: only goes up (requests served, errors). You query its *rate*.\n- **Gauge**: goes up and down (queue depth, memory in use, open connections).\n- **Histogram**: counts observations into buckets (request latency) so you can compute percentiles across many servers.\n- **Summary**: client-side precomputed quantiles; cannot be aggregated across instances, which is why histograms are usually preferred.\n\n**Why averages lie.** If 99 requests take 10 ms and 1 takes 5 s, the mean is 60 ms and looks fine, yet one user in a hundred waits five seconds. Use percentiles: p50 (typical), p95/p99 (tail). And because one page load fans out to many backend calls, a backend p99 becomes something most users hit. Jeff Dean's \"tail at scale\" point: if a page touches 100 services each with a 1% chance of a slow response, about 63% of page loads hit at least one slow call.\n\n**Cardinality** is the cost driver. Every unique label combination is a separate time series. `http_requests_total{route, method, status}` with 50 routes x 5 methods x 10 statuses is 2,500 series per instance: fine. Add `user_id` and you have millions: your metrics backend falls over. Rule: labels must have small, bounded value sets. High-cardinality detail goes in logs or traces.\n\n### Which metrics to start with\n\n- **Google's four golden signals** (SRE book): latency, traffic, errors, saturation.\n- **RED** for request-driven services: Rate, Errors, Duration.\n- **USE** for resources (Brendan Gregg): Utilisation, Saturation, Errors for each CPU, disk, NIC, pool.\n\n## Logs in practice\n\n- Log **structured** JSON with stable field names (`level`, `msg`, `service`, `trace_id`, `route`, `duration_ms`), never free-form strings you later regex.\n- Include the **trace id** in every log line so you can jump from a slow trace to its logs.\n- Log at the right level and **sample** high-volume success logs; keep all errors.\n- Never log secrets or personal data (tokens, passwords, full card numbers, resume text). Redact at the logger, not by hoping callers remember.\n- Set retention by value: debug logs for days, audit logs for years.\n\n## Traces in practice\n\nA **trace** is one request's journey; each **span** has a name, start time, duration, attributes and a parent span id. Context travels between services in the W3C `traceparent` header (`version-traceid-spanid-flags`). Every service must extract it from incoming requests and inject it into outgoing calls, including message queue headers; one uninstrumented hop breaks the tree. OTel auto-instrumentation for HTTP clients/servers, gRPC and database drivers does most of this.\n\n**Sampling** controls cost:\n\n- **Head sampling** decides at the start (keep 5% of traces). Cheap, but you will drop most of the interesting slow or failed requests.\n- **Tail sampling** decides after the trace is complete (keep all errors, all requests over 1 s, and 1% of the rest). Much more useful, but needs a Collector tier that buffers spans for a trace until it is done.\n\n## How the signals work together during an incident\n\n1. An **alert** fires on a metric: checkout error-budget burn is high.\n2. The **dashboard** shows errors started at 14:05 and only on the `payments` route.\n3. You open **exemplar traces** (traces linked from the latency histogram buckets) for failed requests: the span to the fraud service is timing out at 2 s.\n4. The fraud service's **logs** for those trace ids show connection pool exhaustion after a config change.\n5. You roll back. Metrics confirm recovery.\n\n## Interview angle\n\nWhen an interviewer asks \"how would you monitor this system?\", do not list tools. Say what you would measure (RED per endpoint, USE per resource, business metrics like orders per minute), how you would correlate (trace ids in logs, exemplars), how you would control cost (bounded labels, tail sampling, log sampling) and what you would alert on (SLO burn, not CPU). That last part is the next section.",
+          "diagrams": [
+            {
+              "title": "Telemetry pipeline with an OTel Collector",
+              "code": "flowchart LR\n  svcA[\"Service A (OTel SDK)\"] -->|OTLP| collector[\"OTel Collector\"]\n  svcB[\"Service B (OTel SDK)\"] -->|OTLP| collector\n  collector -->|metrics| prom[\"Prometheus / metrics store\"]\n  collector -->|\"traces (tail sampled)\"| traces[\"Trace store\"]\n  collector -->|logs| logs[\"Log store\"]\n  prom --> alerting[\"Alertmanager: burn-rate rules\"]\n  prom --> dash[\"Dashboards\"]\n  traces --> dash\n  logs --> dash\n  alerting --> oncall[\"On-call page or ticket\"]"
+            },
+            {
+              "title": "One trace id across services",
+              "code": "sequenceDiagram\n  participant GW as API gateway\n  participant CO as Checkout\n  participant PA as Payments\n  participant FR as Fraud\n  GW->>CO: POST /checkout (traceparent: trace 4bf9, span a1)\n  CO->>PA: charge (trace 4bf9, parent span c3)\n  PA->>FR: score (trace 4bf9, parent span p7)\n  FR-->>PA: timeout after 2 s\n  PA-->>CO: 502\n  CO-->>GW: 500, log line carries trace_id 4bf9"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "slos-budgets",
+          "label": "SLIs, SLOs, budgets",
+          "body": "## SLI, SLO, SLA: three different things\n\nThe Google SRE book's chapter on Service Level Objectives defines the vocabulary that most companies now use:\n\n- **SLI (indicator):** a measured ratio of good events to valid events. \"Proportion of HTTP requests to `/checkout` that returned a non-5xx response in under 300 ms.\" It is a number between 0 and 100%.\n- **SLO (objective):** the target for that SLI over a window. \"99.9% of checkout requests are good, measured over a rolling 28 days.\"\n- **SLA (agreement):** a contract with customers that has consequences (credits, refunds) if missed. SLAs are deliberately looser than internal SLOs so you get warned long before you owe money.\n\nA useful mental model: the SLI is the speedometer, the SLO is the speed limit you set for yourself, the SLA is the fine written into a contract.\n\n## Choosing good SLIs\n\nMeasure what users feel, as close to them as possible:\n\n| Service type | Typical SLIs |\n|---|---|\n| Request/response API | Availability (non-5xx ratio), latency (share of requests under a threshold) |\n| Data pipeline | Freshness (share of data processed within N minutes), correctness, coverage |\n| Storage | Durability, read/write availability and latency |\n| Frontend | Core Web Vitals (LCP, INP, CLS) at p75 from real users |\n\nTwo practical points. First, express latency SLIs as **\"proportion of requests faster than X\"** rather than \"p99 below X\", because ratios add up cleanly across time and servers and map directly to a budget. Second, measure at the **load balancer or client**, not only inside the service: a crashed process logs nothing, but the load balancer sees every failed request.\n\n## Choosing the target\n\nMore nines are not free. Each extra nine roughly multiplies cost and slows feature work. Users also cannot tell the difference beyond the reliability of their own network and device.\n\n| SLO | Allowed bad time per 30 days | Per year |\n|---|---|---|\n| 99% | 7.2 hours | ~3.65 days |\n| 99.5% | 3.6 hours | ~1.8 days |\n| 99.9% | 43.2 minutes | ~8.8 hours |\n| 99.95% | 21.6 minutes | ~4.4 hours |\n| 99.99% | 4.32 minutes | ~52.6 minutes |\n\nDependencies cap you: if your service calls three dependencies serially, each at 99.9%, your best case is about 99.7% unless you add redundancy, caching or graceful degradation. Set the SLO from what users need and what the business can afford, then engineer to it.\n\n## Error budgets: turning reliability into a decision\n\nThe **error budget** is `1 - SLO`. With a 99.9% SLO over 28 days and 100 million requests, you may fail 100,000 requests. That budget is spent by outages, bad deploys, planned maintenance and risky experiments alike.\n\nThe power of the budget is that it ends the endless argument between \"ship faster\" and \"be more careful\":\n\n- **Budget remaining:** ship features, run experiments, do risky migrations.\n- **Budget exhausted:** the agreed policy kicks in, for example a freeze on non-critical launches and engineering time redirected to reliability work until the budget recovers.\n- **Budget consistently untouched:** your SLO may be stricter than users need, or you are being too cautious; consider shipping faster or loosening the target.\n\nThe policy must be agreed *in advance* by product and engineering leadership; otherwise the first freeze turns into a political fight.\n\n## Worked example\n\nCheckout API, SLO: 99.9% of requests non-5xx over 28 days. Traffic: 50 requests per second on average, so about 121 million requests per window, and a budget of about 121,000 bad requests.\n\n- A bad deploy causes 20% errors for 10 minutes: 50 x 600 x 0.2 = 6,000 bad requests, about 5% of the budget.\n- A full 30-minute outage: 50 x 1,800 = 90,000 bad requests, about 74% of the budget in one incident. After that the team should be cautious for the rest of the window.\n\n## Burn rate\n\n**Burn rate** is how fast you are spending the budget relative to the pace that would use exactly 100% by the end of the window. Burn rate 1 means \"on track to use the whole budget\"; burn rate 10 means \"will exhaust it in a tenth of the window\" (about 2.8 days of a 28-day window).\n\n`burn_rate = observed_error_ratio / (1 - SLO)`\n\nWith a 99.9% SLO, an error ratio of 1.44% over the last hour is a burn rate of 14.4. Burn rate is the basis of good SLO alerting, covered next.\n\n## Common mistakes\n\n- Picking SLIs that are easy to measure (CPU, uptime of a process) instead of what users experience.\n- Setting 99.99% because it sounds good, with no budget policy behind it.\n- Too many SLOs: start with one or two per user journey.\n- Measuring only averages, or measuring only inside the service.\n- Forgetting that planned maintenance and dependency failures still burn the user's budget.\n\n## Interview angle\n\nIf the interviewer asks \"what availability does this system need?\", answer with an SLO and its consequence: \"Checkout gets 99.95% over 28 days, about 20 minutes of bad time per month, which means we need multi-AZ deployment, automated rollback, and the payment provider call must degrade gracefully. The internal admin dashboard gets 99%; it can be single-region.\" That shows you know nines cost money and should differ per component.",
+          "diagrams": [
+            {
+              "title": "From SLI to error-budget policy",
+              "code": "flowchart TD\n  sli[\"SLI: good requests / valid requests\"] --> slo[\"SLO: 99.9% over 28 days\"]\n  slo --> budget[\"Error budget: 0.1% of requests\"]\n  budget --> check{\"Budget left?\"}\n  check -->|yes| ship[\"Ship features and experiments\"]\n  check -->|no| freeze[\"Policy: freeze risky launches, fix reliability\"]\n  slo --> sla[\"SLA: looser external promise with penalties\"]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "alerting-lld",
+          "label": "Alerting and LLD",
+          "body": "## Alert on symptoms, not causes\n\nA page should mean \"users are hurting, or soon will be, and a human must act now\". CPU at 95% is not that: a batch job may be using spare capacity happily. An error-budget burn is exactly that. The SRE book's monitoring chapter puts it simply: every page should be actionable, urgent and user-visible; everything else is a ticket or a dashboard.\n\nGood alerting has two properties that pull against each other:\n\n- **Precision:** a page means a real problem (few false positives).\n- **Recall / detection time:** real problems page quickly (few misses, short delay).\n\n## Why naive SLO alerts fail\n\n- *\"Alert if error ratio over the last 5 minutes exceeds 0.1%\"* (the SLO threshold): pages on every tiny blip that barely dents the budget. Too noisy.\n- *\"Alert if the 28-day budget is exhausted\"*: precise but far too late.\n\n## Multiwindow, multi-burn-rate alerts\n\nThe Google SRE Workbook chapter \"Alerting on SLOs\" walks through these alternatives and lands on a scheme that most teams now copy. For a 99.9% SLO over 30 days:\n\n| Severity | Burn rate | Long window | Short window | Budget consumed when it fires |\n|---|---|---|---|---|\n| Page | 14.4 | 1 hour | 5 minutes | 2% |\n| Page | 6 | 6 hours | 30 minutes | 5% |\n| Ticket | 1 | 3 days | 6 hours | 10% |\n\nEach rule requires **both** windows to exceed the burn rate. The long window ensures enough budget has really been spent to matter; the short window ensures the problem is *still happening*, so the alert resets quickly after recovery instead of staying red for an hour.\n\nIn PromQL, with a recording rule for the error ratio over each window, the first page rule looks like:\n\n```text\n(\n  job:slo_errors_per_request:ratio_rate1h{service=\"checkout\"} > (14.4 * 0.001)\nand\n  job:slo_errors_per_request:ratio_rate5m{service=\"checkout\"} > (14.4 * 0.001)\n)\n```\n\nwhere the ratio is `sum(rate(http_requests_total{code=~\"5..\"}[1h])) / sum(rate(http_requests_total[1h]))`.\n\nLow-traffic services need care: at 10 requests per hour a single failure is a 10% error ratio. Options: synthetic traffic, longer windows, or a minimum-count condition (`and sum(increase(...[1h])) > 100`).\n\n## LLD: instrumenting a service\n\nThe interviewer may ask you to sketch the code. Two pieces are worth knowing: a **middleware** that records RED metrics with bounded labels, and a **burn-rate evaluator** that turns counts into alert decisions.\n\nDesign points for the middleware:\n\n- Label by **route template** (`/users/:id`), never the raw path (`/users/8812`), or cardinality explodes.\n- Use a **histogram** with buckets around your SLO threshold (for a 300 ms target, have a bucket boundary at 0.3 s) so \"share under 300 ms\" is exact.\n- Record status *class* or code, method, route: all bounded.\n- Put the trace id in logs, and let the OTel SDK attach exemplars so dashboards link to traces.\n\nDesign points for the evaluator:\n\n- Inputs are good/total counts per window, pulled from the metrics store.\n- Pure function: easy to unit test with fixtures (\"1.5% errors in last hour and 2% in last 5 minutes must page\").\n- Output includes which rule fired and how much budget it implies, so the page tells the on-call what is going on.\n\n## Runbooks and on-call hygiene\n\n- Every alert links to a **runbook**: what it means, how to confirm, first mitigation steps (roll back, shed load, fail over).\n- Track alert quality: pages per shift, percentage actionable. Delete or demote alerts nobody acts on.\n- After incidents, write **blameless postmortems** with concrete action items; the SRE book has a full chapter on the culture behind them.\n\n## Alerting on latency SLOs\n\nLatency SLOs use the same machinery: count requests slower than the threshold as \"bad\". With a histogram bucket at exactly 0.3 s, the bad ratio is `1 - rate(bucket{le=\"0.3\"}) / rate(count)`, and the same burn-rate rules apply. This is why the bucket boundary must sit on the threshold.\n\n## Trade-offs\n\n| Choice | Benefit | Cost |\n|---|---|---|\n| Rich high-cardinality events (Honeycomb style) | Ask any question after the fact | Storage and ingest cost, needs sampling |\n| Prometheus-style metrics | Cheap, fast alerts | Pre-aggregated, low cardinality only |\n| 100% trace sampling | Every request debuggable | Expensive at scale; most traces are boring |\n| Tail sampling | Keeps errors and slow traces | Collector tier that must buffer whole traces |\n| Many SLOs | Fine-grained | Alert fatigue, hard to reason about |\n\n## Interview angle\n\nA model 60-second answer to \"How would you set up monitoring and alerting for this service?\":\n\n1. Define one or two SLIs per user journey, measured at the load balancer: availability and latency under a threshold.\n2. Set SLOs from user need (for example 99.9% over 28 days) and agree an error-budget policy.\n3. Instrument with OpenTelemetry: RED metrics with bounded labels, structured logs with trace ids, traces with tail sampling.\n4. Page on multiwindow burn-rate alerts; ticket on slow burns; dashboards for everything else.\n5. Runbooks and postmortems close the loop.\n\nFollow-ups to expect: \"Why not alert on CPU?\", \"How do you avoid a cardinality explosion?\", \"How do you alert for a service with very little traffic?\", \"What do you do when the error budget is gone?\".",
+          "diagrams": [
+            {
+              "title": "Burn-rate alert states",
+              "code": "stateDiagram-v2\n  [*] --> Healthy\n  Healthy --> FastBurn: burn above 14.4x on 1h and 5m\n  Healthy --> SlowBurn: burn above 1x on 3d and 6h\n  FastBurn --> Healthy: short window recovers\n  SlowBurn --> Healthy: burn drops below 1x\n  FastBurn: Page on-call now\n  SlowBurn: Open a ticket"
+            }
+          ],
+          "code": [
+            {
+              "lang": "go",
+              "source": "package telemetry\n\nimport (\n\t\"net/http\"\n\t\"strconv\"\n\t\"time\"\n\n\t\"github.com/prometheus/client_golang/prometheus\"\n\t\"github.com/prometheus/client_golang/prometheus/promauto\"\n)\n\nvar (\n\trequests = promauto.NewCounterVec(prometheus.CounterOpts{\n\t\tName: \"http_requests_total\",\n\t\tHelp: \"HTTP requests by route template, method and status code.\",\n\t}, []string{\"route\", \"method\", \"code\"})\n\n\tlatency = promauto.NewHistogramVec(prometheus.HistogramOpts{\n\t\tName: \"http_request_duration_seconds\",\n\t\tHelp: \"Request latency. A bucket boundary sits exactly on the 300 ms SLO threshold.\",\n\t\tBuckets: []float64{0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 1, 2, 5},\n\t}, []string{\"route\", \"method\"})\n)\n\ntype statusRecorder struct {\n\thttp.ResponseWriter\n\tcode int\n}\n\nfunc (r *statusRecorder) WriteHeader(code int) {\n\tr.code = code\n\tr.ResponseWriter.WriteHeader(code)\n}\n\n// Instrument wraps a handler. route must be the template (\"/users/{id}\"), never the raw path,\n// otherwise every user id becomes a new time series.\nfunc Instrument(route string, next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {\n\t\tstart := time.Now()\n\t\trec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}\n\t\tnext.ServeHTTP(rec, req)\n\t\trequests.WithLabelValues(route, req.Method, strconv.Itoa(rec.code)).Inc()\n\t\tlatency.WithLabelValues(route, req.Method).Observe(time.Since(start).Seconds())\n\t})\n}"
+            },
+            {
+              "lang": "ts",
+              "source": "// Multiwindow, multi-burn-rate evaluation (SRE Workbook, \"Alerting on SLOs\"). Pure, so it is easy to test.\ntype WindowCounts = { good: number; total: number };\ntype Severity = \"page\" | \"ticket\";\n\ninterface BurnRule {\n  severity: Severity;\n  burnRate: number;\n  long: string; // window names must exist in the counts map\n  short: string;\n}\n\nconst RULES: BurnRule[] = [\n  { severity: \"page\", burnRate: 14.4, long: \"1h\", short: \"5m\" },\n  { severity: \"page\", burnRate: 6, long: \"6h\", short: \"30m\" },\n  { severity: \"ticket\", burnRate: 1, long: \"3d\", short: \"6h\" },\n];\n\nconst errorRatio = ({ good, total }: WindowCounts): number => (total === 0 ? 0 : (total - good) / total);\n\nexport interface Alert {\n  severity: Severity;\n  rule: string;\n  burnRate: number;\n  budgetConsumedPct: number; // share of the whole SLO window's budget used during the long window\n}\n\nexport function evaluate(\n  slo: number, // e.g. 0.999\n  sloWindowHours: number, // e.g. 720 for 30 days\n  counts: Record<string, WindowCounts>,\n  windowHours: Record<string, number>,\n  minRequests = 100,\n): Alert | null {\n  const budget = 1 - slo;\n  for (const r of RULES) {\n    const long = counts[r.long];\n    const short = counts[r.short];\n    if (!long || !short || long.total < minRequests) continue; // too little traffic to judge\n    const longBurn = errorRatio(long) / budget;\n    const shortBurn = errorRatio(short) / budget;\n    if (longBurn >= r.burnRate && shortBurn >= r.burnRate) {\n      return {\n        severity: r.severity,\n        rule: `${r.burnRate}x over ${r.long} and ${r.short}`,\n        burnRate: Number(longBurn.toFixed(1)),\n        budgetConsumedPct: Number(((longBurn * windowHours[r.long]) / sloWindowHours * 100).toFixed(1)),\n      };\n    }\n  }\n  return null;\n}\n\n// 1.5% errors over the last hour and 2% over the last 5 minutes against a 99.9% SLO pages:\n// burn 15 >= 14.4 on both windows, about 2.1% of the 30-day budget gone.\n// evaluate(0.999, 720, { \"1h\": { good: 98500, total: 100000 }, \"5m\": { good: 8170, total: 8337 } }, { \"1h\": 1 });"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        {
+          "op": "99.9% SLO: allowed bad time per 30 days",
+          "time": "43.2 min",
+          "space": "-"
+        },
+        {
+          "op": "99.99% SLO: allowed bad time per 30 days",
+          "time": "4.32 min",
+          "space": "-"
+        },
+        {
+          "op": "Page: 14.4x burn over 1h + 5m",
+          "time": "2% of budget",
+          "space": "-"
+        },
+        {
+          "op": "Page: 6x burn over 6h + 30m",
+          "time": "5% of budget",
+          "space": "-"
+        },
+        {
+          "op": "Ticket: 1x burn over 3d + 6h",
+          "time": "10% of budget",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Metrics tell you something is wrong, traces tell you where, logs tell you why; correlate them with a shared trace id.",
+        "Keep metric labels bounded: user ids and raw paths explode cardinality and cost.",
+        "Percentiles, not averages: tail latency compounds when one request fans out to many services.",
+        "An SLI is a ratio of good to valid events measured near the user; the SLO is its target; the SLA is a looser contract.",
+        "The error budget (1 - SLO) turns reliability into a shared, pre-agreed release policy.",
+        "Page on multiwindow burn-rate alerts so pages are rare, real and reset quickly after recovery."
+      ],
+      "problems": [],
+      "practiceRef": "hld-storage-observability:4",
+      "check": [
+        {
+          "q": "A service has a 99.9% SLO over 30 days. Roughly how much fully-down time does that allow per month?",
+          "options": [
+            "4.3 minutes",
+            "43 minutes",
+            "7.2 hours",
+            "8.8 hours"
+          ],
+          "answer": 1,
+          "why": "0.1% of 30 days is 43.2 minutes. 4.3 minutes is 99.99%, 7.2 hours is 99%, and 8.8 hours is 99.9% over a whole year."
+        },
+        {
+          "q": "Why should a burn-rate alert require both a long window (1h) and a short window (5m) to exceed the threshold?",
+          "options": [
+            "The long window proves enough budget was spent; the short window proves it is still happening, so the alert clears quickly",
+            "Prometheus cannot evaluate a single window",
+            "The short window catches problems the long window never sees",
+            "It halves storage cost"
+          ],
+          "answer": 0,
+          "why": "The long window gives precision (a real amount of budget is gone). Without the short window the alert would stay firing for up to an hour after the problem was fixed."
+        },
+        {
+          "q": "Which metric label is most likely to cause a cardinality explosion?",
+          "options": [
+            "HTTP method",
+            "Status code class (2xx, 4xx, 5xx)",
+            "Route template such as /users/:id",
+            "Raw request path such as /users/88123"
+          ],
+          "answer": 3,
+          "why": "Raw paths embed ids, so every user creates a new time series. Method, status class and route templates have small, bounded value sets."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Google SRE book: Service Level Objectives",
+          "url": "https://sre.google/sre-book/service-level-objectives/"
+        },
+        {
+          "title": "Google SRE workbook: Alerting on SLOs",
+          "url": "https://sre.google/workbook/alerting-on-slos/"
+        },
+        {
+          "title": "Google SRE book: Monitoring Distributed Systems",
+          "url": "https://sre.google/sre-book/monitoring-distributed-systems/"
+        },
+        {
+          "title": "OpenTelemetry: Signals",
+          "url": "https://opentelemetry.io/docs/concepts/signals/"
+        },
+        {
+          "title": "Prometheus: Histograms and summaries",
+          "url": "https://prometheus.io/docs/practices/histograms/"
+        },
+        {
+          "title": "Brendan Gregg: The USE Method",
+          "url": "https://www.brendangregg.com/usemethod.html"
+        }
+      ]
+    },
+    {
+      "id": "resilience-patterns",
+      "title": "Resilience patterns",
+      "minutes": 35,
+      "summary": "Stopping cascading failures: timeouts and deadlines, safe retries with jitter and budgets, circuit breakers, bulkheads, load shedding and graceful degradation.",
+      "parts": [
+        {
+          "id": "timeouts-retries",
+          "label": "Timeouts and retries",
+          "body": "## Why distributed systems fail differently\n\nIn a monolith a function call either returns or throws. Over a network a call can also **hang**, succeed but lose the response, or succeed slowly enough to be useless. Worse, failures **spread**: one slow dependency ties up threads and connections in its callers, which slow down their callers, until a whole site is down because one non-critical service got slow. That is a **cascading failure**, and almost every resilience pattern exists to stop one.\n\nThink of a restaurant kitchen. If the dessert station stalls and every waiter stands there waiting for desserts, soon nobody takes new orders. Resilience patterns are the rules that stop waiters waiting forever (timeouts), stop them pestering a broken station (circuit breakers), keep one station's queue from blocking the others (bulkheads), and turn customers away politely when the kitchen is full (load shedding).\n\n## Timeouts: the first and most important pattern\n\nEvery network call needs a timeout. Many client libraries default to *no* timeout or to minutes, which is how one stuck dependency exhausts a thread pool.\n\nHow to pick a value:\n\n1. Measure the dependency's latency distribution under normal load.\n2. Choose a timeout a bit above its p99 or p99.9 (AWS's Builders' Library article on timeouts describes picking an acceptable false-timeout rate, such as 0.1%, and using that percentile).\n3. Check it against your **own** budget: if your API promises 500 ms and calls three services in sequence, they cannot each get 1 s.\n\nDistinguish **connect timeout** (short, tens to hundreds of ms in-region: a host that does not accept a connection is probably dead) from **request timeout** (covers the actual work).\n\n### Deadline propagation\n\nBetter than fixed per-hop timeouts is a **deadline** that travels with the request. The edge sets \"this request must finish by 12:00:00.500\"; each service passes the remaining time downstream (gRPC does this natively with deadlines; over HTTP you can pass a header). A service that receives a request with 5 ms left should not start a 200 ms database query; it should fail fast. This stops wasted work on requests the user has already given up on.\n\n## Retries: helpful for transient faults, dangerous under overload\n\nRetries fix **transient** failures: a dropped packet, a leader election, a single bad host behind a load balancer. They make **overload** worse: if a service is failing because it is saturated, every retry adds load exactly when it can least handle it.\n\nRules that keep retries safe:\n\n1. **Only retry idempotent operations**, or make them idempotent with an idempotency key (the server stores the key and returns the original result on a repeat). A retried non-idempotent `POST /charge` can charge a customer twice.\n2. **Only retry retryable errors**: timeouts, connection resets, `503`, `429` (respecting `Retry-After`). Never retry `400` or `401`; they will fail the same way.\n3. **Cap attempts**, typically 2-3 total.\n4. **Back off exponentially with jitter.** Without jitter, every client that failed at the same instant retries at the same instant, producing synchronised waves. Marc Brooker's AWS Architecture Blog post \"Exponential Backoff And Jitter\" simulated the options and showed that **full jitter** (sleep a random time between 0 and the exponential cap) dramatically reduces total work and contention compared with no jitter.\n5. **Retry at one layer only.** If the browser, the gateway, service A and service B each retry 3 times, one user click can become 3 x 3 x 3 x 3 = 81 calls to B's database during an outage. Retry at the layer closest to the failure, or at the edge, and make everything else fail fast.\n6. **Use a retry budget.** Allow retries only while they are a small share of traffic, say 10% of requests over the last minute. When the budget is exhausted, stop retrying. This is what gRPC's retry throttling and Finagle-style retry budgets do, and it caps amplification at 1.1x instead of 3x.\n\n```text\nattempt 1 fails  -> sleep random(0, 100 ms)\nattempt 2 fails  -> sleep random(0, 200 ms)\nattempt 3 fails  -> give up, return error (or fallback)\ncap the exponential at, say, 2 s; never sleep past the request deadline\n```\n\n## Hedged requests: cutting the tail\n\nFor latency-sensitive reads, send the request to one replica and, if it has not answered by the p95 latency, send a second copy to another replica and use whichever answers first. Jeff Dean and Luiz Barroso's \"The Tail at Scale\" (CACM 2013) describes this; the extra load is small (about 5% more requests if you hedge at p95) and the tail improves a lot. Only hedge idempotent reads, and cancel the loser.\n\n## Idempotency: what makes retries safe\n\nThe standard design, used by Stripe's API:\n\n- The client generates a unique `Idempotency-Key` per logical operation and sends it on every attempt.\n- The server atomically records `(key, request hash, status)` before doing the work; a repeat with the same key returns the stored response; a repeat with a different body is rejected.\n- Keys expire after a window (Stripe documents 24 hours).\n\nWithout idempotency you cannot safely retry writes, and without retries transient faults become user-visible errors.\n\n## Interview angle\n\nWhen you draw any arrow between two services, the interviewer may ask \"what happens when that call is slow?\". The strong answer: a timeout derived from the dependency's p99 and our own latency budget, a deadline propagated downstream, at most two retries with full-jitter backoff for idempotent calls only, a retry budget to stop amplification, and idempotency keys for writes. Then mention what happens when retries are not enough, which is the circuit breaker in the next part.",
+          "diagrams": [
+            {
+              "title": "A retried call inside a deadline",
+              "code": "sequenceDiagram\n  participant C as Client\n  participant A as Service A\n  participant B as Service B (overloaded)\n  C->>A: request (deadline 500 ms)\n  A->>B: attempt 1 (timeout 150 ms)\n  B--xA: timeout\n  Note over A: sleep random(0, 100 ms), budget allows retry\n  A->>B: attempt 2 (same idempotency key)\n  B-->>A: 200\n  A-->>C: 200 within deadline"
+            }
+          ],
+          "code": [
+            {
+              "lang": "go",
+              "source": "package resilience\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"math/rand/v2\"\n\t\"sync/atomic\"\n\t\"time\"\n)\n\n// RetryBudget allows retries only while they stay under ratio of recent requests (e.g. 0.1 = 10%).\n// Counters are reset by a ticker every window; kept minimal here.\ntype RetryBudget struct {\n\trequests, retries atomic.Int64\n\tratio             float64\n}\n\nfunc (b *RetryBudget) OnRequest() { b.requests.Add(1) }\n\nfunc (b *RetryBudget) TryRetry() bool {\n\tif float64(b.retries.Load()+1) > b.ratio*float64(b.requests.Load()) {\n\t\treturn false\n\t}\n\tb.retries.Add(1)\n\treturn true\n}\n\nvar ErrNotRetryable = errors.New(\"not retryable\")\n\n// Do runs op up to maxAttempts times with full-jitter exponential backoff, never sleeping past the\n// context deadline. op must be idempotent; it returns ErrNotRetryable (wrapped) for 4xx-style errors.\nfunc Do(ctx context.Context, budget *RetryBudget, maxAttempts int, base, maxDelay time.Duration,\n\top func(ctx context.Context) error) error {\n\tbudget.OnRequest()\n\tvar err error\n\tfor attempt := 0; attempt < maxAttempts; attempt++ {\n\t\tif err = op(ctx); err == nil || errors.Is(err, ErrNotRetryable) {\n\t\t\treturn err\n\t\t}\n\t\tif attempt == maxAttempts-1 || !budget.TryRetry() {\n\t\t\tbreak\n\t\t}\n\t\tbackoff := min(maxDelay, base<<attempt)            // exponential cap\n\t\tsleep := time.Duration(rand.Int64N(int64(backoff))) // full jitter: uniform in [0, cap)\n\t\tif dl, ok := ctx.Deadline(); ok && time.Until(dl) < sleep {\n\t\t\tbreak // no time left for another attempt\n\t\t}\n\t\tselect {\n\t\tcase <-time.After(sleep):\n\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\t}\n\t}\n\treturn err\n}"
+            }
+          ]
+        },
+        {
+          "id": "breakers-bulkheads",
+          "label": "Breakers and bulkheads",
+          "body": "## Circuit breakers\n\nRetries handle blips. When a dependency is properly down, continuing to call it wastes your threads and its recovery capacity, and makes your users wait for a timeout every time. A **circuit breaker**, popularised by Michael Nygard's *Release It!* and explained in Martin Fowler's bliki entry, wraps the call and **fails fast** once failures cross a threshold.\n\nIt is a three-state machine:\n\n| State | Behaviour | Transition |\n|---|---|---|\n| **Closed** | Calls pass through; failures are counted in a rolling window | Too many failures (for example 50% of at least 20 calls in 10 s) opens it |\n| **Open** | Calls fail immediately (or go to a fallback) without touching the dependency | After a cool-down (say 30 s) move to half-open |\n| **Half-open** | Let a few trial calls through | If they succeed, close; if any fail, open again |\n\nDesign details that separate a good answer from a textbook one:\n\n- **Count the right failures.** Timeouts, connection errors and `5xx` count. A `404` or validation error is a correct answer, not a dependency failure.\n- **Use a rate over a rolling window with a minimum volume**, not \"5 consecutive failures\": at high traffic consecutive counts trip on noise; at low traffic a rate with no minimum trips on one error.\n- **One breaker per dependency (and often per endpoint or host).** A single global breaker would cut off healthy dependencies too.\n- **Pair with a fallback**: cached data, a default, a degraded feature, or a clear error. A breaker without a plan for the open state just produces errors faster (which is still better than slow errors).\n- **Emit metrics and alert** on state changes; an open breaker is an incident signal.\n- In a service mesh (Envoy, Istio, Linkerd) **outlier detection** ejects individual bad hosts from the load-balancing pool, which is a per-host breaker you get without code.\n\nLibraries: Resilience4j (Java), Polly (.NET), `opossum` (Node.js), `sony/gobreaker` (Go). Netflix's Hystrix popularised the pattern and is now in maintenance mode, with Netflix pointing users to Resilience4j and adaptive approaches.\n\n## Bulkheads\n\nA ship's hull is split into watertight compartments so one breach does not sink it. A **bulkhead** isolates resources so one failing dependency or tenant cannot consume everything.\n\nForms it takes:\n\n- **Separate connection pools / thread pools / semaphores per dependency.** If the recommendations service hangs, it can exhaust only its own 20 concurrent slots, not the 200 that checkout also needs.\n- **Separate worker pools per priority**: interactive requests and batch jobs never share a queue.\n- **Cell-based architecture**: split the whole system into independent cells (full stacks), each serving a subset of customers, so a bad deploy or poison request takes down one cell, not everyone. AWS describes this pattern for many of its services, and Slack and others have written about moving to cellular designs.\n- **Shuffle sharding**: give each customer a random small subset of workers; two customers rarely share all of theirs, so one noisy customer degrades very few others.\n\nThe trade-off is utilisation: partitioned resources sit idle while another partition is overloaded. You buy isolation with some efficiency.\n\n## How the patterns compose\n\nOrder matters when you stack them on a call:\n\n```text\nrequest\n  -> bulkhead (acquire a slot for this dependency or reject immediately)\n    -> circuit breaker (open? fail fast or fallback)\n      -> retry with jitter and budget (only for retryable errors)\n        -> timeout per attempt, bounded by the request deadline\n          -> network call\n```\n\nThe timeout is innermost because it bounds each attempt. Retries sit inside the breaker so a burst of retried failures counts toward opening it. The bulkhead sits outermost so a stuck dependency cannot accumulate unbounded waiting work.\n\n## Worked example: product page with three dependencies\n\nA product page calls `catalog` (critical), `pricing` (critical) and `recommendations` (nice-to-have).\n\n- All calls get timeouts from p99: catalog 150 ms, pricing 100 ms, recommendations 200 ms, inside a 500 ms page deadline; catalog and pricing run in parallel.\n- `recommendations` has its own bulkhead of 30 concurrent calls and a breaker. When it opens, the page renders a \"popular items\" list from a cache. Users see a slightly less personal page; nobody sees an error.\n- `pricing` has a breaker too, but its fallback is different: showing a stale price could be legally wrong, so when it opens the page shows \"price unavailable, try again\" and disables Add to cart. Fallbacks are a **product decision**, not just an engineering one.\n- `catalog` reads have one hedged request at p95 to a second replica.\n\n## Common mistakes\n\n- Retries without a breaker, so an outage becomes a retry storm.\n- A breaker that counts client errors and opens because users typed bad input.\n- Timeouts longer than the caller's own timeout, so work continues after the caller gave up.\n- Shared thread pool for everything (\"one slow call took the site down\").\n- Testing none of it. The patterns only work if exercised: chaos experiments and game days (Netflix's Chaos Monkey lineage) verify that the fallback path actually renders.\n\n## Interview angle\n\nInterviewers love \"service B is slow, what happens to service A?\". Walk the chain: A's threads wait up to the timeout; without a bulkhead they fill up and A's unrelated endpoints slow down; retries multiply the load on B; the breaker opens after the failure rate passes the threshold and A serves a fallback; half-open probes detect B's recovery. Then say what the user sees in each phase. That narrative shows you understand failure propagation, not just pattern names.",
+          "diagrams": [
+            {
+              "title": "Circuit breaker states",
+              "code": "stateDiagram-v2\n  [*] --> Closed\n  Closed --> Open: failure rate over threshold with minimum calls\n  Open --> HalfOpen: cool-down elapsed\n  HalfOpen --> Closed: trial calls succeed\n  HalfOpen --> Open: any trial call fails\n  Closed: Calls pass, outcomes counted\n  Open: Fail fast or fallback\n  HalfOpen: Few probe calls allowed"
+            },
+            {
+              "title": "Order of the patterns on one call",
+              "code": "flowchart LR\n  req[\"Incoming request\"] --> bulkhead{\"Slot free in dependency pool?\"}\n  bulkhead -->|no| reject[\"Reject fast or fallback\"]\n  bulkhead -->|yes| breaker{\"Breaker open?\"}\n  breaker -->|yes| fallback[\"Fallback: cache or default\"]\n  breaker -->|no| retry[\"Retry loop with jitter and budget\"]\n  retry --> timeout[\"Per-attempt timeout within deadline\"]\n  timeout --> dep[\"Dependency call\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "type State = \"closed\" | \"open\" | \"half-open\";\n\ninterface BreakerOptions {\n  failureRateThreshold: number; // 0.5 = open when half the calls in the window fail\n  minimumCalls: number; // do not judge on tiny samples\n  windowSize: number; // number of recent outcomes kept\n  openMs: number; // cool-down before probing\n  halfOpenMaxCalls: number; // trial calls allowed while half-open\n  isFailure?: (err: unknown) => boolean; // e.g. ignore 4xx\n  now?: () => number; // injectable clock for tests\n}\n\nexport class CircuitOpenError extends Error {}\n\nexport class CircuitBreaker {\n  private state: State = \"closed\";\n  private outcomes: boolean[] = []; // true = failure\n  private openedAt = 0;\n  private trials = 0;\n  private trialSuccesses = 0;\n  private readonly now: () => number;\n  private readonly isFailure: (err: unknown) => boolean;\n\n  constructor(private readonly opts: BreakerOptions) {\n    this.now = opts.now ?? Date.now;\n    this.isFailure = opts.isFailure ?? (() => true);\n  }\n\n  async call<T>(fn: () => Promise<T>, fallback?: () => T | Promise<T>): Promise<T> {\n    if (this.state === \"open\") {\n      if (this.now() - this.openedAt < this.opts.openMs) return this.reject(fallback);\n      this.state = \"half-open\";\n      this.trials = 0;\n      this.trialSuccesses = 0;\n    }\n    if (this.state === \"half-open\") {\n      if (this.trials >= this.opts.halfOpenMaxCalls) return this.reject(fallback);\n      this.trials++;\n    }\n\n    try {\n      const result = await fn();\n      this.onSuccess();\n      return result;\n    } catch (err) {\n      if (this.isFailure(err)) this.onFailure();\n      else this.onSuccess(); // a 404 is a correct answer, not a sick dependency\n      throw err;\n    }\n  }\n\n  private onSuccess(): void {\n    if (this.state === \"half-open\") {\n      if (++this.trialSuccesses >= this.opts.halfOpenMaxCalls) this.close(); // all probes passed\n      return;\n    }\n    this.record(false);\n  }\n\n  private onFailure(): void {\n    if (this.state === \"half-open\") return this.open(); // one failed probe reopens\n    this.record(true);\n    const failures = this.outcomes.filter(Boolean).length;\n    if (this.outcomes.length >= this.opts.minimumCalls && failures / this.outcomes.length >= this.opts.failureRateThreshold) {\n      this.open();\n    }\n  }\n\n  private record(failed: boolean): void {\n    this.outcomes.push(failed);\n    if (this.outcomes.length > this.opts.windowSize) this.outcomes.shift();\n  }\n\n  private open(): void {\n    this.state = \"open\";\n    this.openedAt = this.now();\n    this.outcomes = [];\n  }\n\n  private close(): void {\n    this.state = \"closed\";\n    this.outcomes = [];\n  }\n\n  private async reject<T>(fallback?: () => T | Promise<T>): Promise<T> {\n    if (fallback) return fallback();\n    throw new CircuitOpenError(\"circuit open\");\n  }\n}\n\n// const recs = new CircuitBreaker({ failureRateThreshold: 0.5, minimumCalls: 20, windowSize: 50, openMs: 30_000, halfOpenMaxCalls: 3 });\n// const items = await recs.call(() => fetchRecs(userId, { timeoutMs: 200 }), () => cachedPopularItems());"
+            }
+          ]
+        },
+        {
+          "id": "overload-degradation",
+          "label": "Overload and degradation",
+          "body": "## Overload is a different failure\n\nSo far the dependency was broken. Now *you* are the problem: more requests arrive than you can serve. Queueing theory explains why this gets ugly fast: as utilisation approaches 100%, queueing delay grows without bound. Requests wait so long that clients time out, but the server still does the work for them, so **goodput** (useful completed requests) collapses while throughput looks busy. Then clients retry, adding more load. This is **congestion collapse**, and the Google SRE chapters on handling overload and addressing cascading failures are the canonical reading.\n\nThe goal under overload is not to serve everyone; it is to keep serving *as many requests as possible within their deadlines* and to recover by itself when the spike passes.\n\n## Load shedding\n\n**Load shedding** means rejecting excess work early and cheaply, so the work you accept completes in time.\n\n- **Bound every queue.** An unbounded queue converts overload into latency, then into timeouts, then into memory exhaustion. A bounded queue converts it into fast rejections the client can handle.\n- **Reject early.** Return `503` with `Retry-After` (or `429` for per-client limits) before parsing the body or touching the database. Rejection must cost far less than service.\n- **Drop work that is already doomed.** If a request has waited longer than its deadline, discard it instead of processing it. Some systems switch queues to **LIFO** under overload so fresh requests (whose clients are still waiting) are served first; CoDel-style queue management drops requests that sat too long.\n- **Shed by priority.** Classify requests: checkout and login are critical, recommendations and analytics beacons are sheddable, prefetches are first to go. AWS's Builders' Library article on load shedding and Google's SRE material both describe prioritising this way.\n- **Adaptive concurrency limits.** Instead of a fixed max concurrency, measure latency and adjust the limit like TCP congestion control: increase while latency is low, cut it when latency rises. Netflix's open-source `concurrency-limits` library does this, so each server finds its own capacity without hand tuning.\n- **Client-side throttling.** The SRE book describes clients tracking their own ratio of accepted to attempted requests and rejecting locally with a probability that rises as the backend rejects more, so rejected traffic never even crosses the network.\n\nRate limiting and load shedding differ: **rate limiting** enforces fairness per client (you get 100 rps), regardless of server health; **load shedding** protects the server based on its *current* capacity, regardless of who is asking. You usually want both.\n\n## Graceful degradation\n\nWhen you cannot do everything, do the most important things well. Degradation modes are designed ahead of time:\n\n| Mode | Example |\n|---|---|\n| Serve stale | Show cached prices or feed from a few minutes ago (`stale-if-error` at the CDN) |\n| Reduce quality | Lower video bitrate, smaller images, fewer search results, skip expensive ranking |\n| Turn off features | Hide recommendations, comments, \"people also bought\" |\n| Static fallback | Serve a static status page or read-only mode from object storage |\n| Queue for later | Accept the write into a durable queue and process it when capacity returns (\"your order is being processed\") |\n\nMake degradation controllable: **feature flags / kill switches** that operators can flip, and automatic triggers tied to breaker state or load. Test them: a fallback path that has never run in production is probably broken.\n\n## Retry storms and metastable failures\n\nA nasty class of outage keeps going after the trigger is gone. A brief spike causes timeouts, timeouts cause retries, retries keep the load high, so the system stays overloaded even though real demand returned to normal. Researchers call these **metastable failures**. Defences you already know, combined: retry budgets, jittered backoff, load shedding before work, deadlines, and the ability to drain queues. Recovery often requires shedding hard (or blocking traffic at the edge) to let caches warm and queues empty, then ramping traffic back gradually.\n\nCold caches are a classic trigger: after a cache cluster restart, every request misses and hits the database, which falls over. Mitigations: request coalescing, warming before taking traffic, and admission control on the database path.\n\n## LLD: a circuit breaker and a retry helper\n\nThe interviewer may say \"implement a circuit breaker\". Entities and decisions:\n\n- `CircuitBreaker` with `state`, a rolling window of outcomes, `failureRateThreshold`, `minimumCalls`, `openDuration`, `halfOpenMaxCalls`.\n- `call(fn, fallback?)`: if open and cool-down not elapsed, fail fast or run fallback; if half-open, allow a limited number of trial calls.\n- `isFailure(err)` predicate so client errors do not count.\n- Inject a clock so tests can move time without sleeping.\n- Thread safety: in Node.js the event loop serialises state changes, but in Java or Go you need atomics or a mutex around state transitions.\n\nThe TypeScript breaker and Go retry helper below are small enough to write in an interview and show the key decisions.\n\n## Trade-offs\n\n| Pattern | Protects against | Cost or risk |\n|---|---|---|\n| Timeouts | Hung calls holding resources | Too short causes false failures; too long causes pile-ups |\n| Retries with jitter | Transient faults | Load amplification without budgets; needs idempotency |\n| Circuit breaker | Hammering a dead dependency, slow failures | Tuning; can stay open on a flapping dependency |\n| Bulkhead | One dependency or tenant starving others | Lower utilisation |\n| Load shedding | Overload collapse | Some users see errors by design |\n| Degradation | Total outage | Product work to design fallbacks |\n\n## Interview angle\n\nModel answer outline for \"How do you keep this system up during a traffic spike or a dependency outage?\":\n\n1. Timeouts and deadlines on every call, retries only where idempotent, with jitter and a budget.\n2. Circuit breakers per dependency with designed fallbacks; bulkheads so non-critical paths cannot starve critical ones.\n3. Bounded queues and priority-aware load shedding at the edge and in each service; adaptive concurrency limits.\n4. Graceful degradation modes behind kill switches; CDN `stale-if-error` for read paths.\n5. Chaos tests and game days to prove the fallbacks work.\n\nFollow-ups to expect: \"How do you choose the timeout?\", \"What does the breaker count as a failure?\", \"Why can retries make an outage longer?\", \"What does the user see when the breaker is open?\".",
+          "diagrams": [
+            {
+              "title": "Priority-aware load shedding",
+              "code": "flowchart TD\n  arrive[\"Request arrives\"] --> deadline{\"Deadline already passed?\"}\n  deadline -->|yes| drop[\"Drop silently\"]\n  deadline -->|no| prio{\"Priority class\"}\n  prio -->|critical| limiter{\"Under adaptive concurrency limit?\"}\n  prio -->|sheddable| load{\"Load below 70%?\"}\n  load -->|no| shed[\"503 with Retry-After\"]\n  load -->|yes| limiter\n  limiter -->|yes| serve[\"Serve\"]\n  limiter -->|no| shed"
+            }
+          ],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Retry amplification: 3 attempts at each of 4 layers",
+          "time": "up to 81x calls",
+          "space": "-"
+        },
+        {
+          "op": "Retry budget of 10%",
+          "time": "at most 1.1x calls",
+          "space": "-"
+        },
+        {
+          "op": "Hedging at p95",
+          "time": "~5% extra requests",
+          "space": "-"
+        },
+        {
+          "op": "Open breaker response",
+          "time": "~0 ms (fail fast)",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Every network call needs a timeout derived from the dependency's tail latency and your own latency budget; propagate deadlines downstream.",
+        "Retry only idempotent operations and retryable errors, at one layer, with capped exponential backoff, full jitter and a retry budget.",
+        "Circuit breakers fail fast when a dependency is sick and probe for recovery in half-open state; pair them with designed fallbacks.",
+        "Bulkheads (per-dependency pools, cells, shuffle sharding) stop one failure from starving everything else.",
+        "Under overload, bound queues, drop doomed work and shed by priority so goodput stays high.",
+        "Graceful degradation modes are product decisions; keep them behind kill switches and test them."
+      ],
+      "problems": [],
+      "practiceRef": "hld-reliability",
+      "check": [
+        {
+          "q": "Why does adding full jitter to exponential backoff reduce load on a recovering service?",
+          "options": [
+            "It shortens every sleep",
+            "It spreads clients' retries randomly over time instead of synchronised waves",
+            "It removes the need for timeouts",
+            "It makes requests idempotent"
+          ],
+          "answer": 1,
+          "why": "Clients that failed together would otherwise retry together. Random sleeps between 0 and the cap desynchronise them, so the service sees a smooth trickle instead of spikes."
+        },
+        {
+          "q": "A circuit breaker on the payments client opened because users submitted invalid card numbers that returned 400. What is the design flaw?",
+          "options": [
+            "The cool-down is too short",
+            "The window is too large",
+            "It counts client errors as dependency failures",
+            "It should use consecutive failures instead of a rate"
+          ],
+          "answer": 2,
+          "why": "A 400 is a correct answer from a healthy service. Only timeouts, connection errors and 5xx should count, otherwise bad input can cut off a healthy dependency."
+        },
+        {
+          "q": "Under heavy overload, which change most directly protects goodput?",
+          "options": [
+            "Increase the request queue to unbounded",
+            "Raise client timeouts so fewer requests fail",
+            "Add more retries in every layer",
+            "Bound the queue and reject or drop requests whose deadline has passed before doing work"
+          ],
+          "answer": 3,
+          "why": "Work done for requests whose clients already gave up is wasted. Bounded queues and early rejection keep accepted requests within their deadlines; the other options increase load or latency."
+        }
+      ],
+      "sources": [
+        {
+          "title": "AWS Builders' Library: Timeouts, retries, and backoff with jitter",
+          "url": "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/"
+        },
+        {
+          "title": "AWS Architecture Blog: Exponential Backoff And Jitter",
+          "url": "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
+        },
+        {
+          "title": "Martin Fowler: CircuitBreaker",
+          "url": "https://martinfowler.com/bliki/CircuitBreaker.html"
+        },
+        {
+          "title": "Google SRE book: Handling Overload",
+          "url": "https://sre.google/sre-book/handling-overload/"
+        },
+        {
+          "title": "Google SRE book: Addressing Cascading Failures",
+          "url": "https://sre.google/sre-book/addressing-cascading-failures/"
+        },
+        {
+          "title": "AWS Builders' Library: Using load shedding to avoid overload",
+          "url": "https://aws.amazon.com/builders-library/using-load-shedding-to-avoid-overload/"
+        }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { mergeSections, settingsInputSchema } from "@/lib/domain/settings";
-import { settingsToInput } from "@/lib/services/settings-input";
-import type { AppSettings } from "@/lib/services/settings";
+import { mergeSections, settingsInputSchema } from "@/modules/settings/domain/settings";
+import { settingsToInput } from "@/modules/settings/services/settings-input";
+import type { AppSettings } from "@/modules/settings/services/settings";
 
 // Only the fields settingsToInput reads.
 const stored = {

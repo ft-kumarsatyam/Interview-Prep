@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { practiceCases } from "@/lib/content";
-import { Mastery } from "@/lib/models/learning";
-import { SubtopicProgress } from "@/lib/models/progress";
-import { Settings } from "@/lib/models/system";
-import { exportBackup } from "@/lib/services/export";
-import { addPracticeMinutes, getPracticeAnswer, getPracticeOverview, savePracticeSection, setPracticeRubric } from "@/lib/services/practice-cases";
-import { PracticeAnswer } from "@/lib/models/learning";
+import { practiceCases } from "@/core/content";
+import { Mastery } from "@/core/models/learning";
+import { SubtopicProgress } from "@/core/models/progress";
+import { Settings } from "@/core/models/system";
+import { exportBackup } from "@/core/services/export";
+import { addPracticeMinutes, getPracticeAnswer, getPracticeOverview, savePracticeSection, setPracticeRubric } from "@/modules/design/services/practice-cases";
+import { PracticeAnswer } from "@/core/models/learning";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

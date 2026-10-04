@@ -1,462 +1,121 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import {
-  ArrowRight,
-  Bell,
-  BookOpen,
-  CalendarClock,
-  Check,
-  ChevronRight,
-  Code2,
-  Flame,
-  Lock,
-  ListChecks,
-  Newspaper,
-  PartyPopper,
-  Snowflake,
-  TrendingDown,
-  TrendingUp,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
-import { currentSession } from "@/lib/auth/dal";
-import { getSetupChecklist } from "@/lib/services/setup";
-import { LinkCard } from "@/components/shared/link-card";
-import { Heatmap } from "@/components/dashboard/heatmap";
-import { HoursToday } from "@/components/dashboard/hours-today";
-import { ProgressRing } from "@/components/dashboard/progress-ring";
-import { ProblemList } from "@/components/progress/problem-list";
-import { SubtopicChecklist } from "@/components/progress/subtopic-checklist";
-import { SectionHeading } from "@/components/shared/section-heading";
-import { StatTile } from "@/components/shared/stat-tile";
-import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
-import { toCardItem } from "@/components/news/card-item";
-import { NewsCard } from "@/components/news/news-card";
-import { mainProblemCount } from "@/lib/content";
-import { isLongRead } from "@/lib/domain/article";
-import { READINGS_PER_DAY } from "@/lib/domain/plan-config";
-import { listArticles } from "@/lib/services/news";
-import { formatDate, planClock } from "@/lib/plan-clock";
-import { ensureBacklogQueue } from "@/lib/services/backlog";
-import { getDashboard, type PlanProblem } from "@/lib/services/dashboard";
-import { syncLeetCode } from "@/lib/services/leetcode-sync";
-import { BacklogCard, type BacklogCardData } from "@/components/backlog/backlog-card";
-import { LeetCodeCard } from "@/components/leetcode/leetcode-card";
-import { WeeklyMocksCard } from "@/components/mock/weekly-mocks-card";
-import { weeklyMocks } from "@/lib/services/mock";
-import { getPlanUpdate } from "@/lib/services/recap";
-import { cn } from "@/lib/utils";
+import { Suspense } from "react";
+import { currentSession } from "@/core/auth/dal";
+import { mainProblemCount } from "@/core/content";
+import { planClock } from "@/core/plan-clock";
+import { Skeleton } from "@/components/ui/skeleton";
+import { LeetCodeCard } from "@/modules/dsa/components/leetcode/leetcode-card";
+import { syncLeetCode } from "@/modules/dsa/services/leetcode-sync";
+import { READINGS_PER_DAY } from "@/modules/planner/domain/plan-config";
+import { ActivityCard } from "@/modules/progress/components/dashboard/activity-card";
+import { BacklogSection } from "@/modules/progress/components/dashboard/backlog-section";
+import { CarrySection } from "@/modules/planner/components/carry-section";
+import { JobSearchSection } from "@/modules/jobs/components/job-search-section";
+import { BonusCard } from "@/modules/progress/components/dashboard/bonus-card";
+import { DashboardHeader } from "@/modules/progress/components/dashboard/dashboard-header";
+import { MocksSection } from "@/modules/progress/components/dashboard/mocks-section";
+import { NewsStrip } from "@/modules/progress/components/dashboard/news-strip-section";
+import { NotificationBanner } from "@/modules/progress/components/dashboard/notification-banner";
+import { PlanUpdateSection } from "@/modules/progress/components/dashboard/plan-update-section";
+import { ProblemsCard } from "@/modules/progress/components/dashboard/problems-card";
+import { SetupSection } from "@/modules/progress/components/dashboard/setup-section";
+import { StatGrid } from "@/modules/progress/components/dashboard/stat-grid";
+import { TheoryCard } from "@/modules/progress/components/dashboard/theory-card";
+import { TodayCard } from "@/modules/progress/components/dashboard/today-card";
+import { buildRequirements, dayCopy, greetingFor, isWorkday, localHour, nextRequirement } from "@/modules/progress/domain/dashboard-view";
+import { getDashboard } from "@/modules/progress/services/dashboard";
+import { getStreakInsights } from "@/modules/progress/services/streak-insights";
+import { streakRisk } from "@/modules/progress/domain/streak-insights";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
-function localHour(timeZone: string): number {
-  return Number(new Intl.DateTimeFormat("en-GB", { hour: "numeric", hourCycle: "h23", timeZone }).format(new Date()));
-}
-
-const toItem = (p: PlanProblem, tag?: string) => ({
-  slug: p.slug,
-  title: p.title,
-  difficulty: p.difficulty,
-  pattern: p.pattern,
-  url: p.url,
-  solved: p.solvedToday,
-  tag,
-});
-
-interface Requirement {
-  label: string;
-  value: string;
-  done: boolean;
-  href: string;
-  icon: LucideIcon;
-  /** 0–1, drives the mini progress bar; omitted for pass/fail rows. */
-  frac?: number;
-  hint?: string;
-  /** Call to action when this is the next thing to do. */
-  cta: string;
-}
+const CardSkeleton = ({ className = "h-32" }: { className?: string }) => <Skeleton className={`${className} rounded-xl`} aria-hidden />;
 
 export default async function DashboardPage() {
   // Throttled to once per 10 min; a LeetCode outage must never break the dashboard.
   await syncLeetCode().catch(() => null);
   const session = await currentSession();
-  const [data, unreadNews, setup] = await Promise.all([
-    getDashboard(),
-    listArticles({ filter: "unread", limit: 30 }),
-    getSetupChecklist({ remember: session.remember }),
-  ]);
-  const latestNews = [...unreadNews.filter((a) => isLongRead(a)), ...unreadNews.filter((a) => !isLongRead(a))].slice(0, 3);
+  const data = await getDashboard();
   const { day, plan, settings, today } = data;
-  const [mockSlots, planUpdate, backlog] = await Promise.all([
-    weeklyMocks(today, settings.mockSchedule),
-    getPlanUpdate(today, settings, data.pace.solved),
-    // The backlog is a bonus: if it can't load, the rest of the dashboard still shows.
-    ensureBacklogQueue({ today, plan, settings })
-      .then((v): BacklogCardData => ({ owed: v.open.length, minutes: v.totalMinutes, budget: v.budget, queueDone: v.queueDone, queue: v.queue.map((i) => ({ key: i.key, title: i.title, path: i.path, ...(i.note ? { note: i.note } : {}) })) }))
-      .catch(() => null),
-  ]);
+
   const clock = planClock(settings);
   const hour = localHour(settings.timezone);
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const workday = day.kind === "study" || day.kind === "revision";
-  const atRisk = !day.complete && workday && hour >= 20;
-
-  const requirements: Requirement[] = workday
-    ? [
-        {
-          label: "DSA",
-          value: `${day.dsaSolved}/${day.dsaTarget}`,
-          done: day.dsaSolved >= day.dsaTarget,
-          frac: day.dsaTarget ? day.dsaSolved / day.dsaTarget : 1,
-          href: "#problems",
-          icon: Code2,
-          cta: "Solve the next problem",
-        },
-        {
-          label: "Theory",
-          value: `${day.theoryDone}/${day.theoryTarget}`,
-          done: day.theoryDone >= day.theoryTarget,
-          frac: day.theoryTarget ? day.theoryDone / day.theoryTarget : 1,
-          href: "#theory",
-          icon: BookOpen,
-          cta: "Study today's theory",
-        },
-        {
-          label: "Daily quiz",
-          value: day.quizPassed ? "passed" : day.quizUnlocked ? "ready" : "locked",
-          done: day.quizPassed,
-          href: "/quiz",
-          icon: day.quizUnlocked || day.quizPassed ? ListChecks : Lock,
-          hint: !day.quizUnlocked && !day.quizPassed ? "Unlocks after 1 problem + 1 subtopic" : undefined,
-          cta: "Take the daily quiz",
-        },
-        {
-          label: "Read (bonus)",
-          value: `${day.readings}/${READINGS_PER_DAY}`,
-          done: day.readings >= READINGS_PER_DAY,
-          frac: day.readings / READINGS_PER_DAY,
-          href: "/news",
-          icon: Newspaper,
-          cta: "Read an article",
-        },
-      ]
-    : day.kind === "sunday"
-      ? [
-          {
-            label: "Weekly quiz",
-            value: day.quizPassed ? "passed" : "open",
-            done: day.quizPassed,
-            href: "/quiz",
-            icon: ListChecks,
-            cta: "Take the weekly quiz",
-          },
-        ]
-      : [];
-  const doneCount = requirements.filter((r) => r.done).length;
-  // The quiz only becomes "next" once it can actually be taken.
-  const next = requirements.find((r) => !r.done && !(r.href === "/quiz" && workday && !day.quizUnlocked));
-
-  const newProblems = data.problems.filter((p) => p.role === "new");
-  const reviews = data.problems.filter((p) => p.role === "review");
-  const sideTrack = data.problems.filter((p) => p.role === "js" || p.role === "sql");
+  const requirements = buildRequirements(day, READINGS_PER_DAY);
+  const next = nextRequirement(requirements, day);
+  const insights = await getStreakInsights(today, data.freezeTokens);
+  const risk = streakRisk({ kind: day.kind, complete: day.complete, streak: data.streak, tokens: data.freezeTokens, now: new Date(), timeZone: settings.timezone, left: requirements.filter((r) => !r.done && !r.label.includes("bonus")).map((r) => r.label) });
+  const hasBonus = data.bonus.problems.length + data.bonus.theory.length > 0;
   const showLeetCode = !settings.leetcodeUsername || data.needsDetails.length > 0;
   const lastSyncLabel = settings.leetcodeLastSyncAt
-    ? new Intl.DateTimeFormat("en-IN", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: settings.timezone }).format(
-        settings.leetcodeLastSyncAt,
-      )
+    ? new Intl.DateTimeFormat("en-IN", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: settings.timezone }).format(settings.leetcodeLastSyncAt)
     : null;
-  const weekFrac = clock.totalWeeks ? Math.min(Math.max(clock.week, 0) / clock.totalWeeks, 1) : 0;
-
-  const dayCopy =
-    day.kind === "outside"
-      ? "Outside the plan window. Warm up with anything below."
-      : day.kind === "rest"
-        ? "Rest day: counts as complete. Recharge."
-        : day.kind === "sunday"
-          ? data.bonus.problems.length + data.bonus.theory.length > 0
-            ? "Sunday: reviews + the weekly quiz. Spare hours are below as optional extras."
-            : "Sunday: reviews + the weekly quiz."
-          : day.kind === "revision"
-            ? "Revision phase: timed problems and reviews."
-            : "Hit every target and pass the quiz to keep the streak.";
 
   return (
     <div className="space-y-5 sm:space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
-            {greeting}, {process.env.ADMIN_NAME || "there"}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {formatDate(today, { weekday: "long", day: "numeric", month: "long" })} ·{" "}
-            {clock.week === 0
-              ? `Plan starts in ${clock.daysUntilStart} day${clock.daysUntilStart === 1 ? "" : "s"}`
-              : `Week ${clock.week} of ${clock.totalWeeks} · ${clock.phase?.name}`}
-          </p>
-        </div>
-        {next ? (
-          <Button asChild size="lg" className="w-full sm:w-auto">
-            <Link href={next.href}>
-              <next.icon /> {next.cta} <ArrowRight />
-            </Link>
-          </Button>
-        ) : day.complete ? (
-          <p className="inline-flex items-center gap-2 self-start rounded-full bg-success/15 px-3 py-1.5 text-sm font-medium text-success sm:self-auto">
-            <PartyPopper className="size-4" /> Day complete. Nice work!
-          </p>
-        ) : null}
-      </div>
+      <DashboardHeader greeting={greetingFor(hour)} today={today} clock={clock} next={next} complete={day.complete} />
 
-      {(planUpdate.carryOver || planUpdate.forecast) && (
-        <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm" aria-label="Plan update">
-          <p className="mb-1 flex items-center gap-2 font-medium">
-            <CalendarClock className="size-4 text-warning" aria-hidden /> Plan update
-          </p>
-          <ul className="space-y-1 text-muted-foreground">
-            {planUpdate.carryOver && <li>{planUpdate.carryOver}</li>}
-            {planUpdate.forecast && <li>{planUpdate.forecast}</li>}
-          </ul>
-        </div>
-      )}
-
-      {setup.requiredLeft > 0 && (
-        <LinkCard href="/setup" className="min-h-0 px-4 py-3 text-sm">
-          <Wrench className="size-4 shrink-0 text-primary" aria-hidden />
-          <span className="min-w-0 flex-1">
-            <span className="font-medium">Finish setup: {setup.done}/{setup.total}</span>{" "}
-            <span className="text-muted-foreground">
-              {setup.items
-                .filter((i) => i.required && i.status !== "ok")
-                .map((i) => i.title)
-                .join(" · ")}
-            </span>
-          </span>
-          <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-        </LinkCard>
-      )}
-
-      {data.unreadNotifications.length > 0 && (
-        <div className="flex items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm" role="status">
-          <Bell className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
-          <div className="min-w-0">
-            <p className="font-medium">{data.unreadNotifications[0].title}</p>
-            {data.unreadNotifications[0].body && <p className="text-muted-foreground">{data.unreadNotifications[0].body}</p>}
-          </div>
-        </div>
-      )}
+      <Suspense fallback={null}>
+        <PlanUpdateSection today={today} settings={settings} solved={data.pace.solved} />
+      </Suspense>
+      <Suspense fallback={null}>
+        <SetupSection remember={session.remember} />
+      </Suspense>
+      <Suspense fallback={null}>
+        <CarrySection today={today} plan={plan} settings={settings} />
+      </Suspense>
+      <NotificationBanner notification={data.unreadNotifications[0]} />
 
       <div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
-        <Card className={cn(day.complete && "border-success/40")}>
-          <CardHeader>
-            <CardTitle>Today</CardTitle>
-            <CardDescription>{dayCopy}</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col items-center gap-5 sm:flex-row sm:items-start">
-            <ProgressRing done={doneCount} total={requirements.length} complete={day.complete} />
-            <div className="w-full min-w-0 space-y-3">
-              <ul className="w-full space-y-2">
-                {requirements.map((r) => {
-                  const isNext = r === next;
-                  return (
-                    <li key={r.label}>
-                      <Link
-                        href={r.href}
-                        className={cn(
-                          "group flex flex-col gap-1.5 rounded-lg border p-2.5 text-sm transition-colors hover:bg-muted",
-                          isNext && "border-primary/50 bg-primary/5",
-                        )}
-                      >
-                        <span className="flex items-center gap-3">
-                          {r.done ? (
-                            <Check className="size-4 shrink-0 text-success" aria-hidden />
-                          ) : (
-                            <r.icon className={cn("size-4 shrink-0", isNext ? "text-primary" : "text-muted-foreground")} aria-hidden />
-                          )}
-                          <span className={cn("flex-1", r.done && "text-muted-foreground line-through")}>{r.label}</span>
-                          {isNext && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-2xs font-medium text-primary">next</span>}
-                          <span className="tabular font-mono text-xs">{r.value}</span>
-                          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
-                        </span>
-                        {r.frac !== undefined && !r.done && (
-                          <Progress value={Math.min(r.frac, 1) * 100} className="h-1" aria-hidden />
-                        )}
-                        {r.hint && <span className="pl-7 text-xs text-muted-foreground">{r.hint}</span>}
-                      </Link>
-                    </li>
-                  );
-                })}
-                {requirements.length === 0 && <li className="text-sm text-muted-foreground">No targets today.</li>}
-              </ul>
-              {(workday || day.kind === "sunday") && <HoursToday hours={plan.hours ?? null} estMinutes={plan.estMinutes ?? null} locked={day.complete} />}
-            </div>
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-2 content-start gap-3 sm:gap-4">
-          <StatTile
-            icon={Flame}
-            tone="streak"
-            label="Streak"
-            className={cn(atRisk && "animate-pulse border-warning")}
-            value={
-              <>
-                {data.streak} <span className="text-sm text-muted-foreground sm:text-base">day{data.streak === 1 ? "" : "s"}</span>
-              </>
-            }
-          >
-            <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-              best {data.best}
-              <span className="flex items-center gap-0.5" aria-label={`${data.freezeTokens} freeze tokens`}>
-                {Array.from({ length: Math.max(data.freezeTokens, 0) }, (_, i) => (
-                  <Snowflake key={i} className="size-3.5 text-chart-5" />
-                ))}
-                {data.freezeTokens === 0 && "· no freezes"}
-              </span>
-            </p>
-            {atRisk && <p className="text-xs text-warning">Finish today to keep your streak</p>}
-          </StatTile>
-
-          <StatTile
-            icon={Code2}
-            label="Solved"
-            value={
-              <>
-                {data.solvedMain} <span className="text-sm text-muted-foreground sm:text-base">/ {mainProblemCount}</span>
-              </>
-            }
-          >
-            <p className={cn("flex items-center gap-1 text-xs", data.pace.delta >= 0 ? "text-success" : "text-destructive")}>
-              {data.pace.delta >= 0 ? <TrendingUp className="size-3.5 shrink-0" /> : <TrendingDown className="size-3.5 shrink-0" />}
-              {data.pace.delta === 0
-                ? "exactly on pace"
-                : data.pace.delta > 0
-                  ? `${data.pace.delta} ahead of plan`
-                  : `${-data.pace.delta} behind (ideal ${data.pace.ideal})`}
-            </p>
-          </StatTile>
-
-          <StatTile
-            icon={CalendarClock}
-            label="Countdown"
-            value={`${clock.daysLeft}d`}
-            hint={`to ${formatDate(settings.endDate, { day: "numeric", month: "short", year: "numeric" })}`}
-          />
-
-          <StatTile icon={BookOpen} label="Phase" className="gap-2">
-            <p className="line-clamp-2 text-sm font-medium">{clock.phase?.name ?? "Pre-start"}</p>
-            <Progress value={weekFrac * 100} className="h-1.5" aria-label="Plan progress" />
-            <p className="tabular text-xs text-muted-foreground">
-              Week {Math.max(clock.week, 1)} of {clock.totalWeeks}
-            </p>
-          </StatTile>
-        </div>
+        <TodayCard
+          description={dayCopy(day.kind, hasBonus)}
+          requirements={requirements}
+          next={next}
+          complete={day.complete}
+          showHours={isWorkday(day.kind) || day.kind === "sunday"}
+          hours={plan.hours ?? null}
+          estMinutes={plan.estMinutes ?? null}
+        />
+        <StatGrid
+          streak={data.streak}
+          best={data.best}
+          freezeTokens={data.freezeTokens}
+          risk={risk}
+          freeze={insights.freeze}
+          streakWeek={insights.week}
+          solvedMain={data.solvedMain}
+          mainTotal={mainProblemCount}
+          pace={data.pace}
+          daysLeft={clock.daysLeft}
+          endDate={settings.endDate}
+          phaseName={clock.phase?.name}
+          week={clock.week}
+          totalWeeks={clock.totalWeeks}
+        />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card id="problems" className="scroll-mt-20">
-          <CardHeader>
-            <CardTitle>Today&apos;s problems</CardTitle>
-            <CardDescription>Every problem solved today counts: new, review, JS and SQL.</CardDescription>
-            <CardAction>
-              <Button asChild variant="ghost" size="sm">
-                <Link href="/dsa">
-                  All <ChevronRight />
-                </Link>
-              </Button>
-            </CardAction>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <ProblemList items={newProblems.map((p) => toItem(p))} empty="No new problems today." />
-            {reviews.length > 0 && (
-              <div>
-                <SectionHeading level={3} eyebrow className="mb-1" title="Review due" />
-                <ProblemList items={reviews.map((p) => toItem(p, p.confidence ?? "review"))} />
-              </div>
-            )}
-            {sideTrack.length > 0 && (
-              <div>
-                <SectionHeading level={3} eyebrow className="mb-1" title="Side tracks" />
-                <ProblemList items={sideTrack.map((p) => toItem(p, p.role === "js" ? "JS track" : "SQL"))} />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card id="theory" className="scroll-mt-20">
-          <CardHeader>
-            <CardTitle>Today&apos;s theory</CardTitle>
-            <CardDescription>
-              {plan.theoryTarget > 0 ? `${plan.theoryTarget} subtopic${plan.theoryTarget === 1 ? "" : "s"} due. Notes live in Learn.` : "Nothing due today."}
-            </CardDescription>
-            <CardAction>
-              <Button asChild variant="ghost" size="sm">
-                <Link href="/learn">
-                  Learn <ChevronRight />
-                </Link>
-              </Button>
-            </CardAction>
-          </CardHeader>
-          <CardContent>
-            <SubtopicChecklist items={data.theory.map((t) => ({ id: t.id, title: t.title, done: t.done, meta: t.topicTitle }))} />
-          </CardContent>
-        </Card>
+        <ProblemsCard problems={data.problems} />
+        <TheoryCard theory={data.theory} target={plan.theoryTarget} />
       </div>
 
-      {backlog && <BacklogCard data={backlog} />}
+      <Suspense fallback={<CardSkeleton />}>
+        <BacklogSection today={today} plan={plan} settings={settings} />
+      </Suspense>
+      <Suspense fallback={<CardSkeleton />}>
+        <JobSearchSection today={today} />
+      </Suspense>
+      <Suspense fallback={<CardSkeleton className="h-40" />}>
+        <MocksSection today={today} schedule={settings.mockSchedule} />
+      </Suspense>
 
-      <WeeklyMocksCard slots={mockSlots} today={today} compact />
-
-      {day.kind === "sunday" && data.bonus.problems.length + data.bonus.theory.length > 0 && (
-        <Card id="bonus">
-          <CardHeader>
-            <CardTitle>Bonus for your spare hours</CardTitle>
-            <CardDescription>Optional. Only the weekly quiz counts toward today, so these never affect your streak.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {data.bonus.problems.length > 0 && <ProblemList items={data.bonus.problems.map((p) => ({ slug: p.slug, title: p.title, difficulty: p.difficulty, pattern: p.pattern, url: p.url, solved: false, tag: "bonus" }))} />}
-            {data.bonus.theory.length > 0 && (
-              <SubtopicChecklist items={data.bonus.theory.map((t) => ({ id: t.id, title: t.title, done: false, meta: t.topicTitle }))} />
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {day.kind === "sunday" && <BonusCard bonus={data.bonus} />}
 
       {showLeetCode && <LeetCodeCard username={settings.leetcodeUsername} lastSyncLabel={lastSyncLabel} needsDetails={data.needsDetails} />}
+      <ActivityCard heatmap={data.heatmap} username={settings.leetcodeUsername} lastSyncLabel={lastSyncLabel} showLeetCodeCompact={!showLeetCode} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Activity</CardTitle>
-          <CardDescription>The whole plan, week by week.</CardDescription>
-          {!showLeetCode && (
-            <CardAction>
-              <LeetCodeCard compact username={settings.leetcodeUsername} lastSyncLabel={lastSyncLabel} needsDetails={[]} />
-            </CardAction>
-          )}
-        </CardHeader>
-        <CardContent>
-          <Heatmap cells={data.heatmap} />
-        </CardContent>
-      </Card>
-
-      {latestNews.length > 0 && (
-        <section aria-labelledby="news-strip">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 id="news-strip" className="flex items-center gap-2 font-medium">
-              <Newspaper className="size-4 text-primary" /> AI &amp; engineering news
-            </h2>
-            <Link href="/news" className="text-sm text-muted-foreground hover:text-primary">
-              All news →
-            </Link>
-          </div>
-          <div className="grid gap-3 md:grid-cols-3">
-            {latestNews.map((a) => (
-              <NewsCard key={a.id} readingsGoal={READINGS_PER_DAY} item={toCardItem(a, new Date())} />
-            ))}
-          </div>
-        </section>
-      )}
+      <Suspense fallback={<CardSkeleton className="h-56" />}>
+        <NewsStrip />
+      </Suspense>
     </div>
   );
 }

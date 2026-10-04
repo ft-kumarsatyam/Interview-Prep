@@ -10,7 +10,7 @@ import {
   pickTopNews,
   scoreArticle,
   type BriefArticle,
-} from "@/lib/domain/briefing";
+} from "@/modules/progress/domain/briefing";
 
 const NOW = new Date("2026-10-05T06:00:00Z");
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000).toISOString();

@@ -3,9 +3,9 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { MOCK_TYPES, RUBRIC_MAX, answerPatchSchema } from "@/lib/domain/mock";
-import { deleteMock, gradeMock, saveMockAnswer, selfGradeMock, startMock, submitMock } from "@/lib/services/mock";
+import { requireSession } from "@/core/auth/dal";
+import { MOCK_TYPES, RUBRIC_MAX, answerPatchSchema } from "@/modules/mock/domain/mock";
+import { deleteMock, gradeMock, saveMockAnswer, selfGradeMock, startMock, submitMock } from "@/modules/mock/services/mock";
 
 const idSchema = z.string().regex(/^[a-f0-9]{24}$/);
 const qidSchema = z.string().regex(/^[a-z0-9-]{1,120}$/i);

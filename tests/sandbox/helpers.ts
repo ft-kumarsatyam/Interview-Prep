@@ -1,5 +1,5 @@
 import vm from "node:vm";
-import { WORKER_SOURCE } from "@/lib/sandbox/worker-source";
+import { WORKER_SOURCE } from "@/core/sandbox/worker-source";
 
 export type Message = { type: string; level?: string; text?: string; index?: number; pass?: boolean; actual?: string; hidden?: boolean };
 

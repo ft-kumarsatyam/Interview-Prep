@@ -1,15 +1,15 @@
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Job } from "@/lib/models/jobs";
-import { JobPosting, JobSource } from "@/lib/models/job-postings";
-import { Settings } from "@/lib/models/system";
-import { Target } from "@/lib/models/targets";
-import type { Fetcher } from "@/lib/jobs/connectors";
-import { addCustomSource, discoverJobs, getJobPrefs, getPostingDetail, listSources, markPostingApplied, removeCustomSource, saveJobPrefs, savePosting, setDismissed, setSourceEnabled } from "@/lib/services/job-discovery";
-import { syncJobs } from "@/lib/services/job-sync";
-import { getJob } from "@/lib/services/jobs";
-import { saveBaseResume } from "@/lib/services/resume";
-import { invalidateSettings } from "@/lib/services/settings";
+import { Job } from "@/core/models/jobs";
+import { JobPosting, JobSource } from "@/core/models/job-postings";
+import { Settings } from "@/core/models/system";
+import { Target } from "@/core/models/targets";
+import type { Fetcher } from "@/modules/jobs/lib/connectors";
+import { addCustomSource, discoverJobs, getJobPrefs, getPostingDetail, listSources, markPostingApplied, removeCustomSource, saveJobPrefs, savePosting, setDismissed, setSourceEnabled } from "@/modules/jobs/services/job-discovery";
+import { syncJobs } from "@/modules/jobs/services/job-sync";
+import { getJob } from "@/modules/jobs/services/jobs";
+import { saveBaseResume } from "@/modules/resume/services/resume";
+import { invalidateSettings } from "@/modules/settings/services/settings";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

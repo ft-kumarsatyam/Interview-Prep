@@ -3,10 +3,10 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { todayIn } from "@/lib/services/plan";
-import { getSettings } from "@/lib/services/settings";
-import { addProjectToSavedResume, saveProjectMeta, setMilestone } from "@/lib/services/webdev";
+import { requireSession } from "@/core/auth/dal";
+import { todayIn } from "@/modules/planner/services/plan";
+import { getSettings } from "@/modules/settings/services/settings";
+import { addProjectToSavedResume, saveProjectMeta, setMilestone } from "@/modules/learn/services/webdev";
 
 const slug = z.string().regex(/^[a-z0-9-]{1,80}$/);
 const fail = (err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : "Something went wrong" });

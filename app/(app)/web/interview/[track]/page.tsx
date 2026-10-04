@@ -3,10 +3,11 @@ import { notFound } from "next/navigation";
 import { MessageCircleQuestion } from "lucide-react";
 import { BackLink } from "@/components/shared/back-link";
 import { PageHeader } from "@/components/shared/page-header";
-import { InterviewDeck, type DeckQuestion } from "@/components/web/interview-deck";
-import { interviewQuestions, interviewTracks, webLessonById } from "@/lib/content";
-import type { InterviewStatus } from "@/lib/domain/web-interview";
-import { getInterviewStatus } from "@/lib/services/webdev";
+import { InterviewDeck, type DeckQuestion } from "@/modules/learn/components/web/interview-deck";
+import { interviewQuestions, interviewTracks, webLessonById } from "@/core/content";
+import type { InterviewStatus } from "@/modules/learn/domain/web-interview";
+import { WEB_AREA_INFO, WEB_AREAS, type WebArea } from "@/modules/learn/domain/webdev";
+import { getInterviewStatus } from "@/modules/learn/services/webdev";
 
 /** Besides each track id: "all" is every question and "review" is the ones you marked for review. */
 const VIRTUAL = {
@@ -14,10 +15,17 @@ const VIRTUAL = {
   review: { name: "Review queue", blurb: "The questions you marked to review again." },
 } as const;
 
+const AREA_PREFIX = "area-";
+
 function deckFor(id: string) {
   const track = interviewTracks.find((t) => t.id === id);
   if (track) return { name: track.name, blurb: track.blurb, virtual: false };
   if (id === "all" || id === "review") return { ...VIRTUAL[id], virtual: true };
+  const area = id.slice(AREA_PREFIX.length);
+  if (id.startsWith(AREA_PREFIX) && (WEB_AREAS as readonly string[]).includes(area)) {
+    const info = WEB_AREA_INFO[area as WebArea];
+    return { name: `${info.name}: mixed round`, blurb: `Every ${info.name.toLowerCase()} question, mixed across topics the way a real round jumps around.`, virtual: true };
+  }
   return null;
 }
 
@@ -33,7 +41,15 @@ export default async function InterviewTrackPage({ params }: PageProps<"/web/int
   const status = await getInterviewStatus();
   const trackName = new Map(interviewTracks.map((t) => [t.id, t.name]));
 
-  const source = track === "all" ? interviewQuestions : track === "review" ? interviewQuestions.filter((q) => status.get(q.id) === "review") : interviewQuestions.filter((q) => q.track === track);
+  const trackArea = new Map(interviewTracks.map((t) => [t.id, t.area]));
+  const source =
+    track === "all"
+      ? interviewQuestions
+      : track === "review"
+        ? interviewQuestions.filter((q) => status.get(q.id) === "review")
+        : track.startsWith(AREA_PREFIX)
+          ? interviewQuestions.filter((q) => `${AREA_PREFIX}${trackArea.get(q.track)}` === track)
+          : interviewQuestions.filter((q) => q.track === track);
   const questions: DeckQuestion[] = source.map((q) => {
     const lesson = q.lesson ? webLessonById.get(q.lesson) : undefined;
     return {
@@ -51,7 +67,7 @@ export default async function InterviewTrackPage({ params }: PageProps<"/web/int
 
   return (
     <div className="mx-auto max-w-3xl">
-      <BackLink href="/web/interview">Web interview prep</BackLink>
+      <BackLink href="/web/interview">Interview bank</BackLink>
       <PageHeader icon={MessageCircleQuestion} title={deck.name} description={deck.blurb} />
       {questions.length === 0 ? (
         <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">Nothing to review right now. Mark a question &quot;Review again&quot; and it shows up here.</p>

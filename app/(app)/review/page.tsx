@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { RotateCcw } from "lucide-react";
-import { ReviewQueue } from "@/components/progress/review-queue";
+import { ReviewQueue } from "@/modules/progress/components/review-queue";
 import { PageHeader } from "@/components/shared/page-header";
-import { todayIn } from "@/lib/services/plan";
-import { getReviewQueue } from "@/lib/services/problems";
-import { getSettings } from "@/lib/services/settings";
+import { todayIn } from "@/modules/planner/services/plan";
+import { getReviewQueue } from "@/modules/dsa/services/problems";
+import { getSettings } from "@/modules/settings/services/settings";
 
 export const metadata: Metadata = { title: "Review" };
 

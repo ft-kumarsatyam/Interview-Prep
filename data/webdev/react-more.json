@@ -1,0 +1,391 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "react-reconciliation-fiber",
+      "track": "react",
+      "title": "Reconciliation, keys and the Fiber architecture",
+      "minutes": 22,
+      "summary": "What the virtual DOM really buys you, how reconciliation and keys decide identity and state, and how Fiber, lanes and the commit phases make rendering interruptible.",
+      "body": "## The core idea\nReact lets you describe the UI for the current state, and it works out which DOM operations get the page from what it shows now to what you described. Working that out is **reconciliation**. **Fiber** is the engine that has done it since React 16 (2017). Fiber splits rendering into small units of work, so React can pause, prioritise and throw away work. That ability is what makes transitions, Suspense and streaming possible.\n\nTwo myths to clear up first:\n\n- **\"The virtual DOM is faster than the DOM.\"** It is not. A virtual DOM adds work: building element objects, diffing them, and only then touching the DOM. Hand-written DOM updates are always at least as fast. React's argument is that you write declarative code and React keeps the DOM writes close to minimal for you. Svelte and Solid get similar or better speed with no virtual DOM at all, because they compile updates straight down to DOM operations.\n- **\"React re-renders the DOM on every state change.\"** Rendering means calling your components and diffing their output. The DOM only changes where the output changed.\n\nDan Abramov's essay \"React as a UI Runtime\" (overreacted.io) is the best long read on this model. It describes React as a runtime that manages a tree of \"host instances\" (DOM nodes) for you.\n\n## Step 1: elements are cheap descriptions\nJSX compiles to plain objects:\n\n```tsx\n// <Button kind=\"primary\">Save</Button> becomes roughly:\nconst el = { type: Button, key: null, props: { kind: \"primary\", children: \"Save\" } };\n```\n\nWhen your component runs, it returns a tree of these objects. React compares the new tree with the tree it built last time. A perfect diff between two arbitrary trees costs O(n^3), which would be far too slow. The old reconciliation docs describe two heuristics React uses instead, which bring the cost down to O(n):\n\n1. **Different type means a different subtree.** If a `div` becomes a `section`, or `<Profile>` becomes `<Settings>`, React unmounts the old subtree, which destroys its state and DOM, and mounts a new one. It does not try to reuse anything.\n2. **Keys identify children across renders.** Within a list of siblings, React matches old and new children by `key`. Without keys it matches them by position.\n\nWhen the type at a position stays the same, React keeps the component instance and its state and simply passes in new props. For host elements, it patches only the attributes that changed.\n\n## Step 2: keys are identity, not a warning silencer\nKeys decide **which state belongs to which item**.\n\n```tsx\n// Bug: index keys. Delete the first todo and every row's\n// local state (an open editor, typed text) shifts by one row.\n{todos.map((t, i) => <TodoRow key={i} todo={t} />)}\n\n// Correct: a stable id from the data.\n{todos.map((t) => <TodoRow key={t.id} todo={t} />)}\n```\n\nIndex keys are fine for a static list that never reorders or filters. Random keys (`key={Math.random()}`) are worse than index keys: every render remounts every row, which throws away state, focus and DOM nodes.\n\nKeys also work outside lists. Changing a key is the cleanest way to **reset** a component:\n\n```tsx\n// A new contact means a fresh form: no effect that copies props into state.\n<ContactForm key={contactId} contact={contact} />\n```\n\nThe react.dev page \"Preserving and Resetting State\" puts it this way: state is tied to a **position in the tree**, not to the component function. Same type at the same position (and same key) keeps the state. Anything else resets it. One trap follows from this: if you define a component inside another component, it gets a new type on every render, so it remounts every time.\n\n## Step 3: Fiber, the unit of work\nBefore Fiber, the \"stack reconciler\" walked the tree recursively and could not stop until it finished. A large update could block the main thread for hundreds of milliseconds, and typing would freeze. Fiber turns the recursion into a loop over a linked data structure that React controls.\n\nEach fiber is an object for one component or host node. It holds the type, key, props, state (the hook list), effect flags and pointers:\n\n```text\n            App (fiber)\n            |  child\n            v\n          Header ---sibling---> Main ---sibling---> Footer\n            ^                    |  child\n            | return             v\n                               List ---> Item ---> Item\n```\n\n- `child`, `sibling` and `return` let React walk the tree without the JS call stack, so it can stop after any fiber and resume later.\n- **Double buffering:** there is a `current` tree (what is on screen) and a `workInProgress` tree being built. Each fiber has an `alternate` pointing at its twin. When the work finishes, React swaps the pointer. A render that gets interrupted or thrown away never touches the screen.\n\n## Step 4: render phase vs commit phase\n\n```text\nsetState / transition / Suspense retry\n        |\n        v\n  schedule an update on a lane\n        |\n        v\n RENDER PHASE  (interruptible in concurrent mode, must be pure)\n   beginWork:    call components, reconcile children\n   completeWork: build DOM nodes off-screen, collect effect flags\n        |   React may yield to the browser about every 5 ms,\n        |   restart if a higher-priority update arrives,\n        |   or discard the work entirely\n        v\n COMMIT PHASE  (synchronous, cannot be interrupted)\n   before mutation: read DOM state (e.g. getSnapshotBeforeUpdate)\n   mutation:        insert, update and remove DOM nodes; detach old refs\n   layout:          attach refs, run useLayoutEffect, before paint\n        |\n        v\n  browser paints\n        |\n        v\n  passive effects: useEffect cleanups, then setups\n```\n\nWhat follows from this:\n\n- **The render phase must be pure.** React may call your component several times for one commit, or never commit at all. Side effects in render (subscriptions, mutating module state, analytics calls) will fire twice or leak. StrictMode double-invokes renders in development to surface exactly this.\n- **The commit phase is all-or-nothing**, so the user never sees a half-updated tree.\n- `useLayoutEffect` runs before paint, so use it to measure the DOM and fix layout without a flicker. `useEffect` normally runs after paint. Since React 18, effects caused by a discrete input such as a click are flushed before the next discrete event.\n\n## Step 5: lanes and the scheduler\nEvery update gets a **lane**, a bit in a 31-bit mask. Lanes represent priority and also let React batch updates of the same kind together:\n\n| Lane (simplified) | Typical source |\n| --- | --- |\n| SyncLane | discrete input: click, keydown, `flushSync` |\n| InputContinuousLane | continuous input: pointermove, scroll |\n| DefaultLane | updates outside React events (timers, fetch callbacks) |\n| TransitionLanes | `startTransition`, `useDeferredValue` background renders |\n| IdleLane / Offscreen | prerendering hidden content (`<Activity mode=\"hidden\">`) |\n\nBecause lanes are bitmasks, React can cheaply ask \"which pending lanes should I work on now?\" and render several lanes in one pass. When a click arrives in the middle of a transition render, React leaves the transition work, renders the urgent lane, commits it, and then restarts the transition from the new state. The scheduler yields to the main thread roughly every 5 ms so that input and paint stay responsive.\n\nAll of this machinery only matters for **concurrent** features. A plain `setState` in a click handler takes the synchronous lane and renders without yielding. Automatic batching (React 18+) groups updates made in the same tick, in timeouts and in promises too, into one render.\n\n## Code: watching it happen\n\n```tsx\nimport { useState, useTransition, Profiler } from \"react\";\n\nfunction SlowList({ query }: { query: string }) {\n  const items = [];\n  for (let i = 0; i < 5000; i++) items.push(<li key={i}>{query} {i}</li>);\n  return <ul>{items}</ul>;\n}\n\nexport function Search() {\n  const [text, setText] = useState(\"\");\n  const [query, setQuery] = useState(\"\");\n  const [isPending, startTransition] = useTransition();\n\n  return (\n    <Profiler id=\"search\" onRender={(id, phase, actualMs) => console.log(id, phase, actualMs.toFixed(1))}>\n      <input\n        value={text}\n        onChange={(e) => {\n          setText(e.target.value);                         // SyncLane: input stays responsive\n          startTransition(() => setQuery(e.target.value)); // TransitionLane: interruptible\n        }}\n      />\n      {isPending && <span>Updating...</span>}\n      <SlowList query={query} />\n    </Profiler>\n  );\n}\n```\n\nType quickly and the input keeps up. React abandons stale `SlowList` renders whenever a new keystroke arrives. Remove the transition and every keystroke blocks for the whole list render.\n\n## Trade-offs and when not to care\n- The virtual DOM costs memory and CPU on every update. For very high-frequency visual updates (canvas, 60 fps charts, drag positions) you often bypass React state and write to a ref or the DOM directly.\n- Concurrent rendering makes rendering cheaper to interrupt, but it does not make it cheaper. A 200 ms render in a transition is still 200 ms of CPU, just without blocking input. Fix the slow component first.\n- Interruptible rendering needs pure components and tear-free stores. External stores must go through `useSyncExternalStore`, otherwise two parts of the tree can read different values within one render (\"tearing\").\n\n## Common mistakes and debugging\n- **Defining components inside components:** the type changes every render, so the subtree remounts, inputs lose focus and effects re-run.\n- **Index or random keys** on lists that reorder or filter.\n- **Conditionally switching wrapper types** (`isMobile ? <div> : <section>` around a form) and then wondering where the form state went.\n- **Side effects during render,** which StrictMode exposes as double logs.\n- **Debugging tools:** turn on React DevTools \"Highlight updates when components render\", and use the Profiler's \"Why did this render?\" (record why each component rendered). Chrome Performance traces show long \"Render\" tasks and the commit.\n\n## In the interview\n**What they probe:** whether you know that \"virtual DOM is fast\" is a myth, that rendering is not committing, why keys matter, and whether you can explain Fiber's interruptibility without hand-waving.\n\n**60-second answer outline:**\n1. React renders components to element trees and reconciles them with the previous tree. Two heuristics keep it O(n): a different type remounts the subtree, and keys match siblings.\n2. State lives at a position in the tree, so keys and types decide whether state survives.\n3. Fiber represents each component as a linked work unit with current and work-in-progress trees, so the render phase can pause, resume or be discarded.\n4. Updates carry lanes (bitmask priorities). Urgent lanes interrupt transitions.\n5. The commit phase is synchronous: DOM mutations, then layout effects, then paint, then passive effects.\n\n**Follow-ups to expect:** Why must render be pure? What is tearing and how does `useSyncExternalStore` prevent it? Why does an input lose focus when its parent re-renders? (A component defined inline, or a key that changes.) How do Svelte or Solid avoid a virtual DOM?",
+      "keyPoints": [
+        "The virtual DOM is not faster than the DOM; it is a declarative model whose diff keeps DOM writes near-minimal",
+        "Reconciliation is O(n): a different type remounts the subtree, and keys match siblings across renders",
+        "State belongs to a position in the tree; changing a key or wrapper type resets it",
+        "Fiber turns rendering into resumable units of work with current and work-in-progress trees",
+        "Updates carry lanes (bitmask priorities); the render phase can be interrupted, the commit phase cannot"
+      ],
+      "interview": [
+        "Is the virtual DOM actually faster than updating the DOM directly?",
+        "What is React Fiber and what problem did it solve?",
+        "How does React decide which update to work on first?"
+      ],
+      "check": [
+        {
+          "q": "A todo list uses array indexes as keys. The user deletes the first item while the second row has an open inline editor. What happens?",
+          "options": [
+            "React throws a duplicate key error",
+            "The editor state stays with the item that is now in the first position, so it appears on the wrong todo",
+            "Nothing, React tracks items by content",
+            "The whole list unmounts and remounts"
+          ],
+          "answer": 1,
+          "why": "State is matched by key. With index keys, the row at index 1 becomes index 0, so React reuses the wrong instance and its local state."
+        },
+        {
+          "q": "Which statement about the render and commit phases in concurrent React is correct?",
+          "options": [
+            "Both phases can be interrupted at any point",
+            "Only the commit phase may run more than once per update",
+            "useEffect runs during the commit's mutation step, before paint",
+            "The render phase may be paused, restarted or discarded; the commit phase runs synchronously to completion"
+          ],
+          "answer": 3,
+          "why": "Interruptibility applies only to the pure render phase. The commit applies DOM mutations and layout effects atomically so users never see a half-updated tree."
+        },
+        {
+          "q": "Why does an input lose focus on every keystroke when its component is defined inside the parent component's body?",
+          "options": [
+            "The inner component gets a new function identity each render, so React sees a different type and remounts it",
+            "Inline components cannot hold state",
+            "React batches the keystrokes and drops focus",
+            "StrictMode unmounts components on every render in production"
+          ],
+          "answer": 0,
+          "why": "Type identity drives reconciliation. A component declared inside render is a new type each time, so its subtree, including the focused input, is destroyed and recreated."
+        }
+      ],
+      "resources": [
+        {
+          "title": "React docs: Preserving and Resetting State",
+          "url": "https://react.dev/learn/preserving-and-resetting-state"
+        },
+        {
+          "title": "React docs: Render and Commit",
+          "url": "https://react.dev/learn/render-and-commit"
+        },
+        {
+          "title": "React as a UI Runtime (Dan Abramov)",
+          "url": "https://overreacted.io/react-as-a-ui-runtime/"
+        },
+        {
+          "title": "Legacy React docs: Reconciliation",
+          "url": "https://legacy.reactjs.org/docs/reconciliation.html"
+        },
+        {
+          "title": "React Fiber Architecture (Andrew Clark)",
+          "url": "https://github.com/acdlite/react-fiber-architecture"
+        }
+      ]
+    },
+    {
+      "id": "react-server-components",
+      "track": "react",
+      "title": "React Server Components in depth",
+      "minutes": 22,
+      "summary": "The RSC model: server-only components, the serialised payload, client boundaries, what can cross them, streaming with Suspense, and what the 'use client' and 'use server' directives really mean.",
+      "body": "## The core idea\nReact Server Components (RSC) split one React tree across two environments. **Server Components** run only on the server, either at build time or per request. They can be `async`, read a database or the filesystem directly, and they ship **zero JavaScript** to the browser. **Client Components** are the React you already know: they hydrate in the browser, hold state and handle events. The server renders its part of the tree into a serialised description called the **RSC payload**, sometimes called the Flight format. That payload contains the server-rendered output plus **references** to the client components the browser must load and run.\n\nRSC is not SSR. SSR turns a tree into **HTML** so the first paint is fast, and then the whole tree hydrates. RSC turns server components into a **payload React can merge into the live tree**. That works on first load and on every client-side navigation, and it never hydrates the server parts. In a framework like Next.js you get both: the payload is used to SSR HTML for the first request, and only client components hydrate.\n\nDan Abramov's \"The Two Reacts\" (overreacted.io) is a good framing. UI is a function of both client state and server data, and RSC lets each component run where its inputs live. Josh Comeau's \"Making Sense of React Server Components\" walks through the same model with diagrams.\n\n## How it works, step by step\n\n```text\nREQUEST /product/42\n   |\n   v\nSERVER: render the Server Component tree\n   ProductPage (server, async)  -- awaits db.product(42)\n     ├─ Header (server)\n     ├─ Gallery (CLIENT)    -> emitted as a reference: module id + export name + props\n     └─ Suspense\n          └─ Reviews (server, async, slow) -> streams later\n   |\n   v\nRSC PAYLOAD (streamed rows, simplified)\n   M1: client module ref  { id: \"gallery.js\", name: \"Gallery\", chunks: [...] }\n   J0: [\"div\", {}, [ <h1>\"Blue mug\"</h1>, @M1({ images: [...] }), <Suspense fallback>@pending:2 ]]\n   J2: [ <ul> ...reviews... </ul> ]      <- arrives when the slow query resolves\n   |\n   v\nCLIENT: React reads the stream, downloads the Gallery chunk,\n        builds the tree, hydrates only Gallery, and fills the\n        Suspense hole when row 2 arrives\n```\n\nThe row format above is illustrative. The real wire format is an internal detail that changes between versions, so do not depend on it.\n\nKey mechanics:\n\n1. **The server tree is resolved to plain data.** Server Components run, their `await`s resolve, and their output is reduced to host elements (`div`, text) plus client references.\n2. **Client components are not run on the server for the payload.** React records \"render module X with these props here\". Their code ships as a normal JS chunk. With SSR they also run on the server once to produce HTML, which is why client components still cannot touch `window` during render.\n3. **Streaming:** each `<Suspense>` boundary becomes a hole the server fills later in the same response. The user sees the shell immediately and slow parts arrive as they are ready, in whatever order they finish.\n4. **Navigation:** on a client-side route change, the framework fetches a new payload and React reconciles it into the existing tree. Client component state outside the changed segment survives.\n\n## The two directives\nThey are the most misunderstood part of RSC, and they mean completely different things.\n\n**`'use client'`** goes at the top of a **module**. It marks the boundary where the server module graph enters the client graph. That file and **everything it imports** becomes client code that gets bundled for the browser. You do not need it on every interactive component, only at the entry points. Components without the directive are not automatically server components either: a file with no directive becomes client code if a client module imports it.\n\n**`'use server'`** marks **Server Functions** (called Server Actions when used for mutations). These are async functions the client can call over the network. It does **not** mark Server Components. Server Components need no directive, because in an RSC framework that is the default. The bundler replaces each server function with a reference. Calling it sends a POST with serialised arguments, the function runs on the server, and the result comes back serialised.\n\n```tsx\n// app/product/[id]/page.tsx  (Server Component: no directive)\nimport { db } from \"@/lib/db\";\nimport { AddToCart } from \"./add-to-cart\";\nimport { addToCart } from \"./actions\";\n\nexport default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {\n  const { id } = await params;\n  const product = await db.product.findUnique({ where: { id } }); // runs on the server only\n  if (!product) return <p>Not found</p>;\n  return (\n    <main>\n      <h1>{product.name}</h1>\n      {/* Only serialisable props cross the boundary */}\n      <AddToCart productId={product.id} price={product.priceCents} action={addToCart} />\n    </main>\n  );\n}\n```\n\n```tsx\n// app/product/[id]/add-to-cart.tsx\n\"use client\";\nimport { useTransition } from \"react\";\n\nexport function AddToCart(props: { productId: string; price: number; action: (id: string) => Promise<void> }) {\n  const [pending, start] = useTransition();\n  return (\n    <button disabled={pending} onClick={() => start(() => props.action(props.productId))}>\n      Add for {(props.price / 100).toFixed(2)}\n    </button>\n  );\n}\n```\n\n```ts\n// app/product/[id]/actions.ts\n\"use server\";\nimport { requireUser } from \"@/lib/auth\";\n\nexport async function addToCart(productId: string) {\n  const user = await requireUser(); // every server function is a public endpoint: check auth here\n  // ...validate productId, write the cart row\n}\n```\n\n## Serialisation: what can cross the boundary\nProps from a server component to a client component, and arguments and return values of server functions, must be serialisable by React. The react.dev `'use client'` reference lists the supported types:\n\n- primitives (string, number, bigint, boolean, undefined, null), and symbols registered with `Symbol.for`\n- plain objects and arrays made of serialisable values, `Date`, `Map`, `Set`, typed arrays, `ArrayBuffer`, `FormData`\n- **Promises**, which the client unwraps with `use()`. This lets you start a fetch on the server and stream the result into a client component.\n- JSX elements, including other server components passed as `children` or slot props\n- **Server Functions** (functions marked `'use server'`)\n\nNot serialisable: ordinary functions (event handlers), class instances (an ORM model, a `Decimal`), closures and DOM nodes. A common fix is to map records to plain DTOs at the boundary.\n\n## The composition pattern: server inside client\nA client component cannot *import* a server component, because the import would pull it into the client graph. It can still *render* one that is passed in as a prop:\n\n```tsx\n// Server Component\n<Tabs>                 {/* client: holds the active-tab state */}\n  <BillingSummary />   {/* server: queries the DB, rendered on the server */}\n</Tabs>\n```\n\n`BillingSummary` runs on the server. Its output arrives inside the payload as `children`, and `Tabs` places it wherever it likes. This is how you keep interactivity at the leaves and data access at the top.\n\n## Trade-offs and when not to use it\n**Wins:** less client JS, because heavy libraries such as markdown parsers and syntax highlighters stay on the server. Data fetching sits next to the component without client-side waterfalls. Secrets and DB access stay on the server. Streaming gives a fast first paint.\n\n**Costs:**\n- **A two-world mental model.** Context, state and effects do not exist in server components. Every boundary needs serialisable props.\n- **Data can be sent twice:** once as HTML and once in the payload that hydrates client components. A 500 KB prop passed to a client component costs 500 KB on the wire twice. Pass IDs or trimmed DTOs.\n- **Framework coupling.** RSC needs bundler integration. In practice that means Next.js App Router, React Router's RSC support, Waku, or a Parcel or Vite plugin, so it is not a drop-in for an existing SPA.\n- **Highly interactive apps** (editors, canvases, dashboards with live client state) gain little. Most of the tree is client components anyway.\n\n## Common mistakes and debugging\n- **`'use client'` on everything** by reflex. You lose the bundle win and push data fetching back to the client. Put it on the leaf that needs state or events.\n- **Thinking `'use server'` makes a server component.** It creates a public RPC endpoint.\n- **Leaking secrets through props.** Anything passed to a client component is visible in the payload. Import the `server-only` package in modules that must never reach the client. React's experimental taint APIs (`experimental_taintObjectReference`, `experimental_taintUniqueValue`) can block specific objects or values from being passed.\n- **Passing a class instance or a callback** gives \"Only plain objects can be passed to Client Components\" or \"Functions cannot be passed directly to Client Components\".\n- **Reading context in a server component.** Wrap providers in a client component and render it high in the tree, passing server content as `children`.\n- **Debugging:** in Next.js, view the page source to see the inlined payload chunks, and use the Network tab with the `RSC` request header to see navigation payloads. If a component's code shows up in the client bundle unexpectedly, trace which client module imports it.\n\n## In the interview\n**What they probe:** that you can separate RSC from SSR, explain what the directives really mark, reason about serialisation and payload size, and treat server functions as public endpoints.\n\n**60-second answer outline:**\n1. Server components run only on the server, can be async and ship no JS. Their output is a serialised payload containing client component references.\n2. It is not SSR. SSR makes HTML for the first paint, while RSC makes a mergeable tree for every navigation. Frameworks combine the two.\n3. `'use client'` marks the entry into the client module graph. `'use server'` marks callable server functions, not server components.\n4. Props crossing the boundary must be serialisable. Pass server components to client components as `children`.\n5. Suspense boundaries stream, so slow data does not block the shell.\n\n**Follow-ups to expect:** Can a client component render a server component? What happens to client state on navigation? How do you stop a secret leaking into props? Why might RSC increase total bytes on a page?",
+      "keyPoints": [
+        "Server Components run only on the server, can be async and ship no JS; their output is a serialised payload with client references",
+        "RSC is not SSR: SSR produces HTML for first paint, RSC produces a mergeable tree for every navigation",
+        "'use client' marks the entry into the client module graph; 'use server' marks callable Server Functions, not Server Components",
+        "Props crossing the boundary must be serialisable; pass server components to client components as children",
+        "Every Server Function is a public endpoint, and every prop is visible in the payload"
+      ],
+      "interview": [
+        "How are React Server Components different from server-side rendering?",
+        "What does the 'use client' directive actually mark, and what does 'use server' mark?",
+        "What can you pass as props from a Server Component to a Client Component?"
+      ],
+      "check": [
+        {
+          "q": "A file with no directive is imported by a module that starts with 'use client'. Where does its code run?",
+          "options": [
+            "Only on the server, because files without directives are Server Components",
+            "Nowhere; the build fails",
+            "It becomes part of the client graph and is bundled for the browser",
+            "On the edge runtime"
+          ],
+          "answer": 2,
+          "why": "'use client' marks a boundary in the module graph. Everything imported from a client module is client code, whatever directives it lacks."
+        },
+        {
+          "q": "Which prop can NOT be passed from a Server Component to a Client Component?",
+          "options": [
+            "A Promise that resolves to an array of plain objects",
+            "An inline arrow function used as an onClick handler",
+            "A Date object",
+            "A Server Function marked with 'use server'"
+          ],
+          "answer": 1,
+          "why": "Ordinary functions are not serialisable. Promises, Dates and Server Functions are supported by React's serialisation."
+        },
+        {
+          "q": "How can a Client Component display a Server Component's output?",
+          "options": [
+            "By receiving it as children or another JSX prop from a server parent",
+            "By importing the server component directly",
+            "By calling the server component as a function inside useEffect",
+            "It is impossible"
+          ],
+          "answer": 0,
+          "why": "Importing would pull the component into the client graph. Passing it as a prop means it renders on the server and arrives in the payload."
+        }
+      ],
+      "resources": [
+        {
+          "title": "React docs: Server Components",
+          "url": "https://react.dev/reference/rsc/server-components"
+        },
+        {
+          "title": "React docs: 'use client'",
+          "url": "https://react.dev/reference/rsc/use-client"
+        },
+        {
+          "title": "React docs: 'use server'",
+          "url": "https://react.dev/reference/rsc/use-server"
+        },
+        {
+          "title": "Making Sense of React Server Components (Josh Comeau)",
+          "url": "https://www.joshwcomeau.com/react/server-components/"
+        },
+        {
+          "title": "The Two Reacts (Dan Abramov)",
+          "url": "https://overreacted.io/the-two-reacts/"
+        }
+      ]
+    },
+    {
+      "id": "react-suspense-transitions",
+      "track": "react",
+      "title": "Suspense, transitions and concurrent rendering",
+      "minutes": 20,
+      "summary": "How Suspense boundaries work for data and code, how useTransition and useDeferredValue schedule non-urgent work, and what concurrent rendering requires from your code.",
+      "body": "## The core idea\nConcurrent React has three tools for deciding what the user sees while work is in progress:\n\n- **`<Suspense>`** declares a loading boundary: \"if anything inside is not ready, show this fallback instead.\"\n- **`useTransition` / `startTransition`** marks a state update as **non-urgent**. React renders it in the background, can interrupt it, and keeps showing the old UI while it is pending, instead of flashing a fallback.\n- **`useDeferredValue`** gives you a copy of a value that lags behind during busy periods. Urgent UI uses the fresh value and slow UI uses the deferred one.\n\nAll three rely on **concurrent rendering**: the render phase can be paused, interrupted and thrown away (see the lesson on reconciliation and Fiber). They do not make code faster. They make React smarter about **what to show and when**.\n\n## How Suspense works\nA component **suspends** when it cannot finish rendering because something it needs is still loading. In React 19 that happens in three supported ways:\n\n1. Reading a pending promise with `use(promise)`.\n2. Rendering a `React.lazy` component whose code has not loaded yet.\n3. Using a Suspense-enabled data source. These are frameworks (async Server Components in Next.js, React Router loaders) or libraries such as TanStack Query's `useSuspenseQuery` and Relay.\n\nFetching inside `useEffect` does **not** trigger Suspense. The component already rendered, with empty state, by the time the effect runs.\n\n```text\nrender <Profile>\n   |\n   +-- use(userPromise) -> promise pending\n   |      React stops rendering this subtree and finds the\n   |      nearest <Suspense> above it\n   v\ncommit: show that boundary's fallback (siblings outside the boundary still show)\n   |\npromise resolves -> React retries rendering the subtree\n   v\ncommit: replace the fallback with the content\n```\n\nBoundary placement is a design decision. One boundary around the page gives an all-or-nothing reveal. A boundary around every widget gives the \"popcorn\" effect, with pieces popping in at random. Group content that should appear together, and nest boundaries so the outer shell (nav, heading) shows first and inner details stream in.\n\n```tsx\nimport { Suspense, use } from \"react\";\n\nfunction Comments({ commentsPromise }: { commentsPromise: Promise<Comment[]> }) {\n  const comments = use(commentsPromise); // suspends until resolved\n  return <ul>{comments.map((c) => <li key={c.id}>{c.text}</li>)}</ul>;\n}\n\nexport function Post({ post, commentsPromise }: { post: Post; commentsPromise: Promise<Comment[]> }) {\n  return (\n    <article>\n      <h1>{post.title}</h1>\n      <p>{post.body}</p>\n      <Suspense fallback={<p>Loading comments...</p>}>\n        <Comments commentsPromise={commentsPromise} />\n      </Suspense>\n    </article>\n  );\n}\n```\n\nThe promise must be **stable** across renders. If you create it during render (`use(fetch(url))` in a Client Component), every retry creates a new promise and the component suspends forever. Create it in a Server Component, a loader, or a cache, and pass it down.\n\nReact 19 changed one detail. When a component suspends, React now commits the nearest fallback **immediately**, and only then pre-renders the suspended siblings in the background. Earlier versions rendered the siblings first, which delayed the fallback.\n\n## How transitions work\nWrapping an update in a transition puts it in a **transition lane**:\n\n```tsx\nconst [isPending, startTransition] = useTransition();\n\nfunction selectTab(next: Tab) {\n  startTransition(() => setTab(next));\n}\n```\n\nThree behaviours follow:\n\n1. **Interruptible.** If the user clicks or types while the transition renders, React pauses it, handles the urgent update, then restarts the transition from the new state.\n2. **No unwanted fallbacks.** If the transition makes **already-visible** content suspend (the new tab's data is loading), React keeps showing the **old** UI and sets `isPending` to `true`, instead of replacing the screen with a spinner. Newly mounted boundaries can still show their fallbacks. This is why routers wrap navigations in transitions: the old page stays interactive until the new one is ready.\n3. **Pending state for free.** `isPending` lets you dim the old content or show an inline indicator.\n\nIn React 19, transitions accept **async functions**, and these are called **Actions**:\n\n```tsx\nstartTransition(async () => {\n  const result = await saveDraft(draft);\n  // State updates after an await are not yet automatically part of the\n  // transition; wrap them again (a documented limitation).\n  startTransition(() => setStatus(result.ok ? \"saved\" : \"error\"));\n});\n```\n\n`isPending` stays `true` for the whole async function. Errors thrown inside an Action propagate to the nearest error boundary.\n\nWhat cannot be a transition: updates that control a text input's value. An input must update synchronously or typing feels broken. The pattern is to split the state: the input value is urgent, and the expensive consequence goes in the transition.\n\n## How useDeferredValue works\n\n```tsx\nimport { useDeferredValue, memo, useState } from \"react\";\n\nconst Results = memo(function Results({ query }: { query: string }) {\n  // expensive: filters and renders thousands of rows\n  return <List items={search(query)} />;\n});\n\nexport function SearchPage() {\n  const [query, setQuery] = useState(\"\");\n  const deferredQuery = useDeferredValue(query);\n  const stale = query !== deferredQuery;\n  return (\n    <>\n      <input value={query} onChange={(e) => setQuery(e.target.value)} />\n      <div style={{ opacity: stale ? 0.6 : 1 }}>\n        <Results query={deferredQuery} />\n      </div>\n    </>\n  );\n}\n```\n\nOn each keystroke React first renders with the **old** `deferredQuery`, so `Results` is skipped because `memo` sees the same prop. That render commits quickly and the input stays responsive. React then renders again in the background with the new value. Another keystroke abandons that background render. The `memo` is essential: without it, `Results` re-renders on the urgent pass too, and the deferral gains nothing.\n\nIf the deferred value causes a suspend (the results come from a Suspense data source), the user keeps seeing the old results instead of a fallback. React 19 also added an optional `initialValue` argument (`useDeferredValue(value, initialValue)`) for the first render.\n\n**useTransition or useDeferredValue?**\n\n| You control... | Use |\n| --- | --- |\n| the code that sets the state | `useTransition`: wrap the setter |\n| only the value (it arrives as a prop, or comes from a hook you do not own) | `useDeferredValue` |\n| you need an `isPending` flag | `useTransition` (or compare value with deferred value) |\n\n**Versus debounce and throttle:** debouncing waits a fixed delay, even on a fast machine where the render would take 5 ms. A deferred render starts immediately, adapts to the device, and is interruptible. But a deferred value does **not** reduce the number of network requests. If each keystroke triggers a fetch, you still want debouncing or request cancellation for the network side.\n\n## Concurrent rendering requirements\n- **Purity.** Interrupted renders are thrown away and restarted, so render must have no side effects.\n- **Tearing.** If a component reads a mutable external store (a global variable, a Redux store before v8) during an interruptible render, two components can see different values within one render. `useSyncExternalStore` prevents this: React detects the change and re-renders synchronously.\n- **Opt-in.** You only get concurrent behaviour for updates you mark as transitions or deferred values, and for Suspense. Everything else behaves as it did before.\n\n## Trade-offs and when not to use them\n- A transition does not reduce CPU work. A 300 ms render is still 300 ms on a low-end phone. Virtualise or memoise first.\n- Keeping the old UI visible can confuse users if there is no pending indicator. Always show **something**, such as dimming or a spinner in the tab.\n- Suspense for data needs a cache, so the resolved promise is reused on retry. Rolling your own is subtle. Use a framework or library.\n\n## Common mistakes and debugging\n- Wrapping the controlled input's own `setState` in `startTransition`, which makes typing lag or skip characters.\n- `useDeferredValue` without `memo` on the slow child, which gives no benefit.\n- Creating the promise inside the component that calls `use()`, which loops forever or refetches on every render.\n- One giant Suspense boundary at the root, so the whole page blanks on any lazy chunk.\n- Expecting `useEffect` fetching to show Suspense fallbacks.\n- **Debugging:** the React DevTools Profiler shows the priority of each commit, and the Chrome Performance panel's React tracks (React 19.2) show the Scheduler lanes (Blocking, Transition, Suspense) on a timeline.\n\n## In the interview\n**What they probe:** whether you understand that these are scheduling tools rather than performance hacks, why transitions avoid fallbacks, the difference between the two hooks, and how this compares with debouncing.\n\n**60-second answer outline:**\n1. Suspense shows a fallback when a child suspends on a promise (`use`, `lazy`, framework data). Boundaries are design decisions about reveal order.\n2. A transition marks an update as non-urgent: it is interruptible, keeps the old UI instead of re-showing fallbacks, and exposes `isPending`.\n3. `useDeferredValue` lags a value so expensive children render in the background. Pair it with `memo`.\n4. Neither reduces work, and neither replaces debouncing network calls.\n5. All of it depends on pure renders and tear-free stores (`useSyncExternalStore`).\n\n**Follow-ups to expect:** Why can't the input's own state be a transition? What changed about sibling rendering when a component suspends in React 19? How does a router use transitions for navigation? What is tearing?",
+      "keyPoints": [
+        "A component suspends on a pending promise via use(), React.lazy or a Suspense-enabled data source, not on useEffect fetching",
+        "Transitions are interruptible and keep already-visible UI instead of showing fallbacks, exposing isPending",
+        "useDeferredValue lags a value so a memoised slow child renders in the background",
+        "Neither reduces CPU work nor replaces debouncing network requests",
+        "Concurrent rendering needs pure renders and tear-free external stores (useSyncExternalStore)"
+      ],
+      "interview": [
+        "How does Suspense know that a component is waiting for data?",
+        "useTransition vs useDeferredValue: when do you use each?",
+        "Why use a transition instead of debouncing a search input?"
+      ],
+      "check": [
+        {
+          "q": "A tab switch is wrapped in startTransition and the new tab's data suspends. What does the user see?",
+          "options": [
+            "The nearest Suspense fallback replaces the current tab immediately",
+            "A blank screen until the data arrives",
+            "An error boundary",
+            "The previous tab stays visible while isPending is true"
+          ],
+          "answer": 3,
+          "why": "Transitions avoid hiding already-revealed content. React keeps the old UI and reports isPending until the new tree is ready."
+        },
+        {
+          "q": "You add useDeferredValue for a search query, but typing is still slow. What is the most likely missing piece?",
+          "options": [
+            "The slow results component is not wrapped in memo, so it re-renders on the urgent pass too",
+            "useDeferredValue only works inside Server Components",
+            "You must also call flushSync",
+            "The input must be uncontrolled"
+          ],
+          "answer": 0,
+          "why": "The urgent render passes the old deferred value. Without memo the expensive child re-renders anyway, so nothing is deferred."
+        },
+        {
+          "q": "Why should you not wrap a controlled text input's own setState in startTransition?",
+          "options": [
+            "Transitions cannot update strings",
+            "It causes a hydration mismatch",
+            "Input value updates must be synchronous; a deferrable update makes typing lag or drop characters",
+            "startTransition only works in event handlers on buttons"
+          ],
+          "answer": 2,
+          "why": "Split the state: the input value stays urgent, and the expensive consequence of it goes in the transition."
+        }
+      ],
+      "resources": [
+        {
+          "title": "React docs: Suspense",
+          "url": "https://react.dev/reference/react/Suspense"
+        },
+        {
+          "title": "React docs: useTransition",
+          "url": "https://react.dev/reference/react/useTransition"
+        },
+        {
+          "title": "React docs: useDeferredValue",
+          "url": "https://react.dev/reference/react/useDeferredValue"
+        },
+        {
+          "title": "React docs: useSyncExternalStore",
+          "url": "https://react.dev/reference/react/useSyncExternalStore"
+        },
+        {
+          "title": "New Suspense SSR Architecture in React 18 (React working group)",
+          "url": "https://github.com/reactwg/react-18/discussions/37"
+        }
+      ]
+    },
+    {
+      "id": "react-patterns",
+      "track": "react",
+      "title": "Component API patterns: compound, controlled, headless",
+      "minutes": 18,
+      "summary": "Compound components, controlled vs uncontrolled APIs, render props vs hooks, headless components and composition over configuration, with the trade-offs interviewers probe.",
+      "body": "## The core idea\nMost reusable React components fail in the same way. They start simple, then grow a prop for every request (\"add `showIcon`\", \"add `renderFooter`\", \"add `headerClassName`\") until the API becomes a configuration language that nobody can learn. The patterns in this lesson are different answers to one question: **who controls what?** Who owns the state, who owns the markup, and who owns the behaviour.\n\n- **Composition over configuration:** let callers pass children and pieces instead of flags.\n- **Compound components:** a family of components that share hidden state (`<Tabs>`, `<Tabs.List>`, `<Tabs.Panel>`).\n- **Controlled vs uncontrolled:** the parent owns the state, or the component does, or the component supports both.\n- **Render props vs hooks:** two ways to share stateful logic. Hooks replaced most render props, but not all of them.\n- **Headless components:** behaviour and accessibility with no styling, so a design system can supply the look.\n\nKent C. Dodds calls the underlying principle **inversion of control**: rather than predicting every use case, hand control back to the caller. patterns.dev catalogues these React patterns with examples.\n\n## Composition over configuration\n\n```tsx\n// Configuration: every new need is a new prop\n<Card title=\"Plan\" subtitle=\"Pro\" icon={<Star />} footerButtons={[...]} collapsible headerVariant=\"compact\" />\n\n// Composition: callers assemble what they need\n<Card>\n  <Card.Header>\n    <Star /> <h3>Plan</h3> <Badge>Pro</Badge>\n  </Card.Header>\n  <Card.Body>...</Card.Body>\n  <Card.Footer><Button>Upgrade</Button></Card.Footer>\n</Card>\n```\n\nThe composed version has fewer props, handles cases you did not anticipate, and keeps each piece small. It also fixes prop drilling. A component that only forwards data to a deep child can take `children` instead, so the data flows straight from the owner. As a side benefit, `children` created by the parent keep the same element reference when an intermediate component re-renders, which lets React skip them.\n\nUse configuration when the component **must** enforce a strict layout, such as a brand-locked marketing banner, or when the options really are a small closed set (`size=\"sm\" | \"md\" | \"lg\"`).\n\n## Compound components\nCompound components share implicit state through context, so callers arrange the pieces freely while the parent coordinates them:\n\n```tsx\nimport { createContext, use, useId, useState, type ReactNode } from \"react\";\n\ntype TabsCtx = { active: string; setActive: (v: string) => void; baseId: string };\nconst TabsContext = createContext<TabsCtx | null>(null);\n\nfunction useTabs() {\n  const ctx = use(TabsContext);\n  if (!ctx) throw new Error(\"Tabs.* must be used inside <Tabs>\");\n  return ctx;\n}\n\nexport function Tabs({ defaultValue, children }: { defaultValue: string; children: ReactNode }) {\n  const [active, setActive] = useState(defaultValue);\n  const baseId = useId();\n  return <TabsContext value={{ active, setActive, baseId }}>{children}</TabsContext>;\n}\n\nTabs.List = function List({ children }: { children: ReactNode }) {\n  return <div role=\"tablist\">{children}</div>;\n};\n\nTabs.Trigger = function Trigger({ value, children }: { value: string; children: ReactNode }) {\n  const { active, setActive, baseId } = useTabs();\n  const selected = active === value;\n  return (\n    <button\n      role=\"tab\"\n      id={`${baseId}-tab-${value}`}\n      aria-selected={selected}\n      aria-controls={`${baseId}-panel-${value}`}\n      tabIndex={selected ? 0 : -1}\n      onClick={() => setActive(value)}\n    >\n      {children}\n    </button>\n  );\n};\n\nTabs.Panel = function Panel({ value, children }: { value: string; children: ReactNode }) {\n  const { active, baseId } = useTabs();\n  if (active !== value) return null;\n  return (\n    <div role=\"tabpanel\" id={`${baseId}-panel-${value}`} aria-labelledby={`${baseId}-tab-${value}`}>\n      {children}\n    </div>\n  );\n}\n```\n\nUsage reads like markup, and callers can put anything between the pieces:\n\n```tsx\n<Tabs defaultValue=\"billing\">\n  <Tabs.List>\n    <Tabs.Trigger value=\"profile\">Profile</Tabs.Trigger>\n    <Tabs.Trigger value=\"billing\">Billing</Tabs.Trigger>\n  </Tabs.List>\n  <Tabs.Panel value=\"profile\"><ProfileForm /></Tabs.Panel>\n  <Tabs.Panel value=\"billing\"><BillingSummary /></Tabs.Panel>\n</Tabs>\n```\n\nThe example uses React 19 idioms: `use(Context)` and `<Context value>` as the provider. A real tabs component also needs arrow-key navigation (roving `tabIndex`), which is the point of the \"headless\" section below. Prefer context over the old `React.Children.map` + `cloneElement` approach. Cloning breaks as soon as a caller wraps a trigger in a `div` or a custom component.\n\n## Controlled, uncontrolled and both\n- **Uncontrolled:** the component owns its state and the parent passes an initial value (`defaultValue`, `defaultOpen`). It is simple, but the parent cannot reset or drive it except by remounting it with a new `key`.\n- **Controlled:** the parent owns the state (`value` + `onChange`, `open` + `onOpenChange`). The parent has full control and a single source of truth, but must write more code.\n\nGood library components support both, as native inputs do. The usual implementation is a small \"controllable state\" hook:\n\n```tsx\nimport { useCallback, useState } from \"react\";\n\nexport function useControllableState<T>(opts: { value?: T; defaultValue: T; onChange?: (v: T) => void }) {\n  const [inner, setInner] = useState(opts.defaultValue);\n  const isControlled = opts.value !== undefined;\n  const value = isControlled ? (opts.value as T) : inner;\n  const setValue = useCallback(\n    (next: T) => {\n      if (!isControlled) setInner(next);\n      opts.onChange?.(next);\n    },\n    [isControlled, opts.onChange],\n  );\n  return [value, setValue] as const;\n}\n```\n\nRules: decide controlled vs uncontrolled once, at mount. React warns when an input switches from uncontrolled to controlled. That usually happens because `value` started as `undefined`, so use `\"\"` instead. Never mirror a controlled prop into local state with an effect, because the two copies drift apart.\n\n## Render props vs hooks\nA render prop passes a function that returns UI. It was the main way to share logic before hooks arrived:\n\n```tsx\n<MousePosition>{({ x, y }) => <Cursor x={x} y={y} />}</MousePosition>\n```\n\nHooks share the same logic without the extra component, without nesting, and with plain values:\n\n```tsx\nconst { x, y } = useMousePosition();\n```\n\nPrefer hooks for **logic**. Render props still win when the component must **own the placement of UI**: the caller supplies how each part looks while the component decides where and when it appears. Examples are a virtualised list's `renderItem` (the list decides which rows exist), a `Combobox` with `renderOption`, or an error boundary's `fallbackRender`. Error boundaries are still class components and have no hook equivalent.\n\n## Headless components\nA headless component (or hook) supplies **behaviour, state and accessibility** but no styles or markup decisions. Examples: Radix Primitives and React Aria Components (unstyled parts), TanStack Table and Downshift (hooks that return state plus **prop getters**).\n\n```tsx\n// Prop-getter style: the hook returns props you spread on your own elements\nconst { getToggleButtonProps, getMenuProps, getItemProps, isOpen, highlightedIndex } = useSelect({ items });\n<button {...getToggleButtonProps()}>{selected ?? \"Pick one\"}</button>\n<ul {...getMenuProps()}>\n  {isOpen && items.map((item, index) => (\n    <li key={item.id} {...getItemProps({ item, index })} data-highlighted={highlightedIndex === index}>\n      {item.label}\n    </li>\n  ))}\n</ul>\n```\n\nWhy design systems build on them: keyboard support, focus management, ARIA wiring, typeahead, collision-aware positioning and screen-reader behaviour make up 80% of the effort in a combobox or menu, and they are easy to get wrong. A headless layer handles that once. The design system adds tokens and styling on top. shadcn/ui popularised this split by copying styled wrappers around Radix into your own repo.\n\nRadix's `asChild` prop is a related composition trick. Instead of rendering its own element, the component merges its props and behaviour onto the child you pass, so `<Dialog.Trigger asChild><MyButton /></Dialog.Trigger>` keeps your button.\n\n## Trade-offs and when not to use them\n- Compound components add context overhead and make the API less discoverable in autocomplete. For a two-option component, a couple of props is simpler.\n- Headless libraries move styling work to you, which is overkill for a one-off internal tool.\n- Supporting both controlled and uncontrolled modes doubles the test surface. Application components (not library components) can usually be controlled-only.\n- Context-based compounds re-render all consumers when the context value changes. That is fine for tabs. For large lists, use a store with selectors.\n\n## Common mistakes and debugging\n- Boolean-prop explosion (`isCompact`, `isInline`, `hasBorder`...). Take that as the signal to switch to composition.\n- `cloneElement`-based compounds that break when children are wrapped or conditionally rendered.\n- Forgetting to throw a helpful error when a compound part is used outside its parent.\n- Switching between controlled and uncontrolled (watch for `value={maybeUndefined}`).\n- Copying props into state with `useEffect`. Derive the value, or use a `key` to reset.\n- Building a combobox or menu from scratch and shipping it without keyboard and screen-reader testing.\n\n## In the interview\n**What they probe:** API design taste. Can you explain why an API scales, who owns state, and how you would ship accessible primitives for a design system?\n\n**60-second answer outline:**\n1. Start from inversion of control: composition and `children` over configuration props.\n2. Compound components share state through context so callers arrange the parts. Show Tabs.\n3. Support controlled and uncontrolled modes through a controllable-state hook, decided at mount.\n4. Hooks replaced most render props for sharing logic. Render props remain for \"you render it, I place it\".\n5. Headless primitives own behaviour and accessibility, and the design system owns the look.\n\n**Follow-ups to expect:** How do you type a compound component in TypeScript? How would you add keyboard navigation to Tabs? What goes wrong with `cloneElement`? When would you choose a styled library over a headless one?",
+      "keyPoints": [
+        "Prefer composition and children over growing configuration props; it is inversion of control",
+        "Compound components share implicit state through context so callers arrange the parts freely",
+        "Support controlled and uncontrolled modes with a controllable-state hook decided at mount",
+        "Hooks replaced most render props; render props remain when the component must place caller-rendered UI",
+        "Headless primitives own behaviour and accessibility; the design system owns the styling"
+      ],
+      "interview": [
+        "How would you build a compound component like Tabs?",
+        "Render props vs custom hooks: when is each still the right tool?",
+        "What is a headless component and why do design systems build on them?"
+      ],
+      "check": [
+        {
+          "q": "Why is context preferred over React.Children.map with cloneElement for compound components?",
+          "options": [
+            "cloneElement is removed in React 19",
+            "Context keeps working when callers wrap or conditionally render the parts; cloning only reaches direct children",
+            "Context never causes re-renders",
+            "cloneElement cannot pass props"
+          ],
+          "answer": 1,
+          "why": "Cloning inspects direct children only, so wrapping a trigger in a div breaks it. Context reaches any depth."
+        },
+        {
+          "q": "React warns that a component is changing an uncontrolled input to be controlled. What is the usual cause?",
+          "options": [
+            "Using defaultValue and onChange together",
+            "Rendering the input inside a form",
+            "Using a key on the input",
+            "The value prop started as undefined and later became a string"
+          ],
+          "answer": 3,
+          "why": "value={undefined} means uncontrolled. When it becomes a string the input switches mode. Initialise with an empty string."
+        },
+        {
+          "q": "Which is the best fit for a render prop rather than a hook?",
+          "options": [
+            "Sharing debounce logic between components",
+            "Reading the current theme",
+            "A virtualised list that decides which rows exist while the caller decides how each row looks",
+            "Fetching the current user"
+          ],
+          "answer": 2,
+          "why": "The list owns placement and lifecycle of rows; the caller supplies how each renders. That is the case render props still serve best."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Inversion of Control (Kent C. Dodds)",
+          "url": "https://kentcdodds.com/blog/inversion-of-control"
+        },
+        {
+          "title": "Compound Pattern (patterns.dev)",
+          "url": "https://www.patterns.dev/react/compound-pattern/"
+        },
+        {
+          "title": "React docs: Sharing State Between Components (controlled and uncontrolled)",
+          "url": "https://react.dev/learn/sharing-state-between-components"
+        },
+        {
+          "title": "Radix Primitives: Composition",
+          "url": "https://www.radix-ui.com/primitives/docs/guides/composition"
+        },
+        {
+          "title": "React Aria Components",
+          "url": "https://react-aria.adobe.com/"
+        }
+      ]
+    },
+    {
+      "id": "react-19-features",
+      "track": "react",
+      "title": "React 19: Actions, useOptimistic, use() and the Compiler",
+      "minutes": 20,
+      "summary": "Actions and form handling, useActionState, useFormStatus, useOptimistic, the use() API, ref as a prop, metadata hoisting, React 19.2 additions and what the React Compiler changes.",
+      "body": "## The core idea\nReact 19 (stable December 2024) is mostly about **mutations and async work**. It also removes a lot of boilerplate. The headline is **Actions**: async functions run inside a transition, with built-in pending state, error handling, optimistic updates and form integration. Around them came `useActionState`, `useFormStatus`, `useOptimistic` and the `use()` API. The release also brought a set of quality-of-life changes: `ref` as a normal prop, ref cleanup functions, `<Context>` as a provider, and document metadata you can render anywhere. Separately, the **React Compiler** reached 1.0 in October 2025, and it changes how you think about `useMemo` and `useCallback`. React 19.2 (October 2025) added `<Activity>` and `useEffectEvent`.\n\nThe react.dev post \"React v19\" is the canonical list. This lesson focuses on what interviewers ask about and the details people get wrong.\n\n## Actions: how they work\nBefore React 19, every form submit needed the same hand-written code: `isPending` state, `try/catch`, error state, disabling the button, resetting the form. An **Action** is any async function passed to `startTransition`, or passed to a prop that React treats as an action (`<form action>`, `<button formAction>`).\n\n```text\nuser submits <form action={fn}>\n      |\n      v\nReact starts a transition: isPending = true (useActionState / useFormStatus)\n      |\n      v\nfn(formData) runs (async, can await network)\n      |                     \\\n  resolves                   throws\n      |                        \\\nstate updates commit          nearest error boundary shows\nform resets (uncontrolled)    optimistic state reverts\nisPending = false\n```\n\nPassing a function to `<form action>` means React calls it with the form's `FormData`. When the action succeeds, React **resets uncontrolled form fields** automatically. If the function is a Server Function (`'use server'`), the form also works before JavaScript loads (progressive enhancement), because the framework renders a real POST target.\n\n## useActionState\n`useActionState(action, initialState, permalink?)` returns `[state, formAction, isPending]`. Your action receives the **previous state** as its first argument:\n\n```tsx\n\"use client\";\nimport { useActionState } from \"react\";\nimport { updateName } from \"./actions\"; // a Server Function or any async function\n\ntype State = { error?: string; saved?: boolean };\n\nexport function NameForm({ current }: { current: string }) {\n  const [state, formAction, isPending] = useActionState<State, FormData>(\n    async (_prev, formData) => {\n      const name = String(formData.get(\"name\") ?? \"\").trim();\n      if (name.length < 2) return { error: \"Name is too short\" };\n      const res = await updateName(name);\n      return res.ok ? { saved: true } : { error: res.message };\n    },\n    {},\n  );\n\n  return (\n    <form action={formAction}>\n      <input name=\"name\" defaultValue={current} aria-invalid={!!state.error} />\n      <SubmitButton />\n      {state.error && <p role=\"alert\">{state.error}</p>}\n      {state.saved && <p>Saved</p>}\n      {isPending && <p>Saving...</p>}\n    </form>\n  );\n}\n```\n\nCalls are **queued**. If the user submits twice, the second action receives the result of the first as `prev`. The optional `permalink` argument tells React which URL to submit to before hydration, for progressive enhancement in RSC frameworks.\n\n## useFormStatus\n`useFormStatus()` comes from `react-dom` and reads the status of the **parent** `<form>`, like a context the form provides. It returns `{ pending, data, method, action }`.\n\n```tsx\nimport { useFormStatus } from \"react-dom\";\n\nfunction SubmitButton() {\n  const { pending } = useFormStatus();\n  return <button disabled={pending}>{pending ? \"Saving...\" : \"Save\"}</button>;\n}\n```\n\nThe classic bug is calling it in the same component that renders the `<form>`. It only sees a form **above** it, so it always reports `pending: false`. Put the button in its own component.\n\n## useOptimistic\n`useOptimistic(state, updateFn)` returns `[optimisticState, addOptimistic]`. While an Action is pending, the UI shows `optimisticState`. When the Action finishes (successfully or not), React drops the optimistic layer and goes back to the real `state`. If the server's new data has arrived by then, that is what remains. If the action failed, the optimistic item simply disappears.\n\n```tsx\n\"use client\";\nimport { useOptimistic, startTransition } from \"react\";\n\nexport function Thread({ messages, send }: { messages: Msg[]; send: (text: string) => Promise<void> }) {\n  const [optimistic, addOptimistic] = useOptimistic(messages, (cur: Msg[], text: string) => [\n    ...cur,\n    { id: `temp-${cur.length}`, text, sending: true },\n  ]);\n\n  function onSubmit(formData: FormData) {\n    const text = String(formData.get(\"text\"));\n    startTransition(async () => {\n      addOptimistic(text);   // must be called inside a transition or action\n      await send(text);      // the server action revalidates `messages`\n    });\n  }\n\n  return (\n    <>\n      {optimistic.map((m) => <p key={m.id} style={{ opacity: m.sending ? 0.5 : 1 }}>{m.text}</p>)}\n      <form action={onSubmit}><input name=\"text\" /></form>\n    </>\n  );\n}\n```\n\n`addOptimistic` must run inside an Action or transition. Outside one, React warns and the update flashes away immediately. A rollback is automatic, but **telling the user** is not. Catch the error and show a toast, or keep the failed item with a retry button in real state.\n\n## use()\n`use(resource)` reads a **promise** or a **context**. Unlike other hooks, you can call it inside conditions and loops, though still only during render.\n\n- `use(promise)` suspends until the promise resolves and throws the rejection to the nearest error boundary. The promise must be stable: create it in a Server Component, a loader or a cache, not during render.\n- `use(Context)` is the flexible replacement for `useContext`, and it can be called after an early return.\n\n```tsx\nfunction Price({ show, pricePromise }: { show: boolean; pricePromise: Promise<number> }) {\n  if (!show) return null;\n  const price = use(pricePromise); // fine after an early return\n  return <span>{price}</span>;\n}\n```\n\n## Refs and other quality-of-life changes\n- **`ref` is a prop** for function components. You no longer need `forwardRef`, and the React team has said it will be deprecated in a future version. A codemod migrates existing code.\n- **Ref callbacks can return a cleanup function,** like effects. React calls it on detach instead of calling the callback with `null`. Because of this, an implicit return such as `ref={(el) => (instance = el)}` is now a TypeScript error.\n- **`<Context value={...}>` works as a provider.** `<Context.Provider>` still works but is on its way out.\n- **Document metadata:** `<title>`, `<meta>` and `<link>` rendered anywhere are hoisted into `<head>`. Stylesheets with `precedence` are deduplicated and ordered, and React waits for them before revealing content.\n- **Resource preloading APIs** in `react-dom`: `preload`, `preinit`, `preconnect`, `prefetchDNS`.\n- **Better hydration errors:** one message with a diff instead of a stream of warnings. Third-party extensions that inject DOM nodes into `head` or `body` no longer cause mismatches.\n- **Removed legacy APIs:** `propTypes` and `defaultProps` for function components (use default parameters), string refs, legacy context and `ReactDOM.render` (use `createRoot`).\n\nReact 19.2 additions worth knowing: `<Activity mode=\"hidden\">` hides a subtree while keeping its state, pausing its effects and rendering it at low priority. `useEffectEvent` lets an effect read the latest props without listing them as dependencies.\n\n## The React Compiler\nThe compiler is a build-time Babel plugin (with SWC support in Next.js and integrations for Vite and other tools). It analyses components and hooks and **inserts memoisation automatically**, at a finer grain than you would write by hand: individual JSX subtrees and values, even after early returns. It reached 1.0 in October 2025, and Meta reported running it in production apps such as Instagram and the Meta Quest Store before that.\n\nWhat changes:\n- You rarely need `useMemo`, `useCallback` or `memo` for performance. Keep them where you need **referential identity for correctness**, for example an effect dependency that must not change.\n- It only optimises code that follows the **Rules of React**: pure render, no mutation of props or state, and hooks called unconditionally. Code it cannot prove safe is skipped, not broken. The `eslint-plugin-react-hooks` compiler rules tell you where.\n- You can adopt it incrementally: per directory, or with the `\"use no memo\"` directive to opt a component out.\n\n## Trade-offs and when not to use these\n- Actions and forms work best with a framework that supplies Server Functions and revalidation. In a pure SPA they are still useful, but you wire up cache invalidation yourself, for example with TanStack Query.\n- Automatic form reset surprises people who expected the inputs to keep their values after an error. Return the submitted values in state and use them as `defaultValue`, or make the inputs controlled.\n- `useOptimistic` is for short-lived optimism during an action. Long-lived offline queues need a real client store.\n- The compiler adds build time and can expose existing Rules-of-React violations. Roll it out with the lint rule first.\n\n## Common mistakes and debugging\n- Calling `useFormStatus` in the component that renders the form.\n- Calling `addOptimistic` outside a transition.\n- State updates after `await` inside `startTransition` that are not wrapped again, so they are not treated as part of the transition.\n- Creating promises during render for `use()`.\n- Expecting `useActionState` to run actions in parallel. They are queued in order.\n- Removing every `useMemo` after enabling the compiler without checking whether an effect depends on a stable reference.\n\n## In the interview\n**What they probe:** whether you know what Actions replace, how pending, optimistic and error states flow, how `use()` differs from other hooks, and what the compiler changes in practice.\n\n**60-second answer outline:**\n1. Actions are async functions run in transitions. React tracks pending state, propagates errors to error boundaries, and resets uncontrolled forms on success.\n2. `useActionState` gives state, a wrapped action and `isPending`. `useFormStatus` reads the parent form. `useOptimistic` overlays temporary state that reverts when the action settles.\n3. `use()` reads promises and context, may be called conditionally, and suspends on pending promises.\n4. Refs are props, ref callbacks can clean up, Context is the provider, and metadata hoists.\n5. The compiler auto-memoises code that follows the Rules of React, so manual memoisation becomes the exception.\n\n**Follow-ups to expect:** How do you show a server validation error and keep the typed values? What happens to optimistic state when the action throws? Why can `use` be conditional when hooks cannot? What does the compiler skip?",
+      "keyPoints": [
+        "Actions are async functions run in transitions with built-in pending state, error propagation and form reset",
+        "useActionState returns state, a wrapped action and isPending; calls are queued in order",
+        "useFormStatus reads the parent form only; useOptimistic overlays state that reverts when the action settles",
+        "use() reads promises and context, can be called conditionally, and suspends on pending promises",
+        "The React Compiler auto-memoises code that follows the Rules of React, making manual useMemo the exception"
+      ],
+      "interview": [
+        "How does useOptimistic work, and what happens when the action fails?",
+        "What does the use() API do, and why can it be called conditionally?",
+        "What changed about refs in React 19?"
+      ],
+      "check": [
+        {
+          "q": "A SubmitButton calls useFormStatus but is rendered in the same component that renders the form element. What does pending report?",
+          "options": [
+            "Always false, because useFormStatus only reads a form rendered above the calling component",
+            "Always true",
+            "The correct pending state",
+            "It throws an error"
+          ],
+          "answer": 0,
+          "why": "useFormStatus behaves like reading context from a parent form. Move the button into its own component rendered inside the form."
+        },
+        {
+          "q": "An Action calls addOptimistic(newItem) and then the server call throws. What happens to the optimistic item?",
+          "options": [
+            "It stays until the page reloads",
+            "It is saved locally and retried",
+            "React keeps it and logs a warning",
+            "It disappears when the action settles, because the UI falls back to the real state"
+          ],
+          "answer": 3,
+          "why": "Optimistic state only lives while the action is pending. Informing the user about the failure is still your job."
+        },
+        {
+          "q": "With the React Compiler enabled, which use of useMemo is still worth keeping?",
+          "options": [
+            "Memoising a cheap string concatenation",
+            "Memoising every inline callback passed to a DOM element",
+            "Keeping a stable object identity that an effect depends on for correctness",
+            "None; the compiler errors on manual useMemo"
+          ],
+          "answer": 2,
+          "why": "The compiler handles performance memoisation. Keep manual memoisation where referential identity matters for correctness."
+        }
+      ],
+      "resources": [
+        {
+          "title": "React v19 release post",
+          "url": "https://react.dev/blog/2024/12/05/react-19"
+        },
+        {
+          "title": "React 19.2 release post",
+          "url": "https://react.dev/blog/2025/10/01/react-19-2"
+        },
+        {
+          "title": "React docs: useActionState",
+          "url": "https://react.dev/reference/react/useActionState"
+        },
+        {
+          "title": "React docs: useOptimistic",
+          "url": "https://react.dev/reference/react/useOptimistic"
+        },
+        {
+          "title": "React docs: React Compiler",
+          "url": "https://react.dev/learn/react-compiler"
+        }
+      ]
+    }
+  ],
+  "projects": []
+}

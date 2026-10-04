@@ -3,11 +3,11 @@
  *   node --import tsx scripts/check-case-quiz-part.ts scripts/case-quizzes/parts/<name>.json
  */
 import { readFileSync } from "node:fs";
-import { designCaseBySlug, practiceCaseBySlug } from "../lib/content";
-import type { CaseKind } from "../lib/domain/case-quiz";
-import { buildCaseQuestions, type AuthoredCaseQuestion } from "../lib/domain/case-quiz-build";
-import { caseQuestionSchema } from "../lib/quiz/case-bank";
-import { quizQuestionSchema } from "../lib/quiz/question";
+import { designCaseBySlug, practiceCaseBySlug } from "@/core/content";
+import type { CaseKind } from "@/modules/design/domain/case-quiz";
+import { buildCaseQuestions, type AuthoredCaseQuestion } from "@/modules/design/domain/case-quiz-build";
+import { caseQuestionSchema } from "@/modules/quiz/lib/case-bank";
+import { quizQuestionSchema } from "@/modules/quiz/lib/question";
 
 const file = process.argv[2];
 if (!file) {

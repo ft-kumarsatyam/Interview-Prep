@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { AcSubmission, LeetCodeClient } from "@/lib/leetcode/client";
-import { DayLog } from "@/lib/models/day";
-import { ProblemProgress } from "@/lib/models/progress";
-import { Notification, Settings } from "@/lib/models/system";
-import { syncLeetCode } from "@/lib/services/leetcode-sync";
-import { recordSolve } from "@/lib/services/progress";
+import type { AcSubmission, LeetCodeClient } from "@/modules/dsa/lib/leetcode/client";
+import { DayLog } from "@/core/models/day";
+import { ProblemProgress } from "@/core/models/progress";
+import { Notification, Settings } from "@/core/models/system";
+import { syncLeetCode } from "@/modules/dsa/services/leetcode-sync";
+import { recordSolve } from "@/modules/progress/services/progress";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);
@@ -77,7 +77,7 @@ describe("syncLeetCode", () => {
   });
 });
 
-import { CHECK_FLOOR_MS, checkAccepted } from "@/lib/services/leetcode-sync";
+import { CHECK_FLOOR_MS, checkAccepted } from "@/modules/dsa/services/leetcode-sync";
 
 describe("checkAccepted (copy and open, then detect)", () => {
   const T0 = new Date("2026-10-06T10:00:00Z");

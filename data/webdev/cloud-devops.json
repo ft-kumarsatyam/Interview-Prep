@@ -1,0 +1,808 @@
+{
+  "tracks": [
+    {
+      "id": "cloud-devops",
+      "name": "Cloud and DevOps",
+      "color": "sky",
+      "blurb": "Ship and run software in the cloud: containers, Kubernetes, CI/CD, Terraform, cloud primitives, serverless and edge, safe deploys, autoscaling and cost.",
+      "area": "architecture"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "cd-docker",
+      "track": "cloud-devops",
+      "title": "Docker and container images in depth",
+      "minutes": 25,
+      "summary": "What an image really is, how layers and the build cache work, multi-stage and distroless builds, containers versus VMs, and how to ship images that are small and secure.",
+      "body": "## The core idea\nA container image is a **packaged filesystem plus instructions for how to start a process from it**. A container is that process, running on a normal Linux kernel, with a restricted view of the machine: its own process tree, its own network stack, its own mount table, and limits on CPU and memory.\n\nThat is the whole trick. There is no \"container kernel\" and no emulated hardware. Docker (and containerd, Podman, and the OCI standards underneath them) are tooling around two kernel features, **namespaces** (what a process can see) and **cgroups** (what it can use), plus a clever way of shipping filesystems as stacked layers.\n\nWhy it matters in practice: the image you tested in CI is byte-for-byte the image that runs in production. \"Works on my machine\" turns into \"works in this image digest\", which is something you can reason about.\n\n## What an image actually is\nAn OCI image has three parts:\n\n- **Layers**: tarballs of filesystem changes. Each is identified by the SHA-256 of its content, so identical layers are stored and pulled once.\n- **A config**: environment variables, the default user, working directory, entrypoint and command, exposed ports, and the ordered list of layer digests.\n- **A manifest**: points at the config and layers. A multi-platform image adds an index that points at one manifest per architecture (for example `linux/amd64` and `linux/arm64`).\n\nWhen you start a container, the runtime stacks the read-only layers with an overlay filesystem (usually `overlayfs`) and puts one thin **writable layer** on top. Writes go to that layer with copy-on-write; when the container is removed, that layer is gone. Anything you need to keep goes in a volume or, better, in an external service.\n\n```text\ncontainer  [ writable layer (copy-on-write, deleted with the container) ]\nimage      [ layer 4: COPY dist/ /app            sha256:9f2c... ]\n           [ layer 3: RUN npm ci --omit=dev       sha256:41ab... ]\n           [ layer 2: COPY package*.json /app     sha256:0d77... ]\n           [ layer 1: base image (debian + node)  sha256:c3e1... ]\n```\n\nTwo consequences people miss:\n\n1. **Layers are immutable.** If one instruction writes a file and a later one deletes it, the file is still in the image; the later layer only hides it. This is how secrets leak.\n2. **Tags are mutable, digests are not.** `node:22` points at different bytes next month. `node:22@sha256:...` never changes.\n\n## How the build cache works\nEach instruction (`FROM`, `RUN`, `COPY`, `ADD`, and so on) produces a cache key from the instruction text, the parent layer, and for `COPY`/`ADD` a checksum of the files being copied. BuildKit walks the Dockerfile top to bottom; at the **first instruction whose key changed, the cache is invalidated for that step and every step after it**.\n\nSo the rule is: order instructions from least frequently changing to most frequently changing.\n\n```dockerfile\n# Bad: any source change reinstalls every dependency\nCOPY . .\nRUN npm ci\n\n# Good: the install layer is reused until package*.json changes\nCOPY package.json package-lock.json ./\nRUN npm ci\nCOPY . .\n```\n\nBuildKit adds two tools worth knowing:\n\n- **Cache mounts** keep a package manager cache across builds without putting it in a layer: `RUN --mount=type=cache,target=/root/.npm npm ci`.\n- **Remote cache** (`--cache-from` / `--cache-to`, for example `type=registry` or `type=gha` in GitHub Actions) lets CI runners, which start empty, reuse layers from previous builds.\n\nAnd a `.dockerignore` file matters more than it looks: without it, `COPY . .` sends `node_modules`, `.git` and local `.env` files into the build context, slows every build, busts the cache on irrelevant changes and can leak secrets into the image.\n\n## Multi-stage builds\nBuilding needs compilers, dev dependencies, and source. Running needs only the output. A multi-stage build uses several `FROM` stages and copies just the artifacts into the final one.\n\nA realistic Node.js service:\n\n```dockerfile\n# syntax=docker/dockerfile:1\n\nFROM node:22-bookworm-slim AS deps\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN --mount=type=cache,target=/root/.npm npm ci\n\nFROM deps AS build\nCOPY . .\nRUN npm run build && npm prune --omit=dev\n\nFROM gcr.io/distroless/nodejs22-debian12:nonroot AS runtime\nWORKDIR /app\nENV NODE_ENV=production\nCOPY --from=build /app/node_modules ./node_modules\nCOPY --from=build /app/dist ./dist\nCOPY --from=build /app/package.json ./\nEXPOSE 8080\nCMD [\"dist/server.js\"]\n```\n\nWhat each choice buys:\n\n- The `deps` stage is cached until the lockfile changes.\n- `npm prune --omit=dev` strips test and build tooling before copying `node_modules`.\n- The final stage has no npm, no compiler, no shell, no package manager. The distroless Node image's entrypoint is already `node`, so `CMD` is just the script path.\n- The `:nonroot` tag runs as an unprivileged user by default.\n\nThe same pattern works for Go (build with `CGO_ENABLED=0`, copy one static binary into `distroless/static` or `scratch`), Java (build with Maven or Gradle, copy the JAR into a JRE-only image) and Python (build wheels in one stage, install them into a slim runtime).\n\n## Base images: full, slim, Alpine, distroless\n| Base | What is inside | Trade-off |\n|---|---|---|\n| `node:22` (Debian) | Full OS, compilers, many tools | Easy to debug, large, many CVEs to triage |\n| `node:22-bookworm-slim` | Minimal Debian plus Node | Good default; still has a shell and apt |\n| `node:22-alpine` | musl libc, BusyBox | Small, but musl differs from glibc; native modules and DNS behaviour can surprise you |\n| distroless | Runtime and its libraries only, no shell | Smallest attack surface; debugging needs the `:debug` variant or ephemeral debug containers |\n| `scratch` | Empty | Only for fully static binaries; you must add CA certificates and timezone data yourself |\n\nThe Google distroless README makes the argument plainly: what is not in the image cannot be exploited and does not show up in scanner reports. The cost is operational. You cannot `docker exec ... sh` into it, so you rely on logs, metrics, and tools like `kubectl debug` that attach a separate debugging container.\n\n## Containers versus virtual machines\n```text\n        CONTAINERS                          VIRTUAL MACHINES\n  [app A] [app B] [app C]              [app A]     [app B]\n  [ libs ][ libs ][ libs ]             [guest OS]  [guest OS]\n  ------- shared host kernel -------   [ hypervisor (KVM, Hyper-V) ]\n  [        host hardware         ]     [      host hardware        ]\n```\n\n- **Isolation boundary.** A container is a process separated by namespaces (PID, network, mount, UTS, IPC, user, cgroup) and constrained by cgroups. A kernel bug is shared by every container on the host. A VM has its own kernel behind a hypervisor, which is a much smaller and better-tested boundary.\n- **Startup and density.** Containers start in milliseconds to seconds and add almost no memory overhead. VMs boot a kernel and reserve memory.\n- **Portability.** A Linux container needs a Linux kernel; Docker Desktop on macOS and Windows quietly runs a Linux VM for you.\n\nThe middle ground matters in interviews. **MicroVMs** such as Firecracker (the NSDI 2020 paper explains how AWS Lambda uses it) boot a minimal kernel in around a hundred milliseconds, giving VM isolation with near-container density. **gVisor** intercepts system calls in a user-space kernel. **Kata Containers** run each pod in a lightweight VM. Multi-tenant platforms that run untrusted code use these; a single company running its own services usually accepts plain containers.\n\n## Image security, concretely\n1. **Do not run as root.** Add `USER` (or use a `:nonroot` base). Root in a container is root on the host's kernel interface, limited only by namespaces and dropped capabilities. In Kubernetes, also set `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true` and drop all capabilities.\n2. **Keep secrets out of layers and build args.** `ARG` and `ENV` values are visible in image history. Use BuildKit secret mounts:\n\n```dockerfile\nRUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci\n```\n\n```bash\ndocker build --secret id=npmrc,src=$HOME/.npmrc -t api:dev .\n```\n\n3. **Pin and update bases.** Pin by digest for reproducibility and let a bot (Renovate or Dependabot) open PRs when the base changes, so you get security fixes deliberately rather than never.\n4. **Scan and generate an SBOM.** Tools such as Trivy, Grype or Docker Scout list known CVEs per package. Fail the build on fixable criticals, not on every low-severity finding, or people learn to ignore the scanner.\n5. **Sign and verify.** Sign images in CI (Sigstore `cosign`, keyless via OIDC) and verify signatures at admission in the cluster. SLSA describes the provenance levels if the interviewer goes deeper into supply chain.\n\n## Signals, PID 1 and graceful shutdown\nWhatever your `CMD` starts is PID 1 inside the container. The kernel treats PID 1 specially: **signals with no handler installed are ignored**, rather than killing the process. Node.js does not install a SIGTERM handler by default. So `docker stop` (or Kubernetes deleting a pod) sends SIGTERM, nothing happens, and after the grace period (10 seconds for `docker stop`, 30 for Kubernetes by default) the process gets SIGKILL mid-request.\n\nFixes:\n\n- Use the **exec form** `CMD [\"node\", \"dist/server.js\"]`. The shell form `CMD node dist/server.js` runs `/bin/sh -c`, which becomes PID 1 and does not forward signals.\n- Do not start production processes through `npm start`; run the runtime directly.\n- Handle SIGTERM: stop accepting connections, finish in-flight requests, close pools, exit.\n- Use `docker run --init` or `tini` if the app spawns child processes that need reaping.\n\n```ts\nconst server = app.listen(8080);\nprocess.on(\"SIGTERM\", () => {\n  server.close(async () => {\n    await db.end();\n    process.exit(0);\n  });\n  setTimeout(() => process.exit(1), 25_000).unref();\n});\n```\n\n## Trade-offs and when not to bother\n- For a tiny internal tool, a slim base and a single stage is fine; distroless adds debugging friction.\n- Alpine saves megabytes but can cost days when a native dependency behaves differently under musl. Prefer slim Debian or distroless unless you have measured a reason.\n- Containers are not a security boundary for hostile code. If you run user-submitted code, use microVMs or gVisor.\n- Do not containerise stateful databases on a laptop-style setup and call it production; managed databases or operators with real storage are a separate decision.\n\n## Common mistakes and debugging\n- **Huge images**: check `docker history <image>` and tools like `dive` to see which layer is big. Usual culprits: dev dependencies, build caches, `.git`, test fixtures.\n- **Cache never hits in CI**: runners start clean; configure a registry or GitHub Actions cache backend.\n- **\"Works locally, crashes in prod\"**: different architecture (an `arm64` laptop building an image for `amd64` servers). Build multi-platform with `docker buildx build --platform linux/amd64,linux/arm64`.\n- **Using `latest`**: you cannot tell what is running or roll back to it. Tag with the git SHA and deploy by digest.\n- **Writing to the container filesystem**: logs and uploads vanish on restart. Log to stdout and stderr; store files in object storage.\n\n## In the interview\n**What they probe:** whether you know containers are processes, not small VMs; whether you can write a cache-friendly, multi-stage Dockerfile; and whether you think about security and shutdown, which separates people who have operated containers from people who have only built them.\n\n**A 60-second answer outline** for \"how would you containerise this service?\":\n1. Multi-stage build: dependencies stage cached on the lockfile, build stage, minimal runtime stage.\n2. Slim or distroless base pinned by digest, non-root user, no secrets in layers, `.dockerignore`.\n3. Exec-form CMD, SIGTERM handling for graceful shutdown, logs to stdout.\n4. CI builds once, tags with the git SHA, scans, signs, and pushes; deploys reference the digest.\n\n**Follow-ups to expect:** Why is my image 1.5 GB? How do containers differ from VMs, and when is that difference a security problem? How do you debug a distroless container? How does Docker Desktop run Linux containers on a Mac?",
+      "keyPoints": [
+        "An image is an ordered stack of read-only, content-addressed layers plus a config; a container adds one thin writable layer on top.",
+        "Build cache invalidates from the first changed instruction down, so copy dependency manifests and install before copying source.",
+        "Multi-stage builds keep compilers and dev dependencies out of the final image; distroless or slim bases shrink the attack surface further.",
+        "Containers share the host kernel and are isolated by namespaces and cgroups; VMs and microVMs give each workload its own kernel.",
+        "Run as non-root, keep secrets out of layers, pin base images by digest, scan and sign images, and make your process handle SIGTERM as PID 1."
+      ],
+      "interview": [
+        "What is the difference between a container and a virtual machine?",
+        "How do Docker image layers and the build cache work, and how do you write a Dockerfile that builds fast?",
+        "How would you make a production container image small and secure?",
+        "Your container takes 10 seconds to stop and drops in-flight requests on deploy. What is going on?"
+      ],
+      "check": [
+        {
+          "q": "A Dockerfile does `COPY . .` and then `RUN npm ci`. Every code change reinstalls all dependencies. What is the fix?",
+          "options": [
+            "Add `--no-cache` to the build",
+            "Copy package.json and the lockfile first, run `npm ci`, then copy the rest of the source",
+            "Switch the base image to Alpine",
+            "Move `npm ci` into the CMD instruction"
+          ],
+          "answer": 1,
+          "why": "The cache is invalidated from the first instruction whose inputs changed. Copying only the manifests before the install means the install layer is reused until dependencies actually change."
+        },
+        {
+          "q": "You delete a secret file in a later `RUN rm` instruction. Is the secret gone from the image?",
+          "options": [
+            "Yes, the final filesystem no longer contains it",
+            "Yes, if the image is pushed with compression",
+            "No, it still exists in the earlier layer and anyone who pulls the image can extract it"
+          ],
+          "answer": 2,
+          "why": "Layers are immutable. Deleting a file adds a whiteout in a new layer but the earlier layer still ships with the image. Use BuildKit secret mounts so the secret never lands in a layer."
+        },
+        {
+          "q": "Why does a Node.js process started directly as PID 1 in a container often ignore `docker stop`?",
+          "options": [
+            "PID 1 gets no default signal handlers, so SIGTERM is ignored unless the app installs a handler",
+            "Docker sends SIGKILL first",
+            "Node.js cannot receive signals inside namespaces",
+            "The container runtime blocks all signals to PID 1"
+          ],
+          "answer": 0,
+          "why": "The kernel does not apply default signal actions to PID 1 in a PID namespace. If the process does not handle SIGTERM, it keeps running until the runtime sends SIGKILL after the grace period."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Docker docs: Multi-stage builds",
+          "url": "https://docs.docker.com/build/building/multi-stage/"
+        },
+        {
+          "title": "Docker docs: Docker build cache",
+          "url": "https://docs.docker.com/build/cache/"
+        },
+        {
+          "title": "Docker docs: Building best practices",
+          "url": "https://docs.docker.com/build/building/best-practices/"
+        },
+        {
+          "title": "Docker docs: Docker Engine security",
+          "url": "https://docs.docker.com/engine/security/"
+        },
+        {
+          "title": "GoogleContainerTools/distroless",
+          "url": "https://github.com/GoogleContainerTools/distroless"
+        },
+        {
+          "title": "Firecracker: Lightweight Virtualization for Serverless Applications (NSDI 2020)",
+          "url": "https://www.usenix.org/conference/nsdi20/presentation/agache"
+        }
+      ]
+    },
+    {
+      "id": "cd-kubernetes",
+      "track": "cloud-devops",
+      "title": "Kubernetes for application engineers",
+      "minutes": 30,
+      "summary": "The reconciliation model, pods, Deployments, Services, Gateway API, config and secrets, probes, requests and limits, and the HPA, with the failure modes that bite in production.",
+      "body": "## The core idea\nKubernetes is a **database of desired state plus a crowd of control loops**. You write objects (\"I want 3 replicas of this image, reachable on port 80\") to the API server, which stores them in etcd. Controllers watch those objects, compare them with reality, and act to close the gap. A node dies, pods vanish, the ReplicaSet controller notices fewer pods than desired and creates new ones; the scheduler places them; the kubelet on the chosen node starts them.\n\nNothing in Kubernetes is a one-shot command. Everything is **declarative and level-triggered**: controllers keep converging, so the system heals from partial failures without a human replaying steps. That is also why it can be confusing: when something is wrong you debug a loop, by reading object status and events, not a script.\n\n```text\n  kubectl apply -f deploy.yaml\n          |\n          v\n   [ API server ] <----> [ etcd ]           control plane\n     ^   ^    ^\n     |   |    +---- scheduler: assigns unscheduled pods to nodes (by requests, affinity, taints)\n     |   +--------- controller-manager: Deployment, ReplicaSet, Node, Job ... controllers\n     |\n   watch / status\n     |\n   [ kubelet ] -> container runtime (containerd) -> your containers      each worker node\n   [ kube-proxy or eBPF dataplane ] -> programs Service routing\n```\n\n## Pods, Deployments and ReplicaSets\nA **pod** is the unit of scheduling: one or more containers that share a network namespace (same IP, talk over `localhost`) and can share volumes. Most pods run one app container, sometimes with sidecars (a log shipper, a service-mesh proxy) or init containers that run to completion first.\n\nPods are disposable. They get a new IP every time they are recreated, and you almost never create them directly. A **Deployment** declares a pod template and a replica count. It owns a **ReplicaSet** per template version, and each ReplicaSet keeps N pods alive.\n\nA rolling update is the Deployment controller scaling a new ReplicaSet up while scaling the old one down, bounded by `maxSurge` (extra pods allowed above desired) and `maxUnavailable` (pods allowed below desired). Both default to 25%. `kubectl rollout undo` scales the previous ReplicaSet back up, which is why rollbacks are fast.\n\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  replicas: 3\n  selector:\n    matchLabels: { app: api }\n  strategy:\n    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }\n  template:\n    metadata:\n      labels: { app: api }\n    spec:\n      terminationGracePeriodSeconds: 30\n      containers:\n        - name: api\n          image: ghcr.io/acme/api@sha256:4b1e...\n          ports: [{ containerPort: 8080 }]\n          envFrom:\n            - configMapRef: { name: api-config }\n          env:\n            - name: DATABASE_URL\n              valueFrom:\n                secretKeyRef: { name: api-secrets, key: database-url }\n          resources:\n            requests: { cpu: 250m, memory: 256Mi }\n            limits: { memory: 512Mi }\n          startupProbe:\n            httpGet: { path: /healthz, port: 8080 }\n            failureThreshold: 30\n            periodSeconds: 2\n          readinessProbe:\n            httpGet: { path: /ready, port: 8080 }\n            periodSeconds: 5\n          livenessProbe:\n            httpGet: { path: /healthz, port: 8080 }\n            periodSeconds: 10\n            failureThreshold: 3\n          lifecycle:\n            preStop:\n              exec: { command: [\"sleep\", \"5\"] }\n```\n\nOther workload types: **StatefulSet** (stable names and per-pod volumes, for databases and brokers), **DaemonSet** (one pod per node: log agents, CNI), **Job** and **CronJob** (run to completion).\n\n## Services: how a request reaches your container\nA **Service** gives a stable virtual IP and DNS name (`api.default.svc.cluster.local`) to the set of pods matching its label selector. The control plane keeps **EndpointSlices** listing the IPs of matching pods that are **ready**. kube-proxy (iptables or IPVS rules) or an eBPF dataplane such as Cilium rewrites traffic for the virtual IP to one of those pod IPs.\n\nService types:\n- **ClusterIP** (default): reachable only inside the cluster.\n- **NodePort**: also opens a port on every node.\n- **LoadBalancer**: asks the cloud provider for an external load balancer pointing at the nodes or pods.\n\nFor HTTP from the outside world you usually want one L7 entry point routing by host and path. **Ingress** is the original API for that, implemented by a controller you install. Ingress is feature-frozen; its successor is the **Gateway API** (`Gateway`, `HTTPRoute`), which separates the infrastructure owner's concerns (the gateway) from the app team's routes and supports traffic splitting by weight natively. The Kubernetes project also announced in late 2025 that the community ingress-nginx controller is being retired, which pushed many teams toward Gateway API implementations. For new clusters, start with Gateway API.\n\n```text\nclient -> DNS -> cloud LB -> Gateway / Ingress controller pods\n       -> HTTPRoute (host api.acme.com, path /v1) -> Service \"api\" (ClusterIP)\n       -> EndpointSlice (ready pod IPs only) -> pod 10.2.3.17:8080 -> container\n```\n\n## Configuration and secrets\n- **ConfigMaps** hold non-secret config, injected as env vars or mounted files. Mounted files update in place (eventually); env vars only change when the pod restarts. A common trick is to hash the config into a pod annotation so a config change triggers a rollout.\n- **Secrets** are the same shape, but stored base64-encoded, which is encoding, not encryption. By default they sit unencrypted in etcd unless the cluster enables encryption at rest (managed clusters often do, with a cloud KMS). Lock them down with RBAC: anyone who can create a pod in the namespace can mount any secret in it.\n- In practice, the source of truth lives in a real secret manager (AWS Secrets Manager, GCP Secret Manager, Vault) and is synced in by the External Secrets Operator or mounted with the Secrets Store CSI driver. Pods authenticate to the cloud with workload identity (IRSA or EKS Pod Identity on AWS, Workload Identity on GKE) instead of static keys.\n- Never bake config or secrets into the image. The same image should run in staging and production with different config, as the twelve-factor app put it.\n\n## Probes\n| Probe | On failure | Use it for |\n|---|---|---|\n| startup | Container restarted after `failureThreshold x periodSeconds`; other probes wait until it passes | Slow boots (JVM warm-up, migrations, cache load) |\n| readiness | Pod removed from Service endpoints; **not** restarted | \"Can I take traffic right now?\" (warming up, overloaded, draining) |\n| liveness | Container restarted | \"Is this process wedged beyond recovery?\" (deadlock) |\n\nRules that prevent outages:\n- **Liveness checks only the process.** If liveness calls the database, a database blip restarts every replica simultaneously, and the restart storm (cold caches, connection floods) makes recovery slower.\n- **Readiness can include critical dependencies**, but think about what happens if all pods go unready together: the Service has zero endpoints and every request fails anyway. Many teams keep readiness local too, and handle dependency failure inside the app with timeouts and fallbacks.\n- **Use a startup probe instead of a huge `initialDelaySeconds`** on liveness.\n- Make probe endpoints cheap and give them timeouts; a probe that takes 2 seconds under load will fail exactly when you are busiest.\n\n## Requests, limits and QoS\n- **Requests** are what the scheduler reserves. A pod only lands on a node with enough unreserved capacity. Requests also set the CPU share under contention.\n- **Limits** are hard caps enforced by cgroups. CPU over the limit is **throttled** (CFS quota per 100 ms period), which shows up as latency spikes even when node CPU looks idle. Memory over the limit gets the container **OOM-killed** (`OOMKilled`, exit code 137).\n- **QoS classes**: *Guaranteed* (requests equal limits for every container), *Burstable* (some requests set), *BestEffort* (nothing set). Under node memory pressure the kubelet evicts BestEffort first, then Burstable pods using more than they requested.\n\nA widely used, though debated, policy: set memory request equal to memory limit (memory is not compressible, so overcommitting it invites OOM kills), set CPU requests from observed usage, and leave CPU limits off for latency-sensitive services so they can burst into idle CPU. Whatever you choose, base numbers on measured p95 usage, not guesses. Runtimes need to know their limits too: recent Node.js versions and JVMs read cgroup limits, but check heap settings (`--max-old-space-size`, `-XX:MaxRAMPercentage`).\n\n## The Horizontal Pod Autoscaler\nThe HPA periodically (every 15 seconds by default) reads a metric and computes:\n\n```text\ndesiredReplicas = ceil( currentReplicas x currentMetricValue / desiredMetricValue )\n\n4 pods at 90% CPU, target 60%  ->  ceil(4 x 90 / 60) = 6 pods\n```\n\n- CPU utilisation is a percentage **of requests**, so a pod with tiny requests looks \"busy\" constantly and one with inflated requests never scales.\n- A 10% tolerance avoids flapping; scale-down uses a stabilisation window (300 seconds by default) so a brief dip does not remove pods you will need again.\n- `autoscaling/v2` supports memory, custom metrics (requests per second, in-flight requests) and external metrics (queue depth). KEDA builds on HPA for event sources like Kafka lag or SQS depth and can scale to zero.\n- The HPA only adds pods. If no node has room, pods sit `Pending` until the Cluster Autoscaler or Karpenter adds nodes, which takes minutes. That lag is why you keep headroom.\n- Do not let HPA and VPA fight over the same metric on the same workload.\n\n## Graceful shutdown and disruptions\nWhen a pod is deleted, two things happen in parallel: the kubelet sends SIGTERM, and the endpoints controller removes the pod from Services. Proxies on every node learn about the removal asynchronously, so for a moment traffic can still arrive at a process that has started shutting down. The `preStop` sleep above delays SIGTERM by a few seconds to cover that window. Your app must then drain in-flight requests before `terminationGracePeriodSeconds` expires.\n\nA **PodDisruptionBudget** (`minAvailable: 2`) stops voluntary disruptions, such as node drains during upgrades, from taking down too many replicas at once. Spread replicas across zones with `topologySpreadConstraints` so one zone failure does not take all of them.\n\n## When not to use Kubernetes\nKubernetes is an operating system for a fleet. If you have one or two services and a small team, a managed container platform (Cloud Run, ECS on Fargate, App Runner, Fly.io, Render) or a PaaS gets you rolling deploys, autoscaling and TLS without running a cluster, an ingress, cert-manager, a secrets operator and upgrades every few months. Reach for Kubernetes when you have many services, need its ecosystem (operators, GitOps, service mesh), or need portability across clouds.\n\n## Common mistakes and debugging\n- `kubectl describe pod` first: events show `ImagePullBackOff`, `FailedScheduling` (insufficient CPU or memory, taints), probe failures.\n- `CrashLoopBackOff`: read `kubectl logs --previous`; check exit code (137 is OOM or SIGKILL, 1 is the app).\n- `Pending` forever: requests bigger than any node, or no autoscaler capacity.\n- Service has no endpoints: selector labels do not match pod labels, or pods are not ready.\n- Latency spikes with idle nodes: CPU throttling; look at `container_cpu_cfs_throttled_periods_total`.\n- 502s during every deploy: no preStop delay or the app exits on SIGTERM without draining.\n\n## In the interview\n**What they probe:** whether you understand reconciliation, how traffic actually flows, and the operational knobs that cause outages (probes, limits, shutdown). Seniors get asked about multi-zone resilience, autoscaling lag and when Kubernetes is overkill.\n\n**A 60-second answer outline** for \"how would you run this service on Kubernetes?\":\n1. Deployment with 3+ replicas spread across zones, image pinned by digest, PDB.\n2. Requests from measured usage, memory limit, startup/readiness/liveness probes with liveness kept local.\n3. ClusterIP Service behind a Gateway API route with TLS; config in ConfigMaps, secrets synced from a secret manager via workload identity.\n4. HPA on CPU or a request-rate metric with min replicas for headroom, Cluster Autoscaler or Karpenter for nodes.\n5. Graceful shutdown with preStop and SIGTERM draining; rolling updates with `maxUnavailable: 0`.\n\n**Follow-ups to expect:** What happens step by step when you run `kubectl apply`? Why did my pod get OOM-killed when the node had free memory? Why is my service slow even though CPU is at 30%? How does a Service pick a pod? Ingress versus Gateway API?",
+      "keyPoints": [
+        "Kubernetes is a set of controllers that continuously reconcile actual state toward the desired state you store in the API server.",
+        "A Deployment manages ReplicaSets that manage pods; a Service gives a stable virtual IP and DNS name to whichever pods match its label selector.",
+        "Readiness controls traffic, liveness controls restarts, startup protects slow boots; a liveness probe that checks dependencies causes cascading restarts.",
+        "The scheduler places pods by requests; exceeding a memory limit gets the container OOM-killed, exceeding a CPU limit only throttles it.",
+        "HPA computes replicas as ceil(current x currentMetric / target); CPU utilisation is measured against requests, so wrong requests mean wrong scaling."
+      ],
+      "interview": [
+        "Explain pods, Deployments and Services in Kubernetes and how a request reaches your container.",
+        "What is the difference between liveness, readiness and startup probes, and how do they go wrong?",
+        "How do resource requests and limits work in Kubernetes, and what happens when a pod exceeds them?",
+        "How does the Horizontal Pod Autoscaler decide how many replicas to run?",
+        "How do you manage configuration and secrets for applications running on Kubernetes?"
+      ],
+      "check": [
+        {
+          "q": "Your liveness probe calls the database. The database has a 30-second hiccup. What is the most likely outcome?",
+          "options": [
+            "Nothing, liveness probes are informational",
+            "Pods are removed from the Service but keep running",
+            "Every pod fails liveness and gets restarted at once, turning a short blip into a full outage",
+            "The HPA scales the Deployment up"
+          ],
+          "answer": 2,
+          "why": "Liveness failure restarts the container. A shared dependency failing makes all replicas fail together. Dependency checks belong in readiness at most, and liveness should test only the process itself."
+        },
+        {
+          "q": "A container has `requests.cpu: 250m` and `limits.cpu: 500m`, and a traffic spike needs 1 full core. What happens?",
+          "options": [
+            "The container is OOM-killed",
+            "The container is throttled by the CFS quota to about half a core and latency rises",
+            "The pod is evicted immediately",
+            "The scheduler moves the pod to a bigger node"
+          ],
+          "answer": 1,
+          "why": "CPU is compressible: going over the limit means throttling, not killing. Memory is incompressible: going over the memory limit gets the container OOM-killed."
+        },
+        {
+          "q": "An HPA targets 60% average CPU utilisation. There are 4 replicas averaging 90%. Ignoring tolerance and stabilisation, how many replicas does it want?",
+          "options": [
+            "5",
+            "8",
+            "6",
+            "4"
+          ],
+          "answer": 2,
+          "why": "desired = ceil(4 x 90 / 60) = ceil(6) = 6."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Kubernetes docs: Deployments",
+          "url": "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/"
+        },
+        {
+          "title": "Kubernetes docs: Configure liveness, readiness and startup probes",
+          "url": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/"
+        },
+        {
+          "title": "Kubernetes docs: Resource management for pods and containers",
+          "url": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/"
+        },
+        {
+          "title": "Kubernetes docs: Horizontal Pod Autoscaling",
+          "url": "https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/"
+        },
+        {
+          "title": "Kubernetes docs: Gateway API",
+          "url": "https://kubernetes.io/docs/concepts/services-networking/gateway/"
+        },
+        {
+          "title": "Kubernetes docs: Secrets",
+          "url": "https://kubernetes.io/docs/concepts/configuration/secret/"
+        }
+      ]
+    },
+    {
+      "id": "cd-ci-cd",
+      "track": "cloud-devops",
+      "title": "CI/CD pipelines and trunk-based development",
+      "minutes": 25,
+      "summary": "CI versus continuous delivery versus deployment, pipeline stages, caching, build-once artifacts, a real GitHub Actions workflow, pipeline security and trunk-based development.",
+      "body": "## The core idea\nA CI/CD pipeline is the automated path from \"I pushed a commit\" to \"it is running in production\", with enough checks along the way that you trust it. The value is not the YAML. It is that **small changes ship often, safely, and the same way every time**, so a release is a non-event instead of a weekend.\n\nThree terms that interviewers expect you to separate cleanly:\n\n- **Continuous integration (CI):** everyone integrates into the shared mainline at least daily, and every integration is verified by an automated build and test run. Martin Fowler's canonical article is explicit that CI is a practice, not a tool: if your branches live for two weeks, running Jenkins on them is not CI.\n- **Continuous delivery:** main is **always releasable**. Every green build produces an artifact that could go to production at the push of a button. A human still decides when.\n- **Continuous deployment:** every change that passes the pipeline goes to production automatically, with no human gate. This needs strong tests, progressive rollout and automatic rollback.\n\n## How a good pipeline is shaped\n```text\npush / PR\n   |\n   v\n[ fast checks ] lint, typecheck, unit tests          ~1-3 min, run in parallel\n   |\n   v\n[ build ] compile + docker build (cached) -> image tagged :<git-sha>, push to registry\n   |      scan (CVE), SBOM, sign\n   v\n[ integration ] service + real Postgres/Redis in containers, contract tests, migrations dry-run\n   |\n   v  (main branch only)\n[ deploy staging ] same image digest -> smoke tests / e2e\n   |\n   v  (auto, or approval for continuous delivery)\n[ deploy prod ] canary 5% -> metrics check -> 100%  (auto-rollback on SLO breach)\n```\n\nPrinciples behind that shape:\n\n1. **Fail fast and cheap.** Run linters and unit tests before expensive integration suites. Developers wait on the slowest required check, so keep the PR pipeline around 10 minutes; beyond that, people batch changes and context-switch.\n2. **Build once, promote the artifact.** The image built from commit `a1b2c3d` is pushed once, identified by its digest, and that exact digest goes to staging and then production. Rebuilding per environment invites \"but it passed in staging\".\n3. **Environments differ only in config.** Same image, different environment variables and secrets.\n4. **Everything is in version control:** pipeline definition, Dockerfile, Kubernetes manifests, Terraform. A pipeline change gets reviewed like code.\n5. **The pipeline is the only way to production.** If people can `kubectl apply` from laptops, the audit trail and the guarantees are gone.\n\n## Caching: where most of the speed comes from\n- **Dependency caches**: `actions/setup-node` with `cache: npm` caches the npm download cache keyed on the lockfile hash. Generic `actions/cache` works for anything with a stable key.\n- **Docker layer cache**: CI runners start empty, so without a remote cache every build is cold. `docker/build-push-action` supports `cache-from`/`cache-to` with `type=gha` (GitHub's cache service) or `type=registry`.\n- **Build tool caches**: Turborepo, Nx, Bazel and Gradle can skip tasks whose inputs did not change and share results across machines.\n- **Test selection and sharding**: split slow suites across parallel jobs (Playwright and Jest/Vitest support sharding); in monorepos only run what the change affects.\n\nCache keys must include everything that changes the output (lockfile hash, OS, tool version). A cache that restores stale output is worse than no cache.\n\n## A real GitHub Actions workflow\n```yaml\nname: ci-cd\non:\n  pull_request:\n  push:\n    branches: [main]\n\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: true\n\npermissions:\n  contents: read\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    services:\n      postgres:\n        image: postgres:17\n        env: { POSTGRES_PASSWORD: test }\n        ports: [\"5432:5432\"]\n        options: >-\n          --health-cmd \"pg_isready -U postgres\" --health-interval 5s --health-retries 10\n    steps:\n      - uses: actions/checkout@v5\n      - uses: actions/setup-node@v5\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm run lint && npm run typecheck\n      - run: npm test\n        env: { DATABASE_URL: postgres://postgres:test@localhost:5432/postgres }\n\n  build:\n    needs: test\n    if: github.ref == 'refs/heads/main'\n    runs-on: ubuntu-latest\n    permissions: { contents: read, packages: write, id-token: write }\n    outputs:\n      digest: ${{ steps.push.outputs.digest }}\n    steps:\n      - uses: actions/checkout@v5\n      - uses: docker/setup-buildx-action@v3\n      - uses: docker/login-action@v3\n        with:\n          registry: ghcr.io\n          username: ${{ github.actor }}\n          password: ${{ secrets.GITHUB_TOKEN }}\n      - id: push\n        uses: docker/build-push-action@v6\n        with:\n          push: true\n          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}\n          cache-from: type=gha\n          cache-to: type=gha,mode=max\n\n  deploy-prod:\n    needs: build\n    runs-on: ubuntu-latest\n    environment: production\n    permissions: { contents: read, id-token: write }\n    steps:\n      - uses: aws-actions/configure-aws-credentials@v4\n        with:\n          role-to-assume: arn:aws:iam::123456789012:role/gha-deploy-prod\n          aws-region: eu-west-1\n      - run: ./scripts/deploy.sh \"ghcr.io/${{ github.repository }}@${{ needs.build.outputs.digest }}\"\n```\n\nThings worth pointing out:\n- `concurrency` cancels superseded runs on the same branch, saving minutes and avoiding two deploys racing.\n- Top-level `permissions: contents: read` makes the default `GITHUB_TOKEN` read-only; jobs ask for more only when needed.\n- `environment: production` hooks into GitHub environment protection rules: required reviewers, wait timers, branch restrictions, and environment-scoped secrets.\n- The deploy job uses **OIDC** (`id-token: write`) to assume a cloud role. No AWS keys are stored anywhere.\n- It deploys by **digest**, not tag.\n- In a real repo, pin third-party actions to a full commit SHA (with the version in a comment) and let Dependabot or Renovate update them.\n\n## Environments, approvals and GitOps\nTwo deployment styles:\n\n- **Push-based**: the pipeline runs `helm upgrade` or `kubectl apply` against the cluster. Simple, but CI needs cluster credentials.\n- **Pull-based GitOps**: CI only updates the image digest in a config repo; an in-cluster agent (Argo CD, Flux) notices and reconciles the cluster to match Git. The cluster never exposes credentials to CI, drift is detected and reverted, and rollback is `git revert`. OpenGitOps describes the principles (declarative, versioned, pulled automatically, continuously reconciled).\n\nManual approvals feel safe but often are not: a reviewer clicking \"approve\" on a diff of an image tag is not testing anything. Prefer automated gates (canary metrics, smoke tests) and keep human approval for genuinely risky changes or compliance requirements.\n\n## Securing the pipeline\nCI systems hold the keys to production, which makes them a favourite target. The March 2025 compromise of the popular `tj-actions/changed-files` action, where tags were repointed to malicious code that dumped secrets into build logs, is the case study everyone cites.\n\n- **No long-lived cloud credentials.** Use OIDC federation; restrict the role trust policy to your repo, branch and environment (`sub` claim).\n- **Least-privilege tokens.** Default `GITHUB_TOKEN` to read-only; grant `packages: write` or `id-token: write` per job.\n- **Pin actions to commit SHAs**; prefer official or verified publishers; review updates.\n- **Untrusted input.** `pull_request_target` runs with secrets on code from forks; avoid checking out and running PR code in it. Never interpolate PR titles or branch names directly into `run:` scripts (script injection); pass them via environment variables.\n- **Protect main.** Required reviews, required status checks, no force pushes, signed commits if you need them.\n- **Supply chain.** Lockfiles with `npm ci`, dependency scanning, SBOMs, signed images with provenance attestations (SLSA levels), signature verification at deploy.\n- **Secrets hygiene.** Environment-scoped secrets, masked in logs; rotate anything that may have leaked.\n\n## Trunk-based development\nIn trunk-based development, developers merge small changes into main (the trunk) at least daily, from branches that live hours or a day or two. Unfinished work is merged but hidden behind **feature flags** or built behind an abstraction (**branch by abstraction**) so main stays releasable.\n\nWhy teams prefer it over long-lived feature branches:\n- **Merge pain grows super-linearly with branch age.** Two branches diverging for three weeks produce conflicts nobody understands; ten small merges produce trivial ones.\n- **Integration bugs show up within hours**, while the author still remembers the change.\n- **Code review is better** on 200-line diffs than on 4,000-line ones.\n- **It is a prerequisite for continuous delivery.** If features live on branches, main is never a complete picture of what you will ship.\n\nDORA's research (the four keys: deployment frequency, lead time for changes, change failure rate and time to restore service) has repeatedly found trunk-based practices associated with better delivery performance. The cost is discipline: strong automated tests, feature-flag hygiene, and comfort shipping incomplete code that is switched off.\n\nGitFlow (develop, release and hotfix branches) still fits products with versioned releases and long support windows, such as mobile apps waiting on store review or on-prem software, but it is a poor fit for a web service deployed many times a day.\n\n## Trade-offs and when not to\n- Continuous deployment to production is wrong for regulated changes that need sign-off, or when your test and monitoring coverage cannot catch bad releases. Continuous delivery with a button is a fine stop.\n- Self-hosted runners are faster and cheaper at scale, but a self-hosted runner on a public repo can be abused by fork PRs. Use ephemeral runners.\n- A huge end-to-end suite as a required check makes the pipeline slow and flaky. Keep e2e small and focused on critical journeys; push most coverage down to unit and integration tests.\n\n## Common mistakes and debugging\n- **Flaky tests** erode trust until people re-run until green. Track flake rate, quarantine and fix; never auto-retry silently forever.\n- **Tests that pass locally, fail in CI**: time zones, parallelism, ordering, missing services. Run CI's container locally (`act` or the same Docker image).\n- **Deploy succeeded but nothing changed**: deploying a mutable tag that the cluster had cached. Deploy by digest.\n- **Cache poisoning**: a PR from a fork writing to a cache main reads from. Scope caches by branch.\n\n## In the interview\n**What they probe:** whether you can design a pipeline from scratch and justify each stage, whether you know build-once-promote and OIDC, and whether you understand that CI/CD is about small batches and feedback speed, not tools.\n\n**A 60-second answer outline** for \"design a pipeline for this service\":\n1. On every PR: lint, typecheck, unit tests in parallel with dependency caching; integration tests against real dependencies in containers. Target about 10 minutes.\n2. On merge to main: build the image once with layer caching, tag by SHA, scan, sign, push.\n3. Deploy that digest to staging automatically, run smoke tests.\n4. Promote to production via canary with automated metric checks and auto-rollback; GitOps so the cluster pulls from Git.\n5. OIDC for cloud access, least-privilege tokens, pinned actions, protected main. Track DORA metrics to see if it works.\n\n**Follow-ups to expect:** How do you handle database migrations in this pipeline? How do you keep it fast as the repo grows? What do you do about flaky tests? Push versus pull deploys? How would someone attack this pipeline?",
+      "keyPoints": [
+        "CI means integrating to main at least daily with an automated build and tests; continuous delivery keeps main always releasable; continuous deployment releases every green commit automatically.",
+        "Build the artifact once, tag it with the commit SHA, and promote the same digest through every environment.",
+        "Fast feedback is a feature: cache dependencies and Docker layers, parallelise, run the cheapest checks first, and keep the main pipeline under about 10 minutes.",
+        "Use OIDC federation instead of long-lived cloud keys, least-privilege job permissions, and third-party actions pinned to commit SHAs.",
+        "Trunk-based development with short-lived branches and feature flags reduces merge pain and is strongly associated with high delivery performance in DORA research."
+      ],
+      "interview": [
+        "What is the difference between continuous integration, continuous delivery and continuous deployment?",
+        "Design a CI/CD pipeline for a containerised web service. What stages does it have and why?",
+        "What is trunk-based development and why do high-performing teams prefer it over long-lived feature branches?",
+        "How do you secure a CI/CD pipeline and its credentials?"
+      ],
+      "check": [
+        {
+          "q": "Staging passed, but production runs an image rebuilt from the same commit and it fails. Which practice would have prevented this class of bug?",
+          "options": [
+            "Running the tests twice",
+            "Building once and promoting the same image digest to every environment",
+            "Using a bigger CI runner",
+            "Tagging images as latest"
+          ],
+          "answer": 1,
+          "why": "Rebuilding can pull different base images or dependency versions. Promoting the exact digest that was tested means production runs the bytes you verified."
+        },
+        {
+          "q": "What is the main security advantage of OIDC federation from GitHub Actions to a cloud provider?",
+          "options": [
+            "It makes builds faster",
+            "It encrypts the repository",
+            "Jobs get short-lived credentials scoped by repo, branch or environment, so no long-lived cloud key is stored in CI",
+            "It removes the need for IAM roles"
+          ],
+          "answer": 2,
+          "why": "The job exchanges a signed identity token for temporary credentials. The cloud role's trust policy can restrict which repository, branch or environment may assume it, and there is no static secret to leak."
+        },
+        {
+          "q": "Which is the best description of trunk-based development?",
+          "options": [
+            "Everyone commits to main or merges short-lived branches into it at least daily, keeping main releasable and hiding unfinished work behind flags",
+            "Each feature lives on its own branch until it is fully finished, however long that takes",
+            "Releases are cut from a develop branch every quarter",
+            "Only the tech lead may merge to main"
+          ],
+          "answer": 0,
+          "why": "Trunk-based development minimises divergence: small changes merged often, with incomplete features hidden behind flags or branch by abstraction rather than kept on long-lived branches."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Martin Fowler: Continuous Integration",
+          "url": "https://martinfowler.com/articles/continuousIntegration.html"
+        },
+        {
+          "title": "trunkbaseddevelopment.com",
+          "url": "https://trunkbaseddevelopment.com/"
+        },
+        {
+          "title": "GitHub docs: Workflow syntax for GitHub Actions",
+          "url": "https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions"
+        },
+        {
+          "title": "GitHub docs: Security hardening with OpenID Connect",
+          "url": "https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect"
+        },
+        {
+          "title": "Docker docs: Cache management with GitHub Actions",
+          "url": "https://docs.docker.com/build/ci/github-actions/cache/"
+        },
+        {
+          "title": "DORA: Software delivery performance metrics",
+          "url": "https://dora.dev/guides/dora-metrics-four-keys/"
+        }
+      ]
+    },
+    {
+      "id": "cd-iac-terraform",
+      "track": "cloud-devops",
+      "title": "Infrastructure as code with Terraform",
+      "minutes": 25,
+      "summary": "How Terraform works: providers, state, plan and apply, remote locked state, modules and layout, drift, moved and import blocks, and how it compares with OpenTofu, Pulumi and CDK.",
+      "body": "## The core idea\nInfrastructure as code (IaC) means your servers, networks, databases, DNS records and IAM policies are described in files under version control, and a tool makes reality match those files. Martin Fowler's short definition still holds: define infrastructure through source code that can be treated like any software system, reviewed, tested and versioned.\n\nWhat you get: reproducible environments (staging really looks like production), code review for infrastructure changes, an audit trail in Git, and disaster recovery that is \"re-run the code\" instead of \"remember what we clicked in 2022\".\n\nTerraform is the most widely used tool for this. You write declarative HCL describing **resources**; **providers** (AWS, Google Cloud, Azure, Cloudflare, GitHub, Datadog, hundreds more) translate them into API calls. Terraform builds a dependency graph, works out what has to change, and calls the APIs in the right order, in parallel where it can.\n\n## How Terraform works, step by step\n```text\n  *.tf config  --+\n                 +--> terraform plan --> diff: create / update in place / replace / destroy\n  state file   --+          ^\n                            |\n  real APIs  ---- refresh --+         terraform apply (that plan) --> API calls --> new state\n```\n\n1. **`terraform init`** downloads providers and modules and configures the backend where state lives. The dependency lock file `.terraform.lock.hcl` pins provider versions; commit it.\n2. **`terraform plan`** reads the state, refreshes it against the real APIs, compares the result with your config, and prints the actions: `+` create, `~` update in place, `-/+` replace (destroy then create, or create before destroy if configured), `-` destroy.\n3. **`terraform apply`** executes the plan. In automation you save the plan (`plan -out=tfplan`) and apply exactly that file, so what was reviewed is what runs.\n\nA small example:\n\n```hcl\nterraform {\n  required_version = \">= 1.10\"\n  required_providers {\n    aws = { source = \"hashicorp/aws\", version = \"~> 6.0\" }\n  }\n  backend \"s3\" {\n    bucket       = \"acme-tf-state\"\n    key          = \"prod/network/terraform.tfstate\"\n    region       = \"eu-west-1\"\n    encrypt      = true\n    use_lockfile = true\n  }\n}\n\nprovider \"aws\" {\n  region = var.region\n  default_tags { tags = { env = var.env, owner = \"platform\", managed_by = \"terraform\" } }\n}\n\nresource \"aws_s3_bucket\" \"uploads\" {\n  bucket = \"acme-${var.env}-uploads\"\n  lifecycle { prevent_destroy = true }\n}\n\nresource \"aws_s3_bucket_public_access_block\" \"uploads\" {\n  bucket                  = aws_s3_bucket.uploads.id\n  block_public_acls       = true\n  block_public_policy     = true\n  ignore_public_acls      = true\n  restrict_public_buckets = true\n}\n\noutput \"uploads_bucket\" { value = aws_s3_bucket.uploads.bucket }\n```\n\nThe reference `aws_s3_bucket.uploads.id` creates an implicit dependency, so the access block is created after the bucket. `default_tags` stamps every resource with ownership tags, which pays off when you read the cloud bill.\n\n## State: what it is and why it exists\nThe state file maps each **resource address** in your config (`aws_s3_bucket.uploads`) to a **real object** (bucket `acme-prod-uploads`) along with its last known attributes. Terraform needs it because:\n\n- Most cloud resources cannot be reliably found from config alone (what is the ID of \"the\" load balancer?).\n- It records dependencies so Terraform can destroy things in the right order even after they are deleted from config.\n- It caches attributes so large plans do not hit every API for everything.\n\nState is also dangerous:\n- **It contains secrets in plain text**: database passwords, generated keys, anything a resource returns. Treat the state bucket like a secrets store: encrypted, versioned, tightly scoped IAM, never committed to Git.\n- **Concurrent writes corrupt it.** Use a backend with **locking**. On AWS the S3 backend historically used a DynamoDB table for locks; since Terraform 1.10 it can lock with a lock file in S3 itself (`use_lockfile = true`), and the DynamoDB option is deprecated. Terraform Cloud/HCP Terraform, GCS and Azure Blob backends lock natively.\n- **Losing it is painful.** Turn on bucket versioning so you can roll back a bad state write.\n\nNever hand-edit state. Use `terraform state mv`, `state rm`, or better, the declarative blocks below, which go through code review.\n\n## Modules and environment layout\nA **module** is a directory of `.tf` files with input variables and outputs. Use them to encode a paved road (\"a service gets an ECR repo, an IAM role, a log group with 30-day retention, and alarms\") and version them (a private registry as below, or Git tags with `?ref=`) so changing a module does not silently change every consumer.\n\n```hcl\nmodule \"orders_db\" {\n  source         = \"app.terraform.io/acme/postgres/aws\"\n  version        = \"3.2.0\"\n  name           = \"orders\"\n  env            = var.env\n  instance_class = var.env == \"prod\" ? \"db.r7g.large\" : \"db.t4g.medium\"\n  multi_az       = var.env == \"prod\"\n}\n```\n\n**Split state by blast radius.** One giant state for everything means every plan is slow, every apply can touch everything, and one mistake has an unlimited blast radius. A common layout:\n\n```text\ninfra/\n  modules/            network/, service/, postgres/  (versioned)\n  live/\n    prod/\n      network/        own state\n      data/           own state (databases change rarely; keep them away from churn)\n      services/api/   own state\n    staging/\n      ...\n```\n\nSeparate directories per environment (with separate state and often separate cloud accounts) are clearer than Terraform CLI workspaces for long-lived environments, because the differences are visible in code and credentials are naturally separated. Tools like Terragrunt or Terramate help keep these DRY.\n\n**`for_each` over `count`.** With `count`, resources are indexed `[0]`, `[1]`, `[2]`; removing the first element shifts every index and Terraform plans to destroy and recreate the rest. `for_each` over a map or set keys resources by name, so removing one touches only that one.\n\n## Refactoring and adoption without destroying things\nTerraform tracks objects by address, so renaming a resource looks like \"destroy the old one, create a new one\" unless you tell it otherwise:\n\n```hcl\nmoved {\n  from = aws_s3_bucket.logs\n  to   = module.logging.aws_s3_bucket.this\n}\n\nimport {\n  to = aws_route53_zone.main\n  id = \"Z0123456789ABCDEFGHIJ\"\n}\n\nremoved {\n  from = aws_instance.legacy\n  lifecycle { destroy = false }\n}\n```\n\n- `moved` (Terraform 1.1+) records a rename or a move into a module.\n- `import` blocks (1.5+) adopt existing resources through a reviewed plan; `terraform plan -generate-config-out=generated.tf` can write a first draft of the config.\n- `removed` (1.7+) stops managing a resource without destroying it.\n\n## Drift\nDrift is any difference between the real infrastructure and what the code and state say: someone changed a security group in the console during an incident, an autoscaler changed a desired count, another tool modified a tag.\n\n**Detect it:** run `terraform plan -detailed-exitcode` on a schedule (exit code 2 means changes are pending) or `terraform plan -refresh-only` to see what changed outside Terraform without proposing to change anything. HCP Terraform, Spacelift, env0 and similar platforms offer scheduled drift detection.\n\n**Handle it:** for each drifted attribute decide: was the manual change right? Then **codify** it in the config and apply. Was it wrong? Then **revert** by applying the code. For attributes another system legitimately owns (an autoscaling group's desired capacity), tell Terraform to ignore them with `lifecycle { ignore_changes = [desired_capacity] }`.\n\n**Prevent it:** remove console write access in production (read-only roles, break-glass access that is audited), and make the pipeline the only path to apply.\n\n## Terraform in a pipeline\n```text\nPR opened  -> fmt -check, validate, tflint, policy checks (OPA/Conftest, Checkov)\n           -> terraform plan per affected stack -> plan posted as PR comment\nPR merged  -> apply the saved plan (OIDC role per environment) -> post result\nnightly    -> plan -detailed-exitcode on every stack -> alert on drift\n```\n\nTools like Atlantis or HCP Terraform run this flow. Policy as code catches \"public S3 bucket\" or \"security group open to 0.0.0.0/0 on port 22\" before it exists.\n\n## Alternatives and how to choose\n| Tool | Language | State | Notes |\n|---|---|---|---|\n| Terraform | HCL | Its own state file | Biggest provider ecosystem; licence changed to the Business Source License in 2023; HashiCorp is now part of IBM |\n| OpenTofu | HCL | Same model | Open-source fork of Terraform under the Linux Foundation, created after the licence change; largely drop-in, adds features such as client-side state encryption |\n| Pulumi | TypeScript, Python, Go, C#, Java | Pulumi Cloud or self-managed backend | Real loops, functions, types and unit tests; many providers bridged from Terraform's |\n| AWS CDK | TypeScript, Python, Java, C#, Go | CloudFormation stacks (AWS holds state) | AWS only; high-level constructs; synthesises CloudFormation, so you inherit its rollback behaviour and limits |\n| CloudFormation | YAML/JSON | AWS-managed | No state file to manage; AWS only |\n| Crossplane | Kubernetes CRDs | The Kubernetes API | Continuous reconciliation, fits platform teams already all-in on Kubernetes |\n\nHow I would choose in an interview: multi-cloud or many SaaS providers and a team comfortable with declarative config points to Terraform or OpenTofu. A team of application developers who want to share types and logic with their app code leans to Pulumi or CDK. AWS-only shops with strong CloudFormation experience can use CDK happily. The worst choice is two tools managing the same resources.\n\n## Trade-offs and common mistakes\n- **Clever HCL** (nested dynamic blocks, maps of maps of objects) becomes unreadable. Boring and explicit wins.\n- **Secrets in variables or outputs** end up in state and CI logs. Mark them `sensitive = true`, and better, let the cloud generate them (managed master passwords stored in a secret manager).\n- **Unpinned providers** break builds when a major version lands. Pin with `~>` and commit the lock file.\n- **Applying from laptops** with personal credentials: no audit trail, inconsistent versions, drift. Apply from CI.\n- **Long-running applies that time out** midway leave partial state. Smaller stacks help; re-running plan shows what is left.\n\n## In the interview\n**What they probe:** whether you understand state (what, why, risks), the plan review discipline, how to structure code for a team, and drift. Seniors get asked about blast radius, refactoring without downtime, and tool choice.\n\n**A 60-second answer outline** for \"how do you manage infrastructure with Terraform in a team?\":\n1. Remote state per environment and per stack, encrypted, versioned, locked, least-privilege access.\n2. Versioned modules for the paved road; `for_each`, explicit tags, provider versions pinned.\n3. PRs run fmt, validate, lint, policy checks and a plan posted for review; merges apply the saved plan from CI with OIDC.\n4. Destroy and replace actions are red flags; critical resources use `prevent_destroy`; refactors use `moved` and `import` blocks.\n5. Nightly drift detection, no console writes in production.\n\n**Follow-ups to expect:** What is in the state file and why is it sensitive? What happens if two people apply at once? How do you rename a resource without recreating it? Workspaces versus directories? Why might you pick Pulumi?",
+      "keyPoints": [
+        "Terraform compares your configuration with its state file and the real API to compute a plan; state is the mapping from resource addresses to real-world IDs.",
+        "Keep state remote, locked, encrypted and access-controlled; it often contains secrets in plain text.",
+        "Review the saved plan and apply exactly that plan; watch for destroy and replace actions, which are where outages come from.",
+        "Split state by environment and blast radius, compose reusable versioned modules, and prefer for_each over count for collections.",
+        "Drift is inevitable; detect it with scheduled plan or refresh-only runs, then either codify the change or revert it."
+      ],
+      "interview": [
+        "What is Terraform state, why does it exist, and how do you manage it safely in a team?",
+        "How do you detect and handle infrastructure drift?",
+        "Terraform, Pulumi or AWS CDK: how would you choose an infrastructure-as-code tool?"
+      ],
+      "check": [
+        {
+          "q": "A plan shows `-/+ resource \"aws_db_instance\" \"main\" (forces replacement)` after you renamed the database identifier. What should you do?",
+          "options": [
+            "Apply it; Terraform will migrate the data",
+            "Run apply with -auto-approve to save time",
+            "Delete the state file and re-run",
+            "Stop: replacement destroys the database; revert the change or plan a migration, and consider prevent_destroy"
+          ],
+          "answer": 3,
+          "why": "Forces replacement means destroy and recreate. For a database that is data loss. Treat replace and destroy actions in a plan as a review red flag, and protect critical resources with lifecycle prevent_destroy."
+        },
+        {
+          "q": "Two engineers run `terraform apply` against the same state at the same moment. What prevents corruption?",
+          "options": [
+            "State locking in the backend",
+            "Terraform's dependency graph",
+            "Provider retries",
+            "Workspaces"
+          ],
+          "answer": 0,
+          "why": "Backends that support locking let only one operation write the state at a time; the second run waits or fails. Without locking, concurrent applies can lose resources from state."
+        },
+        {
+          "q": "You refactor `aws_s3_bucket.logs` into a module, so its address becomes `module.logging.aws_s3_bucket.this`. How do you avoid Terraform destroying and recreating the bucket?",
+          "options": [
+            "Add `count = 1` to the module",
+            "Add a `moved` block from the old address to the new one",
+            "Run terraform refresh",
+            "Rename the bucket in the console"
+          ],
+          "answer": 1,
+          "why": "Terraform tracks resources by address. A moved block tells it the existing object now lives at the new address, so the plan shows a move instead of destroy plus create."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Terraform docs: State",
+          "url": "https://developer.hashicorp.com/terraform/language/state"
+        },
+        {
+          "title": "Terraform docs: Modules",
+          "url": "https://developer.hashicorp.com/terraform/language/modules"
+        },
+        {
+          "title": "Terraform docs: terraform plan",
+          "url": "https://developer.hashicorp.com/terraform/cli/commands/plan"
+        },
+        {
+          "title": "Terraform docs: S3 backend",
+          "url": "https://developer.hashicorp.com/terraform/language/backend/s3"
+        },
+        {
+          "title": "Martin Fowler: Infrastructure As Code",
+          "url": "https://martinfowler.com/bliki/InfrastructureAsCode.html"
+        },
+        {
+          "title": "Pulumi documentation",
+          "url": "https://www.pulumi.com/docs/"
+        }
+      ]
+    },
+    {
+      "id": "cd-cloud-primitives",
+      "track": "cloud-devops",
+      "title": "Cloud primitives: compute, storage, networking, databases and IAM",
+      "minutes": 28,
+      "summary": "The building blocks every cloud shares: compute options, object, block and file storage, VPCs and security groups, managed databases, IAM least privilege, regions and zones.",
+      "body": "## The core idea\nEvery major cloud sells the same handful of primitives under different names: somewhere to run code, somewhere to keep bytes, a private network to connect them, managed databases, and an identity system that decides who may do what. If you understand the primitives and their failure boundaries, you can design on AWS, Google Cloud or Azure and translate between them.\n\n| Primitive | AWS | Google Cloud | Azure |\n|---|---|---|---|\n| VMs | EC2 | Compute Engine | Virtual Machines |\n| Managed containers | ECS/Fargate, App Runner | Cloud Run | Container Apps |\n| Kubernetes | EKS | GKE | AKS |\n| Functions | Lambda | Cloud Run functions | Functions |\n| Object storage | S3 | Cloud Storage | Blob Storage |\n| Block storage | EBS | Persistent Disk | Managed Disks |\n| Private network | VPC | VPC | Virtual Network |\n| Relational DB | RDS, Aurora | Cloud SQL, AlloyDB | Azure SQL, Database for PostgreSQL |\n| Key-value / document | DynamoDB | Firestore, Bigtable | Cosmos DB |\n| Identity | IAM | IAM | Entra ID + RBAC |\n\nThis lesson uses AWS names because they are the most common in interviews; the ideas carry over.\n\n## Compute: choosing how much to manage\n```text\nmore control, more ops                                      less control, less ops\n  VMs (EC2)  ->  Kubernetes (EKS)  ->  managed containers (Fargate, Cloud Run)  ->  functions (Lambda)\n  you patch OS     you run workloads     you ship an image                         you ship a handler\n```\n\n- **VMs**: full control (kernel tuning, GPUs, special networking, licensed software). You own patching, scaling groups, images.\n- **Kubernetes**: a platform for many services; powerful, but someone runs it.\n- **Managed containers**: you provide an image, the platform runs and scales it. The sweet spot for many teams.\n- **Functions**: event-driven, scale to zero, per-invocation billing, with limits on duration and runtime (see the serverless lesson).\n\nAlso choose architecture and family: ARM instances (AWS Graviton, Google Axion, Azure Cobalt) are typically cheaper per unit of performance for workloads that run on ARM, which most Node, Python, Go and Java services do.\n\n## Storage: object, block, file\n- **Object storage (S3, GCS, Blob)**: a flat namespace of keys to immutable objects over HTTP. Effectively unlimited, very durable (S3 is designed for eleven nines of durability), cheap, with storage classes for cold data. S3 has offered strong read-after-write consistency since December 2020. Use it for uploads, static assets, backups, logs, data lakes. Not a filesystem: no partial in-place updates, no rename, per-request pricing, latency in tens of milliseconds.\n- **Block storage (EBS, Persistent Disk)**: a virtual disk attached to one VM (mostly), formatted with a filesystem. Low latency, provisioned IOPS and throughput. **Zonal**: an EBS volume lives in one AZ and cannot attach to an instance in another; snapshots go to regional storage. Use it for database data directories, boot disks.\n- **File storage (EFS, Filestore, Azure Files)**: a managed NFS/SMB share many machines mount at once. Use it for legacy apps that need a shared POSIX filesystem. More expensive per GB and slower than block for heavy random I/O.\n\nRule of thumb for app engineers: put user files in object storage behind presigned URLs, keep servers stateless, and let the database own its disks.\n\n## Networking: VPCs, subnets and the request path\nA **VPC** is your private network in a region, with a CIDR range like `10.0.0.0/16`. You divide it into **subnets**, each in one availability zone.\n\n- A **public subnet** has a route `0.0.0.0/0 -> internet gateway`. Resources with public IPs there are reachable from the internet (subject to security groups).\n- A **private subnet** has no route to the internet gateway. Outbound internet access, if needed, goes through a **NAT gateway** that lives in a public subnet.\n- **Security groups** are stateful firewalls attached to network interfaces; allow rules only; they can reference other security groups (\"allow 5432 from the app's SG\"), which is much better than IP ranges.\n- **Network ACLs** are stateless, subnet-level, allow and deny rules. Most teams leave them permissive and rely on security groups.\n- **VPC endpoints** (gateway endpoints for S3 and DynamoDB, interface endpoints via PrivateLink for other services) let private subnets reach cloud APIs without NAT, which is both safer and cheaper.\n\nA standard three-tier layout:\n\n```text\n                         internet\n                            |\n                     [ internet gateway ]\n   VPC 10.0.0.0/16          |\n   +------------- AZ a -----------------+------------- AZ b ----------------+\n   | public  10.0.0.0/24                | public  10.0.1.0/24               |\n   |   ALB node, NAT gateway            |   ALB node, NAT gateway           |\n   | private 10.0.10.0/24 (app)         | private 10.0.11.0/24 (app)        |\n   |   ECS tasks / EKS nodes  SG: app   |   ECS tasks / EKS nodes  SG: app  |\n   | private 10.0.20.0/24 (data)        | private 10.0.21.0/24 (data)       |\n   |   RDS primary   SG: db (5432<-app) |   RDS standby (sync replica)      |\n   +------------------------------------+-----------------------------------+\n   S3 via gateway endpoint (no NAT)     secrets via interface endpoint\n```\n\nKey decisions: only the load balancer is public; apps and databases have no public IPs; the database security group accepts traffic only from the app security group; one NAT gateway per AZ so an AZ failure does not cut off egress for the others (cheaper setups share one and accept the risk).\n\nLoad balancers: an **ALB** works at L7 (HTTP routing by host and path, TLS termination, WebSockets); an **NLB** works at L4 (TCP/UDP, static IPs, very high throughput). In front of that, a CDN (CloudFront, Cloudflare) caches static content and absorbs attacks.\n\n## Managed databases\nManaged relational databases (RDS, Cloud SQL) handle provisioning, patching, backups with point-in-time recovery, and failover. What you still own: schema, indexes, queries, connection management, capacity and cost.\n\n- **Multi-AZ** keeps a synchronous standby in another AZ; failover is automatic, typically within a minute or two, and your app must reconnect (DNS changes, so do not cache the IP forever). The standby does not serve reads in the classic setup.\n- **Read replicas** are asynchronous copies for read scaling; they lag, so reads after writes may be stale.\n- **Aurora** separates compute from a distributed storage layer replicated across three AZs, giving faster failover and replicas sharing storage.\n- **DynamoDB** and similar are serverless key-value stores: single-digit millisecond reads at any scale if you model access patterns up front, painful if you need ad-hoc queries.\n- **Connection limits** are the classic failure with serverless or heavily autoscaled apps: hundreds of pods each holding a pool of 10 connections can exhaust Postgres. Use a pooler (RDS Proxy, PgBouncer) and size pools deliberately.\n\n## IAM and least privilege\nIAM answers \"can this principal perform this action on this resource under these conditions?\"\n\n- **Principals**: human users (ideally through SSO, not IAM users), roles assumed by services, federated identities from CI (OIDC) or Kubernetes (workload identity).\n- **Policies**: JSON documents of `Effect`, `Action`, `Resource`, `Condition`. Evaluation: everything is implicitly denied, an explicit allow grants, and **an explicit deny always wins**. Organisation-level guardrails (Service Control Policies) and permission boundaries cap what any policy in an account can grant.\n- **Roles and temporary credentials**: workloads assume roles and receive short-lived credentials from STS. Long-lived access keys are the thing that leaks on GitHub.\n\nA least-privilege policy for a service that reads and writes one bucket prefix:\n\n```json\n{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\"s3:GetObject\", \"s3:PutObject\"],\n      \"Resource\": \"arn:aws:s3:::acme-prod-uploads/avatars/*\"\n    },\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": \"kms:Decrypt\",\n      \"Resource\": \"arn:aws:kms:eu-west-1:123456789012:key/1111aaaa-22bb-33cc-44dd-555555eeeeee\",\n      \"Condition\": { \"StringEquals\": { \"kms:ViaService\": \"s3.eu-west-1.amazonaws.com\" } }\n    }\n  ]\n}\n```\n\nHow least privilege works in practice, because nobody writes perfect policies on day one:\n1. **One role per workload**, never a shared \"app\" role.\n2. **Start from what the code calls**, scope resources by ARN and prefix, avoid `*` actions.\n3. **Use conditions**: source VPC endpoint, required tags, MFA for humans, `aws:PrincipalOrgID`.\n4. **Review actual usage**: IAM Access Analyzer can generate policies from CloudTrail activity and flag unused permissions and external access.\n5. **Separate accounts per environment** (AWS Organizations): the strongest IAM boundary is a different account. A bug in staging cannot touch production data.\n6. **Break-glass access** for humans in production: time-limited, audited elevation instead of standing admin.\n\n## Regions and availability zones\n- A **region** is a geographic area (eu-west-1, us-central1) with independent infrastructure and control planes.\n- An **availability zone** is one or more discrete data centres in a region with independent power, cooling and networking, close enough for low-latency synchronous replication (single-digit milliseconds between AZs).\n- Some services are **zonal** (an EC2 instance, an EBS volume), some **regional** (S3, DynamoDB, an ALB spanning AZs), a few **global** (IAM, Route 53, CloudFront). The AWS Fault Isolation Boundaries whitepaper maps this out, including the point that global services' control planes often live in one region.\n\n**Multi-AZ** is the default for production: spread replicas across at least two, usually three, AZs; use regional or multi-AZ managed services. It protects against the most common large failures at modest cost (mostly cross-AZ data transfer and extra standby capacity).\n\nThe AWS Builders' Library article on **static stability** adds the important nuance: do not rely on scaling up during a zone failure, because everyone else is scaling too and the control plane may be impaired. Pre-provision enough capacity that losing one AZ is absorbed by what is already running. With three AZs, that means running each at roughly two-thirds of the capacity needed to carry its share alone.\n\n**Multi-region** protects against a whole region failing and lets you serve users closer to home, but it is a different class of problem: data replication across tens to hundreds of milliseconds, conflict resolution or a single write region, failover runbooks you must rehearse, and roughly double the cost. Common patterns: active-passive (warm standby in a second region, async replication, measured RTO and RPO) or active-active with a database built for it (DynamoDB global tables, Spanner, CockroachDB). Choose by the business's recovery time and recovery point objectives, not by fear.\n\n## Trade-offs and common mistakes\n- **Everything public** \"for now\": databases with public IPs and `0.0.0.0/0` security groups are how breaches start. Private by default.\n- **Overlapping CIDRs** between VPCs make peering or Transit Gateway impossible later. Plan address space up front.\n- **NAT gateway surprises**: every byte from private subnets to the internet or to S3 without an endpoint is charged per GB at the NAT. Add gateway endpoints for S3 and DynamoDB on day one.\n- **Single-AZ \"production\"** because the subnet group had one subnet.\n- **Admin roles for everything**, and long-lived keys in CI. Use roles, OIDC and scoped policies.\n- **Ignoring service quotas**: default limits (vCPUs per instance family, Lambda concurrency, IPs) block launches at the worst moment. Request increases ahead of launches.\n\n## In the interview\n**What they probe:** can you lay out a secure network, reason about failure domains, and treat IAM as a design concern rather than an afterthought? Seniors get asked about static stability, multi-region trade-offs and organisation-level guardrails.\n\n**A 60-second answer outline** for \"deploy this web app on AWS\":\n1. VPC across three AZs: public subnets for the ALB and NAT, private subnets for app tasks and the database, S3 and secret manager reached through VPC endpoints.\n2. Containers on Fargate or EKS with one IAM role per service, scoped to exactly the bucket prefix and secrets it needs.\n3. RDS Postgres Multi-AZ with automated backups and PITR, security group accepting only the app SG, connection pooling.\n4. Static assets and uploads in S3 behind CloudFront; capacity sized to survive one AZ loss.\n5. Separate accounts for prod and staging, SSO for humans, CloudTrail and budgets on.\n\n**Follow-ups to expect:** What does a NAT gateway do and what does it cost? Security groups versus NACLs? What happens to your app during an RDS failover? Why might you go multi-region, and what breaks?",
+      "keyPoints": [
+        "Pick compute by how much you want to manage: VMs, managed containers, Kubernetes or functions trade control for operational burden.",
+        "Object storage for blobs and static assets, block storage for a single machine's disk, file storage for shared POSIX access.",
+        "A typical VPC has public subnets for load balancers and NAT, private subnets for apps and data, spread across at least two availability zones.",
+        "IAM least privilege means short-lived role credentials, narrowly scoped actions and resources, conditions, and continuous review of what is actually used.",
+        "Availability zones protect against data-centre failure; regions protect against regional failure at a large cost in complexity and data consistency."
+      ],
+      "interview": [
+        "Design a basic VPC for a web application with a database. What goes in public and private subnets?",
+        "How do you apply least privilege with cloud IAM in practice?",
+        "What are regions and availability zones, and how do you use them for high availability?",
+        "When would you use object, block and file storage?"
+      ],
+      "check": [
+        {
+          "q": "Instances in a private subnet need to download packages from the internet but must not be reachable from it. What do they route through?",
+          "options": [
+            "A NAT gateway in a public subnet",
+            "An internet gateway attached directly to the private subnet",
+            "A public IP on each instance",
+            "A network ACL that allows all traffic"
+          ],
+          "answer": 0,
+          "why": "A NAT gateway allows outbound connections initiated from the private subnet and blocks unsolicited inbound ones. Routing the private subnet to an internet gateway would make it public."
+        },
+        {
+          "q": "Which statement about AWS security groups and network ACLs is correct?",
+          "options": [
+            "Both are stateless",
+            "Network ACLs attach to instances, security groups to subnets",
+            "Security groups only support deny rules",
+            "Security groups are stateful and attach to network interfaces; network ACLs are stateless and apply to subnets"
+          ],
+          "answer": 3,
+          "why": "Security groups track connections, so return traffic is allowed automatically, and they support allow rules only. NACLs evaluate each packet in both directions and support explicit deny."
+        },
+        {
+          "q": "Your service runs in three availability zones and must survive losing one zone without degrading. What is the highest safe steady-state utilisation per zone?",
+          "options": [
+            "About 90%",
+            "About 33%",
+            "About 66%",
+            "100%, autoscaling will cover it"
+          ],
+          "answer": 2,
+          "why": "If one of three zones disappears, the remaining two must carry all the load, so each needs 50% more headroom: run at about two thirds. Autoscaling during a zonal event is unreliable because capacity is contested."
+        }
+      ],
+      "resources": [
+        {
+          "title": "AWS docs: Security best practices in IAM",
+          "url": "https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html"
+        },
+        {
+          "title": "AWS docs: What is Amazon VPC?",
+          "url": "https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html"
+        },
+        {
+          "title": "AWS Builders' Library: Static stability using Availability Zones",
+          "url": "https://aws.amazon.com/builders-library/static-stability-using-availability-zones/"
+        },
+        {
+          "title": "AWS whitepaper: AWS Fault Isolation Boundaries",
+          "url": "https://docs.aws.amazon.com/whitepapers/latest/aws-fault-isolation-boundaries/abstract-and-introduction.html"
+        },
+        {
+          "title": "Google Cloud: Geography and regions",
+          "url": "https://cloud.google.com/docs/geography-and-regions"
+        },
+        {
+          "title": "AWS Well-Architected Framework",
+          "url": "https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html"
+        }
+      ]
+    },
+    {
+      "id": "cd-serverless-edge",
+      "track": "cloud-devops",
+      "title": "Serverless functions and edge runtimes",
+      "minutes": 25,
+      "summary": "How function platforms run code, what cold starts cost and how to cut them, V8-isolate edge runtimes, the data-locality trap, cost maths, and when serverless fits.",
+      "body": "## The core idea\n\"Serverless\" means you hand the platform a unit of code (a function, or a container) and it handles provisioning, scaling, patching and capacity, billing you for what you use instead of for machines. There are still servers; you just do not see, size or keep them.\n\nTwo families matter for interviews:\n\n- **Regional functions and serverless containers**: AWS Lambda, Google Cloud Run, Azure Functions, Vercel Functions. Full language runtimes (Node.js, Python, Java, Go) running in a region, usually close to your database.\n- **Edge runtimes**: Cloudflare Workers, Vercel's Edge runtime, Deno Deploy, Fastly Compute. Lightweight runtimes (mostly V8 isolates, or WebAssembly) deployed to hundreds of locations near users.\n\nThe trade-off throughout: you give up control and some predictability in exchange for not running infrastructure and paying nothing when idle.\n\n## How a function platform runs your code\nUsing Lambda as the reference model, since its lifecycle is the best documented:\n\n```text\nrequest arrives\n   |\n   +-- warm environment free? --yes--> INVOKE handler (ms)\n   |\n   no\n   v\nCOLD START\n  1. place and boot a Firecracker microVM (sandbox)\n  2. download and unpack your code or image\n  3. start the runtime (Node.js, JVM, Python)\n  4. INIT: run your module-scope code (imports, SDK clients, config fetch)\n  5. INVOKE handler\n   |\n   v\nenvironment stays warm for reuse ... eventually frozen, then reclaimed\n```\n\nKey facts:\n- Each Lambda execution environment processes **one request at a time**. 100 concurrent requests need 100 environments; a burst beyond the warm pool means cold starts. (Cloud Run and Vercel's Fluid compute instead let one instance serve many concurrent requests, which reduces cold starts and idle cost for I/O-bound work.)\n- Between invocations the environment is **frozen**. Background work you started after returning the response may not run until the next invocation, or ever. Flush logs and metrics before returning, or use the platform's \"wait until\" helper where it exists.\n- Module-scope state survives across warm invocations of the same environment, which is great for caches and connection reuse, and a bug if you store per-request data there.\n- Limits shape design: Lambda allows up to 15 minutes per invocation and 128 MB to 10,240 MB of memory, with CPU allocated in proportion to memory. Regional account concurrency has a default quota (1,000) that you can raise.\n\nMarc Brooker and colleagues' Firecracker paper (NSDI 2020) explains why AWS built a microVM: VM-level isolation between tenants with boot times and memory overhead low enough for per-function sandboxes.\n\n## Cold starts: what costs time and how to cut it\nCold-start time is sandbox creation plus runtime start plus **your init code**. The last part is usually the biggest one you control.\n\n| Cause | Fix |\n|---|---|\n| Large bundle or image | Bundle and tree-shake (esbuild), drop unused SDKs, import only the AWS SDK v3 clients you use |\n| Heavy init (ORM metadata, big config fetch) | Lazy-load rarely used modules; cache config; precompute at build time |\n| Slow runtime start (JVM, .NET) | SnapStart (snapshot of the initialised environment), GraalVM native images, or a faster runtime |\n| Bursty traffic beyond the warm pool | Provisioned concurrency (Lambda) or minimum instances (Cloud Run) |\n| VPC attachment (historically) | Much improved since Lambda moved to shared network interfaces in 2019; not the multi-second penalty it once was |\n| Low memory setting | More memory means more CPU, which often shortens init and duration enough to cost the same or less |\n\nOrder of magnitude: lean Node.js or Python functions often cold start in a few hundred milliseconds; a JVM function without SnapStart can take seconds. Measure your own: Lambda reports `Init Duration` in the REPORT log line for cold invocations.\n\n```ts\nimport { DynamoDBClient } from \"@aws-sdk/client-dynamodb\";\nimport { DynamoDBDocumentClient, GetCommand } from \"@aws-sdk/lib-dynamodb\";\n\nconst db = DynamoDBDocumentClient.from(new DynamoDBClient({}));\n\nexport const handler = async (event: { pathParameters?: { id?: string } }) => {\n  const id = event.pathParameters?.id;\n  if (!id) return { statusCode: 400, body: \"missing id\" };\n  const { Item } = await db.send(new GetCommand({ TableName: process.env.TABLE, Key: { id } }));\n  return Item ? { statusCode: 200, body: JSON.stringify(Item) } : { statusCode: 404, body: \"not found\" };\n};\n```\n\nThe client lives in module scope, so it is created once per environment and its TCP/TLS connections are reused on warm invocations.\n\nProvisioned concurrency and minimum instances remove cold starts for the configured capacity, but you pay for that capacity whether or not it is used. You are buying back a little bit of \"server\".\n\n## Edge runtimes\nCloudflare's \"How Workers works\" page lays out the model: instead of a container or microVM per tenant, many customers' code runs as **V8 isolates** inside one process. An isolate has its own heap and globals but shares the runtime, so creating one takes milliseconds and costs little memory. That is what makes it economical to run your code in hundreds of locations and start it on demand.\n\nWhat you trade:\n- **A restricted API surface**: Web-standard APIs (`fetch`, `Request`, `Response`, Web Crypto, streams). Node.js compatibility layers have grown a lot, but native modules, raw TCP in some cases and filesystem access are limited or absent.\n- **Tight CPU and memory limits** per request. Edge is for fast logic, not heavy computation.\n- **Different databases**: drivers must speak HTTP or WebSockets (or use platform-provided connectors and poolers).\n\nGood uses: redirects and rewrites, auth token checks, A/B bucketing, geolocation-based routing, header manipulation, personalising cached pages, serving from an edge key-value store, rate limiting near the source.\n\nNote that Next.js 16 renamed `middleware.ts` to `proxy.ts` and runs it on the Node.js runtime by default, a sign that frameworks have moved away from pushing general logic into edge runtimes.\n\n## The data-locality trap\nLatency is dominated by **round trips to data**, not by where the code runs.\n\n```text\nuser in Sydney, database in us-east-1 (Virginia), ~200 ms RTT between them\n\nregional function in us-east-1:\n  user -> function: 1 round trip  ~200 ms\n  function -> DB x4 queries         ~1-2 ms each\n  total                             ~210 ms\n\nedge function in Sydney:\n  user -> function: 1 round trip  ~10 ms\n  function -> DB x4 sequential     ~200 ms each = 800 ms\n  total                             ~810 ms\n```\n\nEdge wins only when the work needs no data, cached data, or data that is also replicated near the user (edge KV, read replicas in many regions, globally distributed databases). Vercel and Cloudflare both let you pin functions to a region near your database for exactly this reason. In an interview, saying \"edge is faster\" without this caveat is a red flag.\n\n## Cost: the crossover\nFunction pricing is per request plus per GB-second of duration. Using Lambda's published x86 on-demand prices (about $0.20 per million requests and about $0.0000166667 per GB-second, before free tier; check current prices):\n\n```text\nsteady 100 req/s, 100 ms average, 512 MB\nrequests per 30 days  = 100 x 2,592,000          = 259.2 M   -> ~$52\nGB-seconds            = 259.2 M x 0.1 s x 0.5 GB = 12.96 M  -> ~$216\ntotal                                                         ~$268 / month\n```\n\nCompare that with the price of the always-on containers or instances that could serve 100 req/s at your latency target, including headroom. For spiky or low traffic, functions win easily because idle costs nothing. For steady high throughput, always-on capacity (especially with savings plans) is usually cheaper, and the gap grows with load. Remember the hidden costs on both sides: API gateway charges, NAT and data transfer, logging volume, and on the container side, the engineers who run it.\n\n## When serverless fits\n- **Spiky or unpredictable traffic**, and things that are idle most of the time: internal tools, webhooks, cron jobs, prototypes.\n- **Event-driven glue**: object uploaded, queue message arrived, record changed.\n- **Embarrassingly parallel fan-out**: process 10,000 files with 1,000 concurrent invocations.\n- **Small teams** who would rather not run infrastructure at all.\n\n## When it does not\n- **Steady, high, predictable load** where per-request pricing exceeds reserved capacity.\n- **Long-running work** beyond duration limits: video transcoding, large ML jobs, long ETL. Use containers or batch services.\n- **Long-lived connections**: WebSockets, gRPC streams, SSE beyond short windows. Platforms offer workarounds (API Gateway WebSockets, Durable Objects), each with its own model.\n- **Heavy connection-pool databases**: thousands of concurrent environments each opening Postgres connections. Needs a pooler (RDS Proxy, PgBouncer, Prisma Accelerate, Neon or Supabase poolers) or an HTTP-based database.\n- **Strict tail latency SLOs** where an occasional cold start breaks the budget, unless you pay for provisioned capacity.\n- **GPU or specialised hardware**, large local disk, or kernel-level tuning.\n- **Portability concerns**: deep coupling to one provider's event sources and IAM. Serverless containers (Cloud Run, Fargate) reduce lock-in compared with function-specific APIs.\n\n## Common mistakes and debugging\n- **Recursive triggers**: a function writes to the bucket that triggers it, and the loop runs up a bill. Use separate prefixes or buckets; Lambda now detects some recursive loops, but do not rely on it.\n- **Unbounded concurrency** overwhelming a downstream database. Set reserved concurrency as a cap.\n- **Retries without idempotency**: async invocations and queue triggers retry on failure, so handlers must tolerate duplicates.\n- **Fire-and-forget work after the response**: it may never run once the environment is frozen.\n- **Timeouts longer than the caller's**: an API gateway that times out at 30 seconds while the function keeps running and billing.\n- **Debugging blind**: emit structured logs with request IDs, use tracing (X-Ray, OpenTelemetry), and watch `Init Duration`, throttles, errors and concurrency.\n\n## In the interview\n**What they probe:** whether you know the execution model (environments, init versus invoke, concurrency), what really drives cold starts, the edge data-locality trap, and whether you can argue cost and fit with numbers rather than fashion.\n\n**A 60-second answer outline** for \"should we build this on serverless?\":\n1. Describe the traffic shape and latency SLO. Spiky or low traffic and relaxed tails point to functions; steady high throughput points to containers.\n2. Check constraints: duration, connections (WebSockets, database pools), hardware, runtime.\n3. Name cold-start mitigations: lean bundles, init outside the handler, provisioned concurrency or min instances for latency-critical paths.\n4. Put compute next to the data; use edge only for data-free or cached logic.\n5. Sketch the cost crossover with real numbers and include gateway, data transfer and logging.\n\n**Follow-ups to expect:** What exactly happens during a cold start? How does Lambda concurrency differ from Cloud Run concurrency? How do you connect thousands of functions to Postgres? Why is my edge function slower than my old server?",
+      "keyPoints": [
+        "A function platform keeps execution environments warm between requests; a cold start is creating one: microVM or isolate, runtime boot, and your init code.",
+        "Reduce cold starts with smaller bundles, lazy init, faster runtimes, provisioned concurrency or minimum instances, and snapshot-based starts like Lambda SnapStart.",
+        "Edge runtimes use V8 isolates that start in milliseconds near the user, with a restricted API and tight CPU limits.",
+        "Edge only helps when the data is also near the user; an edge function that makes several round trips to a distant database is slower than a regional one.",
+        "Serverless fits spiky, event-driven and low-to-moderate traffic; steady high throughput, long-lived connections, heavy compute and strict tail latency often fit containers better."
+      ],
+      "interview": [
+        "What causes serverless cold starts and how do you reduce them?",
+        "When is serverless the wrong choice?",
+        "What is an edge runtime and when does running code at the edge actually make things faster?"
+      ],
+      "check": [
+        {
+          "q": "In AWS Lambda, where should you create a database client so it is reused across invocations?",
+          "options": [
+            "Inside the handler, so each request gets a fresh client",
+            "In a separate Lambda that the handler calls",
+            "In module scope outside the handler, so it is created once per execution environment",
+            "In an environment variable"
+          ],
+          "answer": 2,
+          "why": "Code outside the handler runs during the init phase, once per execution environment, and its objects survive across warm invocations. Creating clients per request adds latency and exhausts connections."
+        },
+        {
+          "q": "An edge function in Sydney makes four sequential queries to a Postgres primary in Virginia. What is the most likely result?",
+          "options": [
+            "Faster than a regional function because the code runs close to the user",
+            "Slower than running the function next to the database, because each query pays a long intercontinental round trip",
+            "Identical latency",
+            "The edge runtime caches the queries automatically"
+          ],
+          "answer": 1,
+          "why": "Compute moved closer to the user but every database round trip now crosses the Pacific. Put compute near the data, or bring the data to the edge with caches or replicas."
+        },
+        {
+          "q": "Which workload is the weakest fit for classic per-request functions such as Lambda?",
+          "options": [
+            "A webhook receiver that gets 50 requests a day",
+            "Resizing images when files land in a bucket",
+            "A nightly report job that takes 2 minutes",
+            "A service handling a steady 3,000 requests per second around the clock with long-lived WebSocket connections"
+          ],
+          "answer": 3,
+          "why": "Steady high throughput is usually cheaper on always-on containers, and long-lived connections do not match a per-invocation model with duration limits. The other three are classic serverless fits."
+        }
+      ],
+      "resources": [
+        {
+          "title": "AWS docs: Lambda execution environment lifecycle",
+          "url": "https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html"
+        },
+        {
+          "title": "AWS Compute Blog: Operating Lambda, performance optimization part 1",
+          "url": "https://aws.amazon.com/blogs/compute/operating-lambda-performance-optimization-part-1/"
+        },
+        {
+          "title": "AWS docs: Lambda SnapStart",
+          "url": "https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html"
+        },
+        {
+          "title": "Cloudflare docs: How Workers works",
+          "url": "https://developers.cloudflare.com/workers/reference/how-workers-works/"
+        },
+        {
+          "title": "Firecracker: Lightweight Virtualization for Serverless Applications (NSDI 2020)",
+          "url": "https://www.usenix.org/conference/nsdi20/presentation/agache"
+        },
+        {
+          "title": "Vercel docs: Functions",
+          "url": "https://vercel.com/docs/functions"
+        }
+      ]
+    },
+    {
+      "id": "cd-deploy-strategies",
+      "track": "cloud-devops",
+      "title": "Deployment strategies, feature flags and safe migrations",
+      "minutes": 28,
+      "summary": "Rolling, blue-green and canary deploys, automated canary analysis, feature flags that separate deploy from release, fast rollbacks, and expand-and-contract migrations.",
+      "body": "## The core idea\nMost outages are caused by changes: a new binary, a config push, a schema migration. A deployment strategy is how you **limit the blast radius of a bad change and shorten the time it is live**. The goal is not zero bad deploys; it is that a bad deploy hurts few users for a few minutes and is undone automatically.\n\nTwo cautionary tales interviewers like:\n- **Knight Capital (2012)**: a deploy reached seven of eight servers, and a repurposed flag activated dead code on the eighth. The firm lost about $440 million in 45 minutes. Lessons: deploy consistently, never reuse flags, have a fast kill switch.\n- **CrowdStrike (July 2024)**: a faulty content update was pushed to all customers at once and crashed roughly 8.5 million Windows machines. Lesson: even \"just config\" needs staged rollout.\n\nMarc Brooker's essay on software deployment, speed and safety makes the balancing point: going slower is not automatically safer, because slow, batched deploys carry more change per release. What makes deploys safe is small changes, staged exposure, good health signals and automatic rollback.\n\n## The three strategies\n```text\nROLLING        v1 v1 v1 v1  ->  v2 v1 v1 v1  ->  v2 v2 v1 v1  ->  v2 v2 v2 v2\n               replace a few at a time; both versions serve traffic mid-rollout\n\nBLUE-GREEN     [ blue v1  ] <- 100% traffic      [ blue v1  ]  (idle, kept for rollback)\n               [ green v2 ]   (tested, idle)     [ green v2 ] <- 100% traffic\n               switch the router in one step\n\nCANARY         v1 95%  /  v2 5%   -> analyse -> 25% -> analyse -> 50% -> 100%\n               widen exposure only while the canary is as healthy as the baseline\n```\n\n| | Rolling | Blue-green | Canary |\n|---|---|---|---|\n| Extra capacity | A little (`maxSurge`) | A full second environment during cutover | A little |\n| Rollback speed | Minutes (roll back through instances) | Seconds (switch router back) | Seconds (shift weight to 0%) |\n| Users exposed to a bad build | Grows with rollout progress | Everyone, at switch time | A small, controlled percentage |\n| Needs | Readiness probes, compatibility | Router or DNS switch, warm-up, shared-state compatibility | Traffic splitting, good metrics, automated analysis |\n| Default in | Kubernetes Deployments, ECS | ECS/CodeDeploy, many PaaS | Argo Rollouts, Flagger, service meshes, Spinnaker |\n\n**Rolling** is the default because it is free: Kubernetes does it with `maxSurge` and `maxUnavailable`. Its weakness is that you find problems only after a meaningful fraction of the fleet runs the new version, and rollback is another rolling update.\n\n**Blue-green** keeps two production environments. You deploy to the idle one, test it with real infrastructure, then flip the load balancer. Martin Fowler's article notes the elegant property that rollback is just flipping back. The catches: you pay for double capacity during the switch, a switch exposes everyone at once, caches and connection pools on green start cold, and both colours share the database, so schema changes still need care. DNS-based switching is slow and leaky because clients cache records; switch at the load balancer.\n\n**Canary** routes a small slice (by percentage, region, internal users first, or a cell) to the new version and expands in steps. The Google SRE Workbook chapter on canarying is the reference: compare the canary against a **concurrent baseline** running the old version with similar traffic, not against yesterday's numbers, because traffic mix changes by the hour.\n\n## Automated canary analysis\nHumans watching dashboards miss things and get tired. Automate the gate:\n\n```yaml\napiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata:\n  name: api\nspec:\n  replicas: 10\n  strategy:\n    canary:\n      steps:\n        - setWeight: 5\n        - pause: { duration: 10m }\n        - analysis: { templates: [{ templateName: error-rate }] }\n        - setWeight: 25\n        - pause: { duration: 10m }\n        - analysis: { templates: [{ templateName: error-rate }] }\n        - setWeight: 100\n---\napiVersion: argoproj.io/v1alpha1\nkind: AnalysisTemplate\nmetadata:\n  name: error-rate\nspec:\n  metrics:\n    - name: http-5xx-ratio\n      interval: 1m\n      failureLimit: 2\n      successCondition: result[0] < 0.01\n      provider:\n        prometheus:\n          address: http://prometheus.monitoring:9090\n          query: |\n            sum(rate(http_requests_total{app=\"api\",version=\"canary\",code=~\"5..\"}[5m]))\n            /\n            sum(rate(http_requests_total{app=\"api\",version=\"canary\"}[5m]))\n```\n\nWhat to measure: error rate, latency percentiles (p99, not just average), saturation (CPU, memory, queue depth), and **business metrics** (checkouts per minute, login success). Crashes are easy to catch; a subtle 3% drop in conversions is not, unless you watch it.\n\nPractical details:\n- **Enough traffic** for statistical signal. A 1% canary on a service with 10 requests a minute tells you nothing; use longer bake times or bigger slices.\n- **Bake time** catches slow problems: memory leaks, cache expiry effects, daily batch interactions.\n- **Waves across failure domains**: the AWS Builders' Library article on hands-off deployments describes deploying to one box, then one AZ, then one region, then many regions in waves, with automatic rollback at every stage. Netflix's Kayenta and Spinnaker made automated canary analysis widely known.\n\n## Feature flags: separate deploy from release\nA **deploy** puts code on servers. A **release** exposes behaviour to users. Feature flags let you deploy dark code continuously and release it independently: to employees, then 1% of users, then a region, then everyone, and turn it off in seconds without a deploy.\n\nPete Hodgson's article on Martin Fowler's site classifies toggles, which helps in interviews:\n- **Release toggles**: hide incomplete features; short-lived (days to weeks).\n- **Experiment toggles**: A/B tests; live for the experiment.\n- **Ops toggles**: kill switches and load-shedding switches; some are long-lived on purpose.\n- **Permission toggles**: entitlements, beta programmes; often permanent and really product configuration.\n\n```ts\nconst enabled = await flags.isEnabled(\"new-checkout\", {\n  userId: user.id,\n  country: user.country,\n  plan: user.plan,\n});\nreturn enabled ? renderNewCheckout(cart) : renderCheckout(cart);\n```\n\nImplementation notes: evaluate flags locally from a cached ruleset (SDKs of LaunchDarkly, Unleash, Flagsmith, GrowthBook, or OpenFeature as a vendor-neutral API) so a flag service outage does not take you down; define a safe default for when the ruleset is unavailable; use consistent hashing on user ID so a user stays in the same bucket.\n\nCosts are real:\n- **Combinatorial complexity**: 10 flags means 1,024 possible code paths. You cannot test them all; keep flags few and short-lived.\n- **Flag debt**: dead flags and both code paths left in place forever. Give every flag an owner and expiry date, and remove the losing path once the flag is fully on.\n- **Hidden config changes**: flipping a flag is a production change. Audit log it, and roll it out gradually like code.\n- **Never repurpose a flag.** Knight Capital is the cautionary tale.\n\n## Rollbacks and roll-forwards\nRollback means returning to the last known good **artifact**: re-point the Deployment at the previous image digest, shift canary weight to zero, flip blue-green back, or `git revert` in GitOps. It should be one command or one click, rehearsed, and faster than diagnosing.\n\nRules of thumb:\n- **Mitigate first, debug second.** If a deploy correlates with an error spike, roll back now and investigate on the old version.\n- **Rollback must be safe.** It is safe only if the previous version still works with the current data and schema, which is why migrations are designed backward compatible.\n- **Roll forward** when rollback is impossible or riskier (a data format already written that the old version cannot read) and the fix is small and well understood.\n- **Config and flags count.** A config push or flag flip is a deploy; keep the previous value one click away.\n\n## Database migrations with deploys\nDuring any rollout, **old and new code run at the same time** against the same database, and a rollback brings old code back. So every schema state must work with at least two adjacent code versions. The pattern is **expand and contract** (Danilo Sato's \"ParallelChange\" on Martin Fowler's site):\n\n```text\ngoal: rename users.fullname -> users.display_name\n\ndeploy 1  EXPAND     add column display_name (nullable)          schema: both columns\ndeploy 2  DUAL WRITE code writes both, reads fullname             old + new code both fine\n          BACKFILL   batch-copy fullname -> display_name for old rows (throttled)\ndeploy 3  SWITCH     code reads display_name, still writes both\ndeploy 4  STOP OLD   code stops writing fullname\ndeploy 5  CONTRACT   drop column fullname (after a safe delay)\n```\n\nEach step is independently deployable and reversible until the final drop. Tedious? Yes. It is also how teams change schemas on busy tables without downtime.\n\nOperational rules for Postgres (similar ideas apply to MySQL with tools like gh-ost):\n- Set `lock_timeout` (for example `SET lock_timeout = '5s'`) on migration sessions. `ALTER TABLE` needs a strong lock; if it queues behind a long query, every other query queues behind it and you have an outage.\n- Build indexes with `CREATE INDEX CONCURRENTLY` (outside a transaction).\n- Add `NOT NULL` constraints safely: add a `CHECK (col IS NOT NULL) NOT VALID` constraint, `VALIDATE CONSTRAINT` later, then set `NOT NULL`.\n- Adding a column with a constant default has been fast since Postgres 11; a volatile default still rewrites the table.\n- Backfill in small batches with sleeps, not one giant `UPDATE` that bloats the table and lags replicas.\n- Run migrations as a separate pipeline step (or a Kubernetes Job) before the code deploy that depends on them, never in every pod's startup where ten replicas race.\n\n## Trade-offs and when not to bother\n- A small internal app with a handful of users can use plain rolling deploys and a quick rollback; canary analysis needs traffic and metrics to be meaningful.\n- Blue-green is attractive for stateful or slow-to-warm systems where mixed versions are awkward, if you can afford the capacity.\n- Feature flags for every change are overkill; use them for risky or user-visible changes and incomplete work on trunk.\n\n## Common mistakes and debugging\n- Canary metrics that do not distinguish versions: label every metric with `version` or the pod template hash.\n- Session or cache incompatibility between versions (a new serialised format the old version cannot read) breaks rollbacks; version your formats.\n- Deploying migrations and code in one step, so rollback leaves code that does not match the schema.\n- Long-running jobs or consumers killed mid-work by a deploy; drain them and make them resumable.\n- \"We will clean up the flag later\". Put the removal ticket in the same sprint.\n\n## In the interview\n**What they probe:** that you know the strategies and their costs, that you think in blast radius and automated rollback, and above all that you understand the version-overlap problem for data and schemas. Senior candidates are expected to bring up expand and contract without being prompted.\n\n**A 60-second answer outline** for \"how would you deploy changes safely here?\":\n1. Small changes, built once and deployed by digest; risky behaviour behind flags.\n2. Canary to 5%, automated comparison with a baseline on errors, p99 latency, saturation and a business metric; widen in steps with bake time; auto-rollback.\n3. Rollback is one action and rehearsed; mitigate before debugging.\n4. Schema changes via expand and contract, migrations run separately with lock timeouts, every step compatible with N-1.\n5. Flags have owners and expiry dates; config pushes are staged like code.\n\n**Follow-ups to expect:** How do you canary a service with little traffic? How do you roll back after a migration? Blue-green with a shared database: what breaks? How do you test feature-flag combinations? How do you deploy a breaking API change to mobile clients you cannot force-upgrade?",
+      "keyPoints": [
+        "Rolling replaces instances gradually; blue-green switches all traffic between two full environments; canary sends a small slice to the new version and widens it while metrics stay healthy.",
+        "Automate the decision: compare canary and baseline on error rate, latency and saturation, and roll back without waiting for a human.",
+        "Feature flags decouple deploying code from releasing behaviour; they need owners, expiry dates and cleanup or they become debt.",
+        "Every deploy must be compatible with the previous version running at the same time: two versions always overlap during a rollout.",
+        "Change schemas with expand and contract: add, dual-write, backfill, switch reads, then remove, each step deployed and reversible on its own."
+      ],
+      "interview": [
+        "Compare rolling, blue-green and canary deployments.",
+        "How do you deploy a database schema change without downtime?",
+        "How do feature flags change the way you release software, and what are their costs?",
+        "A deploy just raised the error rate. Walk me through what you do."
+      ],
+      "check": [
+        {
+          "q": "You need to rename the column `users.fullname` to `display_name` with zero downtime. What is the safe first deploy?",
+          "options": [
+            "ALTER TABLE ... RENAME COLUMN in the same deploy as the code change",
+            "Add `display_name`, have the code write both columns, and keep reading `fullname`",
+            "Drop `fullname` and add `display_name`",
+            "Take a maintenance window"
+          ],
+          "answer": 1,
+          "why": "Expand first: the new column exists and is kept in sync while old code still works. Backfill, switch reads, stop writing the old column, and only then drop it, each as its own deploy."
+        },
+        {
+          "q": "What is the main extra cost of blue-green compared with rolling deployments?",
+          "options": [
+            "It cannot be automated",
+            "It is impossible to roll back",
+            "It requires feature flags",
+            "You need capacity for two full environments during the switch, and shared state such as the database still has to be compatible with both"
+          ],
+          "answer": 3,
+          "why": "Blue-green gives an instant switch and rollback but doubles capacity during the cutover, and both colours usually share one database, so schema changes still need backward compatibility."
+        },
+        {
+          "q": "A canary at 5% shows error rate 0.4% versus 0.1% on the baseline over 15 minutes. What should an automated analysis do?",
+          "options": [
+            "Fail the canary and roll back automatically",
+            "Promote to 100%; 0.4% is a low error rate",
+            "Wait for a human to look at dashboards tomorrow",
+            "Increase to 50% to get more data"
+          ],
+          "answer": 0,
+          "why": "The canary is four times worse than the baseline under the same conditions. Comparing against a concurrent baseline, not an absolute threshold, is what canary analysis is for."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Martin Fowler: BlueGreenDeployment",
+          "url": "https://martinfowler.com/bliki/BlueGreenDeployment.html"
+        },
+        {
+          "title": "Martin Fowler: CanaryRelease",
+          "url": "https://martinfowler.com/bliki/CanaryRelease.html"
+        },
+        {
+          "title": "Pete Hodgson: Feature Toggles (aka Feature Flags)",
+          "url": "https://martinfowler.com/articles/feature-toggles.html"
+        },
+        {
+          "title": "Google SRE Workbook: Canarying releases",
+          "url": "https://sre.google/workbook/canarying-releases/"
+        },
+        {
+          "title": "Danilo Sato: ParallelChange (expand and contract)",
+          "url": "https://martinfowler.com/bliki/ParallelChange.html"
+        },
+        {
+          "title": "AWS Builders' Library: Automating safe, hands-off deployments",
+          "url": "https://aws.amazon.com/builders-library/automating-safe-hands-off-deployments/"
+        }
+      ]
+    },
+    {
+      "id": "cd-cost-scaling",
+      "track": "cloud-devops",
+      "title": "Autoscaling, capacity planning and cloud cost",
+      "minutes": 26,
+      "summary": "Scaling on the right signal, autoscaling lag and headroom, capacity planning with load tests and Little's law, FinOps and unit economics, pricing models and cost traps.",
+      "body": "## The core idea\nScaling and cost are the same problem viewed from two sides. Too little capacity and latency explodes and requests fail; too much and you pay for idle machines. Autoscaling tries to track demand automatically, capacity planning decides the floor, ceiling and headroom, and FinOps makes sure someone actually looks at the bill and connects it to the code that caused it.\n\nThe mindset interviewers want: **measure first** (what saturates, at what load, at what cost per unit of work), then design scaling and spending around those numbers.\n\n## Scaling on the right signal\nAn autoscaler is a feedback loop: observe a metric, compare with a target, change capacity. It is only as good as the metric's relationship to saturation.\n\n| Workload | Good signal | Why |\n|---|---|---|\n| CPU-bound API (JSON rendering, image work, crypto) | CPU utilisation (vs requests) | CPU tracks work done |\n| I/O-bound API (waiting on DB and other services) | In-flight requests per pod, requests per second per pod, latency | CPU stays low while queues grow |\n| Queue consumers | Queue depth or lag divided by per-worker throughput | Backlog is the demand |\n| Streaming / Kafka consumers | Consumer lag per partition (capped at partition count) | More consumers than partitions do nothing |\n| Memory-heavy caches | Usually do not autoscale horizontally; size them deliberately | Scaling a cache reshuffles keys |\n\nKubernetes gives you the HPA for pods (CPU, memory, custom and external metrics), KEDA for event sources such as SQS, Kafka, Redis or cron schedules (including scale to zero), and the VPA for right-sizing requests. Managed platforms scale on concurrency directly (Cloud Run's per-instance concurrency, Lambda's one request per environment).\n\n```yaml\napiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: api\nspec:\n  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: api }\n  minReplicas: 6\n  maxReplicas: 60\n  metrics:\n    - type: Pods\n      pods:\n        metric: { name: http_requests_in_flight }\n        target: { type: AverageValue, averageValue: \"40\" }\n  behavior:\n    scaleUp:\n      stabilizationWindowSeconds: 0\n      policies: [{ type: Percent, value: 100, periodSeconds: 30 }]\n    scaleDown:\n      stabilizationWindowSeconds: 300\n      policies: [{ type: Percent, value: 20, periodSeconds: 60 }]\n```\n\nThis scales up aggressively (can double every 30 seconds) and down cautiously (20% per minute after five calm minutes), which is the right asymmetry: under-provisioning hurts users, over-provisioning for a few minutes costs pennies. Custom metrics like `http_requests_in_flight` need a metrics adapter (Prometheus Adapter, or KEDA).\n\n## Autoscaling lag and headroom\n```text\ntraffic spike at t=0\n  metrics scraped and aggregated ........ 15-60 s\n  HPA decides, pods created ............. seconds\n  pods Pending: no room on nodes\n  node autoscaler launches instances .... 1-3+ min (boot, join, pull image)\n  app starts, warms caches, passes readiness ... seconds to minutes\ncapacity actually serving: often 2-5 minutes after the spike began\n```\n\nImplications:\n- **Keep headroom**: target 50-70% utilisation, not 90%, so the current fleet absorbs the first minutes of a spike.\n- **Make startup fast**: small images, lazy init, readiness that turns green quickly.\n- **Speed up nodes**: Karpenter provisions right-sized nodes directly from pending pods, usually faster than node-group based scaling; some teams run low-priority \"placeholder\" pods that get preempted to free warm capacity instantly.\n- **Pre-scale for known events**: scheduled scaling before a launch, a sale, or the daily 9 a.m. peak. Predictive scaling (EC2 Auto Scaling offers it) learns daily and weekly cycles.\n- **Protect yourself when scaling cannot keep up**: rate limiting, load shedding of low-priority work, and graceful degradation. The Google SRE book chapter on handling overload covers per-client quotas and criticality-based shedding.\n- **Downstreams have limits**: scaling the API from 10 to 100 pods can multiply database connections tenfold. Autoscaling must respect the tightest bottleneck.\n\n## Capacity planning\nAutoscaling handles minutes-to-hours variation. Capacity planning answers: what floor and ceiling, how much headroom, which quotas and reservations, for the next quarter.\n\n1. **Find per-instance capacity at your SLO.** Load test one pod (k6, Gatling, Locust) with realistic traffic and increase load until p99 latency breaks the SLO or errors appear. That knee, minus a safety margin, is the per-pod throughput you plan with. Throughput at 100% CPU is not the number; latency degrades sharply well before that as queues build.\n2. **Use Little's law** to reason about concurrency: `L = lambda x W`. At 2,000 req/s and 50 ms average latency there are 100 requests in flight; if each holds a DB connection for its full duration, the pool across all pods needs about 100 connections plus headroom.\n3. **Forecast peak demand** from history: daily and weekly peaks, growth trend, planned launches, seasonality.\n4. **Add failure headroom.** N+1 at minimum; to survive losing one of three AZs, each zone needs to carry half the load, so run at about two-thirds of zonal capacity.\n5. **Check every dependency and quota**: database CPU and connections, cache memory, third-party rate limits, cloud quotas (vCPUs per family, IPs per subnet, Lambda concurrency).\n\n```text\npeak 6,000 req/s, per-pod capacity at SLO 250 req/s, keep 30% headroom\npods needed = 6,000 / (250 x 0.7) = 34.3 -> 35\nspread over 3 AZs and survive one loss: each AZ must carry 50% of peak\n  -> 6,000 x 0.5 / (250 x 0.7) = 17.1 -> 18 per AZ -> 54 pods at peak\nminReplicas covers the normal daily trough plus one AZ loss; maxReplicas >= 54 with quota to match\n```\n\n## FinOps basics\nThe FinOps Foundation describes FinOps as an operating model where engineering, finance and business share accountability for cloud spend, working in a loop of **Inform** (visibility and allocation), **Optimize** (rates and usage), **Operate** (continuous governance).\n\nWhat it means for an engineer:\n- **Allocation**: tag every resource with team, service and environment (enforced in Terraform `default_tags` and policy checks). In Kubernetes, shared clusters need cost allocation by namespace and label (OpenCost, Kubecost, or the providers' split cost allocation).\n- **Visibility**: per-team dashboards and budgets with anomaly alerts (AWS Cost Anomaly Detection and similar). Showback first, chargeback if the organisation wants it.\n- **Unit economics**: track cost per thousand requests, per active customer, per order or per GB processed. A bill that doubled while traffic tripled is a success; one that doubled while traffic was flat is a bug.\n- **Rate optimisation** (pay less per unit) versus **usage optimisation** (use fewer units). Do usage first, then commit.\n\n### Pricing models\n- **On-demand**: flexible, most expensive.\n- **Commitments**: Savings Plans or Reserved Instances (AWS), committed use discounts (Google Cloud). AWS advertises up to about 72% off on-demand for long, upfront commitments. Commit to the steady baseline you are confident about, not the peak.\n- **Spot / preemptible**: spare capacity at large discounts (AWS cites up to 90%) that can be reclaimed with short notice (two minutes on AWS). Great for stateless, fault-tolerant work: CI runners, batch jobs, stateless web replicas spread across many instance types. Never for a single database primary.\n- **ARM instances** often give better price-performance for workloads that support them.\n\n## Cost traps\nThe bill line items that surprise people:\n- **NAT gateway processing**: charged per GB on top of hourly fees. Private workloads pulling container images, calling S3 or third-party APIs through NAT add up fast. Use VPC gateway endpoints (S3, DynamoDB) and interface endpoints for heavy AWS API traffic, and pull images through a registry in-region.\n- **Cross-AZ data transfer**: charged per GB in each direction on AWS. Chatty microservices, replicas reading across zones, and Kafka replication across AZs can cost more than the compute. Topology-aware routing helps.\n- **Internet egress**: serving large files directly from origin instead of through a CDN.\n- **Idle and orphaned resources**: unattached EBS volumes, old snapshots, idle load balancers, forgotten test clusters, unused elastic IPs (public IPv4 addresses are billed hourly on AWS since 2024).\n- **Over-provisioned requests in Kubernetes**: pods requesting 2 CPUs and using 0.2 strand capacity that nodes still pay for. Right-size from p95 usage (VPA recommendations, Goldilocks).\n- **Observability volume**: verbose logs ingested at per-GB prices, high-cardinality metric labels (user IDs in labels), traces at 100% sampling. Sample, set retention, drop debug logs in production.\n- **Always-on non-production**: staging and preview environments running 24/7 at production size. Scale them down at night and on weekends, use smaller instances, auto-delete previews.\n- **Storage class neglect**: years of logs and backups in hot storage. Use lifecycle rules to transition and expire.\n- **Serverless loops and runaway concurrency**: a recursive trigger or retry storm. Set concurrency caps and budget alerts.\n- **Managed service minimums**: some managed products bill a floor per cluster or per hour even when idle.\n\n## Investigating a cost spike\n```text\n1. Cost explorer: group by service, then by usage type, then by tag/account. Which line moved?\n2. Correlate with time: did it start on a deploy, a traffic change, a new feature, a config change?\n3. Drill into the resource: which bucket, which NAT, which cluster/namespace, which log group?\n4. Fix the cause (code, config, architecture), not just the symptom.\n5. Add a guardrail: budget alert, anomaly detection, policy check, dashboard, so it cannot silently recur.\n```\n\n## Trade-offs\n- Aggressive scale-to-zero saves money and adds cold starts. Keep a floor for latency-critical paths.\n- Commitments lower rates and reduce flexibility; over-committing on a shrinking workload wastes money.\n- Spot saves a lot and adds interruption handling; mix spot with on-demand for a guaranteed floor.\n- Engineering time is a cost too. Saving $200 a month with two weeks of work is a bad trade; fixing a $20,000 NAT bill with a VPC endpoint is a great one.\n\n## In the interview\n**What they probe:** whether you pick scaling signals from how the workload saturates, understand lag and headroom, can do back-of-the-envelope capacity maths, and treat cost as an engineering metric with known traps. Senior candidates should connect capacity to failure domains and cost to unit economics.\n\n**A 60-second answer outline** for \"design autoscaling for a spiky service\":\n1. Measure: load test to find per-pod capacity at the SLO and identify the saturating resource.\n2. Signal: CPU if compute-bound, in-flight requests or queue depth if I/O-bound; KEDA for queues.\n3. Behaviour: fast scale-up, slow scale-down, min replicas sized for the trough plus one AZ loss, max bounded by downstream limits and quotas.\n4. Node layer: Karpenter or Cluster Autoscaler, headroom for the 2-5 minute lag, scheduled pre-scaling for known peaks.\n5. Safety net: rate limiting and load shedding when demand outruns capacity; cost tracked as cost per thousand requests.\n\n**Follow-ups to expect:** Why is CPU a bad signal for this service? What happens to the database when you scale pods tenfold? How do you use spot safely? What would you look at first if the bill doubled? How do you allocate costs in a shared Kubernetes cluster?",
+      "keyPoints": [
+        "Scale on the signal that tracks saturation for that workload: CPU for compute-bound services, concurrency or queue depth for I/O-bound ones.",
+        "Autoscaling has lag at every layer (metrics, pods, nodes); keep headroom, scale up fast and down slowly, and pre-scale for known peaks.",
+        "Capacity planning: find per-instance throughput at your latency SLO by load testing, apply Little's law, and size for peak plus a failure domain.",
+        "FinOps is a practice, not a tool: tag everything, make costs visible to the teams that cause them, and track unit cost such as cost per thousand requests.",
+        "Typical traps: NAT and cross-AZ data transfer, egress, idle and forgotten resources, over-provisioned requests, log and metric volume, and always-on non-production environments."
+      ],
+      "interview": [
+        "How would you design autoscaling for a service with spiky traffic?",
+        "Your cloud bill doubled last month. How do you investigate and bring it down?",
+        "How do you do capacity planning for a service?"
+      ],
+      "check": [
+        {
+          "q": "A Node.js API spends most of its time waiting on a database. CPU sits at 20% while latency climbs under load. Which autoscaling signal fits best?",
+          "options": [
+            "Memory usage",
+            "CPU utilisation with a lower target",
+            "In-flight requests per pod or request latency, since CPU does not track saturation for this workload",
+            "Disk I/O"
+          ],
+          "answer": 2,
+          "why": "For I/O-bound services CPU stays low while the real bottleneck (concurrency, connection pools, event-loop queueing) saturates. Scale on concurrency or a request-rate metric, and check the database is not the true limit."
+        },
+        {
+          "q": "A service handles 2,000 requests per second with an average latency of 50 ms. By Little's law, about how many requests are in flight at once?",
+          "options": [
+            "40",
+            "100",
+            "400",
+            "2,050"
+          ],
+          "answer": 1,
+          "why": "L = lambda x W = 2,000 per second x 0.05 seconds = 100 concurrent requests. That tells you how much concurrency your instances and connection pools must sustain."
+        },
+        {
+          "q": "Which change is most likely to cut a large NAT gateway bill caused by private workloads reading from S3?",
+          "options": [
+            "Add an S3 gateway VPC endpoint so that traffic bypasses the NAT",
+            "Move the workloads to bigger instances",
+            "Enable S3 versioning",
+            "Add a second NAT gateway"
+          ],
+          "answer": 0,
+          "why": "Traffic through a NAT gateway is billed per GB processed. A gateway endpoint for S3 routes that traffic privately with no NAT processing charge."
+        }
+      ],
+      "resources": [
+        {
+          "title": "FinOps Foundation: What is FinOps?",
+          "url": "https://www.finops.org/introduction/what-is-finops/"
+        },
+        {
+          "title": "AWS Well-Architected: Cost Optimization Pillar",
+          "url": "https://docs.aws.amazon.com/wellarchitected/latest/cost-optimization-pillar/welcome.html"
+        },
+        {
+          "title": "Kubernetes docs: Node autoscaling",
+          "url": "https://kubernetes.io/docs/concepts/cluster-administration/cluster-autoscaling/"
+        },
+        {
+          "title": "KEDA documentation",
+          "url": "https://keda.sh/docs/"
+        },
+        {
+          "title": "Google SRE Book: Handling overload",
+          "url": "https://sre.google/sre-book/handling-overload/"
+        },
+        {
+          "title": "Karpenter documentation",
+          "url": "https://karpenter.sh/docs/"
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "k8s-deploy-pipeline",
+      "title": "GitOps deploy pipeline with canary releases on Kubernetes",
+      "level": "advanced",
+      "hours": 50,
+      "stack": [
+        "Docker (multi-stage, distroless)",
+        "Kubernetes (kind locally, or a managed cluster)",
+        "GitHub Actions with OIDC",
+        "Terraform or OpenTofu",
+        "Argo CD + Argo Rollouts",
+        "Prometheus + Grafana",
+        "Postgres",
+        "Trivy + cosign"
+      ],
+      "summary": "Take a small Node.js API from commit to production on Kubernetes: cached multi-stage image builds, scanning and signing in CI, Terraform-managed infrastructure, GitOps with Argo CD, automated canary releases gated on Prometheus metrics, autoscaling, and zero-downtime database migrations.",
+      "why": "Most candidates can say 'I deployed to Kubernetes'. Few can show a pipeline where a bad release is caught at 5% traffic and rolled back automatically, a schema change ships without downtime, and nothing in CI holds a long-lived cloud key. This project demonstrates the platform and reliability judgement hiring managers look for in senior backend, platform and SRE roles, with numbers you measured and a live demo of a failed canary rolling itself back.",
+      "architecture": "```text\ndev push -> GitHub Actions\n   PR:   lint, typecheck, unit + integration tests (Postgres service), docker build (gha cache)\n   main: build once -> tag :sha -> Trivy scan -> cosign sign (keyless OIDC) -> push GHCR\n         -> open PR in deploy repo: bump image digest in overlays/staging\n\ndeploy repo (Kustomize: base + overlays/staging, overlays/prod)\n   Argo CD (in cluster) watches -> syncs Rollout, Service, HPA, PDB, migration Job\n\ncluster (Terraform: VPC, managed k8s or kind, node pools, OIDC roles)\n   Gateway API route -> Service(stable) / Service(canary)\n   Argo Rollouts: 5% -> analysis -> 25% -> analysis -> 100% (abort -> rollback)\n   Prometheus scrapes app metrics (RED, by version) -> AnalysisTemplate queries\n   HPA on in-flight requests; Postgres (managed or in-cluster for dev)\n```\nKey decisions: build once and promote the digest; pull-based GitOps so CI never holds cluster credentials; canary gated on error ratio and p99 latency compared with the stable version; migrations as a pre-sync Job using expand and contract; OIDC for all cloud access; everything reproducible from Terraform plus the deploy repo.",
+      "lessons": [
+        "cd-docker",
+        "cd-kubernetes",
+        "cd-ci-cd",
+        "cd-iac-terraform",
+        "cd-deploy-strategies",
+        "cd-cost-scaling"
+      ],
+      "milestones": [
+        {
+          "id": "m1",
+          "title": "Service and production-grade image",
+          "details": [
+            "Build a small Node.js API with Postgres: /healthz (process only), /ready, one CRUD resource, Prometheus metrics labelled by version.",
+            "Write a multi-stage Dockerfile with a cached deps stage and a distroless nonroot runtime; handle SIGTERM with connection draining.",
+            "Checkable: image under [X] MB, `docker stop` exits cleanly in under 2 seconds with no dropped requests under load."
+          ]
+        },
+        {
+          "id": "m2",
+          "title": "CI that builds once and secures the supply chain",
+          "details": [
+            "GitHub Actions: parallel lint, typecheck and tests with npm cache; integration tests against a Postgres service container.",
+            "On main: build with Buildx and the gha cache, tag by SHA, Trivy scan failing on fixable criticals, cosign keyless signing, push to GHCR.",
+            "Pin third-party actions to commit SHAs and set least-privilege permissions per job.",
+            "Checkable: warm pipeline under 8 minutes; a cache hit visible in build logs; `cosign verify` succeeds for the pushed digest."
+          ]
+        },
+        {
+          "id": "m3",
+          "title": "Infrastructure with Terraform",
+          "details": [
+            "Provision the cluster (managed, or kind/k3d for a zero-cost path) plus networking and an OIDC role for CI, with remote locked state.",
+            "Structure as modules with separate state for network, cluster and data; tags on every resource.",
+            "Checkable: `terraform plan` on a clean checkout shows no changes; a nightly drift job exits 0."
+          ]
+        },
+        {
+          "id": "m4",
+          "title": "GitOps with Argo CD",
+          "details": [
+            "Create a deploy repo with Kustomize base and staging/prod overlays: Deployment or Rollout, Service, Gateway API route, HPA, PDB.",
+            "CI opens a PR bumping the image digest in staging; merging triggers Argo CD sync.",
+            "Checkable: a manual `kubectl edit` in the cluster is reverted by Argo CD within its sync interval."
+          ]
+        },
+        {
+          "id": "m5",
+          "title": "Automated canary releases",
+          "details": [
+            "Replace the Deployment with an Argo Rollout: 5%, 25%, 100% steps with pauses and Prometheus analysis on 5xx ratio and p99 latency versus stable.",
+            "Add a fault-injection env var that makes the new version return 5% errors.",
+            "Checkable: deploying the faulty version aborts at 5% and rolls back automatically within [Y] minutes, with no human action."
+          ]
+        },
+        {
+          "id": "m6",
+          "title": "Zero-downtime schema migration",
+          "details": [
+            "Run migrations as an Argo CD PreSync Job with lock_timeout set, never in pod startup.",
+            "Ship a column rename with expand and contract across separate releases: add, dual-write, backfill in batches, switch reads, drop.",
+            "Checkable: a k6 test running throughout the whole sequence shows zero failed requests, and rollback works at every step before the drop."
+          ]
+        },
+        {
+          "id": "m7",
+          "title": "Autoscaling, load test and cost",
+          "details": [
+            "Load test one pod to find throughput at the p99 SLO; configure HPA on in-flight requests with fast scale-up and slow scale-down.",
+            "Write a capacity note: per-pod capacity, min and max replicas, headroom for one zone loss, and estimated monthly cost per thousand requests.",
+            "Checkable: a k6 spike from [A] to [B] req/s keeps p99 under the SLO, with the scale-up timeline captured in Grafana."
+          ]
+        }
+      ],
+      "stretch": [
+        "Multi-cluster or multi-region promotion with Argo CD ApplicationSets and progressive waves.",
+        "Admission policy (Kyverno or a ValidatingAdmissionPolicy) that only admits cosign-signed images from your registry.",
+        "Preview environments per pull request that are created on open and destroyed on merge.",
+        "KEDA-driven worker that scales on queue depth, including scale to zero.",
+        "SLO burn-rate alerts that can also halt rollouts."
+      ],
+      "resume": [
+        "Built a GitOps delivery pipeline (GitHub Actions, Argo CD, Argo Rollouts) that cut deploy time from [X] min to [Y] min and catches bad releases at 5% traffic, auto-rolling back in under [Z] min.",
+        "Reduced container image size by [X%] and CI time by [Y%] with multi-stage distroless builds and remote layer caching, adding Trivy scanning and keyless cosign signing.",
+        "Shipped zero-downtime schema changes using expand-and-contract migrations, verified by load tests with [0] failed requests across [N] releases.",
+        "Defined Kubernetes autoscaling from load-tested per-pod capacity, holding p99 under [X ms] through a [Y]x traffic spike at [Z%] lower cost than static provisioning."
+      ],
+      "talking": [
+        "Why pull-based GitOps instead of CI running kubectl, and what it changes for credentials and drift.",
+        "How the canary analysis compares canary and stable, which metrics it uses, and how you avoided false positives at low traffic.",
+        "Walk through the column rename across releases and why each step is backward compatible.",
+        "How you chose the HPA metric and the min and max replicas from load-test data.",
+        "Supply-chain controls: pinned actions, OIDC, scanning, signing, and what each one protects against."
+      ],
+      "features": [
+        "A commit to main flows to a staging deploy with no manual steps, visible in the Argo CD UI.",
+        "Live demo: a deliberately faulty release is aborted at 5% and rolled back automatically.",
+        "Grafana dashboard with request rate, errors and p99 latency split by version during a canary.",
+        "HPA scaling up during a k6 spike and back down afterwards, with the timeline captured.",
+        "A column rename shipped across releases with zero failed requests under load.",
+        "Signed images verified by digest; CI with no stored cloud keys.",
+        "Terraform plan on a clean checkout shows no drift."
+      ],
+      "deepDives": [
+        {
+          "title": "Build once, promote by digest",
+          "body": "The pipeline builds the image exactly once per commit and everything downstream refers to the **digest** (`ghcr.io/acme/api@sha256:...`), never to a mutable tag. Staging and production differ only in Kustomize overlays (config, replica counts, resources).\n\nWhy it matters: rebuilding per environment can pull a newer base image or dependency, so the bytes in production were never tested. Tags can be moved; digests cannot. Rollback becomes 'set the previous digest', which Argo CD does from Git history.\n\nThe promotion flow is a pull request in the deploy repo that changes one line. That gives review, an audit trail and a trivially revertible change. Automation (a small script or a tool such as Argo CD Image Updater or Kargo) can open those PRs; a human or a policy merges the prod one."
+        },
+        {
+          "title": "Canary analysis that does not cry wolf",
+          "body": "The Rollout sends 5% of traffic to the canary, then runs an AnalysisTemplate against Prometheus every minute. Two metrics gate promotion:\n\n- **5xx ratio** of the canary, compared with the stable version over the same window, so a downstream blip that hurts both versions does not fail the canary.\n- **p99 latency** of the canary under a fixed threshold relative to stable.\n\n```text\nfail if canary_5xx_ratio > max(0.01, 2 x stable_5xx_ratio) for 2 of 5 checks\nfail if canary_p99 > 1.3 x stable_p99 for 2 of 5 checks\n```\n\nLow traffic is the hard part: at 5% of a quiet service, one error swings the ratio wildly. Mitigations: require a minimum request count before evaluating, use longer windows, allow `failureLimit` of more than one, and generate synthetic traffic in staging. Every metric is labelled with the pod template hash so the queries can split by version. A failed analysis aborts the Rollout and shifts weight back to stable within one evaluation interval."
+        },
+        {
+          "title": "Migrations as a separate, compatible step",
+          "body": "Running migrations in every pod's startup means ten replicas race to take the same lock, and a rollback leaves code that does not match the schema. Instead, migrations run once in an Argo CD **PreSync hook Job** before the new Rollout starts, with `SET lock_timeout = '5s'` so a blocked `ALTER TABLE` fails fast instead of queuing every other query behind it.\n\nEvery migration must be compatible with both the current and the previous app version, because the canary runs both side by side and a rollback brings the old one back. Breaking changes are split with expand and contract: add the new column, dual-write, backfill in batches of a few thousand rows with sleeps, switch reads, stop writing the old column, and drop it in a later release. Indexes use `CREATE INDEX CONCURRENTLY`. A k6 script runs throughout to prove zero failed requests."
+        },
+        {
+          "title": "Autoscaling from measured capacity",
+          "body": "The HPA does not target CPU, because the API is I/O-bound: CPU sat around 25% while p99 latency crossed the SLO. A load test on a single pod found the knee at about N in-flight requests; the HPA targets 70% of that via a custom metric exposed through the Prometheus Adapter.\n\nScale-up is aggressive (100% every 30 seconds, no stabilisation) and scale-down cautious (300-second window, 20% per minute). `minReplicas` covers the daily trough with one zone lost; `maxReplicas` is capped by the Postgres connection budget: replicas x pool size must stay under the database's limit, with a pooler in front if that cap is too low.\n\nThe write-up records the per-pod capacity, the scale-up timeline during a k6 spike (metrics delay, pod start, node provisioning) and the resulting cost per thousand requests, which is what makes the result discussable in an interview."
+        }
+      ]
+    }
+  ]
+}

@@ -2,18 +2,18 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Check, MapPin, TriangleAlert } from "lucide-react";
-import { ApplyPanel } from "@/components/jobs/apply-panel";
-import { JdView } from "@/components/jobs/jd-view";
-import { TailorSection } from "@/components/jobs/tailor-section";
+import { ApplyPanel } from "@/modules/jobs/components/apply-panel";
+import { JdView } from "@/modules/jobs/components/jd-view";
+import { TailorSection } from "@/modules/jobs/components/tailor-section";
 import { BackLink } from "@/components/shared/back-link";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { tierProfiles } from "@/lib/content";
-import { scoreResume } from "@/lib/domain/ats";
-import { AGGREGATOR_LABEL, AGGREGATOR_URL, type Aggregator } from "@/lib/domain/job-postings";
-import { getPostingDetail } from "@/lib/services/job-discovery";
-import { getJob } from "@/lib/services/jobs";
-import { getBaseResume } from "@/lib/services/resume";
+import { tierProfiles } from "@/core/content";
+import { scoreResume } from "@/modules/jobs/domain/ats";
+import { AGGREGATOR_LABEL, AGGREGATOR_URL, type Aggregator } from "@/modules/jobs/domain/job-postings";
+import { getPostingDetail } from "@/modules/jobs/services/job-discovery";
+import { getJob } from "@/modules/jobs/services/jobs";
+import { getBaseResume } from "@/modules/resume/services/resume";
 
 export const metadata: Metadata = { title: "Job" };
 

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth/dal";
-import { exportBackup } from "@/lib/services/export";
-import { todayIn } from "@/lib/services/plan";
-import { getSettings, markRun } from "@/lib/services/settings";
+import { requireSession } from "@/core/auth/dal";
+import { exportBackup } from "@/core/services/export";
+import { todayIn } from "@/modules/planner/services/plan";
+import { getSettings, markRun } from "@/modules/settings/services/settings";
 
 export async function GET() {
   await requireSession();

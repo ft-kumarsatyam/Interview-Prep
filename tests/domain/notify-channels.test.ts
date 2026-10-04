@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { brevoApiKey, brevoChannel, configuredChannels, emailChannel, whatsappChannel } from "@/lib/notify";
-import { resetEnvForTests } from "@/lib/env";
+import { brevoApiKey, brevoChannel, configuredChannels, emailChannel, whatsappChannel } from "@/core/notify";
+import { resetEnvForTests } from "@/core/env";
 
 const KEY = "xkeysib-abc123-def";
 

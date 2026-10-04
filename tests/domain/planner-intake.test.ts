@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { intakeStepSchema, isIntakeComplete, mergeRatings, missingSteps, ratingToWeight } from "@/lib/domain/planner-intake";
+import { intakeStepSchema, isIntakeComplete, mergeRatings, missingSteps, ratingToWeight } from "@/modules/planner/domain/planner-intake";
 
 describe("ratingToWeight", () => {
   it("gives weaker topics more time and strong ones less", () => {

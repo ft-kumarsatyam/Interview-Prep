@@ -2,18 +2,18 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, CheckCircle2, CircleDashed, ListFilter, PartyPopper, XCircle } from "lucide-react";
-import { prettyDate } from "@/components/quiz/format";
-import { PracticeWrong } from "@/components/quiz/practice-wrong";
-import { QuestionReview } from "@/components/quiz/question-review";
+import { prettyDate } from "@/modules/quiz/components/format";
+import { PracticeWrong } from "@/modules/quiz/components/practice-wrong";
+import { QuestionReview } from "@/modules/quiz/components/question-review";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { Badge } from "@/components/ui/badge";
-import { isDateStr } from "@/lib/domain/dates";
-import { chosenIndices, correctIndices, isAnswerCorrect } from "@/lib/domain/quiz";
-import { askSubjectForRef } from "@/lib/quiz/subject";
-import { getQuizReview } from "@/lib/services/quiz";
-import { cn } from "@/lib/utils";
+import { isDateStr } from "@/core/domain/dates";
+import { chosenIndices, correctIndices, isAnswerCorrect } from "@/modules/quiz/domain/quiz";
+import { askSubjectForRef } from "@/modules/quiz/lib/subject";
+import { getQuizReview } from "@/modules/quiz/services/quiz";
+import { cn } from "@/core/utils";
 
 export const metadata: Metadata = { title: "Quiz review" };
 

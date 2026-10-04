@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deepEqual } from "@/lib/sandbox/deep-equal";
+import { deepEqual } from "@/core/sandbox/deep-equal";
 
 describe("deepEqual", () => {
   it("compares primitives", () => {

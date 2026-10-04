@@ -2,9 +2,9 @@
 
 import { refresh } from "next/cache";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { testProviders } from "@/lib/services/ai-test";
-import { runMorning } from "@/lib/services/cron";
+import { requireSession } from "@/core/auth/dal";
+import { testProviders } from "@/modules/ai/services/ai-test";
+import { runMorning } from "@/core/services/cron";
 
 export async function runMorningAction(): Promise<ActionResult<{ message: string }>> {
   await requireSession();

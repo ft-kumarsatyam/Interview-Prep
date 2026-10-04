@@ -2,7 +2,7 @@
 
 import { refresh } from "next/cache";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
+import { requireSession } from "@/core/auth/dal";
 import {
   diagnosticCandidates,
   startDiagnostic,
@@ -11,9 +11,9 @@ import {
   type DiagnosticCandidate,
   type DiagnosticResult,
   type DiagnosticTopic,
-} from "@/lib/services/diagnostic";
-import { completeIntake, getFeasibility, saveIntakeStep } from "@/lib/services/planner-intake";
-import { applyProposal, dismissProposal } from "@/lib/services/rebalance";
+} from "@/modules/progress/services/diagnostic";
+import { completeIntake, getFeasibility, saveIntakeStep } from "@/modules/planner/services/planner-intake";
+import { applyProposal, dismissProposal } from "@/modules/planner/services/rebalance";
 
 const fail = (err: unknown, fallback: string): { ok: false; error: string } => ({ ok: false, error: err instanceof Error ? err.message : fallback });
 

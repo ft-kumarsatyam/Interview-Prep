@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { SquareTerminal } from "lucide-react";
-import { Playground } from "@/components/playground/playground";
+import { Playground } from "@/modules/dsa/components/playground/playground";
 import { PageHeader } from "@/components/shared/page-header";
-import { listSnippets } from "@/lib/services/snippets";
+import { listSnippets } from "@/modules/dsa/services/snippets";
 
 export const metadata: Metadata = { title: "Playground" };
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { filterSnippets, formatTags, parseTags, tagCounts } from "@/lib/playground/tags";
-import { transpileTs } from "@/lib/playground/ts-check";
+import { filterSnippets, formatTags, parseTags, tagCounts } from "@/modules/dsa/lib/playground/tags";
+import { transpileTs } from "@/modules/dsa/lib/playground/ts-check";
 
 describe("transpileTs", () => {
   it("strips types so the result is runnable JavaScript", async () => {

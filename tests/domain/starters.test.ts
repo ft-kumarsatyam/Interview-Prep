@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { testcaseBySlug } from "@/lib/content";
-import { jsStarter, parseSignature, pyStarter, pyType, starterFor, tsStarter, tsType } from "@/lib/domain/starters";
-import { caseToDraft, casesFromInputs, parseDrafts, stepFontSize } from "@/lib/domain/ide";
+import { testcaseBySlug } from "@/core/content";
+import { jsStarter, parseSignature, pyStarter, pyType, starterFor, tsStarter, tsType } from "@/modules/dsa/domain/starters";
+import { caseToDraft, casesFromInputs, parseDrafts, stepFontSize } from "@/modules/dsa/domain/ide";
 
 describe("starters", () => {
   it("reads parameter and return types from the JSDoc starter", () => {

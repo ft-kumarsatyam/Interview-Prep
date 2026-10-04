@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import mammoth from "mammoth";
 import { extractText, getDocumentProxy } from "unpdf";
-import { parseResumeText } from "@/lib/domain/resume";
-import { renderResumeText } from "@/lib/domain/resume-tailor";
-import { resumeToDocx } from "@/lib/resume/export-docx";
-import { resumeToPdf } from "@/lib/resume/export-pdf";
+import { parseResumeText } from "@/modules/resume/domain/resume";
+import { renderResumeText } from "@/modules/resume/domain/resume-tailor";
+import { resumeToDocx } from "@/modules/resume/lib/export-docx";
+import { resumeToPdf } from "@/modules/resume/lib/export-pdf";
 
 const DOC = parseResumeText(`Aarav Sharma
 aarav@example.com | +91 98765 43210 | github.com/aarav

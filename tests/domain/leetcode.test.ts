@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCacheFresh, planSync, type Submission } from "@/lib/domain/leetcode";
+import { isCacheFresh, planSync, type Submission } from "@/modules/dsa/domain/leetcode";
 
 const sec = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 const base = {

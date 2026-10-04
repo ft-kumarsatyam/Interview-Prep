@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { interviewQuestions, webProjects } from "@/lib/content";
-import { WebInterviewProgress, WebLessonProgress } from "@/lib/models/webdev";
-import { Settings } from "@/lib/models/system";
-import { exportBackup } from "@/lib/services/export";
-import { getBaseResume, saveBaseResume } from "@/lib/services/resume";
-import { invalidateSettings } from "@/lib/services/settings";
-import { addProjectToSavedResume, getDoneLessons, getInterviewStatus, getProjectState, saveProjectMeta, setInterviewStatus, setLessonDone, setMilestone } from "@/lib/services/webdev";
+import { interviewQuestions, webProjects } from "@/core/content";
+import { WebInterviewProgress, WebLessonProgress } from "@/core/models/webdev";
+import { Settings } from "@/core/models/system";
+import { exportBackup } from "@/core/services/export";
+import { getBaseResume, saveBaseResume } from "@/modules/resume/services/resume";
+import { invalidateSettings } from "@/modules/settings/services/settings";
+import { addProjectToSavedResume, getDoneLessons, getInterviewStatus, getProjectState, saveProjectMeta, setInterviewStatus, setLessonDone, setMilestone } from "@/modules/learn/services/webdev";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

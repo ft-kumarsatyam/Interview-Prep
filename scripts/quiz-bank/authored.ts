@@ -7,9 +7,9 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { subtopicById } from "@/lib/content";
-import { seededRng, seedFrom, shuffle } from "@/lib/domain/sampling";
-import { difficultySchema, quizQuestionSchema, type QuizQuestion } from "@/lib/quiz/question";
+import { subtopicById } from "@/core/content";
+import { seededRng, seedFrom, shuffle } from "@/core/domain/sampling";
+import { difficultySchema, quizQuestionSchema, type QuizQuestion } from "@/modules/quiz/lib/question";
 import { runSnippet } from "./run-snippet";
 
 export const AUTHORED_DIR = path.join(process.cwd(), "scripts", "quiz-bank", "authored");

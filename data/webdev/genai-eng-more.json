@@ -1,0 +1,170 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "gen-structured-output",
+      "track": "genai-eng",
+      "title": "Structured output: JSON mode, constrained decoding and repair loops",
+      "minutes": 18,
+      "summary": "The guarantee ladder from prompt-only JSON to schema-constrained decoding, function calling as structure, schema design, zod validation and bounded repair loops.",
+      "body": "## The core idea\nMost production LLM features are not chat. They are functions: extract fields from an invoice, classify a ticket, produce a plan an agent will execute, fill a UI component. The rest of your code needs a **typed object**, not prose. Structured output is the set of techniques that turn a probabilistic text generator into something that reliably returns data matching a schema, and the engineering around it for when it still goes wrong.\n\nThere is a ladder of guarantees, and you should know exactly what each rung promises:\n\n```text\nrung                         guarantees                        still possible\n---------------------------  --------------------------------  --------------------------------\n1 prompt \"reply in JSON\"     nothing                           prose, code fences, bad JSON\n2 JSON mode                  syntactically valid JSON          wrong keys, wrong types, missing fields\n3 schema-constrained output  matches your JSON Schema          wrong *values*, refusals, truncation\n4 + validation and repair    your business rules hold          bounded retries, then a fallback\n```\n\nRung 3 is now available from the major APIs and from open-source servers, but it only guarantees *shape*. Rung 4, validating meaning and repairing, is always your job.\n\n## How schema-constrained decoding works\nAt every decoding step the model produces a probability for each token in its vocabulary. Constrained decoding **masks** every token that would make the output impossible to complete validly, then samples from what is left.\n\n```text\nschema: {\"priority\": \"low\" | \"high\"}\ngenerated so far:  {\"priority\": \"\nallowed next tokens: l, lo, low, h, hi, high (whatever tokens start a valid continuation)\neverything else (e.g. \"medium\", \"}\", digits) -> logit set to -infinity\n```\n\nImplementation sketch:\n1. Compile the JSON Schema (or a regex or context-free grammar) into an automaton: a finite-state machine for regular constraints, a pushdown automaton for nested JSON.\n2. Precompute which vocabulary tokens are valid from each automaton state. This is the hard part, because a single token can span several grammar symbols (`\"},{\"` is one token in many tokenizers).\n3. At runtime, look up the mask for the current state, apply it to the logits, sample, advance the state.\n\n\"Efficient Guided Generation for Large Language Models\" (Willard and Louf, 2023), the paper behind the Outlines library, showed how to index the vocabulary against an FSM so masking costs almost nothing per token. XGrammar, llguidance and llama.cpp's GBNF grammars are other widely used engines, and vLLM and SGLang expose structured outputs using them.\n\nTwo practical consequences:\n- **First-call latency**: compiling a large or new schema takes time; providers cache compiled schemas, so the first request with a new schema can be slower.\n- **Schema subsets**: providers support a subset of JSON Schema. OpenAI's strict mode, for example, requires every property to be listed as required (use a union with null for optional values) and `additionalProperties: false`, and does not support every keyword. Read the provider's list before designing schemas.\n\n## The provider options\n- **JSON mode**: valid JSON, no schema. Fine for prototypes; do not rely on it.\n- **Structured outputs / response format with a JSON Schema**: OpenAI calls this Structured Outputs (strict JSON Schema adherence); Gemini supports a response schema with a JSON MIME type; open-source servers accept a JSON Schema or grammar per request.\n- **Tool (function) calling as structure**: define one tool whose input schema is your output type and require the model to call it. This works on every provider that supports tools, and tools are what models are most heavily trained to fill correctly. With strict tool schemas, arguments are constrained too; without strict mode, arguments are usually but not always valid, so validate them.\n\n```ts\nimport OpenAI from \"openai\";\nimport { zodTextFormat } from \"openai/helpers/zod\";\nimport { z } from \"zod\";\n\nconst Ticket = z.object({\n  category: z.enum([\"billing\", \"bug\", \"account\", \"other\"]),\n  priority: z.enum([\"low\", \"medium\", \"high\"]),\n  summary: z.string(),\n  orderId: z.string().nullable(),          // strict mode: optional means nullable, still required\n});\n\nconst openai = new OpenAI();\nconst response = await openai.responses.parse({\n  model: \"gpt-4.1-mini\",\n  input: [\n    { role: \"system\", content: \"Classify the support ticket. Use null when a field is not stated.\" },\n    { role: \"user\", content: ticketText },\n  ],\n  text: { format: zodTextFormat(Ticket, \"ticket\") },\n});\nconst ticket = response.output_parsed;     // typed as z.infer<typeof Ticket>, or null on refusal\n```\n\nThe helper converts the zod schema to JSON Schema for the request and parses the reply back through zod. With zod 4 you can also call `z.toJSONSchema(schema)` yourself to send the schema to any provider or tool definition. The Vercel AI SDK offers a provider-neutral equivalent built on the same idea.\n\n## Schema design affects answer quality\nThe schema is part of the prompt. The model generates fields **in order**, so:\n- **Put reasoning before the answer.** A field like `reasoning` or `evidence` before `verdict` lets the model think in tokens before committing. Putting `verdict` first forces it to decide, then rationalise.\n- **Use enums** for closed sets; free-text categories drift (\"Billing\", \"billing issue\", \"payments\").\n- **Describe fields** (`.describe()` in zod becomes a JSON Schema description) with units and formats: \"amount in cents as an integer\".\n- **Make \"unknown\" representable.** If every field is required and non-null, the model will invent an order id rather than leave it out. Nullable fields and an explicit `\"other\"` enum value reduce fabrication.\n- **Keep it shallow and small.** Deeply nested, huge schemas cost tokens, compile slowly and raise error rates. Split into steps if needed.\n\nThere is evidence that strict format constraints can reduce reasoning quality on some tasks (\"Let Me Speak Freely?\", Tam et al., 2024). A common mitigation is two-step: let the model reason freely, then extract the result into the schema, or include a reasoning field first.\n\n## Validation and repair loops\nEven with constrained decoding, check three things:\n1. **Did generation finish?** If the response stopped because it hit the max token limit, the JSON is truncated. Check the finish or stop reason before parsing.\n2. **Did the model refuse?** Safety refusals may come back in a separate refusal field rather than as your object.\n3. **Is it semantically valid?** Schemas cannot express \"end date after start date\", \"total equals the sum of line items\" or \"the quoted evidence actually appears in the source document\".\n\n```ts\nimport { z } from \"zod\";\n\nconst Invoice = z.object({\n  lineItems: z.array(z.object({ description: z.string(), cents: z.number().int().nonnegative() })).min(1),\n  totalCents: z.number().int().nonnegative(),\n  issuedOn: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),\n}).refine((inv) => inv.lineItems.reduce((s, li) => s + li.cents, 0) === inv.totalCents, {\n  message: \"totalCents must equal the sum of lineItems\",\n  path: [\"totalCents\"],\n});\n\nasync function extractInvoice(text: string, maxAttempts = 3): Promise<z.infer<typeof Invoice>> {\n  const messages: ChatMessage[] = [{ role: \"user\", content: `Extract the invoice:\\n${text}` }];\n  for (let attempt = 1; attempt <= maxAttempts; attempt++) {\n    const reply = await llm.generate({ messages, schema: z.toJSONSchema(Invoice) });\n    if (reply.finishReason === \"length\") throw new Error(\"truncated: raise max tokens or simplify the schema\");\n\n    let candidate: unknown;\n    try { candidate = JSON.parse(reply.text); } catch { candidate = undefined; }\n    const parsed = Invoice.safeParse(candidate);\n    if (parsed.success) return parsed.data;\n\n    // repair: show the model its own output and the precise errors, then try again\n    messages.push({ role: \"assistant\", content: reply.text });\n    messages.push({ role: \"user\", content: `That failed validation:\\n${z.prettifyError(parsed.error)}\\nReturn corrected JSON only.` });\n  }\n  throw new Error(\"invoice extraction failed after retries\"); // caller routes to a fallback or human review\n}\n```\n\nRules for repair loops: cap attempts (one or two repairs is usually enough), send **specific** errors not \"invalid, try again\", log every failure with the schema version, and have a defined fallback (a bigger model, a default, a human queue). If one field fails often, fix the schema or prompt; retries are a symptom.\n\n## Streaming structured output\nUIs often want to render fields as they arrive. Partial JSON is not valid JSON, so use a tolerant partial parser (the AI SDK and others provide streaming object helpers) and treat every partial value as provisional: an array may gain items, a string may grow. Only run side effects and final validation on the complete object.\n\n## Trade-offs and when not to use it\n- For free-form answers shown to humans, forcing JSON adds nothing and can hurt quality; stream prose.\n- Constrained decoding guarantees shape, not truth: a perfectly typed invoice can have every number wrong. For high-stakes extraction, add evidence fields with source quotes and verify the quotes exist.\n- Very large enums (thousands of product ids) are better handled by retrieving candidates first and constraining to those, or by validating against the database afterwards.\n- Self-hosted constrained decoding can reduce throughput if grammar compilation or masking is slow; measure with your schemas.\n\n## Common mistakes and debugging\n- Trusting JSON mode as if it validated the schema.\n- Not checking the finish reason, then debugging \"invalid JSON\" that is just truncation.\n- Answer field before reasoning field.\n- Required, non-null fields for data that may be absent, which invites fabrication.\n- Parsing with `JSON.parse` and a type cast instead of a runtime validator; types disappear at runtime.\n- Infinite or unbounded retry loops that multiply cost on a systematic failure.\n- Silent schema changes: version schemas alongside prompts and keep a regression eval set.\n\n## In the interview\n**What they probe:** whether you know the guarantee ladder precisely, how constrained decoding works under the hood, and that semantic validation and a repair loop are still needed. Senior candidates mention field ordering, nullable fields, truncation and refusals.\n\n**A 60-second answer outline:**\n1. Prompting gives no guarantee; JSON mode gives valid JSON; schema-constrained decoding masks invalid tokens so output matches the schema.\n2. Use provider structured outputs or a forced tool call; define the schema once in zod and derive JSON Schema and types from it.\n3. Design the schema for quality: reasoning first, enums, descriptions, nullable for unknown.\n4. Always validate at runtime, check finish reason and refusals, and run a bounded repair loop with precise errors, then a fallback.\n5. Shape is not truth: verify values with business rules and evidence.\n\n**Follow-ups to expect:** how logit masking handles tokens that span JSON syntax; why constrained output can reduce reasoning quality; how you would stream a structured object to a UI; how you would extract from a 200-page document; JSON mode versus tool calling.",
+      "keyPoints": [
+        "JSON mode guarantees valid JSON only; schema-constrained decoding masks invalid tokens so output matches the schema",
+        "A forced tool call with a strict schema is a portable way to get structure from any tool-capable model",
+        "Schema design is prompt design: reasoning before the answer, enums, field descriptions and nullable fields for unknowns",
+        "Always check finish reason and refusals, validate semantics with zod refinements, and cap repair retries",
+        "Shape is not truth: verify values with business rules and evidence quotes"
+      ],
+      "interview": [
+        "What is the difference between JSON mode and schema-constrained structured output?",
+        "How does constrained decoding guarantee that an LLM's output matches a JSON schema?",
+        "How do you design a validation and repair loop for LLM-generated structured data?",
+        "How does the design of an output schema affect the quality of an LLM's answers?"
+      ],
+      "check": [
+        {
+          "q": "Structured output with a strict schema returns JSON that fails to parse. What should you check first?",
+          "options": [
+            "Whether the temperature was above 1",
+            "Whether the schema uses enums",
+            "Whether the embedding model changed",
+            "Whether generation stopped at the max token limit, truncating the JSON"
+          ],
+          "answer": 3,
+          "why": "Constrained decoding keeps output valid while it runs; a length stop cuts it off mid-object."
+        },
+        {
+          "q": "A grading schema has fields in the order {verdict, reasoning}. What change most likely improves accuracy?",
+          "options": [
+            "Remove the reasoning field",
+            "Put reasoning before verdict so the model thinks before committing",
+            "Make verdict a free-text string",
+            "Switch from structured output to JSON mode"
+          ],
+          "answer": 1,
+          "why": "Models generate fields in order; reasoning first lets the model work through the problem before deciding."
+        },
+        {
+          "q": "Which rule can a JSON Schema NOT express, so it needs a runtime refinement?",
+          "options": [
+            "A field must be an integer",
+            "A field must be one of three strings",
+            "The total must equal the sum of the line items",
+            "An array must have at least one item"
+          ],
+          "answer": 2,
+          "why": "Cross-field arithmetic is semantic validation; express it with a zod refine and repair or reject on failure."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Willard and Louf: Efficient Guided Generation for Large Language Models",
+          "url": "https://arxiv.org/abs/2307.09702"
+        },
+        {
+          "title": "OpenAI: Structured Outputs guide",
+          "url": "https://developers.openai.com/api/docs/guides/structured-outputs"
+        },
+        {
+          "title": "Anthropic: tool use documentation",
+          "url": "https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview"
+        },
+        {
+          "title": "Zod: JSON Schema conversion",
+          "url": "https://zod.dev/json-schema"
+        },
+        {
+          "title": "Tam et al.: Let Me Speak Freely? Format restrictions and LLM performance",
+          "url": "https://arxiv.org/abs/2408.02442"
+        },
+        {
+          "title": "vLLM: structured outputs",
+          "url": "https://docs.vllm.ai/en/latest/features/structured_outputs/"
+        }
+      ]
+    },
+    {
+      "id": "gen-voice-realtime",
+      "track": "genai-eng",
+      "title": "Voice and realtime AI: STT, TTS, latency and turn-taking",
+      "minutes": 20,
+      "summary": "Cascaded vs speech-to-speech voice agents, stage-by-stage latency budgets, streaming STT and TTS, turn detection, barge-in handling and WebRTC transport.",
+      "body": "## The core idea\nA voice agent is a chat app where every weakness is amplified. In text, a 3-second wait is fine; in conversation, a 1.5-second silence already feels broken. In text, the user waits for you to finish; in speech, they interrupt, say \"mm-hm\", pause mid-sentence to think, and talk over background noise. Building voice well is mostly **latency engineering and turn-taking**, not prompt writing.\n\nStudies of conversation across many languages (Stivers et al., 2009) found the typical gap between one speaker stopping and the next starting is around 200 ms. Machines will not hit that through a full model pipeline today, but the closer you get, the more natural it feels. A common product target is under roughly a second from the user finishing speaking to the agent's first audio, and good systems aim well below that.\n\n## Two architectures\n```text\nCASCADED (chained) pipeline\n mic -> VAD -> streaming STT -> text -> LLM (streaming) -> text chunks -> streaming TTS -> speaker\n        ^ turn detection decides when the user is done\n\nSPEECH-TO-SPEECH (native audio model)\n mic audio ----------------> realtime multimodal model ----------------> speaker audio\n                   (one model hears audio and speaks audio; text transcripts optional)\n```\n\n| | Cascaded | Speech-to-speech |\n|---|---|---|\n| Latency | Sum of stages; needs careful streaming | Lower, fewer hops |\n| Control | Swap any component; inspect text at every step | Less visibility, fewer knobs |\n| Prosody and emotion | TTS reads text, loses the user's tone | Can hear tone and respond expressively |\n| Tool calling and guardrails | Mature, text-based | Supported, but evaluation is harder |\n| Cost | Usually cheaper and predictable | Audio tokens are typically more expensive |\n\nOpenAI's Realtime API and Google's Gemini Live API are examples of speech-to-speech interfaces; open-source frameworks like Pipecat and LiveKit Agents let you build either style and handle the transport and turn-taking plumbing. Many production systems still use cascaded pipelines because of control, cost and auditability.\n\n## The latency budget\nEvery stage must **stream**: start the next stage on partial output of the previous one. Illustrative budget for a cascaded pipeline (real numbers depend heavily on providers, region and network):\n\n```text\nstage                                         typical range      what you control\n--------------------------------------------  -----------------  -------------------------------------\nend-of-turn detection (silence wait)          200-800 ms         VAD threshold, semantic turn detection\nSTT final transcript after speech ends        100-300 ms         streaming STT, endpointing settings\nLLM time to first token                       200-600 ms         model size, prompt length, prompt caching\nfirst sentence ready for TTS                  50-300 ms          chunk on clause boundaries\nTTS time to first audio byte                  80-250 ms          streaming TTS, voice model choice\nnetwork + audio buffering (both directions)   50-200 ms          WebRTC, region co-location, jitter buffer\n--------------------------------------------  -----------------\nvoice-to-voice                                ~0.7 s to 2.5 s\n```\n\nThe biggest single item is often **turn detection**: how long you wait in silence before deciding the user has finished. Too short and you cut people off mid-thought; too long and every reply feels sluggish.\n\nLevers that matter most:\n- Co-locate STT, LLM and TTS in the same region as your media server; each cross-region hop costs tens of milliseconds.\n- Use a small, fast LLM for conversational turns; escalate to a bigger model or tool call with a spoken filler (\"let me check that\") when needed.\n- Keep the system prompt stable and use prompt caching to cut time to first token.\n- Send the LLM's output to TTS **sentence by sentence or clause by clause**, not after the full reply.\n- Ask the LLM for short, spoken-style answers: one or two sentences, no markdown, no lists.\n\n## Speech-to-text\n- **Batch models** (Whisper, released by OpenAI in 2022, trained on 680,000 hours of weakly supervised audio) process fixed windows of audio; great accuracy and open weights, but not natively streaming.\n- **Streaming STT** services and models emit **interim** (partial, may change) and **final** transcripts as you speak. Use interim results to start work speculatively (prefetch, prepare tool calls) but only commit on finals.\n- Measure **word error rate (WER)** on *your* audio: accents, phone-line audio (8 kHz) and domain words (drug names, product SKUs) change it drastically. Most providers support keyword or vocabulary boosting.\n- Telephony audio is narrowband (often 8 kHz mu-law over SIP or a provider's media stream); resample correctly and test with real phone audio, not studio recordings.\n\n## Text-to-speech\n- **Streaming TTS** returns audio chunks as it synthesises; time to first byte matters more than total time.\n- **Text normalisation**: \"$1,250.50\", \"Dr.\", \"3/4\", emails and URLs must be expanded or the voice reads them oddly. Do it explicitly for known patterns rather than trusting the model.\n- **Chunking**: synthesising word by word sounds choppy; waiting for the whole reply is slow. Clause or sentence boundaries are the usual compromise.\n- Keep a record of **exactly which text has been spoken** so far; you need it when the user interrupts.\n\n## Turn-taking and interruption\n**Voice activity detection (VAD)** classifies short audio frames (tens of milliseconds) as speech or not. Silero VAD is a widely used small open model. VAD alone answers \"is someone making speech sounds now?\", not \"has the user finished their thought?\". People pause mid-sentence (\"I want to book a flight to... um... Lisbon\").\n\nBetter end-of-turn detection combines signals:\n- silence duration after speech,\n- the partial transcript (does it look complete? \"to...\" does not),\n- a small **semantic turn-detection** model trained to predict end of turn from the words, which several frameworks and realtime APIs now offer,\n- prosody (falling pitch at the end of statements), in speech-native models.\n\n**Barge-in (interruption)** is when the user starts speaking while the agent is talking. A good pipeline:\n\n```text\nagent speaking ---------------------> user starts talking (VAD fires, > ~200 ms of speech)\n    |                                          |\n    |  1. stop audio playback immediately (flush the client's audio buffer)\n    |  2. cancel in-flight LLM generation and TTS requests\n    |  3. truncate the assistant message in history to what was actually heard\n    v  4. listen, transcribe, respond to the new input\n```\n\nStep 3 is the one people forget: if the model \"thinks\" it said a full paragraph that the user never heard, later turns get confused (\"as I mentioned...\"). Speech-to-speech APIs typically provide an event to truncate the assistant's audio item at the playback position for this reason.\n\nAlso handle:\n- **Echo**: the agent's own voice coming back through the user's microphone triggers false barge-ins. Use acoustic echo cancellation (browsers do this for WebRTC audio when enabled) and ignore VAD for speech that matches outgoing audio.\n- **Backchannels**: \"mm-hm\", \"right\", \"okay\" should not stop the agent. Require a minimum speech duration or check the transcript before treating it as an interruption.\n- **Noise**: a door slam is not a turn. Tune VAD thresholds on real environments.\n\n```ts\ntype Turn = { abort: AbortController; spokenText: string };\n\nlet current: Turn | null = null;\n\nasync function respond(userText: string, history: Message[]) {\n  current?.abort.abort();                                   // a new user turn always cancels the old reply\n  const turn: Turn = { abort: new AbortController(), spokenText: \"\" };\n  current = turn;\n\n  const tokens = llm.stream({ messages: [...history, { role: \"user\", content: userText }], signal: turn.abort.signal });\n  for await (const sentence of sentences(tokens)) {         // split on . ? ! and long clauses\n    if (turn.abort.signal.aborted) break;\n    const audio = await tts.synthesize(normaliseForSpeech(sentence), { signal: turn.abort.signal });\n    await player.play(audio, { signal: turn.abort.signal }); // resolves when playback finishes or is cancelled\n    turn.spokenText += sentence + \" \";\n  }\n  history.push({ role: \"assistant\", content: turn.spokenText.trim() }); // only what the user actually heard\n}\n\nvad.on(\"userSpeechStart\", ({ durationMs }) => {\n  if (durationMs < 250 || !current) return;                 // ignore short backchannels and noise\n  player.flush();                                            // silence the agent at once\n  current.abort.abort();\n});\n```\n\nThis is simplified (real pipelines overlap synthesis of the next sentence with playback of the current one, and track playback position at sub-sentence granularity), but it shows the essential structure: one cancellable turn object, streaming at sentence granularity, and history recording what was heard.\n\n## Transport\n- **Browser to server: WebRTC.** It runs over UDP with jitter buffers, Opus audio, echo cancellation and congestion control built in. TCP-based WebSockets suffer from head-of-line blocking on lossy mobile networks: one lost packet stalls everything behind it, which is audible.\n- **Server to model provider: WebSocket** is common and fine on data-centre networks.\n- **Phone: SIP trunks** or telephony providers' media streams, with 8 kHz audio.\n\n```text\nbrowser --WebRTC--> media server / agent worker --WebSocket--> STT, LLM, TTS (or realtime model)\nphone ---SIP------> telephony gateway ---------^\n```\n\n## Designing the conversation for voice\n- Prompts must ask for spoken language: short sentences, no markdown, numbers in a speakable form, confirm critical details back (\"that's the 14th of March, correct?\").\n- Fill silence during slow tool calls with a brief acknowledgement, and keep it honest.\n- Offer escape hatches: repeat, slow down, speak to a human.\n- Guardrails still apply: transcripts can contain prompt injection, and voice agents that take actions (bookings, payments) need confirmation steps.\n\n## Measuring quality\nTrack **voice-to-voice latency percentiles** (p50 and p95, measured from the end of user speech to first agent audio), interruption rate, false barge-ins, cut-offs (agent spoke while user was mid-thought), WER on your traffic, task completion, and call abandonment. Record audio (with consent and retention limits) and replay failures; transcripts alone hide timing problems.\n\n## Common mistakes and debugging\n- Measuring only LLM latency while the silence timeout adds 800 ms.\n- Not streaming TTS, or waiting for the full LLM reply before speaking.\n- Barge-in that stops audio but keeps the full unspoken reply in history.\n- No echo cancellation, so the agent interrupts itself.\n- Using WebSockets from mobile browsers and blaming the model for choppy audio.\n- Markdown and lists in the LLM output being read aloud as \"asterisk asterisk\".\n- Testing only with clean headset audio in a quiet room.\n\n## In the interview\n**What they probe:** can you lay out a latency budget stage by stage, explain turn detection and barge-in precisely, and justify cascaded versus speech-to-speech? Senior candidates talk about streaming at every stage, history truncation on interruption, WebRTC versus WebSockets, and measuring p95 voice-to-voice latency.\n\n**A 60-second answer outline:**\n1. Human turn gaps are around 200 ms, so target under about a second voice-to-voice.\n2. Cascaded pipeline (VAD, streaming STT, LLM, streaming TTS) for control and cost, or speech-to-speech for latency and expressiveness.\n3. Stream everything; chunk LLM output to TTS by sentence; co-locate services; small fast model with fillers for slow tools.\n4. Turn detection combines silence, transcript completeness and a semantic model; barge-in stops playback, cancels generation and truncates history to what was heard.\n5. WebRTC to the client, echo cancellation, and measure p95 latency, interruptions and task success.\n\n**Follow-ups to expect:** how to avoid cutting off users who pause; how you would handle a 3-second tool call; how to evaluate a voice agent; what changes for phone calls; when you would pick a speech-to-speech model.",
+      "keyPoints": [
+        "Human turn gaps are around 200 ms; aim for under about a second voice-to-voice and measure p95, not just the LLM",
+        "Cascaded pipelines give control and lower cost; speech-to-speech models cut hops and keep tone",
+        "Stream every stage and send LLM output to TTS clause by clause; turn detection is often the largest delay",
+        "Barge-in must stop playback, cancel generation and truncate history to what the user actually heard",
+        "Use WebRTC to clients for loss-tolerant audio and echo cancellation; test with real noisy and phone audio"
+      ],
+      "interview": [
+        "How would you design a low-latency voice agent, and where does the latency go?",
+        "How do you handle turn-taking and interruptions (barge-in) in a voice AI system?",
+        "Cascaded STT-LLM-TTS pipeline or a speech-to-speech model: how do you choose?",
+        "Why use WebRTC rather than WebSockets to stream audio between a browser and a voice agent?"
+      ],
+      "check": [
+        {
+          "q": "Users say the voice agent feels slow, but LLM time to first token is only 250 ms. What is a likely culprit?",
+          "options": [
+            "The tokenizer vocabulary is too large",
+            "The embedding model is outdated",
+            "The end-of-turn silence timeout, which may add most of a second before processing starts",
+            "The system prompt uses markdown"
+          ],
+          "answer": 2,
+          "why": "Turn detection waits for silence before anything else runs; it is often the largest item in the budget."
+        },
+        {
+          "q": "After a barge-in, what must happen to the assistant's message in the conversation history?",
+          "options": [
+            "Keep the full generated reply so the model has context",
+            "Delete the whole conversation",
+            "Replace it with the user's interruption",
+            "Truncate it to the text that was actually played to the user"
+          ],
+          "answer": 3,
+          "why": "Otherwise the model believes it said things the user never heard and later turns become confusing."
+        },
+        {
+          "q": "Why does WebRTC usually sound better than a WebSocket for browser audio on a mobile network?",
+          "options": [
+            "It runs over UDP with jitter buffering, so a lost packet does not stall all the audio behind it",
+            "It compresses text better",
+            "It does not need a server",
+            "It guarantees zero packet loss"
+          ],
+          "answer": 0,
+          "why": "WebSockets ride on TCP, where head-of-line blocking turns one lost packet into an audible stall."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Pipecat: open-source framework for voice and multimodal agents",
+          "url": "https://github.com/pipecat-ai/pipecat"
+        },
+        {
+          "title": "LiveKit Agents documentation",
+          "url": "https://docs.livekit.io/agents/"
+        },
+        {
+          "title": "OpenAI: Realtime API guide",
+          "url": "https://developers.openai.com/api/docs/guides/realtime"
+        },
+        {
+          "title": "Radford et al.: Robust Speech Recognition via Large-Scale Weak Supervision (Whisper)",
+          "url": "https://arxiv.org/abs/2212.04356"
+        },
+        {
+          "title": "Silero VAD",
+          "url": "https://github.com/snakers4/silero-vad"
+        },
+        {
+          "title": "MDN: WebRTC API",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API"
+        }
+      ]
+    }
+  ],
+  "projects": []
+}

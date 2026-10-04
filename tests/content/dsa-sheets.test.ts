@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dsaSheets, problemBySlug } from "@/lib/content";
+import { dsaSheets, problemBySlug } from "@/core/content";
 
 describe("data/dsa-sheets.json", () => {
   it("ships the well-known sheets with sensible sizes", () => {

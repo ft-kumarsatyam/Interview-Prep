@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { continueTarget, neighbours, searchTopics, topicIdFromHash, topicProgress, trackTopics, type LearnTopic } from "@/lib/domain/learn";
+import { continueTarget, neighbours, searchTopics, topicIdFromHash, topicProgress, trackTopics, type LearnTopic } from "@/modules/learn/domain/learn";
 
 const t = (id: string, track: string, week: number, n = 3, title = id): LearnTopic => ({
   id,

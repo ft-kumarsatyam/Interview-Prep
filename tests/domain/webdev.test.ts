@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { webLessonById, webLessons, webProjects } from "@/lib/content";
-import { parseResumeText } from "@/lib/domain/resume";
-import { renderResumeText } from "@/lib/domain/resume-tailor";
-import { addProjectToResume, checkScore, hasPlaceholder, lessonsForProject, nextLesson, projectProgress, trackProgress, webdevProblems } from "@/lib/domain/webdev";
+import { webLessonById, webLessons, webProjects } from "@/core/content";
+import { parseResumeText } from "@/modules/resume/domain/resume";
+import { renderResumeText } from "@/modules/resume/domain/resume-tailor";
+import { addProjectToResume, checkScore, hasPlaceholder, lessonsForProject, nextLesson, projectArea, projectProgress, trackProgress, webdevProblems } from "@/modules/learn/domain/webdev";
 
 describe("progress helpers", () => {
   it("tracks per-track completion", () => {
@@ -16,6 +16,13 @@ describe("progress helpers", () => {
     expect(nextLesson(webLessons, new Set([webLessons[0]!.id]))!.id).toBe(webLessons[1]!.id);
     expect(nextLesson(webLessons, new Set(webLessons.map((l) => l.id)))).toBeNull();
     expect(nextLesson(webLessons, new Set(), "mongo")!.track).toBe("mongo");
+  });
+  it("files a project under the area most of its lessons come from", () => {
+    const lessons = new Map([["a", { track: "react" }], ["b", { track: "llm" }], ["c", { track: "rag" }]]);
+    const tracks = [{ id: "react", area: "frontend" as const }, { id: "llm", area: "ai" as const }, { id: "rag", area: "ai" as const }];
+    expect(projectArea({ lessons: ["a", "b", "c"] }, lessons, tracks)).toBe("ai");
+    expect(projectArea({ lessons: ["a"] }, lessons, tracks)).toBe("frontend");
+    expect(projectArea({ lessons: ["zzz"] }, lessons, tracks)).toBe("architecture");
   });
   it("scores a self-check", () => {
     const check = [{ answer: 1 }, { answer: 0 }, { answer: 2 }];
@@ -41,7 +48,7 @@ describe("webdevProblems", () => {
   it("flags unknown tracks, lessons and duplicate ids", () => {
     const l = { ...webLessons[0]!, track: "nope" };
     const p = { ...webProjects[0]!, lessons: ["missing"] };
-    const problems = webdevProblems({ tracks: [{ id: "x", name: "X", color: "c", blurb: "b" }], lessons: [l, l], projects: [p] });
+    const problems = webdevProblems({ tracks: [{ id: "x", name: "X", color: "c", blurb: "b", area: "frontend" }], lessons: [l, l], projects: [p] });
     expect(problems).toEqual(expect.arrayContaining(["lesson " + l.id + ": unknown track nope", "duplicate lesson " + l.id, "project " + p.slug + ": unknown lesson missing", "track x has no lessons"]));
   });
 });

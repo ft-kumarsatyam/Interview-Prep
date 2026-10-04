@@ -1,0 +1,306 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "node-event-loop",
+      "track": "node",
+      "title": "The Node.js event loop in depth",
+      "minutes": 18,
+      "summary": "How libuv drives Node: the phases, the nextTick and promise queues, the hidden thread pool, what blocks the loop and how to measure it.",
+      "body": "## The core idea\nNode runs your JavaScript on **one thread**. That thread executes a callback to completion, then asks \"what is ready next?\" and runs that. The loop that answers the question is provided by **libuv**, a C library that wraps the operating system's non-blocking I/O (epoll on Linux, kqueue on macOS, IOCP on Windows) and adds a small thread pool for the work the OS cannot do asynchronously.\n\nSo a Node server handling 10,000 open connections is not running 10,000 threads. It is one thread that sleeps inside the kernel until any socket has data, wakes up, runs the right callback for a few microseconds, and goes back to sleep. That model is extremely efficient for I/O-heavy services and terrible for anything that keeps the thread busy, because while your callback runs, **nothing else can**.\n\nEverything in this lesson follows from two facts:\n1. Callbacks never interrupt each other. A callback runs until it returns (or hits an `await`).\n2. Between callbacks, Node drains two microtask queues before it lets the loop move on.\n\n## The pieces\n```text\n            your JS (V8, single thread)\n                       |\n   process.nextTick queue  ->  promise microtask queue\n                       |   (drained after every callback)\n   +-------------------v--------------------------+\n   |              libuv event loop                |\n   |  timers -> pending -> idle/prepare -> poll    |\n   |      ^                                 |     |\n   |      +---- close <---- check <---------+     |\n   +----------------------------------------------+\n        |                              |\n  OS async I/O (sockets,         libuv thread pool (default 4):\n  pipes, signals, timers)        fs.*, dns.lookup, zlib async,\n  via epoll / kqueue / IOCP      crypto.pbkdf2/scrypt/randomBytes\n```\n\n**V8** executes JavaScript and owns the heap. It knows nothing about files or sockets.\n\n**libuv** owns the loop. Network sockets are registered with the kernel's readiness API, so they need no threads at all. File system calls, `dns.lookup` (which calls the blocking `getaddrinfo`), async `zlib` and some `crypto` functions run on the **thread pool**, four threads by default, sized with the `UV_THREADPOOL_SIZE` environment variable before the pool is first used. When a pool job finishes, libuv queues its completion so the callback runs on the main thread.\n\n**Node's bindings** glue the two: `fs.readFile` starts a libuv request; when it completes, Node calls your JavaScript callback.\n\n## The phases, one iteration\nThe Node.js guide \"The Node.js Event Loop\" (nodejs.org/learn) is the canonical description. Each iteration (a \"tick\" of the loop) visits these phases in order:\n\n1. **timers**: run callbacks for `setTimeout` / `setInterval` whose threshold has passed. A timer of 10 ms means \"no earlier than 10 ms\", never \"exactly\".\n2. **pending callbacks**: some system-level callbacks deferred from the previous iteration, such as certain TCP errors.\n3. **idle, prepare**: internal.\n4. **poll**: the heart. Compute how long to block (until the nearest timer is due, or zero if anything is pending in check), then wait for I/O events and run their callbacks: incoming data, accepted connections, completed thread-pool work.\n5. **check**: run `setImmediate` callbacks.\n6. **close callbacks**: `socket.on('close')` and similar.\n\nIf there are no timers, no active handles (servers, sockets) and no pending requests, the loop exits and so does the process. That is why a script with just `console.log` terminates, and a script with `http.createServer().listen()` does not.\n\n## Microtasks: the queues between the phases\nTwo queues are not phases. They are drained **after every single callback**, wherever it ran:\n\n- the `process.nextTick` queue, then\n- the promise microtask queue (`.then` callbacks, `await` continuations, `queueMicrotask`).\n\nBoth are drained **completely**, including items added while draining. Since Node 11 this happens between each individual timer or immediate callback too (matching browsers), not just between phases.\n\n```js\nconst fs = require(\"node:fs\");\n\nsetTimeout(() => console.log(\"timeout\"), 0);\nsetImmediate(() => console.log(\"immediate\"));\nPromise.resolve().then(() => console.log(\"promise\"));\nprocess.nextTick(() => console.log(\"nextTick\"));\nconsole.log(\"sync\");\n\nfs.readFile(__filename, () => {\n  setTimeout(() => console.log(\"io: timeout\"), 0);\n  setImmediate(() => console.log(\"io: immediate\"));\n});\n```\n\nTypical output in a CommonJS file:\n\n```text\nsync\nnextTick\npromise\ntimeout        <- or immediate first: not guaranteed from the main module\nimmediate\nio: immediate  <- always before io: timeout\nio: timeout\n```\n\nWhy the two guarantees differ:\n- From the main module, whether the 1 ms minimum timer has expired by the time the loop first reaches the timers phase depends on how fast the process started. So `timeout` vs `immediate` can flip.\n- Inside an I/O callback you are in the poll phase. The next phase is check, so `setImmediate` always wins; timers have to wait for the next iteration.\n\nOne subtle point: in an **ES module**, the top-level code itself runs inside a promise job, so at the top level of an `.mjs` file a resolved promise's `.then` can run before a `process.nextTick` scheduled alongside it. Ordering puzzles that depend on this are trivia; the useful rule is \"both run before any I/O or timer\".\n\n## Blocking the loop\nBecause callbacks cannot be interrupted, one slow callback delays **every** other request on that process. The Node guide \"Don't Block the Event Loop\" puts it bluntly: the fair treatment of clients is your responsibility.\n\nCommon blockers:\n- **Synchronous APIs** on a hot path: `fs.readFileSync`, `crypto.pbkdf2Sync`, `zlib.gzipSync`, `child_process.execSync`.\n- **Big `JSON.parse` / `JSON.stringify`**: a 50 MB payload can take hundreds of milliseconds, all on the main thread.\n- **Catastrophic regex backtracking (ReDoS)**: `/(a+)+$/` against a long string of `a`s followed by `!` is exponential.\n- **CPU loops**: sorting a million rows, image resizing in pure JS, template rendering of huge pages.\n- **Unbounded `nextTick` or promise recursion**: the loop never reaches the poll phase, so I/O starves even though the code \"is async\".\n\n```js\n// Looks async. Still blocks: microtasks drain before any I/O.\nasync function spin(n) {\n  while (n--) await null; // each await is a microtask, not a yield to I/O\n}\n```\n\nTo yield to I/O inside a long job, break it into chunks with `setImmediate`:\n\n```js\nfunction processInChunks(items, fn, chunk = 1000) {\n  return new Promise((resolve) => {\n    let i = 0;\n    (function next() {\n      const end = Math.min(i + chunk, items.length);\n      for (; i < end; i++) fn(items[i]);\n      if (i < items.length) setImmediate(next); // lets poll run in between\n      else resolve();\n    })();\n  });\n}\n```\n\nChunking keeps latency acceptable but the total CPU cost is unchanged. For genuinely heavy CPU work, move it off the main thread to a `worker_thread` (see the concurrency lesson).\n\n## The thread pool is a hidden bottleneck\nFour threads serve all `fs`, `dns.lookup`, async `crypto.pbkdf2` and async `zlib` work for the whole process. If you hash passwords with `bcrypt` (native, thread pool) at 300 ms each and 20 logins arrive at once, the 5th through 20th wait in the pool queue, and so does every `fs.readFile` in the app. Symptoms: file reads and DNS lookups get slow under load while CPU is not saturated.\n\nFixes, in order:\n- Raise `UV_THREADPOOL_SIZE` (for example to the number of cores) at process start, not from inside code after the pool has been used.\n- Avoid `dns.lookup` for hot outbound calls: reuse connections with keep-alive agents so you resolve rarely.\n- Move CPU-heavy hashing to worker threads or a separate service.\n\n## Measuring instead of guessing\nNode ships the tools:\n\n```js\nconst { monitorEventLoopDelay, performance } = require(\"node:perf_hooks\");\n\nconst h = monitorEventLoopDelay({ resolution: 20 });\nh.enable();\n\nlet last = performance.eventLoopUtilization();\nsetInterval(() => {\n  const elu = performance.eventLoopUtilization(last);\n  last = performance.eventLoopUtilization();\n  console.log({\n    p99DelayMs: h.percentile(99) / 1e6, // histogram is in nanoseconds\n    maxDelayMs: h.max / 1e6,\n    utilization: elu.utilization.toFixed(2), // 0..1, fraction of time not idle\n  });\n  h.reset();\n}, 10_000).unref();\n```\n\n- **Event loop delay** answers \"how late did a timer fire?\" A p99 of 200 ms means some requests waited 200 ms before Node even looked at them.\n- **Event loop utilization (ELU)** answers \"how busy is the thread?\" Near 1.0 means the process is CPU bound; adding more async code will not help. It is a better autoscaling signal for Node than CPU percent, which can mislead on multi-core hosts.\n\nExport both as metrics. When delay spikes, take a CPU profile (`node --cpu-prof` or the inspector) to see which function was on the stack.\n\n## Trade-offs: when the model is wrong for you\n- Great for: API gateways, BFFs, websocket fan-out, proxies, anything that mostly waits on databases and other services.\n- Poor for: CPU-heavy pipelines (video, ML inference in JS, big report generation) unless you push that work to workers or another runtime.\n- Concurrency without parallelism: a single process uses one core for JavaScript. Use multiple processes (containers, cluster) to use more cores.\n\n## Common mistakes\n- Believing `async` means \"runs in the background\". An `async` function runs synchronously until its first `await`, and CPU work after the `await` still runs on the main thread.\n- Using `setTimeout(fn, 0)` and expecting zero delay: the minimum is 1 ms and it runs in the next timers phase.\n- Using recursive `process.nextTick` to \"yield\". It does the opposite.\n- Measuring server health with CPU percent only, while p99 latency is dominated by loop delay.\n- Assuming `fs` is non-blocking \"like sockets\". It is asynchronous for your thread but competes for four pool threads.\n\n## In the interview\n**What they probe:** do you have a correct mental model (one JS thread, libuv, thread pool, phases, microtasks), can you predict ordering, and do you know how to find and fix a blocked loop in production?\n\n**A 60-second answer outline:**\n1. Node runs JS on one thread; libuv provides the loop and non-blocking I/O via epoll/kqueue/IOCP, plus a 4-thread pool for fs, DNS lookup, zlib and some crypto.\n2. Each iteration goes timers, pending, poll (wait for I/O), check (`setImmediate`), close.\n3. After every callback Node drains `process.nextTick` then promise microtasks, completely.\n4. Any long synchronous work blocks every request; detect it with `monitorEventLoopDelay` and ELU, profile with `--cpu-prof`, fix by chunking with `setImmediate`, streaming, or moving CPU work to worker threads.\n\n**Follow-ups to expect:**\n- Why does `setImmediate` beat `setTimeout(0)` inside an I/O callback but not from the main module?\n- What uses the libuv thread pool, and what happens when it is saturated?\n- How would you autoscale a Node service? (ELU and loop delay, not just CPU.)\n- Is `await` in a tight loop a yield to I/O? (No, it is a microtask.)",
+      "keyPoints": [
+        "One JS thread; libuv supplies the loop, OS async I/O for sockets and a 4-thread pool for fs, dns.lookup, zlib and some crypto",
+        "Phases per iteration: timers, pending, poll, check (setImmediate), close",
+        "nextTick then promise microtasks drain completely after every callback, so recursive microtasks starve I/O",
+        "Any long synchronous callback delays every request; chunk with setImmediate or move CPU work to workers",
+        "Measure with monitorEventLoopDelay and eventLoopUtilization, then profile with --cpu-prof"
+      ],
+      "interview": [
+        "Walk through one iteration of the libuv event loop and where microtasks run.",
+        "What runs on the libuv thread pool, and what happens when it is saturated?",
+        "How would you find out in production that something is blocking the Node event loop?"
+      ],
+      "check": [
+        {
+          "q": "Inside an fs.readFile callback you schedule setTimeout(fn, 0) and setImmediate(fn2). Which runs first?",
+          "options": [
+            "setTimeout, because timers are the first phase",
+            "It is random every time",
+            "setImmediate, because the check phase follows poll in the same iteration",
+            "Both run in the same phase in scheduling order"
+          ],
+          "answer": 2,
+          "why": "I/O callbacks run in the poll phase; the loop moves to check (setImmediate) before wrapping around to timers."
+        },
+        {
+          "q": "A service's fs reads and DNS lookups slow down whenever many users log in, but CPU is only 40%. Login uses async bcrypt. Most likely cause?",
+          "options": [
+            "The V8 garbage collector is running too often",
+            "The libuv thread pool (4 threads by default) is saturated by hashing jobs",
+            "The kernel has run out of sockets",
+            "Promises are being resolved out of order"
+          ],
+          "answer": 1,
+          "why": "Native bcrypt, fs and dns.lookup share the same small pool; long hashing jobs queue everything else behind them."
+        },
+        {
+          "q": "Which metric best tells you a single Node process is CPU bound on its main thread?",
+          "options": [
+            "Host CPU percent across all cores",
+            "Number of open sockets",
+            "Heap used",
+            "Event loop utilization close to 1.0"
+          ],
+          "answer": 3,
+          "why": "ELU measures the fraction of time the loop was not idle. Host CPU can look low on a multi-core machine while the one JS thread is pegged."
+        }
+      ],
+      "resources": [
+        {
+          "title": "The Node.js Event Loop (Node.js docs)",
+          "url": "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick"
+        },
+        {
+          "title": "Don't Block the Event Loop (or the Worker Pool)",
+          "url": "https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop"
+        },
+        {
+          "title": "libuv design overview",
+          "url": "https://docs.libuv.org/en/v1.x/design.html"
+        },
+        {
+          "title": "Understanding process.nextTick()",
+          "url": "https://nodejs.org/en/learn/asynchronous-work/understanding-processnexttick"
+        },
+        {
+          "title": "perf_hooks: monitorEventLoopDelay and eventLoopUtilization",
+          "url": "https://nodejs.org/api/perf_hooks.html"
+        }
+      ]
+    },
+    {
+      "id": "node-streams",
+      "track": "node",
+      "title": "Node streams and backpressure",
+      "minutes": 17,
+      "summary": "Readable, writable, duplex and transform streams, how backpressure really works, pipeline for safe error handling, and web streams.",
+      "body": "## The core idea\nA stream is data you process **piece by piece as it arrives** instead of loading all of it into memory first. Reading a 4 GB log file with `fs.readFile` needs 4 GB of RAM (and fails past the maximum buffer size). Reading it with a stream needs a few tens of kilobytes, no matter how big the file is, and the first bytes can be processed or sent to the client while the disk is still reading the rest.\n\nStreams are everywhere in Node: HTTP requests and responses, sockets, files, `zlib`, `crypto` hashes, child process stdio. Understanding them is understanding how a Node server moves bytes.\n\nThe hard part is not reading chunks. It is **backpressure**: what happens when the producer is faster than the consumer.\n\n## The four kinds\n| Kind | You read / write | Examples |\n|---|---|---|\n| Readable | read | `fs.createReadStream`, `http.IncomingMessage` (the request on a server), `process.stdin` |\n| Writable | write | `fs.createWriteStream`, `http.ServerResponse`, `process.stdout` |\n| Duplex | both, independent sides | `net.Socket`, a TCP connection |\n| Transform | both, output derived from input | `zlib.createGzip()`, `crypto.createHash` (as a stream), a CSV parser |\n\nEach stream has an internal buffer and a **`highWaterMark`**: the buffer size at which it says \"stop\". For byte streams the default is 64 KiB in current Node (it was 16 KiB before Node 22); `fs.createReadStream` uses 64 KiB. In **object mode** (chunks are JS objects, not bytes) the mark counts objects, 16 by default.\n\n## How backpressure works\n```text\n Readable (disk, 500 MB/s)        Writable (slow client, 1 MB/s)\n +-----------------+   chunk    +---------------------------+\n | buffer          | ---------> | buffer [######.....] hwm  |\n +-----------------+            +---------------------------+\n          ^                              |\n          |   write() returned false     |\n          +------- pause() --------------+\n          +------- resume() on 'drain' --+\n```\n\nThe contract on the writable side:\n1. `writable.write(chunk)` always accepts the chunk, but returns **`false`** once its buffer has reached `highWaterMark`.\n2. A well-behaved producer then **stops writing** and waits for the `'drain'` event.\n3. When the buffer empties below the mark, the writable emits `'drain'` and the producer continues.\n\n`write()` returning `false` is advisory. If you ignore it and keep writing, Node keeps buffering in memory. That is the classic production leak: a fast database cursor piped by hand into a slow HTTP response, memory climbing until the process is OOM-killed. The Node.js guide \"Backpressuring in Streams\" walks through exactly this.\n\nManual, correct handling looks like this:\n\n```js\nconst { once } = require(\"node:events\");\n\nasync function writeAll(rows, out) {\n  for (const row of rows) {\n    if (!out.write(JSON.stringify(row) + \"\\n\")) {\n      await once(out, \"drain\"); // respect backpressure\n    }\n  }\n  out.end();\n}\n```\n\n## pipeline: the one you should use\nHand-wiring `.pipe()` handles backpressure but **not errors or cleanup**: if the destination errors, the source is not destroyed and file descriptors leak. `stream.pipeline` fixes all of it: it wires backpressure, forwards errors, destroys every stream on failure, and tells you when everything finished.\n\n```js\nconst { pipeline } = require(\"node:stream/promises\");\nconst fs = require(\"node:fs\");\nconst zlib = require(\"node:zlib\");\n\nawait pipeline(\n  fs.createReadStream(\"access.log\"),\n  zlib.createGzip(),\n  fs.createWriteStream(\"access.log.gz\"),\n);\n// resolves when the gzip file is fully flushed, rejects on any error\n```\n\nServing a large download from an HTTP handler, with cancellation when the client disconnects:\n\n```js\nconst http = require(\"node:http\");\nconst { pipeline } = require(\"node:stream/promises\");\n\nhttp.createServer(async (req, res) => {\n  res.setHeader(\"content-type\", \"application/gzip\");\n  try {\n    await pipeline(fs.createReadStream(\"big.gz\"), res);\n  } catch (err) {\n    // ERR_STREAM_PREMATURE_CLOSE when the client hangs up: not a server bug\n    if (err.code !== \"ERR_STREAM_PREMATURE_CLOSE\") console.error(err);\n  }\n}).listen(3000);\n```\n\n## Writing your own Transform\nA transform receives chunks and pushes zero or more output chunks. Note that chunks are arbitrary byte slices: **a line or a JSON record can be split across two chunks**, so a parser must carry the leftover.\n\n```js\nconst { Transform } = require(\"node:stream\");\n\nfunction splitLines() {\n  let tail = \"\";\n  return new Transform({\n    readableObjectMode: true,           // emits strings as objects\n    transform(chunk, _enc, cb) {\n      const parts = (tail + chunk.toString(\"utf8\")).split(\"\\n\");\n      tail = parts.pop();               // incomplete last line\n      for (const line of parts) if (line) this.push(line);\n      cb();\n    },\n    flush(cb) {\n      if (tail) this.push(tail);\n      cb();\n    },\n  });\n}\n```\n\n(For real code, `readline` or `TextDecoderStream` handle multi-byte UTF-8 characters split across chunks; `chunk.toString()` on a split character produces a replacement character.)\n\n`pipeline` also accepts **async generator functions** as transforms, which is often the cleanest form:\n\n```js\nawait pipeline(\n  fs.createReadStream(\"events.ndjson\"),\n  splitLines(),\n  async function* (lines) {\n    for await (const line of lines) {\n      const e = JSON.parse(line);\n      if (e.type === \"purchase\") yield JSON.stringify(e) + \"\\n\";\n    }\n  },\n  fs.createWriteStream(\"purchases.ndjson\"),\n);\n```\n\nAsync iteration (`for await (const chunk of readable)`) respects backpressure automatically: the stream is only read as fast as your loop body completes.\n\n## Web streams\nNode also implements the WHATWG **Web Streams** API (`ReadableStream`, `WritableStream`, `TransformStream`), the same one browsers, Deno, Bun and edge runtimes use. `fetch()` in Node returns a `Response` whose `body` is a web `ReadableStream`, and framework route handlers (Next.js, Hono) take and return web streams.\n\nBridging:\n\n```js\nconst { Readable, Writable } = require(\"node:stream\");\n\nconst nodeReadable = Readable.fromWeb(response.body); // web -> Node\nconst webStream = Readable.toWeb(fs.createReadStream(\"f.txt\")); // Node -> web\n```\n\nWeb streams have backpressure too, expressed through the `desiredSize` of a controller and promise-based reads rather than `'drain'` events. In new code that must run on edge runtimes, write web streams; in Node-only code that talks to `fs`, `net` and `zlib`, Node streams are still more mature and usually faster.\n\n## Real uses in backend work\n- **CSV / NDJSON export** from a database cursor straight to the response, constant memory regardless of row count.\n- **Upload proxying**: pipe the incoming request to S3 (or another service) without buffering the whole file.\n- **Streaming LLM output** as server-sent events: a `ReadableStream` that enqueues tokens as they arrive.\n- **Log processing**: gunzip, split lines, filter, aggregate, in one pipeline.\n\n## Trade-offs and when not to bother\n- For small payloads (under a few MB) buffering is simpler and fine; streaming adds error-handling complexity.\n- Streams make **retries** harder: once you have sent half a response, you cannot change the status code. Decide failure behaviour before the first byte (or use trailers or an in-band error record).\n- Object-mode streams have per-chunk overhead. Batch records (for example 500 rows per chunk) for throughput.\n- Debugging stream chains is harder than debugging arrays; keep pipelines short and named.\n\n## Common mistakes\n- Ignoring the return value of `write()` and buffering unboundedly.\n- Using `.pipe()` without error handling, leaking file descriptors on failure.\n- Mixing `'data'` listeners and `for await` on the same stream (two consumers of one stream).\n- Assuming chunk boundaries align with lines, records or UTF-8 characters.\n- Forgetting `flush()` in a transform, losing the final partial record.\n- Calling `res.end()` early in Express while a stream is still writing.\n\nDebugging tips: watch `writable.writableLength` and `readable.readableLength` to see where data is piling up, and `process.memoryUsage().external` / `arrayBuffers`, because `Buffer` memory lives outside the V8 heap.\n\n## In the interview\n**What they probe:** whether you know *why* streams exist (memory and time-to-first-byte), can explain backpressure precisely, and use `pipeline` rather than hand-wired `.pipe()`.\n\n**A 60-second answer outline:**\n1. Streams process data incrementally: constant memory, earlier first byte.\n2. Four types: readable, writable, duplex, transform; each buffers up to `highWaterMark`.\n3. Backpressure: `write()` returns false at the mark, producer pauses until `'drain'`; `pipe`, `pipeline` and `for await` do this for you.\n4. Use `stream/promises` `pipeline` for error propagation and cleanup; handle `ERR_STREAM_PREMATURE_CLOSE` when clients disconnect.\n5. Mention web streams for `fetch` and edge runtimes, and the `fromWeb` / `toWeb` bridges.\n\n**Follow-ups to expect:**\n- What happens if you ignore `write()` returning false?\n- How would you export 10 million rows as CSV from an API without running out of memory?\n- Why is `pipeline` preferred over `.pipe()`?\n- How does backpressure reach the TCP layer? (The socket stops reading, the kernel receive window fills, and TCP flow control slows the sender.)",
+      "keyPoints": [
+        "Streams give constant memory and earlier first byte by processing data chunk by chunk",
+        "write() returning false means stop until 'drain'; ignoring it buffers unboundedly and leaks memory",
+        "Use pipeline from node:stream/promises: it wires backpressure, forwards errors and destroys every stream on failure",
+        "Chunk boundaries do not align with lines, records or UTF-8 characters; carry the tail and implement flush",
+        "Web streams power fetch and edge runtimes; bridge with Readable.fromWeb and Readable.toWeb"
+      ],
+      "interview": [
+        "What happens if you ignore the return value of writable.write() in Node?",
+        "How would you export ten million rows as CSV from a Node API without running out of memory?",
+        "Why is stream.pipeline preferred over .pipe() in Node?"
+      ],
+      "check": [
+        {
+          "q": "writable.write(chunk) returns false. What does that mean?",
+          "options": [
+            "The chunk was rejected and must be written again",
+            "The internal buffer reached highWaterMark; stop writing until 'drain'",
+            "The stream has been closed",
+            "The chunk was written directly to the kernel with no buffering"
+          ],
+          "answer": 1,
+          "why": "The chunk is accepted and buffered; false is the backpressure signal asking the producer to pause until the buffer drains."
+        },
+        {
+          "q": "What does stream.pipeline do that a chain of .pipe() calls does not?",
+          "options": [
+            "It makes the streams run on worker threads",
+            "It disables backpressure for higher throughput",
+            "It converts every stream to object mode",
+            "It forwards errors from any stage and destroys all streams on failure"
+          ],
+          "answer": 3,
+          "why": ".pipe() handles flow but not errors; a failing destination leaves the source open. pipeline cleans up and reports one result."
+        },
+        {
+          "q": "A line-splitting Transform sometimes produces broken JSON records. What is the most likely bug?",
+          "options": [
+            "It assumes each chunk contains whole lines instead of carrying the partial last line over",
+            "highWaterMark is too large",
+            "It uses object mode on the readable side",
+            "JSON.parse is asynchronous"
+          ],
+          "answer": 0,
+          "why": "Chunks are arbitrary byte slices, so a record can be split across two chunks. Keep the tail and emit it in flush."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Backpressuring in Streams (Node.js docs)",
+          "url": "https://nodejs.org/en/learn/modules/backpressuring-in-streams"
+        },
+        {
+          "title": "Node.js Stream API reference",
+          "url": "https://nodejs.org/api/stream.html"
+        },
+        {
+          "title": "Node.js Web Streams API",
+          "url": "https://nodejs.org/api/webstreams.html"
+        }
+      ]
+    },
+    {
+      "id": "node-concurrency-workers",
+      "track": "node",
+      "title": "Concurrency in Node: workers, cluster and child processes",
+      "minutes": 16,
+      "summary": "Concurrency vs parallelism in Node, and when to use the thread pool, worker_threads, cluster or child_process, with their real costs.",
+      "body": "## The core idea\nA single Node process runs your JavaScript on one thread. That gives you **concurrency** (thousands of requests in flight, interleaved while they wait on I/O) but not **parallelism** (two pieces of JavaScript executing at the same instant). When you need parallelism, Node gives you four different mechanisms, and choosing the wrong one is a common interview trap:\n\n| Mechanism | Unit | Shares memory? | Typical use |\n|---|---|---|---|\n| libuv thread pool | native threads (4 by default) | n/a, internal | fs, dns.lookup, zlib, crypto: automatic |\n| `worker_threads` | thread with its own V8 isolate and event loop | only via `SharedArrayBuffer` or transfer | CPU-heavy JS inside one service |\n| `cluster` | OS processes sharing a listening port | no | use all cores for an HTTP server on one machine |\n| `child_process` | any OS process | no (pipes, IPC) | run other programs (ffmpeg, git, Python), isolate risky work |\n\nThe question to ask first is always: **is the bottleneck I/O or CPU, and where does the work need to live?**\n\n## The libuv thread pool (you already use it)\nCovered in the event loop lesson: fs operations, `dns.lookup`, async `zlib` and `crypto.pbkdf2` / `scrypt` / `randomBytes` run on a pool of `UV_THREADPOOL_SIZE` threads (default 4). You do not schedule onto it directly; native addons can. Its relevance here: it is **not** a place to run your own JavaScript, and if you saturate it with hashing, unrelated file reads queue behind it.\n\n## worker_threads\nA worker is a real OS thread running a **separate V8 isolate**: its own heap, its own event loop, its own copy of module state. Workers do not share JavaScript objects with the main thread. They communicate by message passing.\n\n```text\n main thread (event loop serving HTTP)\n   |  postMessage(job)            ^ postMessage(result)\n   v                              |\n +---------- worker pool (N = cores - 1) ----------+\n | worker 1: own isolate, own heap, own loop       |\n | worker 2: ...                                   |\n +-------------------------------------------------+\n   data: structured clone (copy), transfer (move an\n   ArrayBuffer), or SharedArrayBuffer + Atomics (share)\n```\n\nA minimal example: offload a CPU-bound function.\n\n```js\n// hash-worker.js\nconst { parentPort } = require(\"node:worker_threads\");\nconst crypto = require(\"node:crypto\");\n\nparentPort.on(\"message\", ({ id, data, rounds }) => {\n  let h = data;\n  for (let i = 0; i < rounds; i++) h = crypto.createHash(\"sha256\").update(h).digest(\"hex\");\n  parentPort.postMessage({ id, h });\n});\n```\n\n```js\n// main.js\nconst { Worker } = require(\"node:worker_threads\");\nconst worker = new Worker(\"./hash-worker.js\");\nconst pending = new Map();\nlet seq = 0;\n\nworker.on(\"message\", ({ id, h }) => { pending.get(id)(h); pending.delete(id); });\nworker.on(\"error\", (err) => { for (const [, r] of pending) r(Promise.reject(err)); });\n\nfunction hashMany(data, rounds) {\n  return new Promise((resolve) => {\n    const id = ++seq;\n    pending.set(id, resolve);\n    worker.postMessage({ id, data, rounds });\n  });\n}\n```\n\nIn practice use a **pool** rather than one worker per request: starting a worker means booting a new isolate and loading modules, which costs on the order of tens of milliseconds and several megabytes of memory. `piscina` is the widely used pool library (maintained by Node core contributors); it queues tasks, sizes the pool, and handles worker crashes.\n\n**Data transfer costs matter.** `postMessage` uses the structured clone algorithm: a 50 MB object is copied, which itself takes time on the main thread. Options:\n- **Transfer** an `ArrayBuffer` (`postMessage(buf, [buf])`): ownership moves, zero copy, the sender can no longer use it.\n- **`SharedArrayBuffer`** with `Atomics` for coordination: genuinely shared memory, for numeric workloads. You now own data races; keep it to simple counters or ring buffers.\n\nGood fits: image resizing in JS or WASM, PDF generation, big JSON parsing, compression of large payloads, parsing spreadsheets, running a WASM model, password hashing at scale. Bad fits: anything I/O-bound. A worker making database calls just adds overhead; the main loop was already able to wait on thousands of queries.\n\n## cluster\n`cluster` forks multiple copies of your **whole process**. The primary process owns the listening socket and distributes incoming connections to workers (round-robin by default on everything except Windows).\n\n```js\nconst cluster = require(\"node:cluster\");\nconst http = require(\"node:http\");\nconst os = require(\"node:os\");\n\nif (cluster.isPrimary) {\n  for (let i = 0; i < os.availableParallelism(); i++) cluster.fork();\n  cluster.on(\"exit\", (w, code) => {\n    console.error(`worker ${w.process.pid} died (${code}), restarting`);\n    cluster.fork();\n  });\n} else {\n  http.createServer((req, res) => res.end(`pid ${process.pid}\\n`)).listen(3000);\n}\n```\n\nThings that break when you go multi-process:\n- **In-memory state is per process**: sessions, rate-limit counters, caches, websocket rooms. Move shared state to Redis or the database.\n- **Scheduled jobs** run once per worker unless you elect a leader or use a distributed lock.\n- **Sticky sessions** are needed for protocols that keep state on one server (socket.io long-polling fallback).\n\n**cluster in 2026:** on Kubernetes, ECS, Fly or similar platforms, the usual answer is **one Node process per container** and let the orchestrator run more replicas behind a load balancer. That gives you per-process health checks, independent restarts and simpler memory limits. `cluster` (or PM2, which uses it) still makes sense on a single VM or bare-metal box where you manage the processes yourself.\n\n## child_process\nFor running other programs, or isolating code you do not trust to share your process.\n\n| Function | Shell? | Output | Use |\n|---|---|---|---|\n| `spawn(cmd, args)` | no | streams | long-running or large output (ffmpeg) |\n| `execFile(file, args)` | no | buffered | short command, small output |\n| `exec(cmdString)` | yes | buffered | quick scripts; dangerous with user input |\n| `fork(modulePath)` | no | IPC channel | another Node process you talk to via `send` |\n\n```js\nconst { spawn } = require(\"node:child_process\");\nconst { pipeline } = require(\"node:stream/promises\");\n\nconst ff = spawn(\"ffmpeg\", [\"-i\", \"pipe:0\", \"-f\", \"mp3\", \"pipe:1\"]);\nawait Promise.all([\n  pipeline(uploadStream, ff.stdin),\n  pipeline(ff.stdout, fs.createWriteStream(\"out.mp3\")),\n]);\n```\n\nSecurity: `exec` passes the string to `/bin/sh`, so `exec(\"convert \" + userFile)` is command injection. Use `spawn` / `execFile` with an argument array. Buffered variants also have a `maxBuffer` limit; large output errors out, so stream with `spawn`.\n\n## When to use which: a decision list\n1. Work is I/O (database, HTTP, cache)? **Do nothing.** The event loop handles it. Scale with more replicas.\n2. Occasional CPU spike in an otherwise I/O service (a 200 ms PDF render)? **Worker pool** (piscina) inside the service.\n3. Heavy, sustained CPU work (video transcoding, ML batch)? **A separate service or queue consumer**, possibly in another language, so it scales and fails independently.\n4. Need all cores for an HTTP server on one machine you manage? **cluster / PM2**. On an orchestrator: **more replicas**.\n5. Need to run a binary or a script in another language? **`child_process.spawn`**.\n6. Untrusted code? Not `vm` and not workers (neither is a security boundary). Use a separate process with OS-level sandboxing or a container.\n\n## Trade-offs and failure modes\n- Workers add memory per isolate; 16 workers each loading your whole app can cost hundreds of MB.\n- A worker crash emits `'error'` / `'exit'`; unhandled, pending requests hang forever. Pools must reject in-flight tasks and respawn.\n- Message passing serialises data; for small tasks the clone overhead can exceed the work, making workers slower than inline code. Benchmark.\n- Oversubscription: `cores` workers plus the libuv pool plus GC threads on a 2-vCPU container just thrash. Read the container CPU limit (`os.availableParallelism()` reports what Node sees; check it in your container).\n\n## Common mistakes\n- Moving database calls into worker threads \"for performance\".\n- Spawning a new `Worker` per request instead of pooling.\n- Running `cluster` inside Kubernetes pods that also scale horizontally, doubling the layers of process management with no benefit.\n- Storing sessions or rate limits in memory, then adding cluster and getting inconsistent behaviour.\n- Using `exec` with string concatenation of user input.\n\n## In the interview\n**What they probe:** can you distinguish concurrency from parallelism, pick the right tool for CPU vs I/O work, and name the costs (isolate startup, serialisation, shared-state loss)?\n\n**A 60-second answer outline:**\n1. One JS thread: great concurrency for I/O, no parallelism for CPU.\n2. Thread pool is automatic for fs, DNS, zlib, crypto. Workers run CPU-heavy JS in separate isolates, communicate by message passing, and should be pooled.\n3. cluster runs multiple processes on one port to use all cores; in containers prefer one process per container and more replicas.\n4. child_process runs other programs; use `spawn` with argument arrays.\n5. State moves out of memory once there is more than one process.\n\n**Follow-ups to expect:**\n- How do you share data between workers without copying? (Transfer lists, `SharedArrayBuffer` + `Atomics`.)\n- What changes when you go from one process to four?\n- Why not just raise `UV_THREADPOOL_SIZE` for CPU work? (The pool runs native tasks, not your JavaScript.)\n- How do you handle a crashing worker in a pool?",
+      "keyPoints": [
+        "The event loop gives concurrency for I/O; parallel JavaScript needs workers or more processes",
+        "worker_threads run separate V8 isolates; pool them (piscina) and mind structured-clone costs",
+        "cluster forks processes sharing a port; in containers prefer one process per container and more replicas",
+        "child_process runs other programs; use spawn or execFile with argument arrays, never exec with user input",
+        "Going multi-process moves sessions, rate limits, caches and cron leadership out of memory"
+      ],
+      "interview": [
+        "How would you offload a CPU-heavy task in a Node API without blocking other requests?",
+        "What changes in a Node service when you go from one process to many?",
+        "How do worker threads share data, and what does postMessage cost?"
+      ],
+      "check": [
+        {
+          "q": "A Node API spends most of its time waiting on Postgres. Throughput is too low. What is the best first move?",
+          "options": [
+            "Move every query into worker_threads",
+            "Raise UV_THREADPOOL_SIZE to 128",
+            "Profile the queries and pool settings, and scale with more replicas",
+            "Rewrite handlers to use child_process.fork"
+          ],
+          "answer": 2,
+          "why": "I/O-bound work does not benefit from extra JS threads; the loop already waits on many queries concurrently. Fix the database side or add replicas."
+        },
+        {
+          "q": "Why is starting a new Worker per incoming request a bad idea?",
+          "options": [
+            "Workers cannot use require",
+            "Each worker boots a new V8 isolate and loads modules, costing tens of ms and MBs of memory",
+            "Workers share the main thread's heap and corrupt it",
+            "Node allows only one worker per process"
+          ],
+          "answer": 1,
+          "why": "Isolate startup and module loading are expensive. Keep a fixed pool and queue tasks to it."
+        },
+        {
+          "q": "Which call is vulnerable to command injection when given a user-supplied filename?",
+          "options": [
+            "spawn('convert', [file, 'out.png'])",
+            "execFile('convert', [file, 'out.png'])",
+            "fork('./convert.js', [file])",
+            "exec('convert ' + file + ' out.png')"
+          ],
+          "answer": 3,
+          "why": "exec runs the string through a shell, so characters like ; or $( ) in the filename execute commands. Argument arrays are not shell-parsed."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Node.js worker_threads documentation",
+          "url": "https://nodejs.org/api/worker_threads.html"
+        },
+        {
+          "title": "Node.js cluster documentation",
+          "url": "https://nodejs.org/api/cluster.html"
+        },
+        {
+          "title": "Node.js child_process documentation",
+          "url": "https://nodejs.org/api/child_process.html"
+        },
+        {
+          "title": "Don't Block the Event Loop (or the Worker Pool)",
+          "url": "https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop"
+        }
+      ]
+    },
+    {
+      "id": "node-performance-debugging",
+      "track": "node",
+      "title": "Node performance and memory debugging",
+      "minutes": 18,
+      "summary": "A method for slow or leaking Node services: CPU profiles and flame graphs, V8 garbage collection, heap snapshots, and safe production diagnostics.",
+      "body": "## The core idea\nPerformance work in Node is mostly answering three questions with evidence rather than intuition:\n\n1. **Where is the CPU going?** (a CPU profile / flame graph)\n2. **Why is memory growing?** (heap snapshots, GC traces)\n3. **Why is latency high when CPU is low?** (event loop delay, thread pool saturation, slow downstream calls, traced with spans)\n\nNode and V8 ship nearly every tool you need: the inspector protocol, `--cpu-prof`, heap snapshots, `perf_hooks`, diagnostic reports. The skill interviewers look for is a **method**: measure, form a hypothesis, prove it with a profile, fix, measure again.\n\n## Step 0: know which kind of slow you have\n```text\nsymptom: p99 latency up\n   |\n   +-- event loop delay high, ELU near 1.0 ----> CPU on main thread -> CPU profile\n   |\n   +-- loop delay low, latency high ----------> waiting: DB, HTTP, pool queues\n   |                                             -> tracing spans, pool metrics\n   +-- memory climbing, GC time rising -------> leak or oversized cache\n   |                                             -> heap snapshots, --trace-gc\n   +-- fs / dns slow, CPU moderate -----------> libuv thread pool saturated\n```\n\nInstrument these continuously (they are cheap): `monitorEventLoopDelay` percentiles, `performance.eventLoopUtilization()`, `process.memoryUsage()` (rss, heapUsed, external, arrayBuffers), GC pause durations via a `PerformanceObserver` on `'gc'` entries, and request latency per route. OpenTelemetry's Node auto-instrumentation adds spans for HTTP, database and cache calls, which is how you answer \"waiting on what?\".\n\n## CPU profiling\n**Local or staging, interactive:**\n```bash\nnode --inspect server.js          # inspector on 127.0.0.1:9229\n# open chrome://inspect in Chrome -> \"Open dedicated DevTools for Node\"\n# Performance (or Profiler) tab -> record while you run a load test\n```\n\n**Headless, writes a file you open in DevTools or speedscope:**\n```bash\nnode --cpu-prof --cpu-prof-dir=./profiles server.js\n# run load: npx autocannon -c 50 -d 30 http://localhost:3000/report\n# stop the process (SIGINT); a .cpuprofile is written on exit\n```\n\nReading a flame graph: the x-axis is share of samples (not time order), the y-axis is stack depth. Look for **wide plateaus**: functions that are on the stack in many samples. Typical findings in real Node services:\n- `JSON.stringify` of a huge response, or serialising the same object repeatedly.\n- A regex in a validation or routing layer (ReDoS or just an inefficient pattern on long input).\n- Synchronous crypto or compression (`*Sync` calls).\n- Logging: string formatting and synchronous writes for debug logs that are filtered out anyway.\n- ORM hydration: turning 50,000 rows into model instances.\n\n**Never expose the inspector publicly.** `--inspect=0.0.0.0` on a reachable host gives remote code execution to anyone who connects. In production, use `--cpu-prof` for a short window, send `SIGUSR1` to enable the inspector on localhost and port-forward, or use a continuous profiler (Pyroscope, Datadog, Grafana) that samples at low overhead.\n\n**clinic.js** (`clinic doctor`, `clinic flame`, `clinic bubbleprof`) wraps these tools with automatic diagnosis and nice visualisations and is still widely referenced; its maintenance has slowed, so check it supports your Node version. `0x` produces flame graphs from a single command.\n\nBenchmark the fix with a load generator (`autocannon`, `k6`, `wrk`) at realistic concurrency, comparing p50/p99 and throughput, not a single `console.time`.\n\n## How V8 manages memory (enough to debug it)\nThe V8 blog post \"Trash talk: the Orinoco garbage collector\" is the best short explanation. The essentials:\n\n- **Generational heap.** Most objects die young. New objects go to the **young generation** (small, a few MB to tens of MB), collected by a fast **scavenger** that copies survivors. Objects that survive two scavenges are promoted to the **old generation**.\n- **Old generation** is collected by **mark-compact**: mark everything reachable from roots, sweep the rest, compact to reduce fragmentation. V8 does much of the marking concurrently and in parallel on helper threads, but some pauses remain on the main thread.\n- **Heap limit.** The old-space limit is set by V8 based on system memory; change it with `--max-old-space-size=<MB>`. In a container with a 1 GB limit, set it to roughly 70-80% of the limit so V8 collects aggressively before the kernel OOM-kills the process. Off-heap memory (`Buffer`, `ArrayBuffer`, native addons) counts toward RSS but not the heap limit.\n- **Symptoms of pressure:** rising GC time, longer pauses, latency spikes in lockstep with GC, and finally `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory`.\n\n```bash\nnode --trace-gc server.js\n# [1234:0x...]  52012 ms: Mark-Compact 980.1 (1012.3) -> 975.4 (1010.8) MB, 820.5 / 0.0 ms ...\n```\nA Mark-Compact that frees almost nothing and takes hundreds of ms means live data is near the limit: a leak or an oversized working set.\n\n## Memory leaks: what they are in a GC language\nA leak in Node is memory that is **still reachable** but you no longer need. The GC cannot free what something still references. Usual suspects:\n\n- **Unbounded caches**: a module-level `Map` keyed by user id, request URL or query string, never evicted. Use an LRU with a max size, or a TTL.\n- **Event listeners** added per request to a long-lived emitter (`process.on`, a shared socket, a DB client) and never removed. Node warns with `MaxListenersExceededWarning` after 10 listeners on one event; treat that warning as a bug report.\n- **Closures** that capture large objects and are stored somewhere long-lived (a timer, a callback registry).\n- **Timers**: `setInterval` created per connection and never cleared.\n- **Promises that never settle** and accumulate with their captured context.\n- **Request-scoped data in global structures**: pushing every request into an array \"for metrics\".\n\n```js\n// Leak: listener per request on a long-lived emitter, captures req and res\napp.get(\"/stream\", (req, res) => {\n  bus.on(\"update\", (u) => res.write(`data: ${JSON.stringify(u)}\\n\\n`));\n});\n\n// Fixed: remove on close\napp.get(\"/stream\", (req, res) => {\n  const onUpdate = (u) => res.write(`data: ${JSON.stringify(u)}\\n\\n`);\n  bus.on(\"update\", onUpdate);\n  req.on(\"close\", () => bus.off(\"update\", onUpdate));\n});\n```\n\n## Finding a leak with heap snapshots\nThe Node.js guide \"Using Heap Snapshot\" covers the mechanics. The **three-snapshot technique**:\n\n1. Warm up the service, then take snapshot A.\n2. Run the suspected workload (for example 10,000 requests), force GC if possible, take snapshot B.\n3. Run the same workload again, take snapshot C.\n4. In DevTools Memory tab, compare C with B (\"Comparison\" view) and look at object types whose **count keeps growing** by roughly the number of requests.\n5. Select one leaked object and read its **retainers** path upward to the GC root: that path names the `Map`, array or listener holding it.\n\nWays to capture snapshots:\n```bash\nnode --heapsnapshot-signal=SIGUSR2 server.js   # kill -USR2 <pid> writes a snapshot\nnode --heapsnapshot-near-heap-limit=2 server.js # auto-capture just before OOM (up to 2)\n```\n```js\nrequire(\"node:v8\").writeHeapSnapshot(); // programmatic\n```\n\nCaveats: taking a snapshot **pauses the process** and can need memory comparable to the heap size, so on a 2 GB heap it can take seconds and can itself trigger an OOM. Do it on one instance taken out of the load balancer.\n\nTwo numbers in the snapshot view: **shallow size** (the object itself) and **retained size** (everything that would be freed if this object were freed). Sort by retained size to find the object holding the most.\n\n## Other diagnostics worth knowing\n- **Diagnostic report**: `node --report-on-fatalerror --report-uncaught-exception` writes a JSON report (stack, heap stats, libuv handles, environment) when the process dies. `process.report.writeReport()` on demand.\n- **`--heap-prof`**: sampling heap profiler showing which functions allocate the most, cheaper than snapshots for allocation hot spots.\n- **Async stack traces** are on by default for `await`; keep them by using `async/await` instead of raw callbacks.\n- **`--trace-deprecation`, `--trace-warnings`** for where warnings originate.\n- **`node --prof`** produces a V8 tick log processed with `node --prof-process`; mostly superseded by `--cpu-prof`.\n\n## Trade-offs\n- Profilers add overhead (sampling CPU profilers are low single-digit percent; heap snapshots are stop-the-world). Profile in staging under replayed load when you can.\n- Raising `--max-old-space-size` hides a leak for longer; it does not fix it. It is the right fix only when the working set is legitimately larger.\n- Caches trade memory for latency. Every cache needs a bound and a metric (size, hit rate).\n\n## Common mistakes\n- Optimising code that is not in the profile.\n- Profiling with no load, so the hot path never shows.\n- Comparing heap snapshots without warming up first (lazy initialisation looks like a leak).\n- Treating RSS growth as a heap leak when it is `Buffer` / `external` memory (check `process.memoryUsage()` fields separately).\n- Exposing `--inspect` on `0.0.0.0`.\n\n## In the interview\n**What they probe:** a repeatable method, familiarity with real tools, and understanding of V8's GC well enough to interpret what you see.\n\n**A 60-second answer outline (latency regression):**\n1. Check dashboards: event loop delay and ELU, memory and GC, downstream latency.\n2. If CPU-bound: capture a CPU profile under load (`--cpu-prof` or inspector), find the wide frames, fix, re-benchmark with autocannon or k6.\n3. If memory grows: three heap snapshots, compare, follow retainers to the root; common causes are unbounded maps, listeners and timers.\n4. If waiting: tracing spans show the slow dependency or pool queue.\n5. Set `--max-old-space-size` to fit the container and alert on heap and GC time.\n\n**Follow-ups to expect:**\n- What is the difference between shallow and retained size?\n- Why might RSS grow while `heapUsed` stays flat?\n- How do you profile safely in production?\n- What does `MaxListenersExceededWarning` usually indicate?",
+      "keyPoints": [
+        "First classify the slowness: main-thread CPU, waiting on dependencies, memory pressure or thread pool saturation",
+        "CPU profiles (--cpu-prof or the inspector) under realistic load; fix the widest frames and re-benchmark",
+        "V8 is generational: a fast young-gen scavenger and a mark-compact old gen; size --max-old-space-size to the container",
+        "Leaks are reachable-but-unneeded objects: unbounded maps, listeners, timers, closures; find them with three heap snapshots and retainer paths",
+        "Never expose the inspector publicly; snapshots pause the process, so capture on a drained instance"
+      ],
+      "interview": [
+        "How would you find a memory leak in a production Node service?",
+        "How do you profile a Node service that has become CPU bound?",
+        "How does V8 garbage collection work, and how does it show up in Node latency?"
+      ],
+      "check": [
+        {
+          "q": "In a heap snapshot comparison, a class's instance count grows by about 10,000 after each 10,000-request run. What do you inspect next?",
+          "options": [
+            "The retainers path of one instance up to the GC root",
+            "The shallow size of the largest string",
+            "The CPU profile's widest frame",
+            "The number of young-generation scavenges"
+          ],
+          "answer": 0,
+          "why": "Retainers show which map, array, listener or closure keeps the objects alive, which is the actual leak."
+        },
+        {
+          "q": "RSS keeps rising but heapUsed is flat. What is the most likely explanation?",
+          "options": [
+            "The young generation is too small",
+            "A JavaScript Map is growing without bound",
+            "Off-heap memory such as Buffers or native allocations is growing",
+            "The CPU profiler is still attached"
+          ],
+          "answer": 2,
+          "why": "Buffers and ArrayBuffers live outside the V8 heap; check the external and arrayBuffers fields of process.memoryUsage()."
+        },
+        {
+          "q": "Why set --max-old-space-size below the container memory limit?",
+          "options": [
+            "It makes the scavenger run on more threads",
+            "So V8 collects hard before the kernel OOM-kills the process, leaving room for off-heap memory",
+            "It disables mark-compact pauses",
+            "Node refuses to start without it"
+          ],
+          "answer": 1,
+          "why": "If the heap limit exceeds the container limit, the kernel kills the process before V8 tries to free memory. Leave headroom for Buffers and native memory."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Profiling Node.js applications (Node.js docs)",
+          "url": "https://nodejs.org/en/learn/getting-started/profiling"
+        },
+        {
+          "title": "Using heap snapshots (Node.js docs)",
+          "url": "https://nodejs.org/en/learn/diagnostics/memory/using-heap-snapshot"
+        },
+        {
+          "title": "Trash talk: the Orinoco garbage collector (V8 blog)",
+          "url": "https://v8.dev/blog/trash-talk"
+        },
+        {
+          "title": "Debugging Node.js with the inspector",
+          "url": "https://nodejs.org/en/learn/getting-started/debugging"
+        },
+        {
+          "title": "Tracing garbage collection (Node.js docs)",
+          "url": "https://nodejs.org/en/learn/diagnostics/memory/using-gc-traces"
+        },
+        {
+          "title": "Clinic.js",
+          "url": "https://clinicjs.org/"
+        }
+      ]
+    }
+  ],
+  "projects": []
+}

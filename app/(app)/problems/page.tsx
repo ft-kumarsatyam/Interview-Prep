@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CheckCircle2, ClipboardPaste, Library } from "lucide-react";
-import { GenerateProblemButton } from "@/components/problems/generate-dialog";
+import { GenerateProblemButton } from "@/modules/dsa/components/problems/generate-dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { problems } from "@/lib/content";
-import { problemTopics } from "@/lib/domain/problem-topics";
-import { listCustomProblems } from "@/lib/services/custom-problems";
-import { cn } from "@/lib/utils";
+import { problems } from "@/core/content";
+import { problemTopics } from "@/modules/progress/domain/problem-topics";
+import { listCustomProblems } from "@/modules/dsa/services/custom-problems";
+import { cn } from "@/core/utils";
 
 export const metadata: Metadata = { title: "Problems" };
 
@@ -24,8 +24,11 @@ export default async function ProblemsPage() {
       <PageHeader
         icon={Library}
         title="Problems"
-        description="Practice beyond the sheet: generate a fresh problem with AI or bring one from anywhere. They run in the same editor, in JavaScript, TypeScript or Python."
+        description="Code problems beyond the sheet: generate a fresh one with AI or bring one from anywhere. They run in the same editor, in JavaScript, TypeScript or Python. For quizzes, design cases and flashcards across every subject, see the Practice hub."
       >
+        <Button asChild variant="outline">
+          <Link href="/practice">All practice</Link>
+        </Button>
         <GenerateProblemButton topics={topics} />
         <Button asChild variant="outline">
           <Link href="/problems/new">

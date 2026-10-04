@@ -6,7 +6,7 @@ import { Bell, CalendarCheck, CheckCheck, ClipboardCheck, Flame, Newspaper, Refr
 import { markNotificationsReadAction } from "@/app/(app)/notifications/actions";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 export interface BellItem {
   id: string;

@@ -3,11 +3,11 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { todayIn } from "@/lib/services/plan";
-import { getSettings } from "@/lib/services/settings";
-import { INTERVIEW_STATUSES } from "@/lib/domain/web-interview";
-import { setInterviewStatus, setLessonDone } from "@/lib/services/webdev";
+import { requireSession } from "@/core/auth/dal";
+import { todayIn } from "@/modules/planner/services/plan";
+import { getSettings } from "@/modules/settings/services/settings";
+import { INTERVIEW_STATUSES } from "@/modules/learn/domain/web-interview";
+import { setInterviewStatus, setLessonDone } from "@/modules/learn/services/webdev";
 
 export async function setInterviewStatusAction(input: unknown): Promise<ActionResult> {
   await requireSession();

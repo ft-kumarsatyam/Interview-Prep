@@ -3,8 +3,8 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { checkCredentials, recordFailure, throttleMinutes } from "@/lib/auth/credentials";
-import { createSession } from "@/lib/auth/session";
+import { checkCredentials, recordFailure, throttleMinutes } from "@/core/auth/credentials";
+import { createSession } from "@/core/auth/session";
 
 export interface LoginState {
   error?: string;

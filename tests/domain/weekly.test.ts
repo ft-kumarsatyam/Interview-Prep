@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bar, formatMinutes, percent, weekVerdict, weeklyReport, type WeeklyInput } from "@/lib/domain/weekly";
+import { bar, formatMinutes, percent, weekVerdict, weeklyReport, type WeeklyInput } from "@/modules/progress/domain/weekly";
 
 const base: WeeklyInput = {
   from: "2026-10-05",

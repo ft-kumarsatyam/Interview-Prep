@@ -1,5 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 

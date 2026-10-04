@@ -3,9 +3,9 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { CUSTOM_SOURCES, draftInputSchema, generateInputSchema, type CustomProblemDraft } from "@/lib/domain/custom-problem";
-import { deleteCustomProblem, draftFromStatement, generateProblem, recordCustomResult, saveCustomProblem, type GeneratedProblem } from "@/lib/services/custom-problems";
+import { requireSession } from "@/core/auth/dal";
+import { CUSTOM_SOURCES, draftInputSchema, generateInputSchema, type CustomProblemDraft } from "@/modules/dsa/domain/custom-problem";
+import { deleteCustomProblem, draftFromStatement, generateProblem, recordCustomResult, saveCustomProblem, type GeneratedProblem } from "@/modules/dsa/services/custom-problems";
 
 const slugSchema = z.string().regex(/^[a-z0-9-]{1,80}$/);
 

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { testcaseBySlug } from "@/lib/content";
-import { ProblemProgress } from "@/lib/models/progress";
-import { getProblemDetail } from "@/lib/services/problems";
-import { revealHiddenCase } from "@/lib/services/progress";
+import { testcaseBySlug } from "@/core/content";
+import { ProblemProgress } from "@/core/models/progress";
+import { getProblemDetail } from "@/modules/dsa/services/problems";
+import { revealHiddenCase } from "@/modules/progress/services/progress";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 /** The chip look as a class string, for chips that are links (`aria-current`) rather than toggle buttons. */
 export function chipClass(pressed: boolean, className?: string) {

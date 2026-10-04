@@ -2,7 +2,8 @@
   "track": {
     "id": "nextjs",
     "name": "Next.js",
-    "blurb": "Next.js 16 App Router in depth: Server and Client Components, Cache Components and revalidation, Server Actions, security, and rendering performance."
+    "blurb": "Next.js 16 App Router in depth: Server and Client Components, Cache Components and revalidation, Server Actions, security, and rendering performance.",
+    "area": "frontend"
   },
   "questions": [
     {
@@ -452,6 +453,244 @@
         "Not knowing that unlisted params are rendered on demand by default.",
         "Returning params with the wrong shape or non-string values."
       ]
+    },
+    {
+      "id": "nextjs-server-action-network",
+      "level": "mid",
+      "q": "What actually happens on the network when a Server Action runs?",
+      "answer": "**The client sends a POST to the current page's URL with a `Next-Action` header carrying an encrypted action ID and the serialised arguments (often `FormData`) in the body. Next.js checks the Origin against the Host, enforces a 1 MB body limit by default, finds the function and runs it. If the action called `updateTag`, `revalidatePath` or `refresh`, changed cookies, or redirected, the same streamed response carries both the return value and a freshly rendered RSC payload for the page.**\n\n**Step by step:**\n\n```text\n1. build time   'use server' functions are replaced in client bundles by a reference\n                (encrypted action id + dispatcher); unused actions are dropped\n2. invoke       <form action>, formAction, or startTransition(() => action(args))\n3. request      POST /current/route\n                Next-Action: <id>\n                body: FormData or serialised args (+ encrypted closure vars for inline actions)\n4. server       Origin == Host (or X-Forwarded-Host / allowedOrigins) else reject\n                body <= bodySizeLimit (1 MB default)\n                decrypt id -> run the function (your auth + validation)\n5. response     one Flight stream:\n                  - return value -> useActionState / awaited promise\n                  - new RSC payload for the route if revalidated, refreshed or cookies changed\n                  - or a redirect: router navigates and streams the destination\n6. client       React commits the new tree as a seeded navigation\n```\n\n**Consequences worth stating:**\n- **Single round trip.** The mutation, cache invalidation and UI update arrive together. `revalidateTag(tag, \"max\")` is the exception: it marks data for background refresh and does not re-render in the action response.\n- **Sequential dispatch.** The Next.js client sends actions one at a time per client, so `Promise.all([a(), b(), c()])` runs them in sequence. Parallelise inside one action or use Route Handlers for reads.\n- **Public endpoint.** Anyone can replay the POST with any arguments. Auth, authorisation and validation belong inside the function.\n- **Version skew.** Action IDs are tied to the build, and Next.js rotates them at most every 14 days. A tab running an old build may call an ID the new server does not know (\"Failed to find Server Action\"). Mitigate with rolling deploys, `deploymentId` and a retry path in the UI. On multiple self-hosted instances, set a shared `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`.\n- **Progressive enhancement.** A form whose action is a Server Function, rendered by a Server Component, submits as a normal POST even before JavaScript loads.\n\n**Debugging:** in DevTools Network, filter for POSTs to the page URL with the `Next-Action` header. The response is a Flight stream rather than JSON. Check whether it contains the re-rendered tree when you expected the UI to update.",
+      "followUps": [
+        "Why does Promise.all over Server Actions not run them in parallel?",
+        "What causes \"Failed to find Server Action\" after a deploy?",
+        "Which calls make the response include a re-rendered page?"
+      ],
+      "mistakes": [
+        "Thinking Server Actions are private function calls rather than public POST endpoints.",
+        "Not knowing that the response can carry the re-rendered route, so no follow-up fetch is needed.",
+        "Ignoring version skew between an open tab and a new deployment."
+      ],
+      "lesson": "next-server-actions"
+    },
+    {
+      "id": "nextjs-server-action-form-validation",
+      "level": "junior",
+      "q": "How do you validate a Server Action form and show field errors without losing input?",
+      "answer": "**Validate on the server inside the action with a schema such as zod, return a typed state object (field errors plus the submitted values) instead of throwing, and read it in the form with `useActionState`. Feed the returned values back as `defaultValue`, because React resets uncontrolled fields after a form action.**\n\n**The action:**\n\n```ts\n\"use server\";\nimport { z } from \"zod\";\n\nconst Signup = z.object({\n  email: z.string().email(\"Enter a valid email\"),\n  password: z.string().min(12, \"Use at least 12 characters\"),\n});\n\nexport type SignupState = {\n  errors?: { email?: string[]; password?: string[] };\n  values?: { email: string };\n  message?: string;\n};\n\nexport async function signup(_prev: SignupState, formData: FormData): Promise<SignupState> {\n  const raw = { email: String(formData.get(\"email\") ?? \"\"), password: String(formData.get(\"password\") ?? \"\") };\n  const parsed = Signup.safeParse(raw);\n  if (!parsed.success) {\n    return { errors: parsed.error.flatten().fieldErrors, values: { email: raw.email } }; // never echo the password\n  }\n  const res = await createAccount(parsed.data);\n  if (!res.ok) return { message: \"That email is already registered\", values: { email: raw.email } };\n  redirect(\"/welcome\");\n}\n```\n\n**The form:**\n\n```tsx\n\"use client\";\nimport { useActionState } from \"react\";\nimport { signup, type SignupState } from \"./actions\";\n\nexport function SignupForm() {\n  const [state, action, pending] = useActionState<SignupState, FormData>(signup, {});\n  return (\n    <form action={action} noValidate>\n      <label htmlFor=\"email\">Email</label>\n      <input id=\"email\" name=\"email\" type=\"email\" defaultValue={state.values?.email}\n        aria-invalid={!!state.errors?.email} aria-describedby=\"email-error\" />\n      {state.errors?.email && <p id=\"email-error\" role=\"alert\">{state.errors.email[0]}</p>}\n\n      <label htmlFor=\"password\">Password</label>\n      <input id=\"password\" name=\"password\" type=\"password\" aria-describedby=\"pw-error\" />\n      {state.errors?.password && <p id=\"pw-error\" role=\"alert\">{state.errors.password[0]}</p>}\n\n      {state.message && <p role=\"alert\">{state.message}</p>}\n      <button disabled={pending}>{pending ? \"Creating...\" : \"Create account\"}</button>\n    </form>\n  );\n}\n```\n\n**Why each piece matters:**\n- **Server validation is the security boundary.** Client checks (HTML `required`, or the same zod schema in the browser) are UX only, because the POST can be sent without your form.\n- **Return, do not throw, expected errors.** Thrown errors go to `error.tsx` and replace the page. Validation failures are normal outcomes.\n- **Accessibility:** connect errors with `aria-describedby`, mark fields `aria-invalid`, and use `role=\"alert\"` (or move focus to an error summary) so screen-reader users hear the problem.\n- **Pending state:** `useActionState`'s third value, or `useFormStatus` in a child button component.\n- **Progressive enhancement:** this works before hydration. Pass a `permalink` as the third `useActionState` argument if the form can render on a different URL than the one that handles it.",
+      "followUps": [
+        "Why do the inputs clear after a failed submit by default?",
+        "Is client-side validation still useful?",
+        "How do you show a pending state on the submit button?"
+      ],
+      "mistakes": [
+        "Validating only on the client.",
+        "Throwing errors for expected validation failures instead of returning them as state.",
+        "Not returning submitted values, so React's automatic form reset wipes the user's input."
+      ],
+      "lesson": "next-server-actions"
+    },
+    {
+      "id": "nextjs-server-action-read-own-writes",
+      "level": "mid",
+      "q": "After a Server Action, how do you make sure the user sees their own write?",
+      "answer": "**Call `updateTag(tag)` for the tags your mutation affected, inside the Server Action and before any `redirect()`. `updateTag` expires those entries immediately, so the re-render that ships in the same action response, and the next read, wait for fresh data instead of serving stale content. Use `revalidatePath` when a single route is affected, and `refresh()` when the view depends on uncached state.**\n\n**The options in Next.js 16:**\n\n| Call | Freshness for the acting user | Where |\n| --- | --- | --- |\n| `updateTag(\"posts\")` | immediate: the next read blocks on fresh data | Server Actions only |\n| `revalidateTag(\"posts\", \"max\")` | stale-while-revalidate: old data now, new data later | Server Actions, Route Handlers |\n| `revalidatePath(\"/posts\")` | immediate for that path | Server Actions, Route Handlers |\n| `refresh()` | refetches the current route payload; caches untouched | Server Actions |\n\n```ts\n\"use server\";\nimport { updateTag } from \"next/cache\";\nimport { redirect } from \"next/navigation\";\n\nexport async function createPost(formData: FormData) {\n  const session = await verifySession();\n  const post = await db.post.create({ data: { title: String(formData.get(\"title\")), authorId: session.userId } });\n  updateTag(\"posts\");               // list pages\n  updateTag(`post:${post.id}`);     // detail page\n  redirect(`/posts/${post.id}`);    // throws; anything after this never runs\n}\n```\n\nThis works only if the reads were tagged:\n\n```ts\nasync function getPosts() {\n  \"use cache\";\n  cacheLife(\"hours\");\n  cacheTag(\"posts\");\n  return db.post.findMany({ orderBy: { createdAt: \"desc\" } });\n}\n```\n\n**Why not always `revalidateTag`?** With the recommended `\"max\"` profile it serves the stale entry while refreshing in the background, and the action response does **not** include a re-render. That is ideal for a CMS webhook where readers can lag a few seconds, and wrong when the person who just clicked Save expects to see the change. The single-argument `revalidateTag(tag)` is deprecated in 16.\n\n**Other layers to remember:**\n- **Client router cache.** Revalidating inside an action also refreshes the client-side cache for the current route. Other routes the user visited may still be within their `stale` window until next navigation.\n- **Multi-instance self-hosting.** Invalidation is per instance unless your cache handler shares tag state (`refreshTags`), otherwise the next request may land on a pod with stale data.\n- **Optimistic UI.** For instant feedback before the round trip, combine `useOptimistic` with `updateTag`. The optimistic layer shows immediately and the real data replaces it when the action completes.\n\n**Debugging stale UI:** confirm the read is tagged with exactly the string you invalidate (tags are case-sensitive, max 256 characters). Confirm the invalidation runs before `redirect`. Check whether the data comes from a cache you did not tag, such as an untagged `fetch` or a CDN.",
+      "followUps": [
+        "When is revalidateTag with 'max' the better choice?",
+        "What does refresh() do that updateTag does not?",
+        "Why must revalidation come before redirect()?"
+      ],
+      "mistakes": [
+        "Using revalidateTag(tag, 'max') and expecting the acting user to see fresh data immediately.",
+        "Calling revalidation after redirect(), so it never runs.",
+        "Tagging nothing and falling back to revalidatePath('/', 'layout') for every mutation."
+      ],
+      "lesson": "next-server-actions"
+    },
+    {
+      "id": "nextjs-server-action-idor",
+      "level": "senior",
+      "q": "A Server Action receives an item id from the client. What can go wrong and how do you secure it?",
+      "answer": "**The classic bug is an insecure direct object reference (IDOR). The action trusts the ID and updates or deletes that row, but anyone can POST to the action with someone else's ID, because every Server Action is a public endpoint. Secure it by deriving the user from the session inside the action, re-reading the row by ID and owner (or checking a permission) from the database, validating the input, and returning only minimal data.**\n\n**Vulnerable vs safe:**\n\n```ts\n\"use server\";\n\n// Vulnerable: no auth, trusts the client-supplied object\nexport async function archiveInvoiceUnsafe(invoice: { id: string; ownerId: string }) {\n  await db.invoice.update({ where: { id: invoice.id }, data: { archived: true } });\n}\n\n// Safe\nexport async function archiveInvoice(invoiceId: unknown) {\n  const session = await verifySession();                  // 1. who is calling (throws or redirects)\n  const id = z.string().uuid().parse(invoiceId);          // 2. shape\n  const invoice = await db.invoice.findFirst({            // 3. ownership / permission\n    where: { id, orgId: session.orgId },\n    select: { id: true, status: true },\n  });\n  if (!invoice) return { ok: false as const, error: \"Not found\" };   // do not reveal existence\n  if (invoice.status === \"paid\" && session.role !== \"admin\") return { ok: false as const, error: \"Forbidden\" };\n  await db.invoice.update({ where: { id }, data: { archived: true } });\n  updateTag(`invoices:${session.orgId}`);\n  return { ok: true as const };                           // 4. minimal return value\n}\n```\n\n**Why the usual defences are not enough:**\n- **Hiding the UI** is not access control. The action ID is in the client bundle, and the POST can be replayed with any arguments.\n- **zod** checks shape, not ownership. A perfectly valid UUID can belong to another tenant.\n- **`proxy.ts` auth** only sees \"has a session\" and can be skipped by matcher gaps. The Next.js docs note that Server Functions are POSTs to the page route, so excluded paths skip the proxy entirely.\n- **Closure encryption** protects values you captured from tampering and reading, but the docs say not to rely on it for secrets, and it does nothing for arguments the client chooses.\n\n**Defence in depth:**\n- Put these checks in a **Data Access Layer** (`server-only` module) so every caller (pages, actions, route handlers) goes through the same authorisation.\n- **Return DTOs,** never raw rows: return values are serialised to the client.\n- **Rate-limit** abusable actions (password reset, invites, AI generation) per user and IP.\n- **Re-authenticate** for destructive operations (delete account, change email).\n- **Log** denied attempts with user ID and target ID. A spike of not-found results on sequential IDs is an enumeration attempt.\n\nOWASP's IDOR prevention cheat sheet sums up the rule: check authorisation on every object access, and do not rely on unguessable IDs alone.",
+      "followUps": [
+        "Does zod validation prevent this bug?",
+        "Why is hiding the button for non-owners not enough?",
+        "How would you rate-limit an expensive action?"
+      ],
+      "mistakes": [
+        "Relying on rendering the form only for authorised users.",
+        "Trusting a whole object sent from the client, including its ownerId.",
+        "Returning the raw database row from the action."
+      ],
+      "lesson": "next-server-actions"
+    },
+    {
+      "id": "nextjs-photo-modal-shareable-url",
+      "level": "senior",
+      "q": "How would you build a photo modal with a shareable URL using parallel and intercepting routes?",
+      "answer": "**Add a `@modal` parallel route slot to the layout that shows the feed, put an intercepting route `(.)photo/[id]` inside that slot that renders the photo in a dialog, and keep a normal `photo/[id]/page.tsx` for the full page. Clicking a photo is a soft navigation, so the URL changes to `/photo/42` and the intercepted route renders in the modal over the feed. A refresh or shared link is a hard navigation, so no interception happens and the full page renders.**\n\n**File layout:**\n\n```text\napp/\n  layout.tsx                    renders {children} and {modal}\n  page.tsx                      feed with <Link href={`/photo/${id}`}>\n  photo/[id]/page.tsx           full page (hard navigation)\n  @modal/\n    default.tsx                 export default () => null\n    (.)photo/[id]/page.tsx      <Modal><Photo id={id} /></Modal>\n    [...catchAll]/page.tsx      export default () => null   (closes the modal on other links)\n```\n\n```tsx\n// app/layout.tsx\nexport default function RootLayout({ children, modal }: { children: React.ReactNode; modal: React.ReactNode }) {\n  return <html lang=\"en\"><body>{children}{modal}</body></html>;\n}\n```\n\n```tsx\n// components/modal.tsx\n\"use client\";\nimport { useRouter } from \"next/navigation\";\nexport function Modal({ children }: { children: React.ReactNode }) {\n  const router = useRouter();\n  return (\n    <div role=\"dialog\" aria-modal=\"true\" onClick={() => router.back()}>\n      <div onClick={(e) => e.stopPropagation()}>{children}</div>\n    </div>\n  );\n}\n```\n\n**Why each piece exists:**\n- **`(.)photo`**: intercepts `/photo/[id]` from the same segment level. Matchers count route segments, so the `@modal` slot folder does not add a level.\n- **`@modal/default.tsx`** returning `null`: on hard navigation (refresh on `/`), Next.js cannot recover a slot's state and renders `default.tsx`. Without it the route 404s.\n- **Catch-all null page:** during soft navigation, a slot keeps its last state when the new URL does not match it. Navigating from the modal to `/settings` would leave the modal open without it.\n- **`router.back()`** to close: restores the feed URL and scroll position. Back and forward naturally close and reopen the modal.\n- **Shared component:** both `photo/[id]/page.tsx` and the intercepted page render the same `<Photo id>` Server Component, which can be cached with `'use cache'` and `cacheTag`.\n\n**Accessibility:** a real dialog needs focus trapping, Escape to close, focus return to the clicked thumbnail, and a labelled title. Use the native `dialog` element with `showModal()` or a headless dialog primitive rather than a bare div.\n\n**Behaviour summary:**\n\n| Action | URL | Renders |\n| --- | --- | --- |\n| click thumbnail | /photo/42 | feed (children) + modal (intercepted) |\n| refresh / open link | /photo/42 | full photo page + `@modal/default` (null) |\n| back | / | feed; modal slot returns to default |",
+      "followUps": [
+        "How do you close the modal when the user clicks a link to another page?",
+        "What does the user see on refresh with the modal open?",
+        "How do you avoid duplicating the photo UI between the modal and the full page?"
+      ],
+      "mistakes": [
+        "Forgetting @modal/default.tsx, which causes 404s on hard navigation.",
+        "Counting (..) by folders instead of route segments.",
+        "Building the modal with client state only, losing deep links and back-button behaviour."
+      ],
+      "lesson": "next-routing-advanced"
+    },
+    {
+      "id": "nextjs-parallel-route-default",
+      "level": "mid",
+      "q": "Why does a parallel route 404 on refresh, and what is default.tsx for?",
+      "answer": "**On client-side (soft) navigation, Next.js remembers what each slot was showing and keeps unmatched slots as they were. On a refresh or direct visit (hard navigation) there is no remembered state, so for any slot that has no page matching the URL, Next.js renders that slot's `default.tsx`, and if that file does not exist it renders a 404. `default.tsx` is the fallback for \"this slot has nothing for this URL on a fresh load\".**\n\n**Example:**\n\n```text\napp/dashboard/\n  layout.tsx          ({ children, team, analytics })\n  page.tsx            /dashboard\n  @team/\n    page.tsx\n    settings/page.tsx /dashboard/settings  <- only @team has this\n  @analytics/\n    page.tsx\n                      <- no settings page here\n```\n\n- Soft navigation from `/dashboard` to `/dashboard/settings`: `@team` renders `settings`, while `@analytics` keeps showing its `page.tsx` content. Everything looks fine.\n- Refresh on `/dashboard/settings`: `@analytics` has no match and no remembered state, so with no `@analytics/default.tsx` the whole route 404s. The same goes for `children`: `app/dashboard/page.tsx` does not match `/settings`, so you also need `app/dashboard/default.tsx`.\n\n**Fix:**\n\n```tsx\n// app/dashboard/@analytics/default.tsx\nexport default function Default() {\n  return null; // or re-export the slot's page: export { default } from \"./page\";\n}\n```\n\nChoosing what `default.tsx` returns is a product decision: `null` for modal slots, the slot's normal page for persistent panels, or a placeholder.\n\n**Related facts about slots:**\n- `@slot` folders are passed as props to the parent layout and do **not** appear in the URL. `children` is an implicit slot (`app/page.tsx` is the same as `app/@children/page.tsx`).\n- Each slot can have its own `loading.tsx` and `error.tsx`, so it streams and fails independently.\n- At one segment level, all slots share a rendering mode: if one is dynamic, all are.\n- `useSelectedLayoutSegment(\"team\")` in a client layout tells you which segment a slot is showing.\n- The 404 is deliberate. It prevents rendering a parallel route on a page it was never designed for.\n\n**Debugging habit:** for any layout with slots, test every URL both by clicking to it and by refreshing on it. Most parallel-route bugs only show up on one of the two.",
+      "followUps": [
+        "Does the children slot also need a default.tsx?",
+        "How do you read the active segment of a slot?",
+        "Can one slot be static while another is dynamic?"
+      ],
+      "mistakes": [
+        "Testing only with client-side navigation and never refreshing.",
+        "Assuming slots are URL segments.",
+        "Forgetting the implicit children slot needs a default when sibling slots have deeper routes."
+      ],
+      "lesson": "next-routing-advanced"
+    },
+    {
+      "id": "nextjs-route-groups-root-layouts",
+      "level": "junior",
+      "q": "What are route groups, and when do multiple root layouts cause a full page reload?",
+      "answer": "**A route group is a folder wrapped in parentheses, like `(marketing)` or `(app)`. It organises routes and lets a set of them share a layout, loading state or error boundary, without adding anything to the URL. If you give each group its own root layout (its own `html` and `body`) with no shared top-level layout, navigating between pages in different groups triggers a full page load instead of a client-side transition.**\n\n**Typical structure:**\n\n```text\napp/\n  layout.tsx                 shared root: html, body, fonts\n  (marketing)/\n    layout.tsx               marketing header and footer\n    page.tsx                 -> /\n    pricing/page.tsx         -> /pricing\n  (app)/\n    layout.tsx               authenticated shell: sidebar, providers\n    dashboard/page.tsx       -> /dashboard\n    settings/page.tsx        -> /settings\n```\n\n**Uses:**\n- Different chrome for different sections (marketing vs app shell).\n- Wrapping only some routes in a client provider, a `loading.tsx` or an `error.tsx`.\n- Keeping a team's routes together in the tree.\n- Opting a subset of routes into a different root layout, for example a completely different `html` structure for an embedded widget.\n\n**Multiple root layouts:**\n\n```text\napp/\n  (shop)/layout.tsx       <html><body>...shop\n  (blog)/layout.tsx       <html><body>...blog\n```\n\nWithout a top-level `app/layout.tsx`, each group's layout is a root layout. Moving from `/cart` (shop) to `/blog` (blog) reloads the whole page, because React cannot swap the `html` element in a client transition. You lose client state and pay a full load. It is acceptable for sections that really share nothing, but a single root layout plus nested group layouts is usually better.\n\n**Rules from the docs:**\n- Two groups must not resolve to the same URL. `(marketing)/about/page.tsx` and `(shop)/about/page.tsx` cause an error.\n- With multiple root layouts and no top-level layout, the home page `/` must live inside one of the groups.\n- Group names are only for organisation. Pick names that explain intent (`(auth)`, `(public)`).\n\n**Interview tip:** mention that layouts persist across navigation, so the `(app)` layout's sidebar state survives moving between dashboard and settings. That is part of why grouping is valuable.",
+      "followUps": [
+        "Can two route groups both define /about?",
+        "How would you wrap only the authenticated pages in a provider?",
+        "Where does the home page go if every group has its own root layout?"
+      ],
+      "mistakes": [
+        "Thinking route group names appear in the URL.",
+        "Creating two groups that resolve to the same path.",
+        "Using multiple root layouts without realising navigation between them reloads the page."
+      ],
+      "lesson": "next-routing-advanced"
+    },
+    {
+      "id": "nextjs-error-tsx-same-layout",
+      "level": "mid",
+      "q": "Why doesn't error.tsx catch an error thrown in the layout of the same segment?",
+      "answer": "**Because of how the files nest. A segment's `error.tsx` becomes a React error boundary that wraps that segment's `loading`, `not-found`, `page` and child segments, but it sits inside that segment's `layout.tsx` and `template.tsx`. An error boundary only catches errors from its children, so an error thrown while rendering the layout happens outside the boundary and propagates to the parent segment's `error.tsx`, or to `global-error.tsx` for the root layout.**\n\n**The nesting:**\n\n```text\n<Layout>                     app/dashboard/layout.tsx   <- error here goes UP\n  <Template>\n    <ErrorBoundary fallback={<Error />}>   app/dashboard/error.tsx\n      <Suspense fallback={<Loading />}>\n        <NotFoundBoundary>\n          <Page />           <- errors here are caught by dashboard/error.tsx\n```\n\n**Where to catch what:**\n\n| Error thrown in | Caught by |\n| --- | --- |\n| `dashboard/page.tsx` or deeper | `dashboard/error.tsx` |\n| `dashboard/layout.tsx` | `app/error.tsx` (the parent segment) |\n| `app/layout.tsx` (root) | `app/global-error.tsx` (must render its own html and body) |\n\n**A minimal boundary (Next.js 16.3):**\n\n```tsx\n\"use client\"; // error boundaries must be Client Components\nimport { useEffect } from \"react\";\n\nexport default function Error({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {\n  useEffect(() => { reportError(error); }, [error]);\n  return (\n    <div role=\"alert\">\n      <h2>Something went wrong.</h2>\n      <p>Reference: {error.digest}</p>\n      <button onClick={() => retry()}>Try again</button>\n    </div>\n  );\n}\n```\n\n- `retry()` (stable in 16.3) re-fetches and re-renders the segment. `reset()` only clears the error state and re-renders without re-fetching.\n- In production, errors from Server Components reach the client with a **generic message** and a `digest`. Log the digest server-side (for example in `onRequestError` in `instrumentation.ts`) to join user reports to stack traces without leaking details.\n- `global-error.tsx` replaces the root layout when active, so it gets no global styles or metadata exports. Render a `title` element yourself.\n\n**Design implications:**\n- Keep layouts thin and low-risk: move risky data fetching into pages or wrap it in its own Suspense and error-boundary component inside the layout.\n- Put `error.tsx` at the levels where a partial failure makes sense, for example per dashboard widget slot, so one failing panel does not take down the shell.\n- Use `notFound()` with `not-found.tsx` for missing resources rather than throwing generic errors.",
+      "followUps": [
+        "Where do you handle errors thrown in the root layout?",
+        "What is the digest on a production error?",
+        "When should you use retry() instead of reset()?"
+      ],
+      "mistakes": [
+        "Expecting a segment's error.tsx to protect its own layout.",
+        "Making error.tsx a Server Component.",
+        "Showing raw server error messages to users instead of logging them by digest."
+      ],
+      "lesson": "next-routing-advanced"
+    },
+    {
+      "id": "nextjs-middleware-to-proxy",
+      "level": "junior",
+      "q": "Why did Next.js 16 rename middleware.ts to proxy.ts, and what changed?",
+      "answer": "**The capability is the same: code that runs before a request is routed and can redirect, rewrite, set headers or cookies, or respond directly. The Next.js team renamed it because \"middleware\" made people think of Express-style middleware chains, which encouraged putting too much logic there. \"Proxy\" says what it is: a network-boundary layer in front of the app, to be used sparingly. The other real change in 16 is the runtime: Proxy always runs on Node.js and cannot be configured to use Edge.**\n\n**What changed concretely:**\n- File `middleware.ts` becomes `proxy.ts` (project root or `src/`), and the exported function `middleware` becomes `proxy` (a default export also works).\n- Config flags containing \"middleware\" were renamed, for example `skipMiddlewareUrlNormalize` became `skipProxyUrlNormalize`.\n- **Runtime:** Proxy defaults to Node.js, and setting `runtime` in the file throws. The upgrade guide says to keep the deprecated `middleware.ts` if you still need Edge.\n- `middleware.ts` still works but is deprecated.\n\n**Migration:**\n\n```bash\nnpx @next/codemod@canary middleware-to-proxy .\n```\n\n```ts\n// proxy.ts\nimport { NextResponse, type NextRequest } from \"next/server\";\n\nexport function proxy(request: NextRequest) {\n  if (!request.cookies.has(\"session\")) {\n    return NextResponse.redirect(new URL(\"/login\", request.url));\n  }\n}\n\nexport const config = { matcher: [\"/dashboard/:path*\", \"/settings/:path*\"] };\n```\n\n**What the docs now steer you toward:**\n- Static redirects and headers belong in `next.config.ts` (`redirects()`, `headers()`). They run before Proxy and need no code.\n- Proxy is for request-dependent logic: optimistic auth redirects, A/B or locale rewrites, multi-tenant host rewrites, adding headers.\n- It is **not** for slow data fetching or full session management, and `fetch` cache options have no effect inside it.\n- Authorisation still belongs next to the data (Data Access Layer), in pages, Server Actions and Route Handlers. Server Actions are POSTs to page routes, so matcher gaps skip them.\n\n**Good to mention:** there is one proxy file per project, so organise logic into imported modules. Without a `matcher` it runs on every request, including static assets.",
+      "followUps": [
+        "How do you migrate an existing middleware.ts?",
+        "What should you use instead of proxy.ts for simple redirects?",
+        "Can proxy.ts run on the edge runtime?"
+      ],
+      "mistakes": [
+        "Continuing to write middleware.ts in new Next.js 16 projects.",
+        "Assuming the rename also changed what the feature can do.",
+        "Using proxy.ts as the main authorisation layer."
+      ],
+      "lesson": "next-proxy-edge"
+    },
+    {
+      "id": "nextjs-edge-vs-node-runtime",
+      "level": "mid",
+      "q": "Edge runtime vs Node.js runtime: what are the trade-offs?",
+      "answer": "**The Edge runtime runs code in lightweight V8 isolates with a web-standard API subset: very fast cold starts, and it can run close to users in many regions. In exchange there is no full Node.js (no `fs`, no raw TCP sockets, no native addons), bundle sizes are small, and you are often far from your database. The Node.js runtime has the full API surface and the npm ecosystem, but slower cold starts and usually runs in one region near your data. In Next.js 16, Node.js is the default everywhere and the only option for `proxy.ts`. The `edge` route segment option is deprecated.**\n\n**Comparison:**\n\n| | Edge | Node.js |\n| --- | --- | --- |\n| APIs | `fetch`, Request/Response, Web Crypto, streams, URL | everything in Node + npm |\n| Cold start | milliseconds (isolates) | slower (process/container) |\n| Placement | many regions near users | typically a region near the DB |\n| DB access | HTTP-based drivers only | any driver, connection pools |\n| Limits | small code size, restricted globals | larger bundles and memory |\n\n**The latency trap.** Edge looks faster in a hello-world benchmark. But a page that makes three sequential queries to a database in `us-east-1` from an edge function in Singapore pays three intercontinental round trips (roughly 200+ ms each) instead of three ~1 ms local hops. The common lesson from 2023-2024 was: put compute **next to the data**, and use the edge only for logic that needs no origin data (redirects, rewrites, header manipulation, A/B bucketing from a cookie).\n\n**Compatibility pain.** ORMs with native engines, `bcrypt` (native), `jsonwebtoken` (uses Node crypto), and many SDKs failed on Edge. Teams switched to `jose`, `bcryptjs` and HTTP database drivers, or moved the code back to Node.\n\n**Where Next.js landed:** Next.js 15.5 made the Node.js runtime for middleware stable, and Next.js 16's `proxy.ts` uses Node by default with no option to switch. Hosting platforms still offer fast global routing at the CDN layer (Vercel's routing rules and Routing Middleware, Cloudflare Workers in front of an origin). `next.config` `redirects()` and `headers()` remain the cheapest option for static rules.\n\n**How to choose today:**\n- Static redirect or header: `next.config`.\n- Request-dependent redirect or rewrite without data: `proxy.ts` (Node), or a platform edge rule if you need global placement.\n- Anything touching the DB or heavy libraries: Node, in the region of the data, cached where possible.",
+      "followUps": [
+        "Why can running at the edge make a database-backed page slower?",
+        "Which libraries typically fail on the edge runtime?",
+        "Where does a CDN or platform routing layer fit compared with proxy.ts?"
+      ],
+      "mistakes": [
+        "Assuming edge is always faster.",
+        "Ignoring the limited API surface and bundle size limits of edge functions.",
+        "Not knowing that Next.js 16 made Node.js the Proxy runtime and deprecated edge for route segments."
+      ],
+      "lesson": "next-proxy-edge"
+    },
+    {
+      "id": "nextjs-cve-2025-29927",
+      "level": "senior",
+      "q": "What did CVE-2025-29927 teach about doing auth in middleware?",
+      "answer": "**CVE-2025-29927 (March 2025, critical) let an attacker skip Next.js middleware entirely by sending a crafted internal header, `x-middleware-subrequest`, that Next.js used to avoid infinite middleware recursion. Any self-hosted app that enforced authorisation only in middleware exposed its protected pages to anyone. The lesson is that this layer is an optimisation, not a security boundary: check authentication and authorisation next to the data, in every page, Server Action and Route Handler.**\n\n**What happened, in short:**\n- Middleware marks internal subrequests with a header so it does not run on itself recursively.\n- The server trusted that header on **incoming** requests. Supplying the right value made Next.js believe middleware had already run, so it skipped it.\n- Affected: self-hosted apps using `next start` (including standalone output) on versions from 11.1.4 up to the fixes. Patched in 15.2.3, 14.2.25, 13.5.9 and 12.3.5. Vercel-hosted apps were not affected because the platform routes middleware differently. Vercel published a postmortem.\n\n**Why middleware-only auth was fragile even without the CVE:**\n- **Matcher drift:** a new route or a refactored regex can fall outside the matcher.\n- **Server Actions** are POSTs to the page route, so excluding a path also excludes its actions. Moving an action changes coverage silently (the Next.js 16 proxy docs call this out).\n- **Coarse knowledge:** the proxy sees \"valid session cookie\", not \"may this user read invoice 42\".\n\n**The pattern the Next.js docs recommend now:**\n\n```ts\n// lib/dal.ts\nimport \"server-only\";\nimport { cache } from \"react\";\nimport { cookies } from \"next/headers\";\nimport { redirect } from \"next/navigation\";\n\nexport const verifySession = cache(async () => {\n  const token = (await cookies()).get(\"session\")?.value;\n  const session = token ? await decrypt(token) : null;\n  if (!session) redirect(\"/login\");\n  return { userId: session.userId, role: session.role };\n});\n\nexport async function getInvoice(id: string) {\n  const s = await verifySession();\n  return db.invoice.findFirst({ where: { id, orgId: s.orgId }, select: { id: true, total: true } });\n}\n```\n\nPages, actions and route handlers call DAL functions. `proxy.ts` stays as an **optimistic** redirect for a fast logged-out experience.\n\n**Defence in depth beyond code:**\n- Strip internal or unknown `x-middleware-*` style headers at the CDN or reverse proxy.\n- Subscribe to framework security advisories and keep patch versions current. Have a playbook to roll a framework update within hours.\n- Add tests that hit protected routes and actions without a session and assert 401, 403 or a redirect, independent of the proxy.",
+      "followUps": [
+        "Which deployments were affected?",
+        "How would you add defence in depth at the infrastructure level?",
+        "Where should authorisation checks live in a Next.js app?"
+      ],
+      "mistakes": [
+        "Treating middleware or proxy as the single source of truth for access control.",
+        "Not knowing that matcher gaps and Server Actions can bypass the proxy even without a vulnerability.",
+        "Patching the framework but not adding checks in the data layer."
+      ],
+      "lesson": "next-proxy-edge"
+    },
+    {
+      "id": "nextjs-caching-layers-browser-to-db",
+      "level": "senior",
+      "q": "Walk me through the caching layers in a Next.js 16 app, from browser to database.",
+      "answer": "**From the outside in: the browser's client router cache holds RSC payloads for visited and prefetched routes; a CDN caches responses according to Cache-Control; the Next.js server serves prerendered static shells and ISR pages; `'use cache'` entries store outputs of cached functions and components; `React.cache` deduplicates calls within one request; and only then do you hit the database. In Next.js 16 with Cache Components you control the middle layers with `'use cache'`, `cacheLife` and `cacheTag`, and put request-time data behind Suspense.**\n\n**The layers:**\n\n```text\n1 Browser    client router cache   payloads kept for the cacheLife `stale` time\n                                    (router enforces >= 30 s for cached content)\n2 CDN        HTTP cache            static: public / s-maxage + stale-while-revalidate\n                                    dynamic: private, no-cache, no-store\n3 Server     static shell / ISR    prerendered at build, regenerated in background (PPR default)\n4 Server     'use cache' entries   key = build id + function id + serialised args/closure\n                                    default in-memory LRU; cacheHandlers / 'use cache: remote'\n5 Request    React.cache           dedupe getUser() called by five components in one render\n6 Origin     database / APIs\n```\n\n**How code maps onto them:**\n\n```tsx\nasync function getProduct(id: string) {\n  \"use cache\";            // layer 4 (and feeds layer 3's static shell)\n  cacheLife(\"hours\");     // stale 5 min, revalidate 1 h, expire 1 day\n  cacheTag(`product:${id}`);\n  return db.product.findUnique({ where: { id } });\n}\n\nexport default function Page({ params }: { params: Promise<{ id: string }> }) {\n  return (\n    <>\n      <Suspense fallback={<Skeleton />}><Product params={params} /></Suspense>\n      <Suspense fallback={null}><Cart /></Suspense>  {/* reads cookies: request time */}\n    </>\n  );\n}\n```\n\n**What enabling `cacheComponents` changes:** PPR becomes the default (static shell plus streamed holes). The segment configs `dynamic`, `revalidate` and `fetchCache` error and are replaced by `'use cache'` and `cacheLife`. `unstable_cache` is superseded. Runtime APIs (`cookies`, `headers`, `searchParams`) must sit inside Suspense and cannot be read inside a cached scope. Read them outside and pass values as arguments.\n\n**Invalidation across layers:** `updateTag(\"product:42\")` in a Server Action (read-your-own-writes, re-renders in the same response and refreshes the client router cache for the current route), or `revalidateTag(\"product:42\", \"max\")` from a CMS webhook (stale-while-revalidate). The static shell regenerates on the next request. The CDN follows the `s-maxage` and `stale-while-revalidate` headers.\n\n**Host-dependent behaviour:** with the default in-memory handler, serverless instances often do not reuse `'use cache'` entries across requests, while long-lived servers do. Use `'use cache: remote'` with a shared handler when the origin is expensive. No `'use cache'` entry survives a deploy, because the build ID is part of the key.\n\n**Personal data:** keep it out of shared layers. Stream it at request time, or cache it keyed by user ID only where safe (`'use cache: private'` for compliance cases).",
+      "followUps": [
+        "What changes when cacheComponents is enabled?",
+        "Why might a 'use cache' function run on every request on serverless?",
+        "How do you invalidate a product across all these layers when it changes?"
+      ],
+      "mistakes": [
+        "Mixing up the client router cache with the server data cache.",
+        "Caching per-user data in a shared cache or reading cookies inside 'use cache'.",
+        "Not knowing that 'use cache' entries are keyed by build ID and do not survive deploys."
+      ],
+      "lesson": "next-deployment-scale"
+    },
+    {
+      "id": "nextjs-self-host-multi-instance",
+      "level": "senior",
+      "q": "What breaks when you self-host Next.js on several instances behind a load balancer?",
+      "answer": "**Anything that assumes a single server breaks. Each instance has its own ISR and `'use cache'` storage, so pods serve different versions. `revalidateTag` on one pod does not reach the others. Server Action closures encrypted by one instance cannot be decrypted by another unless they share a key. Rolling deploys mix old clients with new servers. And proxies can buffer the streamed responses that PPR and Suspense rely on. Each has a documented fix in the Next.js self-hosting guide.**\n\n**The checklist:**\n\n| Problem | Symptom | Fix |\n| --- | --- | --- |\n| Per-instance page/ISR cache | users see different versions per pod; cache lost on restart | `cacheHandler` backed by Redis or S3, `cacheMaxMemorySize: 0` |\n| Per-instance `'use cache'` | low hit rate, origin load scales with pods | `cacheHandlers` + `'use cache: remote'` |\n| Tag invalidation is local | `revalidateTag` fixes pod A only | implement `refreshTags()` in the handler to sync tag state from shared storage before requests |\n| Action encryption keys differ | \"Failed to find Server Action\" at random | set the same `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` (base64 AES-128/192/256 key) at build |\n| Version skew in rolling deploys | missing JS chunks, stale action IDs, broken prefetches | `deploymentId`: assets get `?dpl=`, navigations send `x-deployment-id`, and a mismatch triggers a hard reload |\n| Inconsistent build IDs | cache misses, skew detection fails | build once and promote the same image; or `generateBuildId` from the git SHA |\n| Buffered streaming | Suspense fallbacks never show; TTFB equals full render | `X-Accel-Buffering: no` for nginx; a load balancer that supports chunked or HTTP/2 streaming |\n| Abrupt shutdown | dropped requests, lost `after()` work | handle SIGTERM, drain 10-30 s, readiness probe fails first |\n| Image optimisation | CPU spikes on pods | dedicated sizing or an image CDN loader |\n\n**Minimal config sketch:**\n\n```js\n// next.config.js\nmodule.exports = {\n  output: \"standalone\",\n  deploymentId: process.env.GIT_SHA,\n  cacheHandler: require.resolve(\"./cache-handler.js\"), // shared ISR/page cache\n  cacheMaxMemorySize: 0,\n  cacheComponents: true,\n  cacheHandlers: { remote: require.resolve(\"./remote-cache-handler.js\") }, // 'use cache: remote'\n};\n```\n\n```bash\n# build once in CI, same key baked in for every replica\nNEXT_SERVER_ACTIONS_ENCRYPTION_KEY=$(cat /run/secrets/actions_key) next build\n```\n\n**Trade-offs to mention:** a shared Redis cache adds a network hop to every cache read and becomes a dependency, so plan for its failure (fall back to rendering rather than erroring). Tag sync on every request costs latency, so keep tag checks cheap. Managed platforms (Vercel, or adapters for other clouds) solve these problems for you, at a price and with platform limits. That cost-versus-control trade-off is usually the real decision behind self-hosting.\n\n**How to verify:** run two replicas locally behind a simple load balancer, mutate on one and read on the other, deploy a new version while a tab is open, and watch for skew handling. Load-test with streaming responses through the real proxy chain.",
+      "followUps": [
+        "How do you make revalidateTag work across pods?",
+        "What is version skew and how does deploymentId help?",
+        "Why might streaming stop working behind nginx?"
+      ],
+      "mistakes": [
+        "Assuming the default filesystem and memory cache is shared between pods.",
+        "Building separately per instance or environment and getting different keys and build IDs.",
+        "Forgetting graceful shutdown, so in-flight requests and after() callbacks are killed during deploys."
+      ],
+      "lesson": "next-deployment-scale"
+    },
+    {
+      "id": "nextjs-tracing-error-reporting",
+      "level": "mid",
+      "q": "How do you add tracing and error reporting to a Next.js app in production?",
+      "answer": "**Use the `instrumentation.ts` file. Its `register()` function initialises OpenTelemetry (the quickest route is `registerOTel` from `@vercel/otel`) so Next.js emits spans for incoming requests, rendering, route handlers and fetches to any OTLP backend. Its `onRequestError` export receives every server error with route context, which you forward to an error tracker. On the client, report Web Vitals with `useReportWebVitals` and catch rendering errors with `error.tsx` boundaries that log the error digest.**\n\n**Server tracing:**\n\n```ts\n// instrumentation.ts\nimport { registerOTel } from \"@vercel/otel\";\n\nexport function register() {\n  registerOTel({ serviceName: \"storefront-web\" });\n}\n```\n\nSet the standard `OTEL_EXPORTER_OTLP_ENDPOINT` (and headers) to send traces to Grafana Tempo, Honeycomb, Datadog or an OpenTelemetry Collector. Next.js instruments request handling, the render of each route, Route Handlers and `fetch` calls. Add custom spans around expensive work:\n\n```ts\nimport { trace } from \"@opentelemetry/api\";\nconst tracer = trace.getTracer(\"storefront\");\n\nexport async function getRecommendations(userId: string) {\n  return tracer.startActiveSpan(\"recommendations.fetch\", async (span) => {\n    try {\n      span.setAttribute(\"rec.count_requested\", 12); // no PII in attributes\n      return await recService.get(userId);\n    } finally {\n      span.end();\n    }\n  });\n}\n```\n\n**Server errors:**\n\n```ts\n// instrumentation.ts\nimport { type Instrumentation } from \"next\";\n\nexport const onRequestError: Instrumentation.onRequestError = async (err, request, context) => {\n  const digest = typeof err === \"object\" && err !== null && \"digest\" in err ? String(err.digest) : undefined;\n  await reportToErrorTracker(err, { digest, path: request.path, route: context.routePath, type: context.routeType }); // await async work\n};\n```\n\nIn production, errors thrown in Server Components reach the browser as a generic message plus a **digest**. Your `error.tsx` shows it (\"Reference: 3829...\") and your server logs record it, so a support ticket can be matched to the exact stack trace without leaking internals.\n\n**Client side:**\n- `error.tsx` and `global-error.tsx` (Client Components) report caught render errors in an effect.\n- `useReportWebVitals` (or `instrumentation-client.ts` for setup that must run before hydration) sends LCP, INP, CLS and TTFB from real users to your analytics. Field data reveals the slow devices and networks Lighthouse never sees.\n\n**What makes it useful rather than noise:**\n- **Correlate:** propagate trace context to downstream services (OpenTelemetry does this over HTTP headers) and include the trace ID in structured logs.\n- **Sample:** keep 100% of error traces and a small percentage of successful ones to control cost.\n- **Protect privacy:** no tokens, emails or request bodies in span attributes or logs.\n- **Alert on SLOs** (p95 latency per route, error rate) rather than on individual errors.\n\n**Debugging flow:** a user reports a broken page and the digest leads to the server error. The trace for that request shows the slow or failing span (a fetch to the pricing API timing out), which points at the fix.",
+      "followUps": [
+        "What is the error digest and how do you use it?",
+        "How do you capture client-side Web Vitals?",
+        "What would you put in a custom span?"
+      ],
+      "mistakes": [
+        "Relying only on console logs without request IDs or traces.",
+        "Showing raw server errors to users instead of logging by digest.",
+        "Measuring performance only with Lighthouse instead of real-user data."
+      ],
+      "lesson": "next-deployment-scale"
     }
   ]
 }

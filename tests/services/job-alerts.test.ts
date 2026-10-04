@@ -1,14 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { JobPosting } from "@/lib/models/job-postings";
-import { Notification, Settings } from "@/lib/models/system";
-import type { Fetcher } from "@/lib/jobs/connectors";
-import type { NotifyChannel } from "@/lib/notify";
-import { buildBriefing } from "@/lib/services/briefing";
-import { saveJobPrefs } from "@/lib/services/job-discovery";
-import { alertNewJobs } from "@/lib/services/job-alerts";
-import { syncJobs } from "@/lib/services/job-sync";
-import { ensureToday } from "@/lib/services/plan";
-import { invalidateSettings, setMailPref } from "@/lib/services/settings";
+import { JobPosting } from "@/core/models/job-postings";
+import { Notification, Settings } from "@/core/models/system";
+import type { Fetcher } from "@/modules/jobs/lib/connectors";
+import type { NotifyChannel } from "@/core/notify";
+import { buildBriefing } from "@/modules/progress/services/briefing";
+import { saveJobPrefs } from "@/modules/jobs/services/job-discovery";
+import { alertNewJobs } from "@/modules/jobs/services/job-alerts";
+import { syncJobs } from "@/modules/jobs/services/job-sync";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { invalidateSettings, setMailPref } from "@/modules/settings/services/settings";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

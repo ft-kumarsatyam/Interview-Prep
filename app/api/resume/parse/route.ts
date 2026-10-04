@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth/dal";
-import { RESUME_TEXT_MAX } from "@/lib/domain/resume";
-import { limited } from "@/lib/services/rate-limit";
+import { requireSession } from "@/core/auth/dal";
+import { RESUME_TEXT_MAX } from "@/modules/resume/domain/resume";
+import { limited } from "@/core/services/rate-limit";
 
 export const maxDuration = 30;
 

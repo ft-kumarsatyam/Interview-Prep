@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { careerSources } from "@/lib/content";
-import { JobPosting, JobSource } from "@/lib/models/job-postings";
-import { Settings } from "@/lib/models/system";
-import type { Fetcher } from "@/lib/jobs/connectors";
-import { ensureSources, syncJobs, trimPostings } from "@/lib/services/job-sync";
-import { invalidateSettings } from "@/lib/services/settings";
+import { careerSources } from "@/core/content";
+import { JobPosting, JobSource } from "@/core/models/job-postings";
+import { Settings } from "@/core/models/system";
+import type { Fetcher } from "@/modules/jobs/lib/connectors";
+import { ensureSources, syncJobs, trimPostings } from "@/modules/jobs/services/job-sync";
+import { invalidateSettings } from "@/modules/settings/services/settings";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

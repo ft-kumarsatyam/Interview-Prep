@@ -2,8 +2,8 @@
 
 import { refresh } from "next/cache";
 import { z } from "zod";
-import { requireSession } from "@/lib/auth/dal";
-import { deleteSnippet, saveSnippet } from "@/lib/services/snippets";
+import { requireSession } from "@/core/auth/dal";
+import { deleteSnippet, saveSnippet } from "@/modules/dsa/services/snippets";
 import type { ActionResult } from "../dashboard/actions";
 
 const snippetSchema = z.object({

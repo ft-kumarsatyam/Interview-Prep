@@ -4,7 +4,7 @@ import { ServiceWorkerRegister } from "@/components/layout/sw-register";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { startupImages } from "@/lib/pwa/splash";
+import { startupImages } from "@/core/pwa/splash";
 import "./globals.css";
 
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });

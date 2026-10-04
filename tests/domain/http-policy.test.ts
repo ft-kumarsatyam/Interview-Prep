@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backoffDelayMs, isRetryableStatus, parseRetryAfterMs, retryDelayMs, shouldRetry, RETRY_AFTER_CAP_MS } from "@/lib/domain/http-policy";
+import { backoffDelayMs, isRetryableStatus, parseRetryAfterMs, retryDelayMs, shouldRetry, RETRY_AFTER_CAP_MS } from "@/core/domain/http-policy";
 
 describe("parseRetryAfterMs", () => {
   it("parses seconds and dates", () => {

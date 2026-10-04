@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { extractJdTerms, matchKeywords, scoreResume } from "@/lib/domain/ats";
-import { headingOf, parseResumeText } from "@/lib/domain/resume";
+import { extractJdTerms, matchKeywords, scoreResume } from "@/modules/jobs/domain/ats";
+import { headingOf, parseResumeText } from "@/modules/resume/domain/resume";
 
 const GOOD = `Aarav Sharma
 aarav@example.com | +91 98765 43210 | linkedin.com/in/aarav | github.com/aarav

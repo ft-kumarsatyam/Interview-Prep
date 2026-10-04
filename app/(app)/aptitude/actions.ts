@@ -3,9 +3,9 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { aptitudeTopicById } from "@/lib/domain/aptitude/topics";
-import { recordAptitudeResults } from "@/lib/services/aptitude";
+import { requireSession } from "@/core/auth/dal";
+import { aptitudeTopicById } from "@/modules/aptitude/domain/aptitude/topics";
+import { recordAptitudeResults } from "@/modules/aptitude/services/aptitude";
 
 const schema = z.object({
   mode: z.enum(["topic", "mock"]),

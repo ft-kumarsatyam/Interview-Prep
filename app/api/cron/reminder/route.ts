@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { isCronAuthorized } from "@/lib/auth/cron";
-import { runReminder } from "@/lib/services/cron";
+import { isCronAuthorized } from "@/core/auth/cron";
+import { runReminder } from "@/core/services/cron";
 
 export const maxDuration = 60;
 

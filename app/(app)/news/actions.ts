@@ -3,8 +3,8 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { ensureArticleContent, getArticle, markArticleRead, refreshNews, retryArticleContent, setBookmark } from "@/lib/services/news";
+import { requireSession } from "@/core/auth/dal";
+import { ensureArticleContent, getArticle, markArticleRead, refreshNews, retryArticleContent, setBookmark } from "@/modules/news/services/news";
 
 const idSchema = z.string().regex(/^[a-f0-9]{24}$/);
 

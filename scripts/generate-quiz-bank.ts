@@ -14,12 +14,12 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { problems, subtopicById, subtopics, topicById, topics, trackById } from "@/lib/content";
-import { seededRng, seedFrom, shuffle, type Rng } from "@/lib/domain/sampling";
-import { createLlm } from "@/lib/llm";
-import { LLM_PROVIDERS, type LlmProviderName } from "@/lib/llm/types";
-import { fromLlm, subtopicPrompt } from "@/lib/quiz/prompts";
-import { llmQuizSchema, quizBankSchema, quizQuestionSchema, type QuizBank, type QuizQuestion } from "@/lib/quiz/question";
+import { problems, subtopicById, subtopics, topicById, topics, trackById } from "@/core/content";
+import { seededRng, seedFrom, shuffle, type Rng } from "@/core/domain/sampling";
+import { createLlm } from "@/core/llm";
+import { LLM_PROVIDERS, type LlmProviderName } from "@/core/llm/types";
+import { fromLlm, subtopicPrompt } from "@/modules/quiz/lib/prompts";
+import { llmQuizSchema, quizBankSchema, quizQuestionSchema, type QuizBank, type QuizQuestion } from "@/modules/quiz/lib/question";
 import { buildAllAuthored } from "./quiz-bank/authored";
 import { CONCEPTS } from "./quiz-bank/concepts";
 import { FORMAT_QUESTIONS } from "./quiz-bank/formats";

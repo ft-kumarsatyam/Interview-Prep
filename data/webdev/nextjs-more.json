@@ -1,0 +1,320 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "next-server-actions",
+      "track": "nextjs",
+      "title": "Server Actions: forms, validation, revalidation and security",
+      "minutes": 20,
+      "summary": "How Server Actions work on the wire in Next.js 16, form handling with useActionState and zod, choosing updateTag vs revalidateTag vs refresh, and securing every action as a public endpoint.",
+      "body": "## The core idea\nA **Server Action** is an async function marked with `'use server'` that the client can call as if it were local. Next.js compiles the call into a **POST request** to the current route. The function runs on the server, and the response carries both the function's return value **and** a freshly rendered RSC payload for the page, when the action revalidated something. One round trip covers the mutation, cache invalidation and updated UI.\n\nThe convenience hides one fact you must never forget. **Every Server Action is a public HTTP endpoint.** Anyone who can send that POST can call it with any arguments. Rendering the form only for admins protects nothing. The Next.js 16 docs say exactly this in the Server Actions and Data Security guides.\n\n## Defining and invoking actions\n\n```ts\n// app/posts/actions.ts\n\"use server\"; // file-level: every export becomes a Server Action\n\nimport { z } from \"zod\";\nimport { updateTag } from \"next/cache\";\nimport { redirect } from \"next/navigation\";\nimport { verifySession } from \"@/lib/dal\";\nimport { db } from \"@/lib/db\";\n\nconst PostInput = z.object({\n  title: z.string().trim().min(3).max(120),\n  body: z.string().trim().min(1).max(20_000),\n});\n\nexport type CreatePostState = { errors?: Record<string, string[]>; message?: string; values?: { title: string; body: string } };\n\nexport async function createPost(_prev: CreatePostState, formData: FormData): Promise<CreatePostState> {\n  const session = await verifySession(); // 1. authenticate (redirects or throws if missing)\n  const raw = { title: String(formData.get(\"title\") ?? \"\"), body: String(formData.get(\"body\") ?? \"\") };\n  const parsed = PostInput.safeParse(raw); // 2. validate: FormData is untrusted\n  if (!parsed.success) return { errors: parsed.error.flatten().fieldErrors, values: raw };\n\n  const post = await db.post.create({ data: { ...parsed.data, authorId: session.userId } }); // 3. mutate\n\n  updateTag(\"posts\"); // 4. invalidate: read-your-own-writes\n  redirect(`/posts/${post.id}`); // 5. throws a control-flow signal; nothing after it runs\n}\n```\n\n```tsx\n// app/posts/new/form.tsx\n\"use client\";\nimport { useActionState } from \"react\";\nimport { createPost, type CreatePostState } from \"../actions\";\n\nexport function NewPostForm() {\n  const [state, action, pending] = useActionState<CreatePostState, FormData>(createPost, {});\n  return (\n    <form action={action}>\n      <input name=\"title\" defaultValue={state.values?.title} aria-describedby=\"title-err\" />\n      {state.errors?.title && <p id=\"title-err\" role=\"alert\">{state.errors.title[0]}</p>}\n      <textarea name=\"body\" defaultValue={state.values?.body} />\n      <button disabled={pending}>{pending ? \"Publishing...\" : \"Publish\"}</button>\n    </form>\n  );\n}\n```\n\nWays to invoke an action:\n- `<form action={fn}>` or `<button formAction={fn}>`. When the form is rendered by a Server Component, it **works before JavaScript loads** (progressive enhancement).\n- From an event handler: wrap the call in `startTransition` so React tracks the pending state.\n- Inline in a Server Component: define an `async function` with `'use server'` as its first line inside the component. Captured variables travel to the client **encrypted** and come back with the call. Next.js still advises against relying on that encryption to hide secrets.\n\nReact resets uncontrolled fields after a successful form action. That is why the example returns `values` on error and feeds them into `defaultValue`.\n\n## What happens on the network\n\n```text\nbrowser                                   Next.js server\n  | POST /posts/new                          |\n  |  header: Next-Action: <encrypted id>     |\n  |  body: FormData / serialised args        |\n  |----------------------------------------->|\n  |                                          | check Origin == Host (CSRF)\n  |                                          | body <= 1 MB (default limit)\n  |                                          | decrypt id -> find function\n  |                                          | run action (your auth + validation)\n  |                                          | updateTag / revalidatePath / refresh?\n  |                                          |   -> re-render current route\n  |<-----------------------------------------|\n  |  one Flight stream: return value + new RSC payload (or redirect)\n  | React commits the new tree; useActionState gets the value\n```\n\nThese behaviours come from the Next.js 16 Server Actions guide:\n\n- **Sequential dispatch.** The client sends actions **one at a time**. Three quick clicks run in order, so `Promise.all` over actions does not parallelise anything. Do parallel work inside one action, or use a Route Handler for reads.\n- **Single response.** When the action calls `updateTag`, `revalidatePath` or `refresh`, sets or deletes a cookie, or calls `redirect`, the re-rendered route comes back in the same response. `revalidateTag(tag, \"max\")` is the exception: it marks the data stale for a background refresh and does **not** re-render in that response.\n- **Action IDs** are encrypted and non-deterministic, and unused actions are removed from client bundles by dead code elimination. New deployments produce new IDs, and Next.js rotates them at most every 14 days even when the code is unchanged. A tab still running the old build gets \"Failed to find Server Action\". Treat it as a retryable error, and use rolling deploys plus `deploymentId` for skew protection.\n\n## Choosing the cache update\n| Call | Effect | Use when |\n| --- | --- | --- |\n| `updateTag(tag)` | expires the tag now; the next read waits for fresh data | the user must see their own write (Server Actions only) |\n| `revalidateTag(tag, \"max\")` | stale-while-revalidate: serve old data, refresh in background | others' views can lag a little; also callable from Route Handlers (webhooks) |\n| `revalidatePath(path)` | invalidate by URL | a single route is affected and tagging is overkill |\n| `refresh()` | refetch the current route's payload without touching caches | the view depends on uncached state the action changed |\n\nThe single-argument `revalidateTag(tag)` is deprecated in Next.js 16. Pass a profile. Call revalidation **before** `redirect`, because `redirect` throws.\n\n## Security: framework layer vs your layer\n**What Next.js does for you:**\n- Actions accept only `POST`, and the `Origin` header must match `Host` (or `X-Forwarded-Host`). Together with `SameSite=Lax` cookies, this blocks classic CSRF. Behind a proxy or CDN on another domain, configure `serverActions.allowedOrigins`.\n- A 1 MB body limit (`serverActions.bodySizeLimit` to change it).\n- Encrypted action IDs and closure variables. For multiple instances, set the same `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` on all of them.\n\n**What you must do in every action:**\n1. **Authenticate.** Read the session inside the action, ideally through a Data Access Layer (DAL) function such as `verifySession()`, which is cached per request with `React.cache`.\n2. **Authorise the specific object.** Zod checks the *shape* of input, not *ownership*. Re-read the row by `id` **and** owner from the database, and never trust an `item` object sent by the client.\n3. **Validate** every field, including hidden inputs and IDs.\n4. **Constrain the return value.** Return values are serialised to the client, so return a minimal DTO, never the raw DB row with password hashes or internal flags.\n5. **Rate-limit** expensive or abusable actions (sign-up, sending email, AI calls) by user or IP.\n\n```ts\n\"use server\";\nexport async function completeItem(itemId: string) {\n  const session = await verifySession();\n  const id = z.string().uuid().parse(itemId);\n  const item = await db.item.findFirst({ where: { id, ownerId: session.userId } }); // ownership check\n  if (!item) return { ok: false as const };\n  await db.item.update({ where: { id }, data: { done: true } });\n  updateTag(`items:${session.userId}`);\n  return { ok: true as const };\n}\n```\n\n## Server Actions vs Route Handlers\nUse **Server Actions** for mutations triggered by your own UI: forms, buttons, optimistic updates. Use **Route Handlers** (`app/api/.../route.ts`) for webhooks, public or third-party APIs, non-POST methods, streaming downloads, and reads that a client fetches directly. Actions are bound to your React tree and build, while Route Handlers are stable URLs you control.\n\n## Trade-offs and when not to use them\n- **Coupling.** An action's ID changes per build, so mobile apps or other services cannot call it. Expose a Route Handler or a separate API for them.\n- **No parallelism** from the client, because of sequential dispatch.\n- **Not for reads.** Fetch data in Server Components. Using actions to load data serialises requests and bypasses caching.\n- **Large uploads.** The 1 MB default and serverless limits make direct-to-storage presigned uploads the better choice for files.\n\n## Common mistakes and debugging\n- Auth only in `proxy.ts` or in the page. Actions are POSTs to the route and can be called directly, and a proxy matcher change silently removes coverage.\n- Trusting client-sent objects (an IDOR bug), or returning raw DB records.\n- Code after `redirect()` that never runs, or revalidating after the redirect.\n- `useFormStatus` inside the component that renders the form.\n- Stale UI because `revalidateTag(tag, \"max\")` was used where read-your-own-writes was needed. Switch to `updateTag`.\n- Multi-instance \"Failed to find Server Action\" errors. Check `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` and `deploymentId`.\n- **Debugging:** in the Network tab, look for POSTs with a `Next-Action` header. Log inside the action with the request ID, and check that the response includes the re-rendered tree when you expect it to.\n\n## In the interview\n**What they probe:** whether you know what really happens on the wire, that actions are public endpoints, how you validate and authorise, and which revalidation call gives read-your-own-writes.\n\n**60-second answer outline:**\n1. `'use server'` turns a function into an RPC. The client POSTs to the current route with an encrypted action ID.\n2. One response returns the value plus the re-rendered route when you call `updateTag`, `revalidatePath` or `refresh`.\n3. The framework adds an Origin check, a body limit and encrypted IDs. You add auth, ownership checks, zod validation, DTO returns and rate limits inside every action.\n4. Use `useActionState` for errors and pending state, return the submitted values on error, and redirect after revalidating.\n5. Use Route Handlers for webhooks and external clients.\n\n**Follow-ups to expect:** How does Next.js stop CSRF on actions? Why does `Promise.all` over actions not speed things up? What happens to an open tab after a deploy? `updateTag` vs `revalidateTag`?",
+      "keyPoints": [
+        "A Server Action is a POST to the current route identified by an encrypted action ID",
+        "One response carries the return value plus the re-rendered route when you call updateTag, revalidatePath or refresh",
+        "Use updateTag for read-your-own-writes; revalidateTag(tag, 'max') is stale-while-revalidate",
+        "The framework checks Origin, caps bodies at 1 MB and encrypts IDs; you must authenticate, authorise objects and validate",
+        "Actions are dispatched sequentially from the client; use Route Handlers for webhooks and external clients"
+      ],
+      "interview": [
+        "What actually happens on the network when a Server Action runs?",
+        "How do you validate a Server Action form and show field errors without losing input?",
+        "After a Server Action, how do you make sure the user sees their own write?",
+        "A Server Action receives an item id from the client. What can go wrong and how do you secure it?"
+      ],
+      "check": [
+        {
+          "q": "A client calls three Server Actions with Promise.all. How do they run?",
+          "options": [
+            "In parallel, each on its own request",
+            "One at a time: Next.js dispatches actions sequentially per client",
+            "Only the last one runs",
+            "They are merged into a single action"
+          ],
+          "answer": 1,
+          "why": "The Next.js client dispatcher queues actions so each re-rendered tree matches the action that produced it."
+        },
+        {
+          "q": "After creating a post in a Server Action, the user is redirected but sees the old list. Which change most directly fixes it?",
+          "options": [
+            "Call revalidateTag('posts', 'max') after redirect()",
+            "Add export const dynamic = 'force-dynamic'",
+            "Call updateTag('posts') before redirect()",
+            "Increase the cacheLife stale time"
+          ],
+          "answer": 2,
+          "why": "updateTag expires the tag so the next read waits for fresh data. redirect throws, so anything after it never runs."
+        },
+        {
+          "q": "Which protection does Next.js NOT provide for Server Actions automatically?",
+          "options": [
+            "Checking that the caller owns the record being modified",
+            "Comparing Origin with Host to block cross-site POSTs",
+            "A default 1 MB request body limit",
+            "Encrypting action IDs and closed-over variables"
+          ],
+          "answer": 0,
+          "why": "Authorisation is application logic. Re-read the row by id and owner from the session inside every action."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Next.js docs: Server Actions and Mutations",
+          "url": "https://nextjs.org/docs/app/guides/server-actions"
+        },
+        {
+          "title": "Next.js docs: Forms",
+          "url": "https://nextjs.org/docs/app/guides/forms"
+        },
+        {
+          "title": "Next.js docs: Data Security",
+          "url": "https://nextjs.org/docs/app/guides/data-security"
+        },
+        {
+          "title": "Next.js docs: updateTag",
+          "url": "https://nextjs.org/docs/app/api-reference/functions/updateTag"
+        },
+        {
+          "title": "OWASP: Insecure Direct Object Reference Prevention Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html"
+        }
+      ]
+    },
+    {
+      "id": "next-routing-advanced",
+      "track": "nextjs",
+      "title": "Advanced routing: groups, parallel and intercepting routes",
+      "minutes": 18,
+      "summary": "The App Router boundary tree (layouts, templates, loading and error), route groups, parallel route slots with default.tsx, intercepting routes, and the shareable-URL modal pattern.",
+      "body": "## The core idea\nThe App Router turns folders into a **tree of nested React boundaries**. Each URL segment can contribute a layout (UI that persists), a loading state (a Suspense boundary), an error state (an error boundary), a not-found state and a page. On top of that come three advanced conventions:\n\n- **Route groups** `(folder)`: organise routes and share layouts **without** changing the URL.\n- **Parallel routes** `@slot`: render several independent pages in one layout at the same time, each with its own navigation state.\n- **Intercepting routes** `(.)`, `(..)`, `(...)`: during client-side navigation, show another route inside the current layout (typically a modal) while the URL changes to the real address.\n\nParallel and intercepting routes together solve a real product problem: a modal with a **shareable URL** that opens as an overlay when you click it in the app, but loads as a full page when someone opens the link directly or refreshes.\n\n## The boundary tree, step by step\nFor `app/dashboard/settings/page.tsx`, Next.js nests the special files of each segment like this (from the project structure docs):\n\n```text\n<RootLayout>                          app/layout.tsx\n  <DashboardLayout>                   app/dashboard/layout.tsx\n    <Template key={pathname}>         app/dashboard/template.tsx (optional)\n      <ErrorBoundary fallback=error>  app/dashboard/error.tsx\n        <Suspense fallback=loading>   app/dashboard/loading.tsx\n          <NotFoundBoundary>          app/dashboard/not-found.tsx\n            ...the same nesting for the settings segment...\n              <Page />\n```\n\nWhat follows from that shape:\n\n- **Layouts persist.** On navigation between siblings, the shared layout does **not** remount or re-render. Its client state (an open sidebar, a scroll position) survives. That is also why a layout cannot read the current pathname as a prop. Use `usePathname()` in a client component.\n- **`template.tsx` is a layout that remounts** on every navigation (it gets a unique key). Use it when you want effects to re-run or local state to reset per page, or when a Suspense fallback should show on every navigation.\n- **`loading.tsx` wraps the page (and nested children) in Suspense,** not the layout of the same segment. The fallback is prerendered and prefetched, so navigation shows it instantly, and shared layouts stay interactive. If a **layout** awaits uncached data, `loading.tsx` cannot cover it. Move the fetch into the page, or wrap it in its own `<Suspense>`.\n- **`error.tsx` catches errors in everything below it, but not in the layout or template of the same segment,** because those sit *outside* the boundary. Errors in a layout are caught by the parent segment's `error.tsx`. Errors in the root layout need `app/global-error.tsx`, which must render its own `<html>` and `<body>`. Error boundaries must be Client Components. In production, errors from Server Components reach the client with a generic message and a `digest` you can match against server logs. In Next.js 16.3 the boundary receives `retry()` (re-fetch and re-render the segment), alongside the older `reset()`.\n- **`not-found.tsx`** renders when you call `notFound()` in that segment.\n\n## Route groups\nA folder in parentheses is left out of the URL:\n\n```text\napp/\n  (marketing)/\n    layout.tsx        <- marketing header and footer\n    page.tsx          -> /\n    pricing/page.tsx  -> /pricing\n  (app)/\n    layout.tsx        <- authenticated shell, sidebar\n    dashboard/page.tsx -> /dashboard\n    settings/page.tsx  -> /settings\n```\n\nUses: different layouts for different sections, wrapping only some routes in a provider or loading boundary, and keeping a team's routes together. Caveats from the docs:\n- Two groups must not resolve to the same URL (`(a)/about` and `(b)/about` is a build error).\n- With **multiple root layouts** (each group has its own `layout.tsx` with `<html>`, and there is no top-level layout), navigating between groups triggers a **full page load**.\n\n## Parallel routes\nA folder that starts with `@` defines a **slot**. Slots are passed to the parent layout as props, next to `children`, which is itself an implicit slot:\n\n```text\napp/dashboard/\n  layout.tsx\n  page.tsx            -> children\n  @analytics/\n    page.tsx\n    default.tsx\n  @team/\n    page.tsx\n    settings/page.tsx -> /dashboard/settings (only the team slot has it)\n    default.tsx\n```\n\n```tsx\nexport default function DashboardLayout({ children, analytics, team }: {\n  children: React.ReactNode; analytics: React.ReactNode; team: React.ReactNode;\n}) {\n  return (\n    <div className=\"grid grid-cols-3 gap-4\">\n      <section className=\"col-span-2\">{children}</section>\n      <aside>{analytics}{team}</aside>\n    </div>\n  );\n}\n```\n\nSlots are **not URL segments**. Each slot can stream independently with its own `loading.tsx` and fail independently with its own `error.tsx`. That independence is the real win for dashboards.\n\n**Soft vs hard navigation, the part everyone trips on:**\n- **Soft (client-side) navigation** to `/dashboard/settings`: the team slot renders its `settings` page, and slots without a match **keep showing what they showed before**.\n- **Hard navigation** (refresh or a direct link): Next.js cannot recover the previous state of unmatched slots, so it renders their **`default.tsx`**. If there is no `default.tsx`, the route **404s**. You also need `default.tsx` for the implicit `children` slot when a sibling slot has deeper routes.\n\n**Conditional slots** (`return role === \"admin\" ? admin : user`) are a security trap. The docs point out that **both slots render on the server**, including their data fetches, and the response includes both. The condition only chooses what is shown. Authorise inside each slot's page or the DAL.\n\n## Intercepting routes\nAn intercepting folder uses a relative-segment prefix:\n- `(.)photo`: same level\n- `(..)photo`: one segment up\n- `(..)(..)photo`: two up\n- `(...)photo`: from the `app` root\n\nThe matching counts **route segments, not folders**, so `@slot` folders and route groups do not count as levels.\n\n**The photo modal recipe:**\n\n```text\napp/\n  layout.tsx            <- renders {children} and {modal}\n  page.tsx              -> / (the feed, links to /photo/[id])\n  photo/[id]/page.tsx   -> full photo page (hard navigation, shared link)\n  @modal/\n    default.tsx         -> returns null (no modal by default)\n    (.)photo/[id]/page.tsx -> the same photo inside <Modal> (soft navigation)\n```\n\n```tsx\n// app/layout.tsx\nexport default function RootLayout({ children, modal }: { children: React.ReactNode; modal: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}{modal}</body>\n    </html>\n  );\n}\n```\n\n```tsx\n// app/@modal/(.)photo/[id]/page.tsx\nimport { Modal } from \"@/components/modal\"; // client: dialog, closes with router.back()\nimport { PhotoView } from \"@/components/photo-view\";\n\nexport default async function PhotoModal({ params }: { params: Promise<{ id: string }> }) {\n  const { id } = await params;\n  return <Modal><PhotoView id={id} /></Modal>;\n}\n```\n\nBehaviour: clicking a photo in the feed is a soft navigation. The URL becomes `/photo/42`, the `@modal` slot renders the intercepted page over the feed, and `children` keeps showing the feed. Refresh, or open the link in a new tab, and there is no interception: `photo/[id]/page.tsx` renders the full page and `@modal` falls back to `default.tsx` (null). Back closes the modal and forward reopens it. To close the modal on a link to another page, add a catch-all `@modal/[...catchAll]/page.tsx` that returns `null`. Otherwise the slot keeps its last state during soft navigation.\n\n## Trade-offs and when not to use them\n- Parallel and intercepting routes add files and invisible rules. For a modal that does not need its own URL (a confirm dialog), use component state.\n- Every slot participates in rendering on every matching request. If one slot is dynamic, the whole segment level is dynamic.\n- Multiple root layouts cost a full reload between sections. Prefer one root layout plus groups unless the sections really share nothing.\n- Deep nesting of layouts that await data can create server waterfalls. Fetch in parallel, or move the reads down into pages.\n\n## Common mistakes and debugging\n- **Missing `default.tsx`** leads to a 404 on refresh in a parallel-route page.\n- **Expecting `error.tsx` to catch errors from the layout beside it.**\n- **Uncached reads in a layout** block navigation, because `loading.tsx` does not cover them.\n- **Using `(..)` counted in folders** when slots or groups sit in between.\n- **Modal stays open** after navigating with a Link. Add the catch-all null page.\n- **Auth decided by which slot the layout returns.** Both slots still ran.\n- **Debugging:** use `useSelectedLayoutSegment(\"modal\")` to see what a slot thinks is active. Check whether a bug only happens on hard navigation (refresh) vs soft navigation, because that distinction explains most parallel-route surprises.\n\n## In the interview\n**What they probe:** whether you understand the boundary nesting (layouts, loading, error), the soft vs hard navigation rule, and whether you can design a URL-addressable modal.\n\n**60-second answer outline:**\n1. Each segment nests layout, template, error, loading, not-found and page. Layouts persist, and error and loading wrap what is below them, not their own layout.\n2. Route groups organise and share layouts without URL segments. Multiple root layouts mean full reloads.\n3. Parallel routes are `@slots` passed to the layout that stream and fail independently. Unmatched slots keep their state on soft navigation and use `default.tsx` on hard navigation.\n4. Intercepting routes render another route in the current layout during soft navigation. Combined with a `@modal` slot, you get a modal with a real, shareable URL.\n5. Both slots in a conditional layout still render, so authorise in each slot.\n\n**Follow-ups to expect:** How do you close the modal on navigation? Why does my parallel route 404 on refresh? Where do you catch an error thrown in the root layout? Template vs layout?",
+      "keyPoints": [
+        "Each segment nests layout, template, error, loading, not-found and page; error and loading wrap what is below, not their own layout",
+        "Layouts persist across navigation; templates remount; loading.tsx cannot cover uncached reads in a layout",
+        "Route groups share layouts without URL segments; multiple root layouts cause full reloads",
+        "Unmatched slots keep state on soft navigation and render default.tsx (or 404) on hard navigation",
+        "Intercepting routes plus a @modal slot give a modal with a real, shareable URL"
+      ],
+      "interview": [
+        "How would you build a photo modal with a shareable URL using parallel and intercepting routes?",
+        "Why does a parallel route 404 on refresh, and what is default.tsx for?",
+        "What are route groups, and when do multiple root layouts cause a full page reload?",
+        "Why doesn't error.tsx catch an error thrown in the layout of the same segment?"
+      ],
+      "check": [
+        {
+          "q": "You open /photo/42 directly in a new tab in an app that intercepts that route into a modal. What renders?",
+          "options": [
+            "The modal over an empty page",
+            "A 404",
+            "The modal over the feed",
+            "The full photo page, because interception only happens on soft navigation"
+          ],
+          "answer": 3,
+          "why": "Hard navigation never intercepts. The real photo/[id]/page.tsx renders and the modal slot falls back to default.tsx."
+        },
+        {
+          "q": "In app/@modal/(..)photo, how is the (..) level counted?",
+          "options": [
+            "By route segments, so the @modal slot folder does not count",
+            "By file-system folders, including @modal",
+            "From the project root",
+            "By the number of layouts above"
+          ],
+          "answer": 0,
+          "why": "Interception matchers count route segments. Slots and groups are not segments."
+        },
+        {
+          "q": "A dashboard layout returns role === 'admin' ? admin : user, using two parallel slots. What is the security issue?",
+          "options": [
+            "Parallel routes cannot read cookies",
+            "The admin slot is cached publicly",
+            "Both slots render on the server, including their data fetches, so authorisation must happen inside each slot",
+            "There is none; the condition prevents the admin slot from running"
+          ],
+          "answer": 2,
+          "why": "The conditional only picks what is shown. Every slot at that level executes, so checks belong in the slot or the DAL."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Next.js docs: Parallel Routes",
+          "url": "https://nextjs.org/docs/app/api-reference/file-conventions/parallel-routes"
+        },
+        {
+          "title": "Next.js docs: Intercepting Routes",
+          "url": "https://nextjs.org/docs/app/api-reference/file-conventions/intercepting-routes"
+        },
+        {
+          "title": "Next.js docs: Route Groups",
+          "url": "https://nextjs.org/docs/app/api-reference/file-conventions/route-groups"
+        },
+        {
+          "title": "Next.js docs: error.js",
+          "url": "https://nextjs.org/docs/app/api-reference/file-conventions/error"
+        },
+        {
+          "title": "Next.js docs: loading.js",
+          "url": "https://nextjs.org/docs/app/api-reference/file-conventions/loading"
+        }
+      ]
+    },
+    {
+      "id": "next-proxy-edge",
+      "track": "nextjs",
+      "title": "proxy.ts, runtimes and request-time routing",
+      "minutes": 16,
+      "summary": "Next.js 16's proxy.ts (formerly middleware.ts): where it runs, matchers, optimistic auth redirects, rewrites for tenants and experiments, edge vs Node runtimes, and the CVE-2025-29927 lesson.",
+      "body": "## The core idea\n`proxy.ts` is code that runs **before a request reaches your routes**. It can redirect, rewrite, set request and response headers or cookies, or answer directly. Next.js 16 **renamed `middleware.ts` to `proxy.ts`**, and the function from `middleware` to `proxy`. The capabilities did not change, but the name now says what the feature is: a network-boundary layer in front of the app, not Express-style middleware you chain business logic through. The docs also say plainly that it should be a **last resort**. Prefer `next.config` redirects and headers, and do real checks next to the data.\n\nIn Next.js 16, Proxy runs on the **Node.js runtime**, and that cannot be configured. Setting `runtime` in the proxy file throws. The Edge runtime is deprecated for route segments in current 16.x docs. The upgrade guide says that if you need Edge for this layer, you keep the deprecated `middleware.ts` for now.\n\n## Where it runs in the request pipeline\nFrom the `proxy.js` reference, the execution order is:\n\n```text\nincoming request\n   |\n1. headers()   from next.config\n2. redirects() from next.config\n3. proxy.ts    <- rewrite / redirect / headers / respond\n4. beforeFiles rewrites (next.config)\n5. filesystem routes: public/, _next/static, app/, pages/\n6. afterFiles rewrites\n7. dynamic routes (/blog/[slug])\n8. fallback rewrites\n   |\nrender page / route handler / server action\n```\n\nFacts that matter:\n- **One proxy file per project,** at the root (or `src/`). Split the logic into modules and import them.\n- **Without a `matcher` it runs on every request,** including `_next/static`, `_next/image` and `public` files. An auth redirect with no matcher can block your CSS and JS.\n- **Matchers must be static constants** (they are analysed at build time). They support path-to-regexp patterns, negative lookaheads, and `has` / `missing` conditions on headers, cookies and query strings.\n- **Server Functions are POSTs to the page route,** not separate routes. Excluding a path in the matcher also skips Server Action calls on that path, and moving an action to another route can silently drop proxy coverage.\n- `fetch` caching options (`cache`, `next.revalidate`, `next.tags`) have **no effect** in Proxy.\n- `event.waitUntil(promise)` keeps the invocation alive for background work such as analytics after the response is sent.\n\n## Code: an optimistic auth redirect done right\n\n```ts\n// proxy.ts\nimport { NextResponse, type NextRequest } from \"next/server\";\nimport { jwtVerify } from \"jose\";\n\nconst key = new TextEncoder().encode(process.env.SESSION_SECRET);\nconst PUBLIC = [\"/login\", \"/signup\"];\n\nexport async function proxy(req: NextRequest) {\n  const { pathname } = req.nextUrl;\n  const token = req.cookies.get(\"session\")?.value;\n\n  let valid = false;\n  if (token) {\n    try {\n      await jwtVerify(token, key, { algorithms: [\"HS256\"] }); // signature + exp, no DB call\n      valid = true;\n    } catch {\n      valid = false;\n    }\n  }\n\n  if (!valid && !PUBLIC.includes(pathname)) {\n    const url = new URL(\"/login\", req.url);\n    url.searchParams.set(\"next\", pathname);\n    return NextResponse.redirect(url);\n  }\n  if (valid && PUBLIC.includes(pathname)) {\n    return NextResponse.redirect(new URL(\"/dashboard\", req.url));\n  }\n\n  // Pass data to the app via REQUEST headers (not response headers)\n  const headers = new Headers(req.headers);\n  headers.set(\"x-pathname\", pathname);\n  return NextResponse.next({ request: { headers } });\n}\n\nexport const config = {\n  matcher: [\n    // everything except static assets, image optimisation and metadata files; skip prefetches\n    {\n      source: \"/((?!_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt).*)\",\n      missing: [{ type: \"header\", key: \"next-router-prefetch\" }],\n    },\n  ],\n};\n```\n\nThis is an **optimistic check**. It gives a fast redirect for users who are obviously logged out. It is **not** authorisation. The page, the Server Actions and the Route Handlers still call `verifySession()` in the Data Access Layer, because:\n- matchers drift, and excluded paths (including Server Actions) bypass the proxy entirely;\n- the proxy only knows \"has a valid token\", not \"may edit invoice 42\";\n- a bug or bypass in this one layer should not expose data.\n\nNote `NextResponse.next({ request: { headers } })`. This forwards headers **upstream** to your app. `NextResponse.next({ headers })` would send them to the **client**.\n\n## Rewrites: same URL, different content\nA rewrite serves another route while the browser URL stays the same:\n\n```ts\n// Multi-tenant: acme.example.com/settings -> /tenants/acme/settings\nexport function proxy(req: NextRequest) {\n  const host = req.headers.get(\"host\") ?? \"\";\n  const sub = host.split(\".\")[0];\n  if (sub && sub !== \"www\" && sub !== \"example\") {\n    return NextResponse.rewrite(new URL(`/tenants/${sub}${req.nextUrl.pathname}`, req.url));\n  }\n}\n```\n\nOther common uses: A/B tests (pick a bucket, set a cookie, rewrite to `/home-b`), country- or locale-based routing from headers, and maintenance mode. For RSC requests, Next.js strips internal Flight headers from the request it gives you and propagates the needed ones automatically when you use `NextResponse.rewrite()`. Hand-rolled `fetch()` proxies have to forward them manually.\n\n## Edge vs Node.js runtime\n| | Edge runtime | Node.js runtime |\n| --- | --- | --- |\n| APIs | Web standard subset: `fetch`, `Request`/`Response`, Web Crypto, streams | full Node: `fs`, `net`, native addons, most npm packages |\n| Cold start | very fast (V8 isolates) | slower (process or container) |\n| Location | can run in many regions near users | usually a region near your data |\n| Limits | small code size limits, no TCP database drivers | larger bundles and memory |\n| Status in Next 16 | deprecated for route segments; not available in `proxy.ts` | default everywhere, the only option for Proxy |\n\nThe trade-off used to be simple: edge for tiny, latency-critical logic near users, Node for everything else. In practice, edge functions far from the database often **added** latency once they called the DB, and the restricted API surface broke libraries. Next.js 15.5 made Node.js middleware stable, and 16 made it the Proxy default. On Vercel, the platform's Routing Middleware and CDN still give you fast global redirects and rewrites. The config-level `redirects()` and `headers()` are the cheapest option of all for static rules.\n\n## The security lesson: CVE-2025-29927\nIn March 2025, a critical vulnerability showed that sending an internal header (`x-middleware-subrequest`) could make Next.js **skip middleware entirely** on self-hosted apps using `next start`. Apps that did authorisation only in middleware were exposed. The fixes shipped in 12.3.5, 13.5.9, 14.2.25 and 15.2.3. The lesson the Next.js team now repeats in its docs: treat this layer as an optimisation, and **check auth next to the data**. Defence in depth also means stripping unexpected internal headers at your reverse proxy or CDN.\n\n## Trade-offs and when not to use it\n- **Static redirects and headers** belong in `next.config` (`redirects`, `headers`). They are faster and declarative.\n- **Slow work** (DB queries, third-party calls) adds latency to every matched request. The docs say Proxy is not for slow data fetching or full session management.\n- **Per-page logic** is clearer in the page or layout itself.\n- Every request runs it, so a bug can take the whole site down, including static assets. Keep it small and test it.\n\n## Common mistakes and debugging\n- No matcher, which breaks static assets or images behind an auth redirect.\n- Authorisation only in the proxy (CVE-2025-29927, matcher drift, Server Actions excluded).\n- Setting headers on the response when the app needed them on the request.\n- Large headers causing 431 errors upstream.\n- Database calls from the proxy on every request.\n- Still writing `middleware.ts` and `export function middleware` in a Next 16 project. Run `npx @next/codemod@canary middleware-to-proxy .`\n- **Testing:** `next/experimental/testing/server` provides `unstable_doesProxyMatch` to assert matcher coverage, plus `isRewrite` and `getRewrittenUrl` to unit-test the function. Add tests that assert protected paths **are** matched.\n\n## In the interview\n**What they probe:** whether you know the Next 16 rename and runtime change, the request order, the difference between optimistic auth and real authorisation, and edge vs Node trade-offs.\n\n**60-second answer outline:**\n1. `proxy.ts` (formerly `middleware.ts`) runs before routing to redirect, rewrite, set headers or respond. In Next 16 it runs on Node.js and cannot be switched to Edge.\n2. It runs after config headers and redirects and before the filesystem routes. Always scope it with a matcher that excludes static assets.\n3. Use it for optimistic redirects, rewrites (tenants, A/B, locale) and header plumbing. Do not use it for authorisation or slow I/O.\n4. Real checks live in the DAL called by pages, actions and route handlers. CVE-2025-29927 showed why.\n5. Edge offers fast cold starts but limited APIs and distance from data. Node offers full APIs, which is why it became the default.\n\n**Follow-ups to expect:** How do you pass the user ID from the proxy to a page? How would you implement subdomain multi-tenancy? Why not verify the session against the database in the proxy? What does a rewrite do differently from a redirect?",
+      "keyPoints": [
+        "Next.js 16 renamed middleware.ts to proxy.ts; it runs on Node.js and the runtime cannot be configured",
+        "Proxy runs after next.config headers and redirects and before filesystem routes; scope it with a matcher",
+        "Use it for optimistic redirects, rewrites and header plumbing, never as the only authorisation layer",
+        "Server Actions are POSTs to page routes, so matcher exclusions silently skip them",
+        "Edge has fast cold starts but limited APIs and distance from data, which is why Node became the default"
+      ],
+      "interview": [
+        "Why did Next.js 16 rename middleware.ts to proxy.ts, and what changed?",
+        "Edge runtime vs Node.js runtime: what are the trade-offs?",
+        "What did CVE-2025-29927 teach about doing auth in middleware?"
+      ],
+      "check": [
+        {
+          "q": "A proxy.ts has no matcher and redirects unauthenticated users to /login. What breaks first?",
+          "options": [
+            "Nothing; proxy never runs for static files",
+            "Static assets such as _next/static CSS and JS can also be redirected, so even the login page loads unstyled",
+            "Only API routes are affected",
+            "The build fails"
+          ],
+          "answer": 1,
+          "why": "Without a matcher, Proxy runs on every request, including static files and image optimisation."
+        },
+        {
+          "q": "How do you pass a value computed in proxy.ts to a Server Component without exposing it to the browser?",
+          "options": [
+            "NextResponse.next({ headers })",
+            "A global variable shared with the page module",
+            "A query string parameter on a redirect",
+            "NextResponse.next({ request: { headers } }) with a modified copy of the request headers"
+          ],
+          "answer": 3,
+          "why": "Setting request headers forwards them upstream to your app. Passing headers directly sets them on the response sent to the client."
+        },
+        {
+          "q": "In Next.js 16, what happens if you export runtime = 'edge' from proxy.ts?",
+          "options": [
+            "Proxy runs on the edge runtime",
+            "It is ignored silently",
+            "It throws, because the runtime option is not available in Proxy, which always uses Node.js",
+            "It falls back to a static export"
+          ],
+          "answer": 2,
+          "why": "Proxy defaults to Node.js and the runtime config is not supported there. The upgrade guide says to keep middleware.ts if you still need edge."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Next.js docs: proxy.js file convention",
+          "url": "https://nextjs.org/docs/app/api-reference/file-conventions/proxy"
+        },
+        {
+          "title": "Next.js docs: Proxy (getting started)",
+          "url": "https://nextjs.org/docs/app/getting-started/proxy"
+        },
+        {
+          "title": "Next.js docs: Upgrading to version 16",
+          "url": "https://nextjs.org/docs/app/guides/upgrading/version-16"
+        },
+        {
+          "title": "Vercel: Postmortem on the Next.js middleware bypass (CVE-2025-29927)",
+          "url": "https://vercel.com/blog/postmortem-on-next-js-middleware-bypass"
+        },
+        {
+          "title": "Next.js docs: Authentication",
+          "url": "https://nextjs.org/docs/app/guides/authentication"
+        }
+      ]
+    },
+    {
+      "id": "next-deployment-scale",
+      "track": "nextjs",
+      "title": "Caching, ISR and running Next.js at scale",
+      "minutes": 22,
+      "summary": "The caching layers in Next.js 16 (Cache Components, 'use cache', cacheLife, tags, ISR, CDN), Vercel vs self-hosting on many instances, and production observability.",
+      "body": "## The core idea\nNext.js performance at scale comes down to one question: **how often does a request reach your code and your database?** Next.js 16 answers it with stacked caching layers. In 16 the primary model is **Cache Components**: you enable `cacheComponents: true`, mark cacheable work with `'use cache'`, give it a lifetime with `cacheLife` and a name with `cacheTag`, and wrap request-time work in `<Suspense>`. At build time Next.js prerenders a **static shell** of everything it can, which is Partial Prerendering (PPR) as the default. Dynamic holes stream in at request time.\n\nThe second half of the job is **operational**. The same app behaves differently on Vercel, on one `next start` box, and on ten Kubernetes pods. Caches may be per-instance, encryption keys may differ, deploys may cause version skew, and streaming may be buffered by a proxy. Knowing those failure modes is what separates a senior answer.\n\n## The caching layers, from browser to data\n\n```text\nBrowser\n 1. Client router cache   prefetched / visited RSC payloads, kept for `stale` time\n                          (minimum 30 s for 'use cache' content)\nCDN / reverse proxy\n 2. HTTP cache            honours Cache-Control: static shells and assets are public,\n                          dynamic responses are private, no-store\nNext.js server\n 3. Static shell / ISR    prerendered HTML + payload; revalidated in the background\n 4. 'use cache' entries   function/component outputs keyed by build id + function id + args\n                          (in-memory LRU by default; cacheHandlers for Redis etc.)\n 5. React.cache           per-request memoisation (dedupe the same call in one render)\nData source\n 6. Your DB / APIs        what all of the above protects\n```\n\n**Layer 4 in detail** (from the `use cache` reference):\n- The cache key combines the **build ID** (or `deploymentId`), a hash of the function's location, and the **serialised arguments**, including variables the function closes over. A new deploy starts with empty `'use cache'` entries.\n- The function may not call `cookies()`, `headers()` or `searchParams` inside the cached scope, and that applies to helpers it calls too. Read those values outside and pass them in as arguments, which makes them part of the key.\n- **Runtime persistence depends on the host.** On serverless, in-memory entries usually do not survive between requests (each request may hit a fresh instance). On a long-lived self-hosted server they do. For a shared, durable runtime cache, use `'use cache: remote'` with a configured handler (Redis, KV), which costs a network hop. `'use cache: private'` covers the rare case of caching per-user data that reads cookies directly.\n\n**Lifetimes with `cacheLife`.** Each profile has three numbers: `stale` (how long the client uses the entry without asking), `revalidate` (after this, the next request triggers a background refresh) and `expire` (after this with no traffic, the next request waits for fresh data). Built-in profiles: `seconds`, `minutes`, `hours`, `days`, `weeks`, `max`, plus `default`, which is 5 min stale, 15 min revalidate, never expires. Set one explicitly in every cached scope.\n\n**On-demand invalidation:** tag with `cacheTag(\"product:42\")`. Then call `updateTag` from a Server Action when the user needs to see their own write immediately, or `revalidateTag(tag, \"max\")` for stale-while-revalidate from anywhere, such as a CMS webhook Route Handler.\n\n## Code: one page, three kinds of content\n\n```tsx\n// next.config.ts: cacheComponents: true\nimport { Suspense } from \"react\";\nimport { cookies } from \"next/headers\";\nimport { cacheLife, cacheTag } from \"next/cache\";\n\nexport default function ProductPage({ params }: { params: Promise<{ id: string }> }) {\n  return (\n    <>\n      <SiteHeader />                                  {/* static: in the shell */}\n      <Suspense fallback={<ProductSkeleton />}>\n        <Product params={params} />                   {/* cached per id */}\n      </Suspense>\n      <Suspense fallback={<p>Loading your cart...</p>}>\n        <CartBadge />                                 {/* per request: streams */}\n      </Suspense>\n    </>\n  );\n}\n\nasync function Product({ params }: { params: Promise<{ id: string }> }) {\n  const { id } = await params;\n  return <ProductBody id={id} />;\n}\n\nasync function ProductBody({ id }: { id: string }) {\n  \"use cache\";\n  cacheLife(\"hours\");\n  cacheTag(`product:${id}`);\n  const p = await db.product.findUnique({ where: { id } });\n  return <ProductView product={p} />;\n}\n\nasync function CartBadge() {\n  const session = (await cookies()).get(\"session\")?.value; // runtime API: must be inside Suspense\n  const count = await getCartCount(session);\n  return <span>{count}</span>;\n}\n```\n\nWith Cache Components enabled, the old segment configs (`export const dynamic`, `revalidate`, `fetchCache`) **error** and are replaced by `'use cache'` and `cacheLife`. `unstable_cache` is replaced by `'use cache'`. The docs still point to `unstable_cache` or the `fetch` cache only when an entry must survive across deploys. Use `generateStaticParams` to prerender known IDs at build time.\n\n**ISR** is the same idea at the page level. A prerendered page is served from cache and regenerated in the background after its revalidate window, or when its tags are invalidated. For pages, Next.js sends `Cache-Control: s-maxage=<revalidate>, stale-while-revalidate` so that a CDN can hold them. Dynamically rendered pages get `private, no-cache, no-store, max-age=0, must-revalidate`, so a CDN never caches personal HTML.\n\n## Vercel vs self-hosting\n**On Vercel**, the platform handles the hard parts: a globally shared ISR and data cache, tag invalidation across regions, the CDN in front, streaming, image optimisation, skew protection between deployments, and preview deployments. You pay with platform limits and usage pricing.\n\n**Self-hosting** (`next start`, Docker with `output: \"standalone\"`, or a platform adapter) gives you every feature, including Proxy, ISR, streaming and Cache Components, but these become your job. From the self-hosting guide:\n\n| Concern | What goes wrong | Fix |\n| --- | --- | --- |\n| ISR / page cache | stored on each instance's disk and memory, so pods disagree; ephemeral disks lose it | custom `cacheHandler` (Redis, S3) and `cacheMaxMemorySize: 0` |\n| `'use cache'` entries | in-memory per instance | `cacheHandlers` + `'use cache: remote'` |\n| Tag invalidation | `revalidateTag` on pod A does not reach pod B | implement `refreshTags()` in the handler to sync tag state from shared storage |\n| Server Actions | each build or instance has a different key, so \"Failed to find Server Action\" | the same `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` (base64 AES key) at build time |\n| Rolling deploys | old clients request missing chunks or old action IDs | `deploymentId`, so Next.js detects skew and does a hard navigation |\n| Build IDs | rebuilding per environment gives different IDs | build once, promote the artefact; or `generateBuildId` |\n| Streaming | nginx or the load balancer buffers responses, so PPR loses its TTFB win | `X-Accel-Buffering: no`, and a load balancer that supports chunked transfer |\n| Images | optimiser CPU and memory on your servers | size the pods, or use a loader for an image CDN |\n| Shutdown | in-flight requests and `after()` callbacks cut off | handle SIGTERM with a 10-30 s drain period |\n\n## Observability\n- **Tracing:** add `instrumentation.ts` with `export function register()`. The quickest setup is `registerOTel({ serviceName: \"web\" })` from `@vercel/otel`. Next.js emits OpenTelemetry spans for requests, rendering, route handlers and fetches. Export them over OTLP to any backend (Grafana Tempo, Honeycomb, Datadog).\n- **Server errors:** `export async function onRequestError(err, request, context)` in `instrumentation.ts` gets every server error with route and render context. Forward it to Sentry or your logger. Production errors show users a generic message with a `digest`, so log the digest and you can join a user report to the server stack trace.\n- **Client:** `useReportWebVitals` (or `instrumentation-client.ts`) sends real-user LCP, INP and CLS to analytics. Field data beats Lighthouse.\n- **Cache visibility:** log cache hits and misses in your cache handler, and alert when the DB QPS per request rises. That is how a broken tag or a key that is too fine-grained shows up.\n\n## Trade-offs and when not to cache\n- Personalised, fast-changing data (balances, carts, inventory at checkout) should stay request-time. Show it in a Suspense hole rather than caching it per user.\n- Fine-grained keys (a whole `searchParams` object, a timestamp argument) give a near-zero hit rate and fill memory.\n- `'use cache: remote'` adds a network round trip and cost to every lookup. Use it where the origin is expensive, not by default.\n- Self-hosting saves money at scale but costs engineering time on every item in the table above.\n\n## Common mistakes and debugging\n- Reading `cookies()` inside a cached function. It errors, sometimes only at runtime under `next start`.\n- Expecting in-memory `'use cache'` to absorb traffic on serverless.\n- Calling `revalidateTag` on a multi-pod deployment without a shared handler, so some users see stale pages.\n- Using a different encryption key per instance.\n- Forgetting a `<Suspense>` around runtime data, which triggers the blocking-route error in development.\n- Putting a CDN in front without respecting `Vary` and the RSC headers, so HTML and payload variants get mixed up.\n- **Debugging:** run `next build` and read the route output, which marks static, partially prerendered and dynamic routes. Inspect `Cache-Control` and `x-nextjs-cache`-style response headers, and follow the OpenTelemetry trace for slow requests.\n\n## In the interview\n**What they probe:** whether you can name the layers, explain how Next 16's Cache Components differ from older ISR configs, and run Next.js on your own infrastructure without stale caches or broken actions.\n\n**60-second answer outline:**\n1. The layers are client router cache, CDN, static shell and ISR, `'use cache'` entries, per-request `React.cache`, then the DB.\n2. In Next 16, `cacheComponents` plus `'use cache'`, `cacheLife` and `cacheTag` replace `dynamic`, `revalidate` and `fetchCache`. Runtime data goes behind Suspense, and the static shell is prerendered (PPR).\n3. Invalidate with `updateTag` for read-your-own-writes, or `revalidateTag(tag, \"max\")` for stale-while-revalidate.\n4. Self-hosting needs a shared cache handler with tag sync, a stable action encryption key, a `deploymentId` for skew, unbuffered streaming and graceful shutdown.\n5. Observe with OpenTelemetry via `instrumentation.ts`, `onRequestError` with digests, and real-user Web Vitals.\n\n**Follow-ups to expect:** Why does my cached function run on every request on serverless? What happens to cache entries on deploy? How do you invalidate a product page when the CMS changes it? How would you run this on Kubernetes?",
+      "keyPoints": [
+        "Layers: client router cache, CDN, static shell and ISR, 'use cache' entries, React.cache, then the data source",
+        "cacheComponents with 'use cache', cacheLife and cacheTag replaces dynamic, revalidate and fetchCache segment configs",
+        "In-memory 'use cache' entries rarely survive on serverless; use 'use cache: remote' with a handler for shared caching",
+        "Multi-instance self-hosting needs a shared cache handler with tag sync, one encryption key, deploymentId and unbuffered streaming",
+        "Observe with OpenTelemetry in instrumentation.ts, onRequestError with error digests, and real-user Web Vitals"
+      ],
+      "interview": [
+        "Walk me through the caching layers in a Next.js 16 app, from browser to database.",
+        "What breaks when you self-host Next.js on several instances behind a load balancer?",
+        "How do you add tracing and error reporting to a Next.js app in production?"
+      ],
+      "check": [
+        {
+          "q": "A function marked 'use cache' calls cookies() through a helper. What happens?",
+          "options": [
+            "The cookie value becomes part of the cache key automatically",
+            "The cache is silently disabled for that function",
+            "It works only in development",
+            "It errors, because request-time APIs are not allowed anywhere in the cached call stack"
+          ],
+          "answer": 3,
+          "why": "Read cookies outside the cached scope and pass the value as an argument, which then becomes part of the key."
+        },
+        {
+          "q": "You run four Next.js pods. revalidateTag on pod A works, but users on other pods still see stale pages. What is missing?",
+          "options": [
+            "A shared cache handler that implements tag coordination (refreshTags) across instances",
+            "A larger cacheMaxMemorySize",
+            "export const dynamic = 'force-static'",
+            "A shorter cacheLife stale time"
+          ],
+          "answer": 0,
+          "why": "By default each instance has its own cache and invalidates only locally. Shared storage plus tag sync fixes it."
+        },
+        {
+          "q": "Which response header does Next.js set for dynamically rendered pages to keep CDNs from caching personal HTML?",
+          "options": [
+            "public, max-age=31536000, immutable",
+            "s-maxage=60, stale-while-revalidate",
+            "private, no-cache, no-store, max-age=0, must-revalidate",
+            "Vary: Cookie only"
+          ],
+          "answer": 2,
+          "why": "Immutable caching is for hashed assets and s-maxage for ISR pages. Dynamic responses are marked private and no-store."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Next.js docs: Caching (Cache Components)",
+          "url": "https://nextjs.org/docs/app/getting-started/caching"
+        },
+        {
+          "title": "Next.js docs: use cache directive",
+          "url": "https://nextjs.org/docs/app/api-reference/directives/use-cache"
+        },
+        {
+          "title": "Next.js docs: cacheLife",
+          "url": "https://nextjs.org/docs/app/api-reference/functions/cacheLife"
+        },
+        {
+          "title": "Next.js docs: Self-Hosting",
+          "url": "https://nextjs.org/docs/app/guides/self-hosting"
+        },
+        {
+          "title": "Next.js docs: OpenTelemetry",
+          "url": "https://nextjs.org/docs/app/guides/open-telemetry"
+        },
+        {
+          "title": "OpenTelemetry: What is OpenTelemetry?",
+          "url": "https://opentelemetry.io/docs/what-is-opentelemetry/"
+        }
+      ]
+    }
+  ],
+  "projects": []
+}

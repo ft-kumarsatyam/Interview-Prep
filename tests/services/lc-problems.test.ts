@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { LcProblemCache } from "@/lib/models/lc";
-import type { LcQuestion, LcQuestionFetcher } from "@/lib/leetcode/question";
-import { exportBackup } from "@/lib/services/export";
-import { LC_TTL_MS, getLeetCodeProblem } from "@/lib/services/lc-problems";
+import { LcProblemCache } from "@/core/models/lc";
+import type { LcQuestion, LcQuestionFetcher } from "@/modules/dsa/lib/leetcode/question";
+import { exportBackup } from "@/core/services/export";
+import { LC_TTL_MS, getLeetCodeProblem } from "@/modules/dsa/services/lc-problems";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, BookOpen, CalendarOff, CheckCircle2, Circle, Code2, History, ListChecks, Lock, RotateCcw } from "lucide-react";
-import { DailyQuizRunner } from "@/components/quiz/daily-quiz-runner";
+import { DailyQuizRunner } from "@/modules/quiz/components/daily-quiz-runner";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { seedFrom } from "@/lib/domain/sampling";
-import { getQuizPage } from "@/lib/services/quiz";
-import { cn } from "@/lib/utils";
+import { seedFrom } from "@/core/domain/sampling";
+import { getQuizPage } from "@/modules/quiz/services/quiz";
+import { cn } from "@/core/utils";
 
 export const metadata: Metadata = { title: "Quiz" };
 

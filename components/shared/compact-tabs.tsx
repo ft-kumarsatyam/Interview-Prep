@@ -2,7 +2,7 @@
 
 import type { ComponentProps } from "react";
 import { TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 /** Dense tab strip for panes inside the IDE (test cases, result, console). One place for the overrides. */
 export function CompactTabsList({ className, ...props }: ComponentProps<typeof TabsList>) {

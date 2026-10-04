@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DRILLS } from "@/lib/playground/drills";
+import { DRILLS } from "@/modules/dsa/lib/playground/drills";
 import { runWorker } from "./helpers";
 
 describe("output drills", () => {

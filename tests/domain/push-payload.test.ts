@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { renderMail, type MailSpec } from "@/lib/domain/mail-html";
-import { PUSH_BODY_LINES, PUSH_LINE_MAX, PUSH_TITLE_MAX, buildPushPayload, deviceLabel, sectionLine, summaryLines } from "@/lib/domain/push-payload";
-import { withRoast } from "@/lib/domain/roast";
+import { renderMail, type MailSpec } from "@/modules/notifications/domain/mail-html";
+import { PUSH_BODY_LINES, PUSH_LINE_MAX, PUSH_TITLE_MAX, buildPushPayload, deviceLabel, sectionLine, summaryLines } from "@/modules/notifications/domain/push-payload";
+import { withRoast } from "@/modules/resume/domain/roast";
 
 const spec: MailSpec = {
   title: "Today's targets · Sat 3 Oct",

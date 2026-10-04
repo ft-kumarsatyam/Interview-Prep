@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Code2, RotateCcw } from "lucide-react";
-import { DsaBrowser } from "@/components/dsa/dsa-browser";
-import { nextUnsolved, parseFilters } from "@/components/dsa/dsa-filters";
-import { DsaOverview } from "@/components/dsa/dsa-overview";
+import { DsaBrowser } from "@/modules/dsa/components/dsa-browser";
+import { nextUnsolved, parseFilters } from "@/modules/dsa/components/dsa-filters";
+import { DsaOverview } from "@/modules/dsa/components/dsa-overview";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { dsaSheets, problems } from "@/lib/content";
-import { todayIn } from "@/lib/services/plan";
-import { countDueReviews, getProgressMap } from "@/lib/services/problems";
-import { getSettings } from "@/lib/services/settings";
+import { dsaSheets, problems } from "@/core/content";
+import { todayIn } from "@/modules/planner/services/plan";
+import { countDueReviews, getProgressMap } from "@/modules/dsa/services/problems";
+import { getSettings } from "@/modules/settings/services/settings";
 
 export const metadata: Metadata = { title: "DSA" };
 

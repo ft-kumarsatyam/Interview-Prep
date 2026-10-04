@@ -1,16 +1,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_PROFILE } from "@/lib/domain/planner-profile";
-import { PlanChange } from "@/lib/models/planner";
-import { Settings } from "@/lib/models/system";
-import { Quiz } from "@/lib/models/day";
-import { ensureToday, replanToday } from "@/lib/services/plan";
-import { listPlanChanges } from "@/lib/services/plan-log";
-import { getIndicators, getSprintView, savePlanner } from "@/lib/services/planner";
-import { recordSolve, toggleSubtopic } from "@/lib/services/progress";
-import { saveSettings } from "@/lib/services/settings";
-import { settingsInputSchema } from "@/lib/domain/settings";
-import { logStudySession, listStudySessions, minutesByDate, deleteStudySession } from "@/lib/services/study";
-import { exportBackup } from "@/lib/services/export";
+import { DEFAULT_PROFILE } from "@/modules/planner/domain/planner-profile";
+import { PlanChange } from "@/core/models/planner";
+import { Settings } from "@/core/models/system";
+import { Quiz } from "@/core/models/day";
+import { ensureToday, replanToday } from "@/modules/planner/services/plan";
+import { listPlanChanges } from "@/modules/planner/services/plan-log";
+import { getIndicators, getSprintView, savePlanner } from "@/modules/planner/services/planner";
+import { recordSolve, toggleSubtopic } from "@/modules/progress/services/progress";
+import { saveSettings } from "@/modules/settings/services/settings";
+import { settingsInputSchema } from "@/modules/settings/domain/settings";
+import { logStudySession, listStudySessions, minutesByDate, deleteStudySession } from "@/modules/planner/services/study";
+import { exportBackup } from "@/core/services/export";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

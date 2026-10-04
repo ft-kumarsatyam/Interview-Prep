@@ -2,10 +2,10 @@
 
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { practiceCaseBySlug } from "@/lib/content";
-import { EXPLAIN_SECTION_IDS, SECTION_MAX } from "@/lib/domain/practice-cases";
-import { addPracticeMinutes, savePracticeSection, setPracticeRubric } from "@/lib/services/practice-cases";
+import { requireSession } from "@/core/auth/dal";
+import { practiceCaseBySlug } from "@/core/content";
+import { EXPLAIN_SECTION_IDS, SECTION_MAX } from "@/modules/design/domain/practice-cases";
+import { addPracticeMinutes, savePracticeSection, setPracticeRubric } from "@/modules/design/services/practice-cases";
 
 const target = z
   .object({ kind: z.enum(["os", "dbms"]), slug: z.string().max(80) })

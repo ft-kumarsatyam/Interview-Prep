@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Settings } from "@/lib/models/system";
-import { exportBackup } from "@/lib/services/export";
-import { getNavBadges } from "@/lib/services/nav";
-import { ensureToday } from "@/lib/services/plan";
-import { recordSolve, toggleSubtopic } from "@/lib/services/progress";
-import { seedContent } from "@/lib/services/seed";
-import { saveSettings, getSettings } from "@/lib/services/settings";
-import { getStats } from "@/lib/services/stats";
+import { Settings } from "@/core/models/system";
+import { exportBackup } from "@/core/services/export";
+import { getNavBadges } from "@/core/services/nav";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { recordSolve, toggleSubtopic } from "@/modules/progress/services/progress";
+import { seedContent } from "@/core/services/seed";
+import { saveSettings, getSettings } from "@/modules/settings/services/settings";
+import { getStats } from "@/modules/progress/services/stats";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

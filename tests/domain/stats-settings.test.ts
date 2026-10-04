@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { mergeRestDays, normaliseQueries, settingsInputSchema } from "@/lib/domain/settings";
-import { coverage, cumulativeVsIdeal, difficultyByWeek, quizTrend, solvesPerDay, topicMastery, type SolveRow } from "@/lib/domain/stats";
+import { mergeRestDays, normaliseQueries, settingsInputSchema } from "@/modules/settings/domain/settings";
+import { coverage, cumulativeVsIdeal, difficultyByWeek, quizTrend, solvesPerDay, topicMastery, type SolveRow } from "@/modules/progress/domain/stats";
 
 const row = (slug: string, difficulty: SolveRow["difficulty"], solveDates: string[], main = true): SolveRow => ({ slug, difficulty, main, solveDates });
 

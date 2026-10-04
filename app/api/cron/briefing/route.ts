@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { isCronAuthorized } from "@/lib/auth/cron";
-import { runBriefingTick } from "@/lib/services/briefing";
+import { isCronAuthorized } from "@/core/auth/cron";
+import { runBriefingTick } from "@/modules/progress/services/briefing";
 
 export const maxDuration = 60;
 

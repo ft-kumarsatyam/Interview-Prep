@@ -2,7 +2,7 @@
 
 import { GripHorizontal, GripVertical } from "lucide-react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 /** Resizable panes (react-resizable-panels v4). Pass `storageId` to remember sizes in localStorage. */
 function ResizablePanelGroup({

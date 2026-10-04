@@ -2,9 +2,9 @@
 
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { approvePaidToday } from "@/lib/services/ai";
-import { explainAnswer, type ExplainResult } from "@/lib/services/ai-explain";
+import { requireSession } from "@/core/auth/dal";
+import { approvePaidToday } from "@/modules/ai/services/ai";
+import { explainAnswer, type ExplainResult } from "@/modules/ai/services/ai-explain";
 
 /** "Allow the paid AI fallback for the rest of today": removes the confirm prompt until midnight. */
 export async function allowPaidTodayAction(): Promise<ActionResult> {

@@ -1,0 +1,303 @@
+{
+  "chapter": {
+    "id": "scaling-building-blocks",
+    "title": "Scaling building blocks",
+    "summary": "Load balancing, caching and rate limiting: the pieces every large system is assembled from, each as a high-level design and as code."
+  },
+  "lessons": [
+    {
+      "id": "load-balancing",
+      "title": "Load balancing",
+      "minutes": 16,
+      "summary": "Spreading traffic across many servers: algorithms, layers, health checks, and a pluggable balancer in code.",
+      "parts": [
+        {
+          "id": "hld",
+          "label": "HLD",
+          "body": "## Why a load balancer\n\nOne server has a ceiling: CPU, memory, network. You can **scale up** (a bigger machine, simple, but there is a limit and one failure kills you) or **scale out** (more machines behind a **load balancer (LB)**). Scaling out gives capacity *and* availability: if one server dies, the LB stops sending it traffic.\n\n```\nclients -> DNS -> [Load balancer] -> server 1 / server 2 / server 3\n```\n\nThe LB is the single entry point, so it must not become a single point of failure: run **at least two** (active-active or active-passive with a floating IP / DNS failover).\n\n## Layer 4 vs Layer 7\n\n| | L4 (transport) | L7 (application) |\n|---|---|---|\n| Sees | IP, port, TCP/UDP | HTTP path, headers, cookies, TLS contents |\n| Speed | Very fast, little state | Slower, can terminate TLS and inspect |\n| Can do | Spread connections | Route `/api` vs `/static`, A/B, auth, rate limit, retries |\n| Examples | AWS NLB, HAProxy tcp mode | AWS ALB, Nginx, Envoy |\n\nUse L7 when you need content-aware routing (microservices, canary releases). Use L4 for raw throughput or non-HTTP protocols.\n\n## Algorithms\n\n- **Round robin**: servers in turn. Simple; ignores load and server size.\n- **Weighted round robin**: bigger machines get proportionally more.\n- **Least connections**: send to the server with the fewest active connections. Good when requests vary in duration (websockets, uploads).\n- **Least response time**: fastest recent responder.\n- **IP hash / consistent hash**: same client (or key) goes to the same server. Gives **stickiness** for in-memory sessions or cache locality. Consistent hashing keeps most keys in place when a server is added or removed.\n- **Power of two choices**: pick two random servers, send to the less loaded. Surprisingly close to optimal with almost no coordination.\n\n## Health checks and failure handling\n\nThe LB probes each server (`GET /health` every few seconds). After N consecutive failures it marks the server **out of rotation**; after M successes it is back. Use **passive** checks too: eject on repeated 5xx or timeouts. Add **connection draining** so in-flight requests finish when a server is deployed or removed.\n\n## Stateless servers and sessions\n\nLoad balancing is easy only if servers are **stateless**: any server can handle any request. Keep session data in a shared store (Redis) or a signed token (JWT), not in process memory. If you must use sticky sessions, remember a restart or scale-in drops those sessions.\n\n## Beyond one data centre\n\n- **DNS / GeoDNS** sends users to the nearest region.\n- **Global load balancers / anycast** route to healthy regions.\n- Inside a region, an L4 LB fronts a fleet of L7 proxies, which front the services. This tiering is how very large sites scale the LB itself.\n\n## Trade-offs to mention in an interview\n\n- LB adds a hop of latency and is infrastructure to operate (use managed ones where possible).\n- TLS termination at the LB offloads work but means traffic behind it may be plain text, so secure the internal network or re-encrypt.\n- Sticky sessions simplify state but unbalance load and hurt failover.\n- Autoscaling needs the LB to discover new instances (service registry or cloud target groups).",
+          "diagrams": [
+            {
+              "title": "Redundant load balancers in front of a stateless fleet",
+              "code": "flowchart TD\n  U[\"Clients\"] --> D[\"DNS / GeoDNS\"]\n  D --> L1[\"Load balancer A\"]\n  D --> L2[\"Load balancer B (standby)\"]\n  L1 --> S1[\"Server 1\"]\n  L1 --> S2[\"Server 2\"]\n  L1 --> S3[\"Server 3\"]\n  L2 --> S1\n  L2 --> S2\n  L2 --> S3\n  S1 --> R[(\"Shared session store: Redis\")]\n  S2 --> R\n  S3 --> R"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "lld",
+          "label": "LLD",
+          "body": "## What the interviewer wants\n\n\"Design a load balancer class\": a component that holds a set of servers, picks one per request using an **interchangeable algorithm**, and skips unhealthy servers. The classic answer uses the **Strategy pattern**.\n\n## Entities\n\n- `Server { id, weight, healthy, activeConnections }`\n- `LoadBalancingStrategy` (interface): `pick(servers, key?) -> Server`\n- Implementations: `RoundRobin`, `LeastConnections`, `ConsistentHash` (Strategy pattern)\n- `LoadBalancer`: owns the server list and a strategy, filters to healthy servers, delegates `pick`. Exposes `addServer`, `removeServer`, `setHealth`, `route(request)`.\n\n## Why Strategy\n\nThe algorithm varies independently of everything else. With the strategy behind an interface, you add a new algorithm without touching `LoadBalancer`, and tests can swap in a deterministic one. This is the **Open/Closed Principle** in practice.\n\n## Concurrency\n\nA real LB handles many requests at once. Round robin needs an **atomic counter** (or a lock) so two threads do not read the same index. Server list changes (add/remove) should be copy-on-write or guarded by a read-write lock so a pick never sees a half-updated list.\n\n## Extension points to mention\n\n- Health checker as a separate class that calls `setHealth` (Observer or a scheduled task).\n- Connection draining: mark a server `draining` so it receives no new requests.\n- Weighted round robin: expand servers by weight, or use smooth weighted round robin.\n- Metrics: counters per server for observability.\n\n## Edge cases\n\nNo healthy servers (return an error, do not loop forever), a server removed mid-request, integer overflow of the round-robin counter (use modulo and wrap), and a key-based strategy when the server list changes.",
+          "diagrams": [
+            {
+              "title": "Strategy pattern: the balancer depends on an interface",
+              "code": "classDiagram\n  class LoadBalancer {\n    -servers\n    -strategy\n    +addServer(s)\n    +removeServer(id)\n    +route(key)\n  }\n  class Strategy {\n    <<interface>>\n    +pick(servers, key)\n  }\n  class RoundRobin\n  class LeastConnections\n  class ConsistentHash\n  LoadBalancer o-- Strategy\n  Strategy <|.. RoundRobin\n  Strategy <|.. LeastConnections\n  Strategy <|.. ConsistentHash"
+            }
+          ],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "interface Server { id: string; healthy: boolean; active: number }\n\ninterface Strategy {\n  pick(servers: Server[], key?: string): Server | null;\n}\n\nclass RoundRobin implements Strategy {\n  private next = 0;\n  pick(servers: Server[]): Server | null {\n    if (servers.length === 0) return null;\n    const s = servers[this.next % servers.length];\n    this.next = (this.next + 1) % servers.length; // wrap, never overflow\n    return s;\n  }\n}\n\nclass LeastConnections implements Strategy {\n  pick(servers: Server[]): Server | null {\n    return servers.reduce<Server | null>((best, s) => (best === null || s.active < best.active ? s : best), null);\n  }\n}\n\nclass LoadBalancer {\n  private servers = new Map<string, Server>();\n  constructor(private strategy: Strategy) {}\n\n  addServer(id: string) { this.servers.set(id, { id, healthy: true, active: 0 }); }\n  removeServer(id: string) { this.servers.delete(id); }\n  setHealth(id: string, healthy: boolean) { const s = this.servers.get(id); if (s) s.healthy = healthy; }\n  setStrategy(strategy: Strategy) { this.strategy = strategy; }\n\n  route(key?: string): Server {\n    const healthy = [...this.servers.values()].filter((s) => s.healthy);\n    const chosen = this.strategy.pick(healthy, key);\n    if (!chosen) throw new Error('no healthy servers');\n    chosen.active++;\n    return chosen; // caller calls release(chosen) when the request finishes\n  }\n  release(s: Server) { s.active = Math.max(0, s.active - 1); }\n}"
+            },
+            {
+              "lang": "python",
+              "source": "from abc import ABC, abstractmethod\nfrom dataclasses import dataclass\n\n@dataclass\nclass Server:\n    id: str\n    healthy: bool = True\n    active: int = 0\n\nclass Strategy(ABC):\n    @abstractmethod\n    def pick(self, servers, key=None): ...\n\nclass RoundRobin(Strategy):\n    def __init__(self):\n        self._next = 0\n    def pick(self, servers, key=None):\n        if not servers:\n            return None\n        s = servers[self._next % len(servers)]\n        self._next = (self._next + 1) % len(servers)\n        return s\n\nclass LeastConnections(Strategy):\n    def pick(self, servers, key=None):\n        return min(servers, key=lambda s: s.active, default=None)\n\nclass LoadBalancer:\n    def __init__(self, strategy: Strategy):\n        self._servers: dict[str, Server] = {}\n        self._strategy = strategy\n\n    def add_server(self, id): self._servers[id] = Server(id)\n    def remove_server(self, id): self._servers.pop(id, None)\n    def set_health(self, id, healthy):\n        if id in self._servers: self._servers[id].healthy = healthy\n\n    def route(self, key=None) -> Server:\n        healthy = [s for s in self._servers.values() if s.healthy]\n        chosen = self._strategy.pick(healthy, key)\n        if chosen is None:\n            raise RuntimeError('no healthy servers')\n        chosen.active += 1\n        return chosen"
+            },
+            {
+              "lang": "java",
+              "source": "interface Strategy { Server pick(List<Server> servers, String key); }\n\nclass RoundRobin implements Strategy {\n    private final AtomicInteger next = new AtomicInteger();\n    public Server pick(List<Server> servers, String key) {\n        if (servers.isEmpty()) return null;\n        int i = Math.floorMod(next.getAndIncrement(), servers.size());\n        return servers.get(i);\n    }\n}\n\nclass LoadBalancer {\n    private final Map<String, Server> servers = new ConcurrentHashMap<>();\n    private volatile Strategy strategy;\n    LoadBalancer(Strategy s) { this.strategy = s; }\n\n    Server route(String key) {\n        List<Server> healthy = servers.values().stream().filter(Server::isHealthy).toList();\n        Server chosen = strategy.pick(healthy, key);\n        if (chosen == null) throw new IllegalStateException(\"no healthy servers\");\n        return chosen;\n    }\n}"
+            },
+            {
+              "lang": "cpp",
+              "source": "struct Server { std::string id; bool healthy = true; int active = 0; };\n\nstruct Strategy {\n    virtual ~Strategy() = default;\n    virtual Server* pick(std::vector<Server*>& servers, const std::string& key) = 0;\n};\n\nstruct RoundRobin : Strategy {\n    std::atomic<size_t> next{0};\n    Server* pick(std::vector<Server*>& servers, const std::string&) override {\n        if (servers.empty()) return nullptr;\n        return servers[next.fetch_add(1) % servers.size()];\n    }\n};"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        { "op": "Round robin pick", "time": "O(1)", "space": "O(1)" },
+        { "op": "Least connections pick (scan)", "time": "O(n)", "space": "O(1)" },
+        { "op": "Least connections (min-heap)", "time": "O(log n)", "space": "O(n)" },
+        { "op": "Consistent hash lookup", "time": "O(log n)", "space": "O(n · vnodes)" }
+      ],
+      "keyPoints": [
+        "A load balancer gives capacity and availability, so run at least two and keep servers stateless.",
+        "L4 balances connections quickly; L7 understands HTTP and enables routing, retries and TLS termination.",
+        "Pick the algorithm for the workload: round robin for uniform requests, least connections for uneven ones.",
+        "Health checks and connection draining keep failures and deploys invisible to users.",
+        "In LLD, put each algorithm behind a Strategy interface and make the round-robin counter thread-safe."
+      ],
+      "problems": [],
+      "practiceRef": "hld-building-blocks:0",
+      "check": [
+        {
+          "q": "Which load balancing method suits long-lived, uneven requests such as websockets?",
+          "options": ["Round robin", "Least connections", "Random", "IP hash only"],
+          "answer": 1,
+          "why": "Least connections accounts for how busy each server currently is, which round robin ignores."
+        },
+        {
+          "q": "Why should the app servers behind a load balancer be stateless?",
+          "options": [
+            "Stateless servers are faster",
+            "Any server can serve any request, so scaling and failover are trivial",
+            "Load balancers cannot route stateful traffic",
+            "It reduces TLS cost"
+          ],
+          "answer": 1,
+          "why": "If session state lives in a shared store, requests are interchangeable across servers."
+        },
+        {
+          "q": "In the LLD, why is the balancing algorithm an interface?",
+          "options": [
+            "To make the code longer",
+            "So algorithms can be swapped without changing LoadBalancer (Strategy / Open-Closed)",
+            "Interfaces are required in Java",
+            "To avoid health checks"
+          ],
+          "answer": 1,
+          "why": "The varying part is isolated behind an interface so new strategies need no changes to the balancer."
+        }
+      ],
+      "sources": [
+        { "title": "NGINX load balancing", "url": "https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/" },
+        { "title": "Mitzenmacher: the power of two choices", "url": "https://www.eecs.harvard.edu/~michaelm/postscripts/handbook2001.pdf" }
+      ]
+    },
+    {
+      "id": "caching",
+      "title": "Caching",
+      "minutes": 18,
+      "summary": "Where to cache, write strategies, eviction, and the classic failure modes, then an LRU cache in code.",
+      "parts": [
+        {
+          "id": "hld",
+          "label": "HLD",
+          "body": "## Why cache\n\nReading from memory takes about **100 nanoseconds**; a database query takes **milliseconds**, 10,000 to 100,000 times slower. Many reads ask for the same popular data. Caching keeps hot data close so you serve it fast and spare the database.\n\n## Where caches live\n\n1. **Client / browser cache**: HTTP `Cache-Control`, `ETag`. Free and closest to the user.\n2. **CDN**: caches static (and some dynamic) content near users worldwide.\n3. **API gateway / reverse proxy cache**: whole responses.\n4. **Application (in-process) cache**: a map in each server. Fastest, but every instance has its own copy, so it can disagree.\n5. **Distributed cache** (Redis, Memcached): a shared cache tier all servers use.\n6. **Database cache**: buffer pool, query cache.\n\n## Read strategies\n\n**Cache-aside (lazy loading)**: the most common.\n\n```\nread(key):\n  v = cache.get(key)\n  if v is hit: return v\n  v = db.read(key)\n  cache.set(key, v, ttl)\n  return v\n```\n\nSimple and resilient (cache down means slower, not broken). Downside: first read is a miss, and data can be stale.\n\n**Read-through**: the cache itself loads from the DB on a miss.\n\n## Write strategies\n\n| Strategy | How | Pros | Cons |\n|---|---|---|---|\n| **Write-through** | write to cache and DB together | consistent, no loss | slower writes, caches data never read |\n| **Write-back (write-behind)** | write to cache, flush to DB later | very fast writes | data loss if the cache dies before flush |\n| **Write-around** | write to DB only; cache fills on read | avoids polluting cache | first read after write is a miss |\n| **Invalidate on write** (with cache-aside) | write DB, then delete the key | simple, common | race windows (see below) |\n\n## Eviction\n\nWhen the cache is full, something must go: **LRU** (least recently used, the default choice), **LFU** (least frequently used), **FIFO**, **TTL** (expire after a time), random. TTL also bounds staleness.\n\n## The hard part: invalidation and failure modes\n\n- **Stale data**: DB updated but cache not. Use short TTLs and delete-on-write; accept eventual consistency where the product allows.\n- **Cache stampede (thundering herd)**: a hot key expires and thousands of requests hit the DB at once. Fixes: **request coalescing** (one loader, others wait), **jittered TTLs**, refresh-ahead, locks with a short timeout.\n- **Cache penetration**: lookups for keys that never exist bypass the cache every time. Fix: cache negative results briefly, or use a **Bloom filter** in front.\n- **Hot keys**: one key overloads a single cache node. Fix: replicate hot keys or add a local cache in front.\n- **Cache avalanche**: many keys expire together. Fix: randomise TTLs.\n\n## Scaling the cache tier\n\nPartition keys across cache nodes with **consistent hashing** so adding or removing a node moves few keys. Add replicas for availability. Know that a cold cache after a restart can melt the database: warm it or rate-limit refills.\n\n## What to cache\n\nRead-heavy, expensive-to-compute, tolerant of slight staleness: profiles, product pages, feed fragments, computed aggregates, sessions. Do **not** cache data that must be strongly consistent (account balances during a transfer).\n\n## Metrics\n\nWatch **hit ratio** (aim for 90%+ on hot paths), latency, evictions, memory. A low hit ratio means the cache is too small, keys are poorly chosen or TTLs are too short.",
+          "diagrams": [
+            {
+              "title": "Cache-aside read path",
+              "code": "flowchart TD\n  A[\"App receives read\"] --> B{\"In cache?\"}\n  B -- \"hit\" --> C[\"Return value\"]\n  B -- \"miss\" --> D[\"Read from database\"]\n  D --> E[\"Store in cache with TTL\"]\n  E --> C"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "lld",
+          "label": "LLD",
+          "body": "## The classic: design an LRU cache\n\n**Requirements**: fixed capacity; `get(key)` and `put(key, value)` both in **O(1)**; when full, evict the **least recently used** item. Both reads and writes count as a \"use\".\n\n## The key insight\n\nYou need two things at once: **fast lookup by key** (hash map) and **fast reordering by recency** (a list where you can move a node to the front and remove from the back in O(1)). A singly linked list cannot remove a node in O(1) without its predecessor, so use a **doubly linked list**.\n\n- `HashMap<key, Node>`: finds a node in O(1).\n- `DoublyLinkedList`: head = most recent, tail = least recent.\n- `get`: look up the node, move it to the head, return its value.\n- `put`: if present, update and move to head. If new, create a node at the head; if over capacity, remove the tail and delete its key from the map.\n\nUse **sentinel head and tail nodes** so there are no null checks at the ends.\n\n## Class design\n\n- `Node { key, value, prev, next }`: store the **key** in the node so eviction can delete the map entry.\n- `LRUCache(capacity)`: `get`, `put`, plus private `remove(node)` and `addToFront(node)`.\n\n## Making it production-grade\n\n- **Thread safety**: guard with a lock (a single mutex is fine; reads mutate order, so a read lock is not enough), or shard the cache into N segments by key hash to reduce contention.\n- **TTL**: store an expiry per node; check on `get`; optionally a background sweeper.\n- **Eviction policy as a Strategy**: `EvictionPolicy` interface with `LRU`, `LFU`, `FIFO` implementations so the cache is policy-agnostic.\n- **Generics**: `Cache<K, V>`.\n- **Observability**: hit/miss counters.\n\n## Edge cases\n\nCapacity of 1, `put` of an existing key (must not grow size), `get` of a missing key, capacity 0, null values vs missing.",
+          "diagrams": [
+            {
+              "title": "LRU = hash map + doubly linked list",
+              "code": "flowchart LR\n  M[\"HashMap: key to node\"] -.-> N2\n  H[\"head sentinel\"] <--> N1[\"most recent\"] <--> N2[\"...\"] <--> N3[\"least recent\"] <--> T[\"tail sentinel\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "js",
+              "source": "class Node {\n  constructor(key, value) { this.key = key; this.value = value; this.prev = null; this.next = null; }\n}\n\nclass LRUCache {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.map = new Map();\n    this.head = new Node(0, 0); // most recent side\n    this.tail = new Node(0, 0); // least recent side\n    this.head.next = this.tail;\n    this.tail.prev = this.head;\n  }\n  #remove(n) { n.prev.next = n.next; n.next.prev = n.prev; }\n  #addFront(n) {\n    n.next = this.head.next; n.prev = this.head;\n    this.head.next.prev = n; this.head.next = n;\n  }\n  get(key) {\n    const n = this.map.get(key);\n    if (!n) return -1;\n    this.#remove(n); this.#addFront(n);\n    return n.value;\n  }\n  put(key, value) {\n    const existing = this.map.get(key);\n    if (existing) { existing.value = value; this.#remove(existing); this.#addFront(existing); return; }\n    if (this.map.size === this.capacity) {\n      const lru = this.tail.prev;\n      this.#remove(lru); this.map.delete(lru.key);\n    }\n    const n = new Node(key, value);\n    this.map.set(key, n); this.#addFront(n);\n  }\n}"
+            },
+            {
+              "lang": "python",
+              "source": "from collections import OrderedDict\n\n# Idiomatic: OrderedDict keeps insertion order and can move keys to the end in O(1)\nclass LRUCache:\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.data = OrderedDict()\n\n    def get(self, key):\n        if key not in self.data:\n            return -1\n        self.data.move_to_end(key)          # mark most recent\n        return self.data[key]\n\n    def put(self, key, value):\n        if key in self.data:\n            self.data.move_to_end(key)\n        self.data[key] = value\n        if len(self.data) > self.capacity:\n            self.data.popitem(last=False)   # evict least recent\n\n# In an interview, also be ready to write the hash map + doubly linked list version by hand."
+            },
+            {
+              "lang": "java",
+              "source": "class LRUCache<K, V> {\n    private final int capacity;\n    private final LinkedHashMap<K, V> map;\n\n    LRUCache(int capacity) {\n        this.capacity = capacity;\n        // accessOrder = true makes get() move the entry to the end (most recent)\n        this.map = new LinkedHashMap<>(16, 0.75f, true) {\n            @Override protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {\n                return size() > LRUCache.this.capacity;\n            }\n        };\n    }\n    synchronized V get(K key) { return map.get(key); }\n    synchronized void put(K key, V value) { map.put(key, value); }\n}"
+            },
+            {
+              "lang": "cpp",
+              "source": "class LRUCache {\n    int cap;\n    list<pair<int,int>> items;                       // front = most recent\n    unordered_map<int, list<pair<int,int>>::iterator> pos;\npublic:\n    LRUCache(int c) : cap(c) {}\n    int get(int key) {\n        auto it = pos.find(key);\n        if (it == pos.end()) return -1;\n        items.splice(items.begin(), items, it->second); // move to front, O(1)\n        return it->second->second;\n    }\n    void put(int key, int value) {\n        auto it = pos.find(key);\n        if (it != pos.end()) { it->second->second = value; items.splice(items.begin(), items, it->second); return; }\n        if ((int)items.size() == cap) { pos.erase(items.back().first); items.pop_back(); }\n        items.emplace_front(key, value);\n        pos[key] = items.begin();\n    }\n};"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        { "op": "LRU get", "time": "O(1)", "space": "O(1)" },
+        { "op": "LRU put (incl. eviction)", "time": "O(1)", "space": "O(1)" },
+        { "op": "LRU total memory", "time": "-", "space": "O(capacity)" },
+        { "op": "LFU with O(1) design", "time": "O(1)", "space": "O(capacity)" }
+      ],
+      "keyPoints": [
+        "Cache hot, read-heavy, staleness-tolerant data; cache-aside is the default pattern.",
+        "Write-through is consistent, write-back is fast but can lose data, write-around avoids pollution.",
+        "Invalidate on write and use TTLs with jitter to bound staleness and avoid avalanches.",
+        "Stampede, penetration and hot keys are the classic failure modes, each with a known fix.",
+        "LRU = hash map + doubly linked list with sentinels, giving O(1) get and put."
+      ],
+      "problems": [],
+      "practiceRef": "hld-building-blocks:3",
+      "check": [
+        {
+          "q": "Why does an LRU cache need a doubly (not singly) linked list?",
+          "options": [
+            "Doubly linked lists use less memory",
+            "Removing an arbitrary node in O(1) needs its predecessor pointer",
+            "Singly linked lists cannot hold keys",
+            "It makes the hash map unnecessary"
+          ],
+          "answer": 1,
+          "why": "When a node is accessed it is removed from the middle and moved to the front; that needs prev and next to be O(1)."
+        },
+        {
+          "q": "A very popular key expires and thousands of requests hit the database together. This is a:",
+          "options": ["Cache penetration", "Cache stampede", "Write-back failure", "Cold start"],
+          "answer": 1,
+          "why": "Many concurrent misses for one hot key is a stampede; coalescing requests or refreshing ahead fixes it."
+        },
+        {
+          "q": "Which write strategy risks losing data if the cache crashes before flushing?",
+          "options": ["Write-through", "Write-around", "Write-back", "Cache-aside"],
+          "answer": 2,
+          "why": "Write-back acknowledges the write from the cache and persists later, so unflushed writes are lost on a crash."
+        }
+      ],
+      "sources": [
+        { "title": "Redis: client-side caching and eviction", "url": "https://redis.io/docs/latest/develop/reference/eviction/" },
+        { "title": "AWS Builders Library: caching challenges and strategies", "url": "https://aws.amazon.com/builders-library/caching-challenges-and-strategies/" }
+      ]
+    },
+    {
+      "id": "rate-limiting",
+      "title": "Rate limiting",
+      "minutes": 16,
+      "summary": "Protecting a service from overload and abuse: the four algorithms, distributed enforcement, and a token bucket in code.",
+      "parts": [
+        {
+          "id": "hld",
+          "label": "HLD",
+          "body": "## Why rate limit\n\nA **rate limiter** caps how many requests a client may make in a window. It protects against abuse and bots, prevents one noisy tenant from starving others, controls cost (paid downstream APIs), and shields the system from overload (a form of **load shedding**).\n\n## Where it runs\n\n- **API gateway / edge** (most common): one place, before requests reach services.\n- **In the service** (middleware): finer control, per-endpoint.\n- **Client side** (cooperative): the SDK backs off, but you cannot trust it.\n\nOn rejection return **HTTP 429 Too Many Requests** with headers `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.\n\n## What to limit by\n\nUser id, API key, IP address, tenant, or endpoint. Combine: e.g. 100/min per user *and* 1000/min per IP. IP alone is unfair behind a shared NAT.\n\n## The four algorithms\n\n**1. Token bucket** (most popular). A bucket holds up to `capacity` tokens and refills at `rate` tokens/second. Each request takes one token; if none, reject. **Allows bursts** up to capacity but enforces the long-run average rate. Memory: 2 numbers per key.\n\n**2. Leaky bucket.** Requests enter a queue that drains at a fixed rate. Smooths traffic to a constant output; bursts overflow and are dropped. Good when downstream needs a steady rate.\n\n**3. Fixed window counter.** Count requests per clock window (e.g. per minute). Simple and cheap, but a burst straddling the boundary can send **2× the limit** in a short span (end of one window plus start of the next).\n\n**4. Sliding window.** Fixes the boundary issue.\n- *Sliding log*: store each request timestamp. Exact, but memory-heavy.\n- *Sliding window counter*: weight the previous window's count by overlap: `count = prev × (1 - elapsed%) + current`. Approximate, tiny memory.\n\n| Algorithm | Bursts | Memory | Accuracy |\n|---|---|---|---|\n| Token bucket | allowed | tiny | good |\n| Leaky bucket | smoothed | queue | good |\n| Fixed window | boundary spikes | tiny | poor at edges |\n| Sliding log | none | high | exact |\n| Sliding counter | small error | tiny | very good |\n\n## Distributed rate limiting\n\nWith many gateway nodes, per-node counters let a client multiply their limit. Options:\n\n- **Central store (Redis)**: all nodes share counters. Use an **atomic** operation (a Lua script or `INCR` + `EXPIRE`) to avoid race conditions where two nodes both read 99 and allow the 100th and 101st.\n- **Sticky routing**: send a client to one node (hurts balance).\n- **Local + sync**: approximate local counters synchronised periodically; trades accuracy for latency.\n\nDecide **fail open vs fail closed** if Redis is down: fail open keeps the product up (risking overload), fail closed protects the backend (risking an outage). Most public APIs fail open with local fallback limits.\n\n## Other design points\n\n- Rules live in config (hot-reloadable), keyed by endpoint and tier.\n- Add **jitter and exponential backoff** guidance for clients on 429.\n- Different limits per plan (free vs paid).\n- Observe rejected counts per client; alert on spikes.",
+          "diagrams": [
+            {
+              "title": "Rate limiter at the gateway with a shared Redis counter",
+              "code": "flowchart LR\n  C[\"Client\"] --> G[\"API gateway: rate limiter\"]\n  G -- \"check and decrement atomically\" --> R[(\"Redis\")]\n  G -- \"allowed\" --> S[\"Service\"]\n  G -- \"rejected\" --> X[\"429 + Retry-After\"]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "lld",
+          "label": "LLD",
+          "body": "## Design a rate limiter class\n\n**Requirements**: `allow(clientId) -> boolean`; configurable limit; thread-safe; pluggable algorithm; many clients.\n\n## Entities\n\n- `RateLimiter` (interface): `allow(key): boolean`\n- `TokenBucketLimiter`, `FixedWindowLimiter`, `SlidingWindowLimiter` (Strategy)\n- `Bucket { tokens, lastRefill }`: per-key state\n- `RateLimiterFactory` to build the right one from config\n\n## Token bucket without a timer thread\n\nDon't run a background thread refilling every bucket. **Refill lazily**: on each request compute how much time passed since `lastRefill`, add `elapsed × rate` tokens (capped at capacity), then try to take one.\n\n```\nallow(key):\n  b = buckets[key] or new Bucket(capacity, now)\n  elapsed = now - b.lastRefill\n  b.tokens = min(capacity, b.tokens + elapsed * ratePerSec)\n  b.lastRefill = now\n  if b.tokens >= 1: b.tokens -= 1; return true\n  return false\n```\n\nO(1) per request, O(1) memory per client.\n\n## Concurrency\n\nThe read-refill-decrement sequence must be **atomic per key**. Use a lock per bucket (or `ConcurrentHashMap.compute`), not a global lock. In a distributed version, this exact logic runs as one **Redis Lua script**.\n\n## Memory\n\nIdle clients accumulate buckets forever. Evict buckets idle longer than `capacity / rate` (they are full again anyway), with a periodic sweep or an LRU map.\n\n## Testability\n\nInject a **clock** (`now()` function) instead of calling `Date.now()` inside, so tests can advance time deterministically.\n\n## Edge cases\n\nClock going backwards (clamp elapsed to ≥ 0), fractional tokens, first request for a new key, limit changes at runtime, and burst capacity larger than the per-second rate.",
+          "diagrams": [
+            {
+              "title": "Token bucket refill and consume",
+              "code": "flowchart TD\n  A[\"Request arrives\"] --> B[\"Refill tokens from elapsed time, cap at capacity\"]\n  B --> C{\"tokens >= 1?\"}\n  C -- \"yes\" --> D[\"tokens = tokens - 1: allow\"]\n  C -- \"no\" --> E[\"reject: 429\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "interface RateLimiter { allow(key: string): boolean }\n\ntype Clock = () => number; // milliseconds\n\nclass TokenBucketLimiter implements RateLimiter {\n  private buckets = new Map<string, { tokens: number; last: number }>();\n\n  constructor(\n    private capacity: number,\n    private refillPerSec: number,\n    private now: Clock = Date.now, // injectable for tests\n  ) {}\n\n  allow(key: string): boolean {\n    const t = this.now();\n    const b = this.buckets.get(key) ?? { tokens: this.capacity, last: t };\n    const elapsedSec = Math.max(0, (t - b.last) / 1000); // clamp if the clock goes backwards\n    b.tokens = Math.min(this.capacity, b.tokens + elapsedSec * this.refillPerSec);\n    b.last = t;\n    this.buckets.set(key, b);\n    if (b.tokens >= 1) {\n      b.tokens -= 1;\n      return true;\n    }\n    return false;\n  }\n}\n\n// 5 requests burst, 1 per second sustained\nconst limiter = new TokenBucketLimiter(5, 1);"
+            },
+            {
+              "lang": "python",
+              "source": "import threading, time\n\nclass TokenBucketLimiter:\n    def __init__(self, capacity, refill_per_sec, clock=time.monotonic):\n        self.capacity = capacity\n        self.rate = refill_per_sec\n        self.clock = clock\n        self._buckets = {}          # key -> [tokens, last]\n        self._lock = threading.Lock()\n\n    def allow(self, key) -> bool:\n        now = self.clock()\n        with self._lock:            # atomic read-refill-consume\n            tokens, last = self._buckets.get(key, (self.capacity, now))\n            tokens = min(self.capacity, tokens + max(0, now - last) * self.rate)\n            allowed = tokens >= 1\n            if allowed:\n                tokens -= 1\n            self._buckets[key] = (tokens, now)\n            return allowed"
+            },
+            {
+              "lang": "java",
+              "source": "class TokenBucketLimiter {\n    private static class Bucket { double tokens; long last; }\n    private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();\n    private final double capacity, ratePerSec;\n\n    TokenBucketLimiter(double capacity, double ratePerSec) { this.capacity = capacity; this.ratePerSec = ratePerSec; }\n\n    boolean allow(String key) {\n        long now = System.nanoTime();\n        Bucket b = buckets.computeIfAbsent(key, k -> { Bucket x = new Bucket(); x.tokens = capacity; x.last = now; return x; });\n        synchronized (b) { // per-key lock, not a global one\n            double elapsedSec = Math.max(0, (now - b.last) / 1e9);\n            b.tokens = Math.min(capacity, b.tokens + elapsedSec * ratePerSec);\n            b.last = now;\n            if (b.tokens >= 1) { b.tokens -= 1; return true; }\n            return false;\n        }\n    }\n}"
+            },
+            {
+              "lang": "cpp",
+              "source": "class TokenBucket {\n    double capacity, rate, tokens;\n    std::chrono::steady_clock::time_point last;\n    std::mutex mu;\npublic:\n    TokenBucket(double cap, double perSec) : capacity(cap), rate(perSec), tokens(cap), last(std::chrono::steady_clock::now()) {}\n    bool allow() {\n        std::lock_guard<std::mutex> g(mu);\n        auto now = std::chrono::steady_clock::now();\n        double elapsed = std::chrono::duration<double>(now - last).count();\n        tokens = std::min(capacity, tokens + elapsed * rate);\n        last = now;\n        if (tokens >= 1) { tokens -= 1; return true; }\n        return false;\n    }\n};"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        { "op": "Token bucket allow()", "time": "O(1)", "space": "O(1) per key" },
+        { "op": "Fixed window allow()", "time": "O(1)", "space": "O(1) per key" },
+        { "op": "Sliding log allow()", "time": "O(log n) or amortised O(1)", "space": "O(requests in window) per key" },
+        { "op": "Sliding window counter", "time": "O(1)", "space": "O(1) per key" }
+      ],
+      "keyPoints": [
+        "Return 429 with Retry-After; limit by user, key, IP or tenant, often several at once.",
+        "Token bucket allows bursts at a steady average; fixed window has boundary spikes; sliding window fixes them.",
+        "Distributed limiting needs an atomic shared counter, such as a Redis Lua script.",
+        "Refill lazily from elapsed time instead of running a timer thread per bucket.",
+        "Inject a clock for tests and clean up idle buckets to bound memory."
+      ],
+      "problems": [],
+      "practiceRef": "hld-ratelimiter-idgen:3",
+      "check": [
+        {
+          "q": "What is the main flaw of the fixed window counter?",
+          "options": [
+            "It uses a lot of memory",
+            "A burst across a window boundary can allow up to twice the limit",
+            "It cannot be distributed",
+            "It rejects all bursts"
+          ],
+          "answer": 1,
+          "why": "Requests at the end of one window and the start of the next both count against fresh windows."
+        },
+        {
+          "q": "Why refill a token bucket lazily on each request rather than with a timer?",
+          "options": [
+            "Timers are not allowed in production",
+            "It needs no background work and is O(1) per request and per key",
+            "Lazy refill allows larger bursts",
+            "It avoids the need for locks"
+          ],
+          "answer": 1,
+          "why": "Computing tokens from elapsed time gives the same result without a thread per bucket."
+        },
+        {
+          "q": "Two gateway nodes both read a counter of 99 and both allow a request. What prevents this?",
+          "options": [
+            "Longer TTLs",
+            "An atomic check-and-increment in the shared store (for example a Lua script)",
+            "More gateway nodes",
+            "Using IP hash"
+          ],
+          "answer": 1,
+          "why": "The read, check and write must be one atomic operation so concurrent nodes cannot both pass."
+        }
+      ],
+      "sources": [
+        { "title": "Stripe: scaling your API with rate limiters", "url": "https://stripe.com/blog/rate-limiters" },
+        { "title": "Cloudflare: counting things, a lot of different things", "url": "https://blog.cloudflare.com/counting-things-a-lot-of-different-things/" }
+      ]
+    }
+  ]
+}

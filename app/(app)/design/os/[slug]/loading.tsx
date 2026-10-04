@@ -1,4 +1,4 @@
-import { CaseDetailSkeleton } from "@/components/design/skeletons";
+import { CaseDetailSkeleton } from "@/modules/design/components/skeletons";
 
 export default function Loading() {
   return <CaseDetailSkeleton />;

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 /** A whole card that is a link: one hover, one focus ring, one touch height everywhere. */
 export function LinkCard({ href, className, children, external, rel }: { href: string; className?: string; children: React.ReactNode; external?: boolean; rel?: string }) {

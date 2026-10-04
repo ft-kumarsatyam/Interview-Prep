@@ -1,16 +1,19 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BookOpen, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Code2, Hourglass, LayoutGrid, List } from "lucide-react";
-import { AgendaList } from "@/components/calendar/agenda-list";
-import { Legend, MonthGrid } from "@/components/calendar/month-grid";
+import { AgendaList } from "@/modules/planner/components/calendar/agenda-list";
+import { Legend, MonthGrid } from "@/modules/planner/components/calendar/month-grid";
 import { chipClass } from "@/components/shared/chip";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatTile } from "@/components/shared/stat-tile";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { summarizeMonth } from "@/lib/domain/calendar-view";
-import { getCalendarMonth, isMonthStr } from "@/lib/services/calendar";
-import { cn } from "@/lib/utils";
+import { summarizeMonth } from "@/modules/planner/domain/calendar-view";
+import { Suspense } from "react";
+import { CarrySection } from "@/modules/planner/components/carry-section";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { getCalendarMonth, isMonthStr } from "@/modules/planner/services/calendar";
+import { cn } from "@/core/utils";
 
 export const metadata: Metadata = { title: "Calendar" };
 
@@ -33,6 +36,7 @@ const AUTO_LIST = "max-sm:border-primary/40 max-sm:bg-primary/10 max-sm:font-med
 export default async function CalendarPage({ searchParams }: PageProps<"/calendar">) {
   const { m, view: rawView } = await searchParams;
   const view: View = rawView === "month" || rawView === "list" ? rawView : "auto";
+  const today = await ensureToday();
   const data = await getCalendarMonth(typeof m === "string" && isMonthStr(m) ? m : undefined);
   const month = data.month;
   const prev = shiftMonth(month, -1);
@@ -75,8 +79,14 @@ export default async function CalendarPage({ searchParams }: PageProps<"/calenda
         </nav>
       </PageHeader>
 
+      <div className="mb-4">
+        <Suspense fallback={null}>
+          <CarrySection today={today.today} plan={today.plan} settings={today.settings} />
+        </Suspense>
+      </div>
+
       <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-4">
-        <StatTile icon={CalendarCheck} tone="success" label="Days complete" value={s.elapsed ? `${s.complete}/${s.elapsed}` : "–"} hint={s.elapsed ? `${s.partial} partly done · ${s.missed} missed` : "No plan days yet this month"}>
+        <StatTile icon={CalendarCheck} tone="success" label="Days complete" value={s.elapsed ? `${s.complete}/${s.elapsed}` : "–"} hint={s.elapsed ? `${s.partial} with something left · ${s.missed} missed${s.caughtUp ? ` · ${s.caughtUp} caught up` : ""}` : "No plan days yet this month"}>
           {s.elapsed > 0 && <Progress value={pct(s.complete, s.elapsed)} className="mt-1 h-1 [&>div]:bg-success" aria-label="Days complete" />}
         </StatTile>
         <StatTile icon={Code2} tone="primary" label="DSA this month" value={`${s.dsaDone}/${s.dsaPlanned}`} hint="Done so far of all planned">

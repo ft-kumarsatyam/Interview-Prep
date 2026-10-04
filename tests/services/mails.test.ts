@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Notification, Settings } from "@/lib/models/system";
-import type { NotifyChannel } from "@/lib/notify";
-import { runEvening, runMorning, runReminder } from "@/lib/services/cron";
-import { buildWeeklyMail } from "@/lib/services/mail-content";
-import { ensureToday } from "@/lib/services/plan";
-import { getSettings, invalidateSettings, setMailPref, setRoastLevel } from "@/lib/services/settings";
-import { sendTestMail } from "@/lib/services/test-mail";
+import { Notification, Settings } from "@/core/models/system";
+import type { NotifyChannel } from "@/core/notify";
+import { runEvening, runMorning, runReminder } from "@/core/services/cron";
+import { buildWeeklyMail } from "@/modules/notifications/services/mail-content";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { getSettings, invalidateSettings, setMailPref, setRoastLevel } from "@/modules/settings/services/settings";
+import { sendTestMail } from "@/modules/notifications/services/test-mail";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 process.env.CRON_SECRET = "cron-secret-cron-secret";

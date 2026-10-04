@@ -1,8 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { HoursToday } from "@/components/dashboard/hours-today";
-import { SettingsForm, type SettingsFormValues } from "@/components/settings/settings-form";
+import { HoursToday } from "@/modules/progress/components/dashboard/hours-today";
+import { SettingsForm, type SettingsFormValues } from "@/modules/settings/components/settings-form";
 
 describe("HoursToday", () => {
   it("shows the planned hours, the estimate and the presets, with the current one pressed", () => {

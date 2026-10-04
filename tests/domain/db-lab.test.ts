@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import initSqlJs, { type Database } from "sql.js";
 import { beforeAll, describe, expect, it } from "vitest";
-import { DB_CHALLENGES, MONGO_DATASETS, SQL_DATASETS, challengesFor, compareRows, docsToRows, mongoDataset, sqlDataset, type Row } from "@/lib/domain/db-lab";
-import { runMongo } from "@/lib/domain/mongo-query";
+import { DB_CHALLENGES, MONGO_DATASETS, SQL_DATASETS, challengesFor, compareRows, docsToRows, mongoDataset, sqlDataset, type Row } from "@/modules/dsa/domain/db-lab";
+import { runMongo } from "@/modules/dsa/domain/mongo-query";
 
 let SQL: Awaited<ReturnType<typeof initSqlJs>>;
 beforeAll(async () => {

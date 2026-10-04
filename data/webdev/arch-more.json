@@ -1,0 +1,535 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "arch-ddd",
+      "track": "arch",
+      "title": "Domain-driven design: bounded contexts, aggregates and context maps",
+      "minutes": 24,
+      "summary": "The parts of DDD that matter in practice: ubiquitous language, bounded contexts as service and module boundaries, aggregates as consistency boundaries, and context mapping between teams.",
+      "body": "## The core idea\nDomain-driven design (Eric Evans, *Domain-Driven Design*, 2003) is a way to build software whose structure mirrors the business it serves. Its tactical patterns (entities, value objects, repositories) are the part most people learn first and the part that matters least. The lasting ideas are strategic:\n\n- **Ubiquitous language**: developers and domain experts use the same words with the same meaning, in conversation and in code.\n- **Bounded context**: a boundary inside which one model, and one meaning per word, is consistent.\n- **Aggregate**: a cluster of objects treated as one unit for changes, whose invariants always hold.\n- **Context map**: an explicit picture of how contexts, and the teams that own them, relate.\n\nThese are the tools you use to decide where to draw module and service boundaries, which is why architecture interviews keep coming back to them. A microservice with the wrong boundary is worse than a module with the wrong boundary, because fixing it means a network migration instead of a refactor.\n\n## Ubiquitous language\nEvery domain has jargon: a \"policy\" in insurance, a \"position\" in trading, a \"fulfilment\" in retail. When the code uses different words (`Item`, `Record`, `Entry`) from the people who define the rules, every conversation needs translation and subtle bugs live in the gaps.\n\nThe practice is simple and unglamorous:\n- Name classes, methods, events and tables with the experts' terms: `policy.renew()`, not `updateRecord(type=2)`.\n- When a word is ambiguous, stop and resolve it with the experts. Often the ambiguity *is* a boundary: two groups use the same word for different things.\n- Prefer verbs from the domain over CRUD: `order.cancel(reason)` captures a rule; `order.status = 'CANCELLED'` bypasses it.\n\nAs Fowler's bliki entry puts it, the language should be used in code, diagrams and speech, and it evolves as understanding improves.\n\n## Bounded contexts\nThe early instinct in enterprise systems was one canonical model: one `Customer` class for the whole company. It fails because \"customer\" means different things to different parts of the business.\n\n```text\n               shared id: product_id = 42\n+------------------+   +-------------------+   +------------------+\n| Catalogue        |   | Inventory         |   | Billing          |\n| Product          |   | StockItem         |   | Product          |\n|  title, images,  |   |  sku, bin, qty,   |   |  price, tax code,|\n|  description,    |   |  reorder level    |   |  revenue account |\n|  SEO slug        |   |                   |   |                  |\n+------------------+   +-------------------+   +------------------+\n```\n\nEach context models only what it needs, in its own language, and owns its data. They share an identifier and communicate through explicit contracts (APIs, events), translating at the boundary. Within a context, \"Product\" has exactly one meaning.\n\nA bounded context is a **linguistic and model boundary**, not automatically a deployment unit. A modular monolith can have several contexts as modules with enforced boundaries. A context is often a good candidate for a service, but one context may be several services, and starting with modules is cheaper.\n\n### How to find boundaries in a real system\n1. **Listen to language.** Where the same word changes meaning, or a team uses completely different vocabulary, there is a boundary.\n2. **Follow business capabilities and subdomains.** What does the business do? Sell, fulfil, bill, support. Evans distinguishes the **core** domain (your competitive advantage, where you invest your best engineers), **supporting** subdomains (necessary, specific to you) and **generic** ones (buy or use a library: auth, email, payments processing).\n3. **Run event storming.** Alberto Brandolini's workshop puts domain experts and engineers in a room with orange sticky notes for domain events (\"Order placed\", \"Payment captured\", \"Parcel shipped\") on a timeline. Clusters of events and the commands and policies around them reveal contexts; places where the language shifts or a handoff happens are candidate boundaries.\n4. **Look at change patterns in the existing code.** Files that always change together belong together (git history makes this measurable). Tables joined by every query in one area and almost never by another hint at a seam.\n5. **Check team ownership.** Conway's law: boundaries that cut across teams create constant coordination. Aim for one team per context, while one team may own several.\n\nSignals that a boundary is wrong: every feature touches several contexts; services call each other synchronously in long chains to answer one request; two services share tables; you need distributed transactions for routine operations.\n\n## Aggregates\nInside a context, an **aggregate** is a cluster of entities and value objects with one **root** entity. Outside code may only hold a reference to the root, and every change goes through it. The aggregate is the **consistency boundary**: its invariants are true at the end of every transaction.\n\n```ts\ntype Money = { cents: number; currency: \"EUR\" };\n\nexport class Order {\n  private lines: OrderLine[] = [];\n  private status: \"draft\" | \"placed\" | \"cancelled\" = \"draft\";\n  private events: DomainEvent[] = [];\n\n  constructor(readonly id: string, readonly customerId: string, private creditLimit: Money) {}\n\n  addLine(productId: string, qty: number, unitPrice: Money) {\n    if (this.status !== \"draft\") throw new Error(\"Only draft orders can change\");\n    if (qty <= 0) throw new Error(\"Quantity must be positive\");\n    const next = this.total().cents + qty * unitPrice.cents;\n    if (next > this.creditLimit.cents) throw new Error(\"Credit limit exceeded\"); // invariant\n    this.lines.push({ productId, qty, unitPrice });\n  }\n\n  place() {\n    if (this.lines.length === 0) throw new Error(\"Empty order\");\n    this.status = \"placed\";\n    this.events.push({ type: \"OrderPlaced\", orderId: this.id, total: this.total() });\n  }\n\n  total(): Money {\n    return { cents: this.lines.reduce((s, l) => s + l.qty * l.unitPrice.cents, 0), currency: \"EUR\" };\n  }\n\n  pullEvents() { const e = this.events; this.events = []; return e; }\n}\n```\n\nNote what is *not* inside: the `Customer` (referenced by `customerId`) and the `Product` (referenced by `productId`). Vaughn Vernon's \"Effective Aggregate Design\" essays give the rules most teams follow:\n1. **Model true invariants in consistency boundaries.** Put things in one aggregate only if a business rule requires them to be consistent at the same instant.\n2. **Design small aggregates.** Large ones (a `Customer` containing all orders ever) load slowly, and every change to any part conflicts with every other change under optimistic concurrency.\n3. **Reference other aggregates by identity**, not object pointers. This keeps them independently loadable and storable, even in different databases.\n4. **Use eventual consistency outside the boundary.** If placing an order should reserve stock, the `Order` raises `OrderPlaced` and a handler updates the `Inventory` aggregate in a separate transaction.\n\n### Why one aggregate per transaction\n- **Scalability and contention**: a transaction that locks one small aggregate rarely conflicts. One that updates an order, a customer and three stock items conflicts with everything.\n- **Distribution-ready**: aggregates referenced by id can later live in different services or shards; a transaction spanning them would need 2PC.\n- **Honesty about the business**: most cross-aggregate rules are not truly instantaneous. \"Reserve stock when an order is placed\" tolerates a second of delay; ask the domain expert what happens if it fails (backorder, cancel, notify) and model that.\n\nThe pattern in code: load one aggregate through its repository, call a domain method, save it with a version check, and publish its events via an outbox in the same transaction.\n\n```ts\n// application service: one aggregate, one transaction\nasync function placeOrder(orderId: string) {\n  await uow.run(async (tx) => {\n    const order = await orders.get(tx, orderId);      // loads with version\n    order.place();\n    await orders.save(tx, order);                     // UPDATE ... WHERE version = $v\n    await outbox.add(tx, order.pullEvents());         // same transaction\n  });\n}\n```\n\n### Other tactical building blocks, briefly\n- **Entity**: has identity that persists through changes (an `Order` with id 17).\n- **Value object**: defined by its values, immutable, compared by value (`Money`, `Address`, `DateRange`). Use many of them; they kill primitive obsession and hold validation.\n- **Domain event**: a fact that happened, in past tense, named in the ubiquitous language (`PaymentCaptured`).\n- **Repository**: loads and saves whole aggregates, one per aggregate root, not per table.\n- **Domain service**: an operation that does not belong to one entity (pricing across several products).\n\n## Context mapping\nContexts must integrate, and the relationship between them is as much about teams as code. Evans named the patterns; the DDD Crew's context-mapping repository has a good cheat sheet.\n\n```text\n[Ordering] --(Customer/Supplier)--> [Payments]     upstream Payments plans for Ordering's needs\n[Ordering] --(ACL)--> [Legacy ERP]                 translate ERP model into Ordering terms\n[Shipping] <==(Shared Kernel)==> [Returns]         small shared library both teams co-own\n[Ordering] --(Conformist)--> [Stripe API]          adopt the external model as is\n[Catalogue] --(Open Host Service + Published Language)--> many consumers\n```\n\n- **Upstream / downstream**: the upstream context's changes affect the downstream one, not the reverse.\n- **Customer-supplier**: the downstream team is a customer whose needs the upstream team plans for (shared roadmap, contract tests). Works when both are in one organisation with aligned incentives.\n- **Conformist**: the downstream simply adopts the upstream model, because it has no leverage (a big SaaS API) or the model is good enough.\n- **Anti-corruption layer (ACL)**: the downstream builds a translation layer that converts the upstream model into its own, so foreign concepts and naming never leak in. Essential for legacy systems and third-party APIs with awkward models; it is also the core of the strangler fig migration.\n- **Shared kernel**: two teams share a small, explicitly bounded part of the model (a library or schema) and must coordinate every change. Keep it tiny.\n- **Open host service and published language**: the upstream offers a well-documented protocol and format (a public API with a versioned schema, events in a registry) for many consumers.\n- **Partnership**: two teams succeed or fail together and coordinate closely.\n- **Separate ways**: integration costs more than it gives; duplicate instead.\n\nAn ACL in practice is just a mapping module at the edge:\n\n```ts\n// ordering/infrastructure/erp-acl.ts\nexport function toOrderingCustomer(erp: ErpKundeRecord): Customer {\n  return {\n    id: CustomerId.parse(erp.KUNNR.trim()),\n    name: erp.NAME1,\n    creditLimit: Money.fromCents(Math.round(Number(erp.KLIMK) * 100), \"EUR\"),\n    blocked: erp.SPERR === \"X\",\n  };\n}\n```\n\n## Trade-offs and when not to use it\n- DDD's tactical patterns add ceremony. For CRUD-heavy areas (admin screens, settings, reference data), a plain data model with validation is fine. Spend modelling effort on the **core domain**.\n- Small aggregates and eventual consistency push complexity into process handling (what if stock reservation fails?). That complexity was always there in the business; DDD makes you face it.\n- Bounded contexts do not require microservices. Many teams get most of the benefit from a modular monolith with enforced module boundaries (lint rules, package visibility, separate schemas).\n- Event storming and ubiquitous language need access to domain experts. Without them you are guessing with sticky notes.\n\n## Common mistakes\n- **Entity-per-table thinking**: aggregates mirror database tables, and every relationship becomes an object reference.\n- **Anaemic domain model**: entities are bags of getters and setters; all rules live in services, so nothing enforces invariants.\n- **Giant aggregates** to get \"consistency\", leading to lock contention and slow loads.\n- **One shared \"common\" model** across services, which recreates the coupling DDD tries to avoid.\n- **Splitting services by noun** (`CustomerService`, `ProductService`, `OrderService`) rather than by capability, so every use case touches all of them.\n- **Leaking upstream models** without an ACL, so a vendor's field names spread through your code.\n\n## In the interview\n**What they probe:** whether you can use DDD to draw boundaries and reason about consistency, not recite pattern names.\n\n**60-second answer outline:**\n1. A bounded context is where one model and vocabulary hold; the same word can mean different things elsewhere.\n2. Find boundaries from language shifts, business capabilities, event storming and change patterns; align with teams.\n3. Aggregates are consistency boundaries: small, root-only access, reference others by id, one per transaction.\n4. Cross-aggregate and cross-context rules are eventually consistent through domain events and an outbox.\n5. Context maps describe team relationships; use an ACL against legacy or external models.\n\n**Follow-ups to expect:** how you would split a monolith along contexts (strangler fig plus ACL); how an aggregate handles concurrent edits (optimistic versioning); what goes in a shared kernel; how DDD relates to event sourcing (aggregates are natural event streams); when DDD is overkill.",
+      "keyPoints": [
+        "A bounded context is the boundary inside which one model and one vocabulary are consistent; the same word may mean different things in different contexts",
+        "Find boundaries from language and business capabilities (event storming helps), not from database tables or nouns",
+        "An aggregate is a consistency boundary: invariants inside it hold after every transaction; keep aggregates small and reference others by id",
+        "Change one aggregate per transaction and use domain events for eventual consistency between aggregates and contexts",
+        "Context maps make team relationships explicit; an anti-corruption layer protects your model from a messy or external one"
+      ],
+      "interview": [
+        "What is a bounded context, and how do you find the boundaries in a real codebase?",
+        "What makes a good aggregate, and why should one transaction change only one aggregate?",
+        "Explain context mapping: anti-corruption layer, shared kernel and customer-supplier."
+      ],
+      "check": [
+        {
+          "q": "In an e-commerce company, 'Product' means a catalogue entry to marketing, a SKU with bin locations to the warehouse, and a line with a price to billing. What does DDD suggest?",
+          "options": [
+            "Create one canonical Product model that has every field",
+            "Let each bounded context own its own Product model, linked by a shared identifier",
+            "Store products only in the warehouse and let others query it",
+            "Rename two of them so no word is reused"
+          ],
+          "answer": 1,
+          "why": "One model for everyone becomes a bloated, coupled god object. Separate contexts each model what they need and translate at the boundaries."
+        },
+        {
+          "q": "An Order aggregate holds a list of OrderLines and must keep 'total never exceeds credit limit'. Where should an OrderLine be modified?",
+          "options": [
+            "Directly through an OrderLine repository",
+            "In a database trigger",
+            "Through methods on the Order aggregate root, which checks the invariant",
+            "In the UI before saving"
+          ],
+          "answer": 2,
+          "why": "Only the root is referenced from outside, so every change passes through the code that enforces the invariant."
+        },
+        {
+          "q": "Your team integrates with a legacy ERP whose model is confusing. Which context-mapping pattern protects your model?",
+          "options": [
+            "Shared kernel",
+            "Conformist",
+            "Separate ways",
+            "Anti-corruption layer"
+          ],
+          "answer": 3,
+          "why": "An anti-corruption layer translates the ERP's model into your own terms at the boundary, so its concepts do not leak into your domain."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Martin Fowler: Bounded Context",
+          "url": "https://martinfowler.com/bliki/BoundedContext.html"
+        },
+        {
+          "title": "Martin Fowler: DDD Aggregate",
+          "url": "https://martinfowler.com/bliki/DDD_Aggregate.html"
+        },
+        {
+          "title": "Martin Fowler: Ubiquitous Language",
+          "url": "https://martinfowler.com/bliki/UbiquitousLanguage.html"
+        },
+        {
+          "title": "DDD Crew: context mapping patterns and cheat sheet",
+          "url": "https://github.com/ddd-crew/context-mapping"
+        },
+        {
+          "title": "Microsoft Azure Architecture Center: using domain analysis to model microservices",
+          "url": "https://learn.microsoft.com/en-us/azure/architecture/microservices/model/domain-analysis"
+        }
+      ]
+    },
+    {
+      "id": "arch-event-sourcing-cqrs",
+      "track": "arch",
+      "title": "Event sourcing and CQRS: event stores, projections and snapshots",
+      "minutes": 26,
+      "summary": "Storing state as a sequence of events: how an event store works, optimistic concurrency per stream, projections and read models, snapshots, schema evolution, GDPR, and when it is overkill.",
+      "body": "## The core idea\nMost systems store **current state**: the `accounts` row says the balance is 120. When it changes, the old value is overwritten. **Event sourcing** stores the **changes** instead: `AccountOpened`, `MoneyDeposited(100)`, `MoneyDeposited(50)`, `MoneyWithdrawn(30)`. The current balance is derived by replaying them. The event log is the source of truth; everything else is a cache.\n\n**CQRS** (command query responsibility segregation) is a separate idea that often travels with it: use one model to handle writes (commands that enforce rules) and different models to serve reads (queries shaped for screens). Greg Young popularised both. You can do CQRS without event sourcing (write to normalised tables, project to a denormalised read table), and in principle event sourcing without CQRS, but event-sourced systems almost always need CQRS, because \"show all accounts with balance over 1,000\" cannot be answered efficiently by replaying every stream.\n\nFowler's bliki entry on CQRS is notably cautious: most systems are better served by a single model, and CQRS adds risky complexity when applied where it is not needed. Keep that in mind; interviewers often test for it.\n\n## Why anyone does this\n- **Complete audit trail by construction**: every state change has a recorded cause, actor and time. Finance, healthcare and compliance-heavy domains want this anyway.\n- **Temporal queries**: \"what did this account look like on 31 March?\" is a replay up to that date.\n- **New read models from old data**: a new dashboard or analytics view can be built by replaying history, as if the feature had existed from day one.\n- **Debugging**: reproduce a bug by replaying the exact events that led to it.\n- **Natural integration**: events are already there to publish to other services.\n\n## How it works step by step\n```text\ncommand: Withdraw(acc-7, 30)\n   |\n   v\nload stream \"account-acc-7\" (from snapshot v40 + events 41..)\nfold events -> state {balance: 120, version: 43}\ndecide: balance >= 30 ? emit MoneyWithdrawn(30) : reject\nappend [MoneyWithdrawn] to stream with expectedVersion = 43\n   |  (conflict -> reload and retry)\n   v\nevent store (append-only log, global position)\n   |-----------------------> projector A: account_balances table\n   |-----------------------> projector B: monthly_statements\n   |-----------------------> outbox / broker: other services\nqueries read the projections, never the streams\n```\n\n### The write side: decide, then append\nA **stream** is the ordered events of one aggregate (one account, one order). The write path is a pure function pattern:\n\n```ts\ntype Event =\n  | { type: \"AccountOpened\"; owner: string }\n  | { type: \"MoneyDeposited\"; amount: number }\n  | { type: \"MoneyWithdrawn\"; amount: number };\n\ntype State = { open: boolean; balance: number };\n\nconst initial: State = { open: false, balance: 0 };\n\nexport function evolve(s: State, e: Event): State {\n  switch (e.type) {\n    case \"AccountOpened\": return { open: true, balance: 0 };\n    case \"MoneyDeposited\": return { ...s, balance: s.balance + e.amount };\n    case \"MoneyWithdrawn\": return { ...s, balance: s.balance - e.amount };\n  }\n}\n\nexport function decideWithdraw(s: State, amount: number): Event[] {\n  if (!s.open) throw new Error(\"Account not open\");\n  if (amount <= 0) throw new Error(\"Amount must be positive\");\n  if (s.balance < amount) throw new Error(\"Insufficient funds\");\n  return [{ type: \"MoneyWithdrawn\", amount }];\n}\n\nexport const fold = (events: Event[], from = initial) => events.reduce(evolve, from);\n```\n\n`evolve` must never throw or check rules: events are facts that already happened, and replaying history must always succeed. Rules live in `decide`. This split also makes the domain trivially unit-testable: given these past events, when this command, then these new events.\n\n### The event store\nAt minimum: append events to a stream atomically with an expected-version check, read a stream in order, and read all events in global order for projections. A minimal Postgres version:\n\n```sql\nCREATE TABLE events (\n  global_position bigserial PRIMARY KEY,\n  stream_id       text        NOT NULL,\n  version         int         NOT NULL,\n  type            text        NOT NULL,\n  data            jsonb       NOT NULL,\n  metadata        jsonb       NOT NULL DEFAULT '{}',  -- causation id, correlation id, actor\n  recorded_at     timestamptz NOT NULL DEFAULT now(),\n  UNIQUE (stream_id, version)\n);\n-- append: INSERT the new events with version = expected + 1, +2, ...\n-- a duplicate (stream_id, version) means someone else appended first -> conflict\n```\n\nThe unique constraint is the optimistic concurrency check. Purpose-built stores (KurrentDB, formerly EventStoreDB; Marten on Postgres; Axon Server) add subscriptions, stream metadata and tooling.\n\n**A classic pitfall** with this table: `bigserial` values are allocated when the insert runs, not when the transaction commits. Transaction 1 takes position 100, transaction 2 takes 101 and commits first. A projector that has read up to 101 and stores \"checkpoint = 101\" will never see 100 when it commits. Fixes: a single writer, a transaction-id-based ordering (for example filtering on `pg_snapshot_xmin`), or having the projector tolerate gaps briefly before moving past them. Libraries like Marten deal with this; a hand-rolled store must too.\n\n### The read side: projections\nA **projection** (projector, read-model updater) subscribes to the global event stream, applies each event to a read model and stores a **checkpoint** (the last processed position).\n\n```ts\nasync function project(e: StoredEvent, tx: Tx) {\n  if (e.type === \"MoneyDeposited\" || e.type === \"MoneyWithdrawn\") {\n    const delta = e.type === \"MoneyDeposited\" ? e.data.amount : -e.data.amount;\n    await tx.query(\n      `INSERT INTO account_balances (account_id, balance, last_position)\n       VALUES ($1, $2, $3)\n       ON CONFLICT (account_id) DO UPDATE\n         SET balance = account_balances.balance + $2, last_position = $3\n       WHERE account_balances.last_position < $3`,   -- idempotent on redelivery\n      [e.streamId, delta, e.globalPosition]);\n  }\n  await tx.query(\"UPDATE checkpoints SET position = $1 WHERE name = 'balances'\", [e.globalPosition]);\n}\n```\n\nProperties to design for:\n- **Eventually consistent**: the read model lags the write by milliseconds to seconds. The UI must cope (return the new state from the command, or wait for the projection to reach the command's position).\n- **Idempotent**: at-least-once delivery means an event may be applied twice. Store the checkpoint in the same transaction as the read-model update, or guard each row with the last applied position as above.\n- **Rebuildable**: to change a read model, create a new table, replay from position 0, switch reads over, drop the old one. Plan for replays of the full history to take hours as volume grows.\n- **Any store**: read models can live in Postgres, Elasticsearch, Redis or a warehouse, each shaped for its queries.\n\n### Snapshots\nA stream with 50,000 events is slow to load. A **snapshot** stores the folded state at version N; loading reads the latest snapshot and replays events after it. Rules:\n- Snapshots are a cache. They can be deleted and regenerated; events are never deleted for them.\n- Take them every N events or on a timer, asynchronously, not in the command path.\n- Version the snapshot schema; when `State` changes shape, discard old snapshots and rebuild.\n- Often the better fix is a **shorter stream**: model \"account for a fiscal year\" with a closing event that carries the opening balance forward, as accountants do.\n\n## Schema evolution: the hard part\nEvents are stored forever, so the code must read events written years ago in old formats. Greg Young's book *Versioning in an Event Sourced System* covers the options:\n- **Additive changes only** where possible: add optional fields with defaults; never rename or change the meaning of a field.\n- **Upcasting**: when reading, transform old event versions into the current shape (`MoneyDeposited v1 {amount}` becomes `v2 {amount, currency: \"EUR\"}`). Upcasters are chained pure functions, and the domain only sees the latest version.\n- **New event type** when the meaning changes (`MoneyDepositedV2` or a better name), handling both in `evolve`.\n- **Copy and transform**: as a last resort, write a new store or stream with migrated events and switch over. Expensive and must be rehearsed.\n- **Weak schema**: deserialise tolerantly (ignore unknown fields, default missing ones).\n\nTreat event schemas like public API contracts: review them, register them, and test that every historical version still deserialises.\n\n## Deleting personal data\nImmutable logs collide with GDPR's right to erasure. Common approaches:\n- Keep personal data **out of events** (store it in a regular table referenced by id).\n- **Crypto-shredding**: encrypt personal fields with a per-person key; delete the key to make the data unreadable.\n- As a last resort, rewrite the affected streams with a controlled migration.\n\n## When it is overkill\nEvent sourcing is a big commitment. Signs you should not use it:\n- The domain is mostly CRUD: forms that create and edit records, without meaningful business events.\n- Nobody needs history beyond what an audit table gives you.\n- The team has no experience with eventual consistency, projections or schema evolution, and there is no time to learn.\n- You would only use it to \"publish events to other services\". Use the **transactional outbox** with a normal state-based model instead.\n\nCheaper alternatives that cover many of its benefits:\n- **Audit log table** written in the same transaction as the state change (who, what, before, after).\n- **Temporal tables** (system-versioned tables in SQL Server and MariaDB, or history tables via triggers in Postgres) for \"as of\" queries.\n- **Outbox plus change data capture** to integrate other services and build read models.\n- **CQRS without event sourcing**: a normal write model plus denormalised read tables updated in the same transaction or by CDC.\n\nWhere it shines: ledgers and payments, trading, inventory with reservations, workflow and case management, booking systems, anything where \"how did we get here?\" is a frequent and important question. It also suits a single core aggregate inside an otherwise normal system: event-source the ledger, keep user settings in a table.\n\n## Common mistakes and debugging\n- **Event sourcing the whole system** instead of the parts that benefit.\n- **CRUD events** (`AccountUpdated` with the full row) that capture no intent; you get the costs without the meaning.\n- **Rules in `evolve`**, so replaying history fails after a rule changes.\n- **Querying streams for lists and searches** instead of building projections.\n- **Projections that are not idempotent**, producing double counts after a redeploy or redelivery.\n- **Ignoring the gap problem** in hand-rolled Postgres stores.\n- **Publishing internal domain events directly** to other teams, so your internal schema becomes everyone's contract. Publish separate, stable integration events.\n- Debugging tip: build a small tool that prints a stream's events and the folded state after each one. Most bugs become obvious.\n\n## In the interview\n**What they probe:** whether you understand the mechanics (append with expected version, projections, snapshots), the operational reality (eventual consistency, schema evolution, rebuilds) and, above all, when not to use it.\n\n**60-second answer outline:**\n1. Store changes as immutable events per aggregate stream; state is a fold.\n2. Commands load, decide and append with an expected version for optimistic concurrency.\n3. Projections subscribe to the global log, build query-specific read models, track checkpoints, are idempotent and rebuildable; reads are eventually consistent.\n4. Snapshots cache folded state for long streams; events remain the truth.\n5. Schema evolution via additive changes and upcasters; GDPR via crypto-shredding.\n6. Use it where history and audit are the product; otherwise an outbox plus an audit table is cheaper.\n\n**Follow-ups to expect:** how the UI shows a user their own change before the projection catches up; how you would rebuild a projection with no downtime; how to enforce uniqueness (for example unique email) across streams (a separate reservation table or stream, since streams cannot see each other); how event sourcing relates to Kafka (Kafka is a log, but is not designed as a per-aggregate store with expected-version appends).",
+      "keyPoints": [
+        "Event sourcing stores every change as an immutable event; current state is a fold over a stream's events",
+        "Append with an expected version per stream for optimistic concurrency; one stream is usually one aggregate",
+        "Projections build query-optimised read models from the event log; they are eventually consistent and can be rebuilt from scratch",
+        "Snapshots are a performance cache for long streams, not a source of truth",
+        "Most systems do not need it; use it where history, audit or temporal queries are core requirements"
+      ],
+      "interview": [
+        "How does an event-sourced system work end to end: event store, projections and snapshots?",
+        "How do you change an event schema in an event-sourced system that has years of history?",
+        "When is event sourcing overkill, and what would you use instead?"
+      ],
+      "check": [
+        {
+          "q": "Two requests load the same account stream at version 41 and both try to append an event. What should the event store do?",
+          "options": [
+            "Accept both and order them by timestamp",
+            "Accept the first append with expectedVersion 41 and reject the second with a concurrency conflict",
+            "Merge both events into one",
+            "Reject both"
+          ],
+          "answer": 1,
+          "why": "Optimistic concurrency: the append succeeds only if the stream is still at the expected version. The loser reloads, re-checks its invariants and retries."
+        },
+        {
+          "q": "A projection has a bug that produced wrong totals for months. What is the usual fix in an event-sourced system?",
+          "options": [
+            "Edit the stored events to correct the totals",
+            "Delete the affected streams",
+            "Write compensating events for every affected row",
+            "Fix the projection code and rebuild the read model by replaying events"
+          ],
+          "answer": 3,
+          "why": "Read models are derived data. Replaying the unchanged events through fixed code regenerates correct state, which is one of event sourcing's main benefits."
+        },
+        {
+          "q": "What is the role of a snapshot?",
+          "options": [
+            "It replaces old events, which can then be deleted",
+            "It is the source of truth for the aggregate",
+            "It caches the folded state at a version so loading replays only later events",
+            "It is a backup of the read model"
+          ],
+          "answer": 2,
+          "why": "Snapshots are an optimisation. Events stay the source of truth; a snapshot can be discarded and recomputed at any time."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Martin Fowler: Event Sourcing",
+          "url": "https://martinfowler.com/eaaDev/EventSourcing.html"
+        },
+        {
+          "title": "Martin Fowler: CQRS",
+          "url": "https://martinfowler.com/bliki/CQRS.html"
+        },
+        {
+          "title": "Azure Architecture Center: Event Sourcing pattern",
+          "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing"
+        },
+        {
+          "title": "Azure Architecture Center: CQRS pattern",
+          "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"
+        },
+        {
+          "title": "Martin Fowler: What do you mean by Event-Driven?",
+          "url": "https://martinfowler.com/articles/201701-event-driven.html"
+        }
+      ]
+    },
+    {
+      "id": "arch-scalability-patterns",
+      "track": "arch",
+      "title": "Scalability patterns: stateless services, replicas, sharding, backpressure and load shedding",
+      "minutes": 26,
+      "summary": "How systems grow from one server to many: stateless horizontal scaling, finding the real bottleneck, read replicas, caching, sharding, CQRS for reads, queues, backpressure and load shedding.",
+      "body": "## The core idea\nScalability is the ability to handle more load by adding resources, ideally with cost growing roughly in proportion to load. It is not the same as performance: a fast system can be unscalable (it uses one big lock), and a scalable system can be slow per request.\n\nThere are only a few moves:\n1. **Do less work**: caching, batching, better queries and indexes, less data per request.\n2. **Scale up**: a bigger machine. Underrated; modern servers have hundreds of cores and terabytes of RAM.\n3. **Scale out**: more machines doing the same work (stateless replicas, read replicas).\n4. **Split the work**: partition data or functionality so different machines do different parts (sharding, services, CQRS).\n5. **Shape the load**: queues to absorb bursts, backpressure to slow producers, load shedding to reject what you cannot handle.\n\nThe skill interviewers look for is choosing among them **from evidence**, in the right order.\n\n## Find the bottleneck first\nEvery system has one resource that saturates first: CPU on app servers, database connections, database write IOPS, a lock, a downstream API's rate limit, network bandwidth. Adding capacity anywhere else does nothing.\n\nTools that make this concrete:\n- **Little's law**: `L = lambda x W`. Concurrency equals throughput times latency. At 5,000 requests per second and 40 ms each, 200 requests are in flight. If each needs a database connection for 30 ms, you need about 150 connections busy at once, which already exceeds many Postgres setups without a pooler.\n- **Utilisation and queueing**: as a resource approaches 100% utilisation, queueing delay grows sharply (in simple queueing models latency is proportional to `1 / (1 - utilisation)`). Plan to run critical resources at well under full utilisation so bursts do not explode latency.\n- **Amdahl's law and the Universal Scalability Law**: the serial fraction of work (a global lock, a single leader) caps speed-up, and coordination between nodes can make throughput fall as you add nodes. If doubling nodes gives 1.3x, look for contention.\n- **Measure p99, not averages**. Fan-out amplifies tails: a request that calls 50 backends in parallel is slow whenever any of them is.\n\n## Stateless services and horizontal scaling\nAn app server is **stateless** when any instance can serve any request because nothing request-relevant lives in its memory or local disk between requests. The twelve-factor app calls these disposable processes. State moves to:\n- **Sessions**: signed cookies or tokens, or a shared store (Redis, the database).\n- **Files**: object storage (S3, GCS), not local disk.\n- **Caches**: a shared cache, with in-process caches treated as disposable.\n- **Background work**: a queue, not an in-memory timer.\n\nThen scaling is mechanical: put instances behind a load balancer and add more. Autoscalers (Kubernetes HPA, cloud autoscaling groups) add instances based on CPU, request rate or queue depth. Things to get right:\n- **Scale on the right signal**: CPU for compute-bound services, in-flight requests or queue lag for I/O-bound ones.\n- **Startup time**: if a new instance takes two minutes to warm up, autoscaling cannot follow a spike. Keep headroom or scale on predictive schedules.\n- **Downstream limits**: 50 instances with a pool of 20 connections each is 1,000 database connections. Use a pooler (PgBouncer, RDS Proxy) and budget connections deliberately.\n- **Graceful shutdown**: stop accepting, finish in-flight requests, then exit, or every scale-in drops requests.\n\nHorizontal scaling of app servers is easy precisely because the hard part, state, was pushed elsewhere. The rest of the patterns are about scaling that state.\n\n## Scaling reads\nMost products read far more than they write, so read scaling comes first.\n\n**Caching.** A cache in front of the database (cache-aside with Redis, an HTTP cache or CDN for public content) removes most reads. Hit rate is what matters: a 95% hit rate cuts database reads 20x. The risks are staleness, invalidation bugs and stampedes when a hot key expires (use request coalescing, early refresh or locks).\n\n**Read replicas.** Followers that receive the primary's log asynchronously and serve reads.\n- They help when reads dominate, queries are heavy (reports, search pages, exports), or you want analytics isolated from OLTP.\n- They cause bugs because of **replication lag**: a user writes, then reads from a replica that has not caught up and sees old data. Fixes: read-your-writes routing (send a user's reads to the primary for a few seconds after they write, or wait until the replica has replayed the write's LSN), and never using replicas for read-then-write logic (check stock on a replica, then decrement on the primary).\n- They do not scale writes. Every replica replays every write, so a write-bound primary stays write-bound.\n- Lag spikes during long transactions, vacuum, schema changes and backups; monitor `replay_lag` and route away from lagging replicas.\n\n**CQRS read models.** When the read shape differs a lot from the write shape (a feed, a search page, a dashboard with aggregates), maintain a separate denormalised read model updated from the write side (in the same transaction, by an outbox consumer or by CDC). Reads become single-key lookups or index scans on a store chosen for them: Elasticsearch for search, Redis for leaderboards, a columnar store for analytics. The cost is eventual consistency and another system to keep in sync.\n\n## Scaling writes\nWrites are harder because each must be durable and ordered somewhere.\n- **Do fewer writes**: batch (insert 1,000 rows in one statement), coalesce counters in memory or Redis and flush periodically, drop writes nobody reads.\n- **Make writes cheaper**: fewer indexes, append-only tables, a log-structured store for write-heavy workloads (Cassandra, ScyllaDB, RocksDB-based engines).\n- **Move work off the request path**: accept the request, write a job to a queue, process asynchronously.\n- **Partition (shard)**: split data by a key (tenant, user) across independent primaries so each takes a fraction of the writes. This is the only way to scale writes beyond one machine, and it costs cross-shard queries, transactions and operational complexity. Distributed SQL databases (CockroachDB, Spanner, YugabyteDB) or Vitess for MySQL do this for you, at a latency cost.\n- **Functional partitioning**: separate databases for separate domains (orders, catalogue, analytics) before sharding any one of them.\n\n## Queues, backpressure and load shedding\nLoad is bursty. The question is what happens when work arrives faster than you can do it.\n\n**Queues** decouple producers and consumers and absorb bursts. A queue with spare consumer capacity smooths a spike over a few seconds. A queue facing **sustained** overload just grows until it runs out of memory or until every item in it is too old to be useful. Bound every queue and decide what happens when it is full.\n\n**Backpressure** propagates \"slow down\" upstream so producers do not outrun consumers:\n- TCP flow control does this between two sockets.\n- Node.js streams: `write()` returns `false` when the buffer passes `highWaterMark`; the producer should wait for `'drain'`. `pipeline()` handles this for you.\n- Reactive Streams (and gRPC flow control) let consumers request N items at a time.\n- In a request system, backpressure is a bounded queue or concurrency limit that makes callers wait or receive an error.\n\n```ts\nimport { pipeline } from \"node:stream/promises\";\nimport { createReadStream, createWriteStream } from \"node:fs\";\nimport { createGzip } from \"node:zlib\";\n\n// pipeline() pauses the reader whenever gzip or the disk falls behind.\nawait pipeline(createReadStream(\"events.ndjson\"), createGzip(), createWriteStream(\"events.ndjson.gz\"));\n```\n\n**Load shedding** is the server deciding not to do some work so the work it accepts still succeeds. The Google SRE book's chapter on handling overload and the AWS Builders' Library article on load shedding make the same point: an overloaded server that tries to serve everyone serves no one, because latencies exceed client timeouts and it spends its capacity on requests whose callers have already given up.\n\nTechniques:\n- **Concurrency limits**: cap in-flight requests per instance; reject the rest immediately with 503 or 429 and `Retry-After`. Adaptive limiters (Netflix's concurrency-limits library, based on ideas from TCP congestion control) find the limit automatically by watching latency.\n- **Shed early and cheaply**: reject before parsing the body or touching the database.\n- **Prioritise**: drop prefetches, analytics beacons and batch jobs before checkout and login. Tag requests with a criticality class.\n- **Drop stale work**: propagate deadlines; if a request's deadline has passed when it reaches the front of the queue, drop it. Facebook's \"Fail at Scale\" describes switching to **adaptive LIFO** queues under load (serve the newest requests, whose callers are still waiting) and CoDel-style queue timeouts.\n- **Client cooperation**: clients honour 429 and `Retry-After`, back off with jitter, and use retry budgets so a brownout does not become a retry storm.\n\n```text\n              accept?                       queue (bounded, deadline-aware)\nrequest --> [concurrency limiter] --yes--> [ ....... ] --> workers --> DB\n                 | no (over limit or low priority)\n                 v\n             503 / 429 + Retry-After   (cheap, fast, before any real work)\n```\n\nThe difference in one line: **backpressure** slows the producer down, which works when producers can wait (pipelines, internal consumers); **load shedding** refuses work, which is necessary when producers are many independent clients who will not slow down on their own.\n\n## Worked example: 1k to 50k requests per second\n1. **Measure**: where does time go at 1k rps? Profile the hot endpoints, check database query time, connection pool waits, CPU, cache hit rate. Load test to find where it breaks.\n2. **Cheap wins**: fix N+1 queries, add missing indexes, cache hot reads (catalogue, config, sessions), put static and public content behind a CDN, compress responses.\n3. **Stateless app tier**: externalise sessions and files, run N instances behind a load balancer with autoscaling on in-flight requests, add PgBouncer.\n4. **Reads**: read replicas for heavy and staleness-tolerant queries with read-your-writes routing; CQRS read models for feeds and search.\n5. **Writes**: estimate write rate at 50k rps (say 10% writes is 5k writes/s). One well-tuned Postgres primary can often handle that with batching; if not, partition by tenant or user, or move the write-heavy part (events, logs) to a store built for it.\n6. **Async**: move email, image processing and webhooks to queues with bounded consumers.\n7. **Protect it**: rate limits per client, concurrency limits and load shedding per instance, timeouts and retry budgets on every dependency.\n8. **Verify**: load test at 1.5x target, including a dependency failing, and watch p99, error rate and saturation.\n\n## Trade-offs and when not to\n- Every distributed piece (cache, replica, queue, shard) adds a consistency problem and an operational burden. Do not add one without a measured need.\n- Scaling up first is often cheaper and simpler than sharding. Many large products run on a handful of big database primaries.\n- Autoscaling does not help when the bottleneck is a shared database or a downstream with a fixed quota; it can make things worse by adding connections.\n\n## Common mistakes\n- Adding app servers when the database is the bottleneck.\n- Unbounded queues and thread pools.\n- Retrying on overload without backoff, budgets or `Retry-After`.\n- Reading from replicas in read-modify-write flows.\n- Load testing only the happy path with a warm cache.\n- Treating averages as the SLO.\n\n## In the interview\n**What they probe:** whether you find the bottleneck with numbers, know which pattern scales reads vs writes, and can protect a system under overload.\n\n**60-second answer outline:**\n1. Measure first: Little's law for concurrency, utilisation, p99, where time goes.\n2. Do less work (indexes, caching, batching), then stateless horizontal scaling with pooled connections.\n3. Scale reads with caches, replicas (watch lag) and CQRS read models; scale writes by batching, async and partitioning.\n4. Bound queues; use backpressure inside pipelines and load shedding at the edge, with priorities and deadlines.\n5. Verify with load tests that include failures.\n\n**Follow-ups to expect:** how you would shard the users table; how you would keep a cache consistent; how an autoscaler and a load shedder interact; what happens to the database when 100 new pods start; how to choose a concurrency limit.",
+      "keyPoints": [
+        "Scale by finding the bottleneck with numbers (Little's law, utilisation, p99) before adding machines",
+        "Stateless app servers scale horizontally; state moves to databases, caches and object storage, which become the hard part",
+        "Read replicas, caches and CQRS read models scale reads; partitioning (sharding) is what scales writes",
+        "Backpressure slows producers when consumers fall behind; load shedding rejects work early so the work you accept still succeeds",
+        "Queues absorb bursts but never fix sustained overload; bound every queue"
+      ],
+      "interview": [
+        "Your API handles 1k requests per second and must handle 50k. Walk through how you would scale it.",
+        "What is backpressure, and how is load shedding different?",
+        "When do read replicas help, and when do they cause bugs?"
+      ],
+      "check": [
+        {
+          "q": "A service handles 2,000 requests per second with an average latency of 50 ms. By Little's law, roughly how many requests are in flight?",
+          "options": [
+            "40",
+            "100",
+            "400",
+            "2,000"
+          ],
+          "answer": 1,
+          "why": "L = lambda x W = 2,000/s x 0.05 s = 100 concurrent requests. That sizes thread pools and connection pools."
+        },
+        {
+          "q": "Write throughput on the primary database is the bottleneck. Which change actually helps?",
+          "options": [
+            "Add more read replicas",
+            "Add more stateless API servers",
+            "Partition the data so writes spread over several primaries, or batch and reduce writes",
+            "Increase the cache TTL"
+          ],
+          "answer": 2,
+          "why": "Replicas, caches and app servers scale reads and compute. Writes scale only by spreading them over independent primaries or doing fewer of them."
+        },
+        {
+          "q": "Under overload, a server keeps accepting requests into an unbounded queue. What typically happens?",
+          "options": [
+            "Throughput rises until the queue drains",
+            "Latency grows until most requests time out at the client, so the server does work nobody waits for",
+            "The queue automatically sheds old requests",
+            "Clients receive 429s"
+          ],
+          "answer": 1,
+          "why": "Queued requests wait longer than client timeouts, so the server completes requests whose callers already gave up. Goodput collapses."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Google SRE book: Handling Overload",
+          "url": "https://sre.google/sre-book/handling-overload/"
+        },
+        {
+          "title": "AWS Builders' Library: Using load shedding to avoid overload",
+          "url": "https://aws.amazon.com/builders-library/using-load-shedding-to-avoid-overload/"
+        },
+        {
+          "title": "AWS Builders' Library: Avoiding insurmountable queue backlogs",
+          "url": "https://aws.amazon.com/builders-library/avoiding-insurmountable-queue-backlogs/"
+        },
+        {
+          "title": "The Twelve-Factor App: processes",
+          "url": "https://12factor.net/processes"
+        },
+        {
+          "title": "Netflix concurrency-limits: adaptive concurrency limiting library",
+          "url": "https://github.com/Netflix/concurrency-limits"
+        }
+      ]
+    },
+    {
+      "id": "arch-resilience",
+      "track": "arch",
+      "title": "Resilience patterns: timeouts, retries, circuit breakers, bulkheads and chaos engineering",
+      "minutes": 26,
+      "summary": "Keeping a system up when dependencies fail or slow down: deadlines, retries with jitter and budgets, circuit breakers, bulkheads, graceful degradation and chaos engineering.",
+      "body": "## The core idea\nIn a distributed system something is always failing: a node restarting, a network path dropping packets, a dependency having a slow minute. Resilience is not about preventing failure; it is about **containing** it so one bad component degrades a feature instead of taking down the product.\n\nThe dangerous failures are rarely clean crashes. A dead dependency fails fast and is easy to handle. A **slow** dependency is worse: callers wait, their threads and connections fill up, they become slow, and the slowness propagates upstream until everything is stuck. That is a **cascading failure**, and almost every pattern in this lesson exists to stop it:\n\n```text\nDB slow (p99 2s) -> Orders threads all waiting -> Orders slow\n  -> API gateway connections to Orders exhausted -> gateway slow for EVERY route\n  -> clients retry -> 3x load on an already slow system -> outage\n```\n\n## Timeouts and deadlines\n**Every remote call needs a timeout**, including connection setup, DNS, TLS handshakes and reading the response. Many libraries default to no timeout or to very long ones.\n\nHow to pick a value:\n- Base it on the dependency's measured latency, for example a little above its p99 or p99.9 under normal load, not on a round number. The AWS Builders' Library describes picking timeouts from downstream latency percentiles and accepting a small rate of false timeouts.\n- It must fit inside the caller's own budget. If the user-facing request has 1 s total and makes three sequential calls, each cannot have a 1 s timeout.\n\n**Deadline propagation** fixes the budget problem. The edge sets an absolute deadline (\"this request must finish by 12:00:01.000\") and passes the remaining time to each downstream call (gRPC does this natively; with HTTP you pass a header). Each service uses `min(own timeout, remaining deadline)` and stops working on a request whose deadline has passed, instead of finishing work nobody will read.\n\n```ts\nasync function callWithDeadline<T>(url: string, deadline: number, perCallMs: number): Promise<T> {\n  const remaining = deadline - Date.now();\n  if (remaining <= 0) throw new Error(\"deadline exceeded before call\");\n  const timeout = Math.min(perCallMs, remaining);\n  const res = await fetch(url, {\n    signal: AbortSignal.timeout(timeout),\n    headers: { \"x-deadline\": String(deadline) },\n  });\n  if (!res.ok) throw new HttpError(res.status);\n  return (await res.json()) as T;\n}\n```\n\n## Retries done right\nRetries turn transient failures (a dropped packet, a restarting pod) into successes. Done carelessly, they turn a partial outage into a full one. Rules:\n\n1. **Only retry what is safe**: idempotent operations (GET, PUT with full replacement, DELETE) or writes carrying an **idempotency key** the server deduplicates. Never blindly retry a payment.\n2. **Only retry retryable errors**: timeouts, connection resets, 503, 429 (honouring `Retry-After`). Not 400, 401, 404 or validation errors.\n3. **Exponential backoff with a cap**: wait `base * 2^attempt`, capped (say at 5 to 20 seconds for background work, much less for interactive paths).\n4. **Add jitter**: Marc Brooker's AWS post on backoff and jitter showed that without jitter, clients that failed together retry together in synchronised waves. **Full jitter**, a random delay between 0 and the backoff value, spreads them out and completes the total work with fewer calls.\n5. **Limit attempts**: 2 or 3 tries total is typical for synchronous calls.\n6. **Retry at one layer**: if five layers each retry 3 times, one failure at the bottom becomes up to 3^5 = 243 attempts. Retry close to the failing dependency or at the edge, not everywhere.\n7. **Retry budgets**: cap retries as a fraction of normal traffic, for example retries may add at most 10% extra requests per client. The Google SRE book recommends both a per-request retry limit and a per-client retry ratio; Envoy and Finagle implement retry budgets. Brooker's later writing on retries argues for token-bucket style budgets precisely because simple backoff alone does not bound load during a large outage.\n\n```ts\nconst sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));\n\nexport async function retry<T>(fn: () => Promise<T>, opts = { attempts: 3, baseMs: 100, capMs: 2000 }) {\n  let lastErr: unknown;\n  for (let attempt = 0; attempt < opts.attempts; attempt++) {\n    try {\n      return await fn();\n    } catch (err) {\n      lastErr = err;\n      if (!isRetryable(err) || attempt === opts.attempts - 1 || !retryBudget.tryAcquire()) break;\n      const backoff = Math.min(opts.capMs, opts.baseMs * 2 ** attempt);\n      await sleep(Math.random() * backoff); // full jitter\n    }\n  }\n  throw lastErr;\n}\n```\n\n**Hedged requests** are a related tail-latency tool from Dean and Barroso's \"The Tail at Scale\": send a second copy of a read to another replica if the first has not answered by, say, the p95 latency, and use whichever returns first. Only for idempotent reads, and with a cap on how many hedges you send.\n\n## Circuit breakers\nA circuit breaker (popularised by Michael Nygard's *Release It!*, explained in Fowler's bliki) wraps calls to a dependency and tracks failures. When the failure rate crosses a threshold, it **opens** and fails calls immediately without sending them, giving the dependency room to recover and freeing the caller's threads.\n\n```text\n         failures > threshold\n CLOSED ------------------------> OPEN\n   ^   (calls pass, failures counted)   | (calls fail fast)\n   |                                    | cool-down elapsed\n   |  trial calls succeed               v\n   +---------------------------- HALF-OPEN (let a few trial calls through)\n                                        | trial call fails -> back to OPEN\n```\n\nDesign choices:\n- **What counts as failure**: timeouts and 5xx yes; 4xx no (a client bug should not open the breaker for everyone).\n- **Threshold on rate over a window with a minimum volume**, for example open if more than 50% of at least 20 calls in the last 10 s failed. A count-based threshold trips on noise at low traffic.\n- **Scope**: per dependency, and sometimes per endpoint or per host, so one bad replica does not block healthy ones.\n- **What to do when open**: return a fallback (cached value, default, degraded response) or a fast error the caller can handle.\n\nNetflix's Hystrix made the pattern famous and has been in maintenance mode since 2018; resilience4j (JVM), Polly (.NET), opossum (Node.js) and service meshes (Envoy outlier detection) implement it today.\n\n## Bulkheads\nA ship's bulkheads split the hull into compartments so one breach does not sink it. In software, a **bulkhead** gives each dependency, workload or tenant its **own bounded pool of resources**, so exhaustion in one cannot starve the others.\n\n- **Separate connection or thread pools per dependency**: if the recommendations service hangs, it can exhaust only its 20 connections, not the pool checkout also needs.\n- **Separate queues and worker pools per workload**: interactive requests and batch exports do not share a queue.\n- **Per-tenant limits** so one noisy customer cannot consume the cluster.\n- **Separate deployments** for critical and non-critical paths (checkout on its own instances).\n- **Cell-based architecture** at the largest scale: AWS describes splitting a service into independent cells, each serving a subset of customers, so a bad deployment or poison request affects one cell.\n\nBulkheads and circuit breakers complement each other. The bulkhead **limits how much damage** a slow dependency can do while you are still calling it (it caps concurrency); the circuit breaker **stops calling** a dependency once it is clearly unhealthy. Concurrency-limited bulkheads also detect slowness that error-rate breakers miss, because a slow dependency fills its bulkhead long before calls start failing.\n\n## Graceful degradation\nDecide in advance what the product does when each dependency is down, and build those modes:\n- **Serve stale data**: show cached recommendations or the last known price with a marker.\n- **Hide non-critical features**: no \"people also bought\" carousel; checkout still works.\n- **Static fallbacks**: a default home page from the CDN if personalisation fails.\n- **Queue and confirm later**: accept the order, say \"processing\", and complete when the dependency recovers.\n- **Feature flags / kill switches** to turn off expensive features under load.\n\nThe key is classifying dependencies as **critical** (the request cannot succeed without it) or **optional** (degrade without it), and making sure optional dependencies have short timeouts and are never on the critical path by accident.\n\n## Metastable failures\nSome outages persist after the trigger is gone. Bronson et al.'s HotOS 2021 paper \"Metastable Failures in Distributed Systems\" describes systems that enter a bad state, often through retries or cache misses, that **sustains itself**: a brief overload causes timeouts, clients retry, the retries keep the system overloaded even after the original spike ends. Cold caches after a restart are another example: every request misses, the database is overloaded, nothing warms up. Recovery usually requires shedding load hard (block traffic, drain queues) rather than waiting. Retry budgets, load shedding and cache warming are the defences.\n\n## Chaos engineering\nYou do not know a fallback works until it has run in production conditions. Chaos engineering, as defined in the Principles of Chaos Engineering (from Netflix's practice, which started with Chaos Monkey randomly terminating instances around 2011), is running **controlled experiments** that inject real failures to build confidence that the system withstands them.\n\nThe method:\n1. **Define steady state** with business metrics (orders per minute, successful logins, p99 latency), not CPU.\n2. **Hypothesise** that steady state will continue when you inject a failure: \"if one Redis replica dies, checkout success stays above 99.5%\".\n3. **Inject a realistic failure**: kill an instance, add 300 ms latency to a dependency, drop a zone, fill a disk, expire certificates, return 503 from a third-party API.\n4. **Minimise blast radius**: start in staging, then a small percentage of production traffic or one cell, with a stop button and automatic abort if metrics breach thresholds.\n5. **Learn and fix**: every failed hypothesis is a bug found before customers found it.\n\nIntroducing it safely at a company:\n- Start with **game days**: a scheduled session where the team injects a failure in staging and practises detection and response. It tests runbooks, alerts and people as much as code.\n- Make sure **observability and alerting** are good enough to see the effect; chaos without visibility is just breaking things.\n- Get buy-in by framing it as testing existing resilience claims (\"we say we survive a zone loss; let's prove it\").\n- Begin with failures you believe you handle, during business hours, with the owning team present. Graduate to automated, continuous experiments.\n- Tools: AWS Fault Injection Service, Azure Chaos Studio, Gremlin, Chaos Mesh and LitmusChaos for Kubernetes, Toxiproxy for network faults in tests, or a service mesh's fault injection (Istio can inject delays and aborts per route).\n\n## Trade-offs and pitfalls\n- **Timeouts too short** cause false failures and retries under normal latency spikes; too long and threads pile up. Revisit them from real latency data.\n- **Fallbacks are code too**: a fallback that is never exercised is likely broken (or overloads the database it falls back to). Test fallbacks as part of chaos experiments.\n- **Breakers can hide problems**: alert when a breaker opens.\n- **Retries and hedges add load**: always bounded, always budgeted.\n- **Complexity**: a mesh or library can provide most of these consistently; hand-rolling a different retry policy in every service guarantees inconsistency.\n\n## In the interview\n**What they probe:** whether you can stop a cascading failure and quantify choices (timeouts from percentiles, retry amplification), not just name patterns.\n\n**60-second answer outline:**\n1. Slow dependencies cause cascades by exhausting threads and connections; containment is the goal.\n2. Timeouts on every call, set from latency percentiles and bounded by a propagated deadline.\n3. Retries only for idempotent, retryable errors, with capped exponential backoff, full jitter, a budget, at one layer.\n4. Circuit breakers fail fast and probe in half-open; bulkheads cap the resources any one dependency or tenant can take.\n5. Degraded modes for optional dependencies, load shedding for overload, and chaos experiments to prove it all works.\n\n**Follow-ups to expect:** how you compute the timeout for a call chain; what counts as a failure for a breaker; how a mesh implements these (Envoy retries, outlier detection, timeouts); what a metastable failure is; how you would run the first chaos experiment at a company that has never done one.",
+      "keyPoints": [
+        "Every remote call needs a timeout; propagate a deadline so downstream services stop working on requests the caller abandoned",
+        "Retry only idempotent or idempotency-keyed operations, with capped exponential backoff, full jitter and a retry budget, at one layer",
+        "Circuit breakers fail fast when a dependency is unhealthy and probe it before restoring traffic",
+        "Bulkheads isolate resources (pools, queues, cells) so one slow dependency or tenant cannot exhaust everything",
+        "Design degraded modes deliberately and test failure with controlled chaos experiments"
+      ],
+      "interview": [
+        "How do you choose timeouts and retry budgets across a chain of service calls?",
+        "What is the bulkhead pattern, and how does it relate to circuit breakers?",
+        "What is chaos engineering, and how would you introduce it safely at a company?"
+      ],
+      "check": [
+        {
+          "q": "Five layers of services each retry failed calls 3 times. The bottom dependency is down. How many attempts can one user request cause at the bottom?",
+          "options": [
+            "15",
+            "3",
+            "Up to 243 (3 to the power of 5)",
+            "5"
+          ],
+          "answer": 2,
+          "why": "Retries multiply across layers. Retry at one layer (usually the edge or the caller closest to the failing dependency) and use retry budgets."
+        },
+        {
+          "q": "A circuit breaker is open. After its cool-down, what does it do?",
+          "options": [
+            "Closes fully and sends all traffic",
+            "Moves to half-open and lets a limited number of trial requests through",
+            "Stays open until an operator resets it",
+            "Retries every queued request"
+          ],
+          "answer": 1,
+          "why": "Half-open probes the dependency. Success closes the breaker; failure reopens it. Sending everything at once could knock a recovering service over again."
+        },
+        {
+          "q": "Why add jitter to exponential backoff?",
+          "options": [
+            "To make retries faster on average",
+            "To spread retries from many clients over time so they do not arrive in synchronised waves",
+            "To make retries idempotent",
+            "To reduce the number of retries"
+          ],
+          "answer": 1,
+          "why": "Without jitter, clients that failed together retry together. Full jitter (a random delay up to the backoff cap) decorrelates them."
+        }
+      ],
+      "resources": [
+        {
+          "title": "AWS Builders' Library: Timeouts, retries, and backoff with jitter",
+          "url": "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/"
+        },
+        {
+          "title": "AWS Architecture Blog: Exponential Backoff and Jitter (Marc Brooker)",
+          "url": "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
+        },
+        {
+          "title": "Google SRE book: Addressing Cascading Failures",
+          "url": "https://sre.google/sre-book/addressing-cascading-failures/"
+        },
+        {
+          "title": "Martin Fowler: Circuit Breaker",
+          "url": "https://martinfowler.com/bliki/CircuitBreaker.html"
+        },
+        {
+          "title": "Principles of Chaos Engineering",
+          "url": "https://principlesofchaos.org/"
+        },
+        {
+          "title": "Metastable Failures in Distributed Systems (Bronson et al., HotOS 2021)",
+          "url": "https://sigops.org/s/conferences/hotos/2021/papers/hotos21-s11-bronson.pdf"
+        }
+      ]
+    },
+    {
+      "id": "arch-api-gateway-mesh",
+      "track": "arch",
+      "title": "API gateways, BFFs, service meshes and service discovery",
+      "minutes": 24,
+      "summary": "What sits between clients and services and between services: API gateways, backends for frontends, service discovery, and service meshes in sidecar and ambient modes, with their costs.",
+      "body": "## The core idea\nOnce you have more than a handful of services, two kinds of traffic need managing:\n\n- **North-south**: clients (browsers, mobile apps, partners) calling into your system. The **API gateway** and **backends for frontends (BFFs)** live here.\n- **East-west**: services calling each other inside your network. **Service discovery** and the **service mesh** live here.\n\n```text\n             browser      mobile app      partner\n                |              |              |\n          [ web BFF ]    [ mobile BFF ]       |\n                \\              |             /\n                 +------ [ API gateway ] ---+        north-south\n                               |\n        +-------------+--------+--------+-------------+\n        |             |                 |             |    east-west\n     orders  <->  payments  <->     catalogue  <->  users\n     (each call: discovery, mTLS, retries, timeouts, telemetry -> mesh)\n```\n\nEach layer exists to take a cross-cutting concern out of every service's code. Each also adds a hop, a component to operate and a place for misconfiguration. Good answers place each concern in exactly one layer.\n\n## API gateway\nAn API gateway is a reverse proxy at the edge that every external request passes through. Typical responsibilities:\n- **Routing**: `/orders/*` to the orders service, `/v2/*` to new versions, canary splits.\n- **TLS termination** and HTTP/2 or HTTP/3 to clients.\n- **Authentication**: validate JWTs or session tokens, call an auth service, attach a verified identity header for internal services.\n- **Rate limiting and quotas** per API key, user or IP.\n- **Request shaping**: size limits, header normalisation, CORS, compression, caching of public responses.\n- **Observability**: access logs, metrics and the start of a trace for each request.\n\nImplementations: Kong, Envoy-based gateways (Envoy Gateway, Gloo, Emissary), NGINX, Traefik, cloud gateways (AWS API Gateway, Azure API Management, Google Apigee and API Gateway), and edge platforms. In Kubernetes, the **Gateway API** (`Gateway`, `HTTPRoute`, `GRPCRoute` resources, which reached v1.0 in 2023) is the role-oriented successor to Ingress, implemented by most of these.\n\n```yaml\napiVersion: gateway.networking.k8s.io/v1\nkind: HTTPRoute\nmetadata:\n  name: orders\nspec:\n  parentRefs:\n    - name: public-gateway\n  hostnames: [\"api.example.com\"]\n  rules:\n    - matches:\n        - path: { type: PathPrefix, value: /orders }\n      backendRefs:\n        - name: orders-v1\n          port: 8080\n          weight: 90\n        - name: orders-v2\n          port: 8080\n          weight: 10\n```\n\nWhat does **not** belong in the gateway: business logic, per-client aggregation logic for many clients, or anything that makes the gateway a deployment bottleneck owned by one team that everyone else waits on. A gateway full of custom scripts becomes the new monolith.\n\n## Backends for frontends (BFF)\nSam Newman describes the BFF pattern: instead of one general-purpose API serving web, iOS, Android and partners, each user experience gets **its own backend**, owned by the team that builds that frontend.\n\nWhy:\n- Different clients need different data shapes. The mobile home screen wants one small payload; the web dashboard wants richer data and more calls.\n- The frontend team can change its backend without negotiating with a central API team.\n- Aggregation (call orders, users and recommendations; combine; trim fields) happens server-side, close to the services, instead of over a phone's network.\n\nA BFF should stay thin: aggregation, shaping, client-specific auth flows (for example holding OAuth tokens server-side so the browser only has a cookie), and caching. Business rules stay in domain services; otherwise each BFF re-implements them differently. Common forms: a Node.js service per client, Next.js route handlers and Server Components acting as the web BFF, or a GraphQL layer (often federated) that serves several clients with one schema, which is an alternative to multiple BFFs.\n\nTypical layering: gateway in front for edge policy, then BFFs, then domain services.\n\n## Service discovery\nInstances come and go (autoscaling, deploys, failures), so callers cannot hard-code IPs. Service discovery maps a **logical name** to the set of **healthy instances**.\n\nTwo models:\n- **Server-side discovery**: the caller sends to a stable address (a load balancer or virtual IP), which knows the instances. Simple clients; an extra hop or kernel-level forwarding.\n- **Client-side discovery**: the caller queries a registry (Consul, Eureka, etcd, or the Kubernetes API) and load-balances itself. Fewer hops and smarter balancing; every client needs the library.\n\n### In Kubernetes\n```text\nDeployment pods (labels app=orders) --> EndpointSlices (ready pod IPs, kept current by the control plane)\nService \"orders\" (ClusterIP 10.96.12.7, selector app=orders)\nCoreDNS: orders.shop.svc.cluster.local -> 10.96.12.7\nkube-proxy (iptables / IPVS / nftables) or an eBPF dataplane (Cilium):\n   packets to 10.96.12.7:8080 -> DNAT to one ready pod IP\n```\n\n- A **Service** selects pods by label and gets a stable virtual IP and DNS name.\n- **EndpointSlices** list the ready pod addresses; readiness probes decide who is in.\n- **kube-proxy** (or an eBPF replacement) programs each node so traffic to the virtual IP is forwarded to a pod. This is **L4**: it picks a pod per connection.\n- A **headless Service** (`clusterIP: None`) makes DNS return the pod IPs directly, for client-side balancing or stateful sets.\n\nThe classic gotcha: **long-lived connections defeat L4 balancing**. A gRPC client opens one HTTP/2 connection and multiplexes everything over it, so all requests go to whichever pod got the connection. Fixes: client-side load balancing over a headless Service, periodic connection recycling (max connection age on the server), or an L7 proxy or mesh that balances per request. The same applies to HTTP keep-alive pools and database connections.\n\nAlso watch **DNS caching**: clients or runtimes that cache DNS results indefinitely keep calling dead IPs after a change.\n\n## Service mesh\nA service mesh moves networking concerns for east-west traffic out of application code into a **data plane** of proxies, configured by a **control plane**.\n\nWhat you get, uniformly for every service in any language:\n- **mTLS** between services with automatic certificate issuance and rotation, plus identity-based authorisation (\"only `checkout` may call `payments`\"). Often the main reason teams adopt a mesh, as a foundation for zero-trust networking.\n- **Traffic management**: per-request L7 load balancing, retries, timeouts, circuit breaking (outlier detection), canary and weighted routing, mirroring, fault injection.\n- **Telemetry**: request metrics (rate, errors, latency) per service pair, access logs and trace spans without code changes. Applications still need to propagate trace headers for traces to join up.\n\nImplementations: **Istio** (Envoy data plane, istiod control plane), **Linkerd** (its own lightweight Rust proxy, linkerd2-proxy), **Cilium** service mesh (eBPF plus a per-node Envoy for L7), Consul service mesh, and cloud-managed variants. The control plane speaks Envoy's **xDS** APIs to push configuration; gRPC can also consume xDS directly as a \"proxyless\" mesh.\n\n### Sidecar mode\n```text\npod: [ app container ] <-> [ proxy sidecar ]  ==mTLS==>  [ proxy sidecar ] <-> [ app ]\n       localhost                                              pod B\n```\nEvery pod gets a proxy container; iptables rules (or a CNI plugin) redirect the pod's traffic through it. Every service call therefore crosses two proxies.\n\nCosts:\n- **Resources**: a proxy per pod, each with its own memory and CPU, multiplied across thousands of pods.\n- **Latency**: two extra proxy hops per call, typically small (sub-millisecond to low milliseconds per hop depending on configuration and load) but it accumulates across deep call chains.\n- **Operational complexity**: injection, proxy upgrades that require restarting every pod, startup ordering (the app starting before its proxy is ready, jobs that never exit because the sidecar keeps running). Kubernetes' native sidecar containers (init containers with `restartPolicy: Always`, introduced in 1.28) fix the ordering and job-termination problems.\n- **Debuggability**: a failed call may be the app, either proxy, a policy, or a certificate.\n\n### Ambient (sidecarless) mode\nIstio's **ambient mode** (generally available since Istio 1.24 in late 2024) splits the mesh into two layers:\n- **ztunnel**: a per-node, Rust-based L4 proxy handling mTLS, L4 authorisation and L4 telemetry for all ambient pods on the node, tunnelling traffic between nodes over HTTP CONNECT (HBONE).\n- **Waypoint proxies**: Envoy deployments, created per namespace or service account only when you need L7 features (HTTP routing, retries, L7 authorisation).\n\nBenefits: no per-pod proxy, no pod restarts to join or upgrade the mesh, lower resource use, and you pay for L7 processing only where you use it. Trade-offs: a newer model with fewer years in production, a per-node component whose failure affects all pods on that node, and L7 traffic now takes a hop through a waypoint that may sit on another node. Cilium takes a related approach with eBPF in the kernel and a per-node Envoy.\n\n### Do you need a mesh?\nProbably not if you have a few services, one language with a good shared client library, and no mTLS requirement. A mesh pays off with many services across languages, a security requirement for service identity and encryption, and teams who need consistent traffic policy without coordinating library upgrades. Start with the smallest feature set (mTLS and metrics), and introduce retries and routing policy deliberately, because mesh retries combine with application retries.\n\n## Gateway vs mesh vs BFF: placing each concern\n| Concern | Where |\n|---|---|\n| Public TLS, auth of end users, API keys, rate limits, WAF | API gateway (or edge/CDN) |\n| Shaping and aggregating data for one client | That client's BFF |\n| Service-to-service mTLS and identity authorisation | Mesh |\n| Retries, timeouts, circuit breaking between services | Mesh or one shared client library, not both uncoordinated |\n| Canary and weighted routing | Gateway for external entry points, mesh for internal hops |\n| Business rules | Domain services, never in proxies |\n\nThe boundaries blur: Istio has its own ingress gateway, the Gateway API now covers mesh routing too (the GAMMA initiative), and some gateways do aggregation. The principle is one owner per concern.\n\n## Common mistakes and debugging\n- **Logic creep into the gateway** until it is an unowned monolith.\n- **Fat BFFs** duplicating business rules across clients.\n- **Double retries**: the app retries 3 times, the mesh retries 3 times, and the gateway retries too.\n- **Assuming L4 balancing works for gRPC** or other long-lived connections.\n- **Mesh adoption all at once**, everywhere, with every feature on. Roll out namespace by namespace, starting in permissive mTLS mode.\n- **Debugging**: check the proxy's own stats and config dump (`istioctl proxy-config`, Envoy's admin `/stats` and `/config_dump`, `linkerd viz`), confirm certificates and policies, and compare latency measured at the app with latency at the proxy.\n\n## In the interview\n**What they probe:** whether you can place concerns at the right layer, explain how discovery actually routes a packet, and weigh a mesh's benefits against its costs.\n\n**60-second answer outline:**\n1. Gateway at the edge: routing, TLS, end-user auth, rate limits, observability for north-south traffic.\n2. BFF per client experience: aggregation and shaping, owned by the frontend team, thin.\n3. Discovery maps names to healthy instances; in Kubernetes via Services, EndpointSlices, CoreDNS and kube-proxy or eBPF, at L4.\n4. Mesh for east-west: mTLS and identity, L7 traffic policy, telemetry, via proxies and a control plane.\n5. Sidecars cost resources, latency and upgrades; ambient mode uses per-node L4 ztunnels and optional L7 waypoints. Adopt only when the scale and security needs justify it.\n\n**Follow-ups to expect:** how you would roll out mTLS without breaking traffic; why gRPC needs special load balancing; how a mesh and application retries interact; how a canary release works through the gateway and mesh; when GraphQL federation replaces BFFs.",
+      "keyPoints": [
+        "An API gateway handles north-south edge concerns: routing, TLS, authentication, rate limits, request shaping",
+        "A BFF is a backend owned by one frontend team that aggregates and shapes data for that client",
+        "Service discovery maps a logical name to healthy instances; Kubernetes does it with Services, EndpointSlices, DNS and kube-proxy or eBPF",
+        "A service mesh moves east-west concerns (mTLS, retries, timeouts, traffic shifting, telemetry) into proxies managed by a control plane",
+        "Sidecars cost memory, latency and operational complexity per pod; ambient mode splits L4 (per-node) from optional L7 proxies"
+      ],
+      "interview": [
+        "What does a service mesh give you, and what does it cost? Compare sidecar and ambient modes.",
+        "API gateway vs service mesh vs BFF: what belongs where?",
+        "How does service discovery work in Kubernetes and in a service mesh?"
+      ],
+      "check": [
+        {
+          "q": "A gRPC client in Kubernetes calls a ClusterIP Service with 5 backend pods, but all traffic lands on one pod. Why?",
+          "options": [
+            "gRPC does not support Kubernetes Services",
+            "kube-proxy balances connections, and gRPC multiplexes all requests over one long-lived HTTP/2 connection",
+            "The Service selector matches only one pod",
+            "DNS caching is disabled"
+          ],
+          "answer": 1,
+          "why": "L4 balancing picks a backend per connection. Use client-side load balancing (headless Service plus gRPC balancer), or an L7 proxy or mesh that balances per request."
+        },
+        {
+          "q": "Which concern belongs in the API gateway rather than in a BFF?",
+          "options": [
+            "Terminating TLS, validating tokens and applying per-client rate limits for all public traffic",
+            "Combining three backend calls into one payload shaped for the mobile home screen",
+            "Choosing which fields the web app needs",
+            "Formatting dates for the iOS client"
+          ],
+          "answer": 0,
+          "why": "Cross-cutting edge policy applies to every client and belongs in the gateway. Client-specific aggregation and shaping belong in that client's BFF."
+        },
+        {
+          "q": "In Istio ambient mode, what provides mTLS and L4 telemetry for a pod?",
+          "options": [
+            "An Envoy sidecar injected into each pod",
+            "The Kubernetes API server",
+            "The application's HTTP client library",
+            "A per-node ztunnel proxy, with optional waypoint proxies for L7 features"
+          ],
+          "answer": 3,
+          "why": "Ambient mode removes sidecars: ztunnel handles L4 and mTLS per node, and waypoint proxies are deployed only where L7 policies or routing are needed."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Sam Newman: Backends For Frontends",
+          "url": "https://samnewman.io/patterns/architectural/bff/"
+        },
+        {
+          "title": "Kubernetes docs: Service",
+          "url": "https://kubernetes.io/docs/concepts/services-networking/service/"
+        },
+        {
+          "title": "Kubernetes Gateway API",
+          "url": "https://gateway-api.sigs.k8s.io/"
+        },
+        {
+          "title": "Istio docs: ambient mode overview",
+          "url": "https://istio.io/latest/docs/ambient/overview/"
+        },
+        {
+          "title": "Envoy proxy: what is Envoy",
+          "url": "https://www.envoyproxy.io/docs/envoy/latest/intro/what_is_envoy"
+        },
+        {
+          "title": "microservices.io: API gateway pattern",
+          "url": "https://microservices.io/patterns/apigateway.html"
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "event-sourced-bank",
+      "title": "Event-sourced bank ledger with CQRS read models",
+      "level": "advanced",
+      "hours": 60,
+      "stack": [
+        "TypeScript",
+        "Node.js (NestJS or Fastify)",
+        "PostgreSQL",
+        "Kafka or Redpanda (optional)",
+        "Next.js",
+        "Vitest + Testcontainers",
+        "OpenTelemetry"
+      ],
+      "summary": "A small banking core where accounts are event-sourced streams: deposits, withdrawals and transfers with optimistic concurrency, a transfer saga with compensation, rebuildable projections, snapshots, upcasting, and an audit UI that replays any account to any point in time.",
+      "why": "It shows the hard parts of backend engineering that interviewers probe and toy CRUD apps never reach: concurrency control, idempotency, sagas across aggregates, eventual consistency in the UI, projection rebuilds, schema evolution and fault injection. Every DDD, event sourcing, distributed transaction and resilience question maps to a decision you made, measured and can defend.",
+      "architecture": "```text\nclient -> API (auth, Idempotency-Key) -> command handler\n             load stream (snapshot + tail) -> decide -> append(expectedVersion)\n                                                        |\n                                    Postgres: events (UNIQUE stream_id, version)\n                                              outbox, snapshots, saga_state\n                                                        |\n             projector workers (checkpointed) ----------+------> balances, history, daily_totals\n             transfer process manager <---- events ---- +        (read API, Next.js UI)\n             outbox relay -> Kafka (optional) -> fraud consumer\n```\nKey decisions: one stream per account, so the invariant \"no overdraft\" is enforced inside one aggregate with optimistic concurrency; transfers are sagas between two streams with compensations; Postgres as the event store to keep one database, with an explicit fix for sequence gaps; projections are disposable and rebuilt by replay; idempotency keys at the API and position guards in projections give effectively-once processing.",
+      "lessons": [
+        "arch-event-sourcing-cqrs",
+        "arch-ddd",
+        "arch-caching-queues",
+        "distdb-distributed-transactions",
+        "arch-resilience",
+        "arch-scalability-patterns"
+      ],
+      "milestones": [
+        {
+          "id": "m1",
+          "title": "Domain core as pure functions",
+          "details": [
+            "Model Account with events AccountOpened, MoneyDeposited, MoneyWithdrawn, AccountFrozen and pure evolve/decide functions",
+            "Use integer minor units and a Money value object; reject negative amounts and frozen accounts in decide",
+            "Given-when-then unit tests cover every rule; coverage of the domain module is above 95%"
+          ]
+        },
+        {
+          "id": "m2",
+          "title": "Postgres event store",
+          "details": [
+            "events table with UNIQUE(stream_id, version), jsonb data, metadata with correlation and causation ids",
+            "append(streamId, expectedVersion, events) returns a typed ConcurrencyError on conflict",
+            "Handle the global-position gap problem (single writer or transaction-id ordering) and prove it with a concurrent-insert test",
+            "A test with 50 parallel withdrawals on one account never overdraws and every request either commits or gets a conflict"
+          ]
+        },
+        {
+          "id": "m3",
+          "title": "Commands over HTTP with idempotency",
+          "details": [
+            "POST endpoints take an Idempotency-Key header; repeated keys return the original result",
+            "Conflicts are retried server-side a bounded number of times with jitter, then surfaced as 409",
+            "Load test shows the latency and conflict rate at [N] concurrent clients on one hot account"
+          ]
+        },
+        {
+          "id": "m4",
+          "title": "Projections and read API",
+          "details": [
+            "Balances, transaction history and a daily-totals projection, each with its own checkpoint stored in the same transaction as its writes",
+            "Idempotent handlers verified by replaying the same events twice",
+            "Rebuild a projection into a new table from position 0 and switch over with no read downtime"
+          ]
+        },
+        {
+          "id": "m5",
+          "title": "Transfer saga",
+          "details": [
+            "Transfer process manager: debit source, credit destination, complete; compensation refunds the source if the credit fails",
+            "Saga state persisted with a status per step and a stuck-saga dashboard",
+            "Fault-injection tests kill the process between every step and show money is conserved across all accounts"
+          ]
+        },
+        {
+          "id": "m6",
+          "title": "Snapshots and schema evolution",
+          "details": [
+            "Snapshot every [N] events asynchronously; loading uses snapshot plus tail, verified equal to full replay",
+            "Introduce MoneyDeposited v2 with a currency field and an upcaster; old events still load",
+            "Benchmark load time for a 100k-event stream with and without snapshots"
+          ]
+        },
+        {
+          "id": "m7",
+          "title": "Audit and time-travel UI",
+          "details": [
+            "Next.js page shows an account's events, the folded state after each one, and a date picker to view the balance as of any moment",
+            "UI shows a pending state until the projection reaches the command's position",
+            "Traces link the HTTP request, the append and the projection update in one view"
+          ]
+        }
+      ],
+      "stretch": [
+        "Publish integration events through an outbox to Kafka and build a fraud-check consumer",
+        "Crypto-shredding of personal data with per-customer keys",
+        "Per-account monthly closing events to keep streams short",
+        "Run the store on CockroachDB and compare conflict behaviour",
+        "Chaos test: kill the projector and the database primary during a load test"
+      ],
+      "resume": [
+        "Built an event-sourced ledger in TypeScript and PostgreSQL handling [X] commands/s with optimistic concurrency, zero lost or duplicated postings across [Y] fault-injection runs",
+        "Designed a transfer saga with idempotent steps and compensations that conserved balances under process crashes at every step boundary",
+        "Cut aggregate load time from [A ms] to [B ms] for 100k-event streams with asynchronous snapshots, and rebuilt projections with zero read downtime"
+      ],
+      "talking": [
+        "Why accounts are separate streams and why a transfer is a saga, not one transaction",
+        "How the expected-version check prevents overdrafts under concurrency",
+        "The Postgres sequence gap problem and how the projector handles it",
+        "How the UI deals with eventually consistent read models",
+        "How old events keep loading after a schema change",
+        "What I would change to run this across regions"
+      ],
+      "features": [
+        "Open accounts, deposit, withdraw and transfer through an API and a small UI",
+        "Concurrent withdrawals on one account never overdraw",
+        "Retrying a request with the same Idempotency-Key never double-posts",
+        "Transfers survive a crash mid-way and either complete or compensate",
+        "Rebuild any read model from history while the app keeps serving reads",
+        "Time-travel view of any account's balance and history",
+        "Dashboard of stuck sagas and projection lag"
+      ],
+      "deepDives": [
+        {
+          "title": "Enforcing no-overdraft under concurrency",
+          "body": "The invariant \"balance never goes below zero\" lives inside one aggregate, the account stream. A withdrawal loads the stream at version `v`, folds it, checks the balance and appends `MoneyWithdrawn` with `expectedVersion = v`. The `UNIQUE (stream_id, version)` constraint makes the append fail if another command appended first. The loser reloads, re-checks and retries.\n\n```text\nA: load v=10 (balance 100) -> decide withdraw 80 ok -> append v11  OK\nB: load v=10 (balance 100) -> decide withdraw 50 ok -> append v11  CONFLICT\nB: reload v=11 (balance 20) -> decide withdraw 50 -> rejected: insufficient funds\n```\n\nMeasure the conflict rate on a hot account. If it is high, the fix is a smaller aggregate boundary or a queue per account (single writer), not locks across streams. Bounded server-side retries with jitter keep latency predictable."
+        },
+        {
+          "title": "Transfers as a saga, not a distributed transaction",
+          "body": "A transfer touches two streams. Appending to both in one database transaction would work in Postgres, but it couples aggregates and would not survive splitting accounts across shards or services. Instead a process manager drives: `TransferRequested`, then debit the source (`MoneyWithdrawn` with the transfer id), then credit the destination, then `TransferCompleted`. If the credit fails permanently (destination frozen), it issues a compensating deposit to the source.\n\nEvery step is keyed by the transfer id, so replaying the process manager after a crash never posts twice: before appending, the handler checks whether an event with that transfer id already exists in the target stream. Saga state is persisted, and a sweeper resumes sagas stuck in a step for longer than a threshold. The test that matters: crash the process at every step boundary, restart, and assert that the sum of all balances is unchanged and every transfer is either completed or compensated."
+        },
+        {
+          "title": "Projections, gaps and rebuilds",
+          "body": "Projectors read events in global-position order and store a checkpoint in the same transaction as their read-model writes, so a crash never applies an event twice or skips one. The subtle bug is sequence gaps: `bigserial` positions are assigned at insert, not commit, so a projector can read position 101 before 100 commits. The project uses one of two fixes and documents it: a single writer process per database, or ordering by transaction id and only reading events from transactions older than the current snapshot's xmin.\n\nRebuilds create `balances_v2`, replay from position 0 while the old table keeps serving, then switch the read API with a config flag once v2's checkpoint catches up with the head, and drop v1. Report rebuild time per million events."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "llm-scaling-laws",
+      "track": "llm",
+      "title": "Scaling laws, compute-optimal training and test-time compute",
+      "minutes": 20,
+      "summary": "Kaplan vs Chinchilla, the 6ND compute rule, why modern models are over-trained, data quality limits, and test-time compute as a second scaling axis.",
+      "body": "## The core idea\nA scaling law is an empirical curve that says how a model's loss falls as you spend more on three things: parameters (N), training tokens (D) and compute (C). The surprising finding, first shown cleanly by Kaplan et al. at OpenAI in 2020, is that across many orders of magnitude the relationship is a smooth **power law**: double the compute and the loss drops by a predictable fraction. That predictability is why labs can train small pilot models, fit a curve, and decide how big the expensive run should be before spending tens of millions of dollars on it.\n\nThe practical question scaling laws answer is: **given a fixed compute budget, how should I split it between a bigger model and more data?** Kaplan's answer and DeepMind's 2022 Chinchilla answer differed sharply, and the industry has since moved past both by asking a different question: what is cheapest to train *and serve*? On top of that, a newer axis has appeared: spending compute at inference time (letting the model think longer) can buy accuracy that would otherwise need a much bigger model.\n\n## The vocabulary you need\n- **N**: number of parameters (Kaplan counted non-embedding parameters; Chinchilla counted all).\n- **D**: number of training tokens seen.\n- **C**: training compute in FLOPs. For a dense transformer the standard approximation is **C ≈ 6ND**: about 2ND for the forward pass and 4ND for the backward pass.\n- **Loss**: cross-entropy on held-out text, in nats per token. Lower is better; it is what scaling laws predict. Downstream benchmark accuracy is much noisier and is not what the curves fit.\n\nA quick sanity check of 6ND: Chinchilla itself was 70B parameters on 1.4T tokens, so C ≈ 6 × 70e9 × 1.4e12 ≈ 5.9e23 FLOPs. On H100s at roughly 989 dense BF16 TFLOPS and a realistic 40% model FLOPs utilisation (MFU), that is about 5.9e23 / 4e14 ≈ 1.5e9 GPU-seconds, or roughly 410,000 GPU-hours. Being able to do this arithmetic out loud is a strong interview signal.\n\n## Kaplan et al. (2020): bigger models first\n\"Scaling Laws for Neural Language Models\" trained a large family of transformers and found loss follows power laws in N, D and C separately, as long as the other two are not the bottleneck. Two conclusions shaped the GPT-3 era:\n\n1. **Architecture details matter little** compared with scale: depth versus width, within reason, barely moved the curve.\n2. **For a fixed compute budget, most of the extra compute should go into a bigger model**, trained on relatively fewer tokens and stopped well before convergence. Their fitted allocation had the optimal model size growing roughly as C^0.73, with data growing much more slowly.\n\nThat is why GPT-3 (175B parameters) was trained on only about 300B tokens, under 2 tokens per parameter. Gopher (280B) followed the same recipe.\n\n## Chinchilla (2022): scale data and parameters equally\nHoffmann et al. at DeepMind (\"Training Compute-Optimal Large Language Models\") re-ran the experiment with over 400 models and three independent fitting methods. They found that **parameters and tokens should grow in roughly equal proportion**: each scales as about C^0.5. The rule of thumb that falls out is **about 20 training tokens per parameter**.\n\nThey proved it with a head-to-head: Chinchilla (70B parameters, 1.4T tokens) used about the same compute as Gopher (280B parameters, 300B tokens) and beat it across most benchmarks, while being 4x cheaper to serve.\n\nTheir third method fitted a parametric loss:\n\n```text\nL(N, D) = E + A / N^alpha + B / D^beta\n\nE      irreducible loss of natural text (the entropy floor)\nA/N^a  penalty for a model that is too small\nB/D^b  penalty for too little data\nfitted (Chinchilla, approach 3): E ~ 1.69, A ~ 406.4, B ~ 410.7, alpha ~ 0.34, beta ~ 0.28\n```\n\nMinimising L subject to 6ND = C gives the compute-optimal split. A 2024 replication attempt by Besiroglu et al. found problems with the original approach-3 fit and re-estimated the parameters, but the headline (scale both roughly equally, tens of tokens per parameter) survived.\n\n**Why did Kaplan get it wrong?** The usual explanations: Kaplan used a fixed learning-rate schedule that was not matched to each run's length, so shorter-trained models looked worse than they were; they counted only non-embedding parameters; and their models were small, where those effects are largest. Chinchilla set the cosine schedule length to match each run's token count.\n\n```python\nimport math\n\ndef chinchilla_optimal(compute_flops: float, tokens_per_param: float = 20.0):\n    \"\"\"Compute-optimal N and D for a dense transformer, using C = 6 N D and D = k N.\"\"\"\n    # C = 6 * N * (k * N)  =>  N = sqrt(C / (6k))\n    n = math.sqrt(compute_flops / (6 * tokens_per_param))\n    return n, tokens_per_param * n\n\ndef gpu_hours(compute_flops: float, peak_flops: float = 989e12, mfu: float = 0.4) -> float:\n    return compute_flops / (peak_flops * mfu) / 3600\n\nfor c in (1e22, 1e23, 1e24, 1e25):\n    n, d = chinchilla_optimal(c)\n    print(f\"C={c:.0e}: N={n/1e9:6.1f}B params, D={d/1e12:5.2f}T tokens, ~{gpu_hours(c):,.0f} H100-hours\")\n# C=1e24 gives roughly 91B params on 1.8T tokens, about 700k H100-hours at 40% MFU\n```\n\n## Beyond Chinchilla: optimise for inference, not just training\nChinchilla-optimal means \"lowest loss for a given *training* budget\". But a model that will serve billions of requests spends far more compute at inference than in training, and inference cost scales with N. So it pays to **over-train a smaller model**: spend more training compute than Chinchilla says is optimal for that size, to get a small model that is cheap forever after. Sardana et al. (\"Beyond Chinchilla-Optimal\", 2023) formalised this: once you account for expected inference demand, the optimal model is smaller and trained on far more tokens.\n\nThis is what the industry did. Meta's Llama 3 8B was trained on over 15T tokens, close to 2,000 tokens per parameter, a hundred times the Chinchilla ratio. The loss curve keeps falling slowly long past the Chinchilla point; you pay more training compute for a model that is much cheaper to run.\n\n```text\nCompute-optimal (Chinchilla)      Inference-aware (Llama-3 style)\n--------------------------------  --------------------------------\nfixed training budget             training + lifetime inference budget\n~20 tokens / param                hundreds to thousands of tokens / param\nbigger model, fewer tokens        smaller model, many more tokens\nbest loss per training FLOP       best total cost of ownership\n```\n\n## Data quality and the data wall\nScaling laws assume tokens of constant quality. In reality, **better data shifts the whole curve down**, and the constraint since 2023 has increasingly been high-quality text, not GPUs.\n\n- **Filtering beats volume.** Hugging Face's FineWeb work showed careful deduplication and filtering of Common Crawl produces better models per token than larger, dirtier sets; their FineWeb-Edu subset, filtered by an \"educational value\" classifier trained on LLM annotations, gave large gains on knowledge and reasoning benchmarks.\n- **Small models on curated data.** Microsoft's \"Textbooks Are All You Need\" (phi-1) trained a 1.3B code model largely on filtered and synthetic \"textbook quality\" data and got results that normally needed far larger models.\n- **Deduplication** matters: repeated documents waste compute and increase memorisation.\n- **Repeating data.** Muennighoff et al. (\"Scaling Data-Constrained Language Models\", 2023) found that up to about 4 epochs of repeated data is almost as good as fresh data, after which the value of extra repetitions falls off quickly. That gives a principled answer to \"we have run out of unique tokens\".\n- **Mixtures.** The ratio of web, code, maths, books and multilingual data changes downstream skills a lot; code data is widely reported to help reasoning. Teams tune mixtures with small proxy runs.\n- **Synthetic data** from strong models is now a standard ingredient, especially for maths, code and instruction data, with the risks of narrowing diversity and copying the teacher's mistakes.\n\n## Test-time compute: the second scaling axis\nTraining scaling makes a model better at answering in one pass. **Test-time compute** spends extra inference FLOPs on each hard query. OpenAI's o1 announcement (2024) showed accuracy on maths benchmarks rising smoothly with both more RL training compute and more thinking time at inference; DeepSeek-R1 (2025) showed similar long-chain-of-thought behaviour emerging from reinforcement learning with verifiable rewards, and released the weights.\n\nWays to spend test-time compute:\n\n| Method | How it works | Needs |\n|---|---|---|\n| Long chain of thought | Model reasons for thousands of tokens before answering | A model trained to reason (RL) |\n| Self-consistency | Sample k answers, majority vote | Answers that can be compared |\n| Best-of-N with a verifier | Sample N, pick the best by a reward model, unit tests or a checker | A good verifier |\n| Sequential revision | Model critiques and revises its own answer | Works best with external feedback |\n| Search over steps | Beam or tree search guided by a process reward model | Step-level scoring |\n\nKey findings worth citing:\n- Snell et al. (2024) found that allocating test-time compute adaptively by question difficulty can beat a much larger model on problems where the small model has a reasonable base success rate, but not on the hardest problems: there, pretraining compute wins.\n- \"Large Language Monkeys\" (Brown et al., 2024) showed **coverage** (the chance that at least one of k samples is correct) keeps rising with k across orders of magnitude. The catch: turning coverage into accuracy needs a verifier. With unit tests or proof checkers, repeated sampling is extremely effective; with majority voting or reward models, gains plateau.\n\n```python\nfrom collections import Counter\n\ndef self_consistency(ask, question: str, k: int = 8) -> tuple[str, float]:\n    \"\"\"Sample k reasoning paths at temperature > 0 and majority-vote the final answer.\"\"\"\n    answers = [ask(question, temperature=0.8).final_answer for _ in range(k)]\n    best, votes = Counter(answers).most_common(1)[0]\n    return best, votes / k  # agreement rate doubles as a cheap confidence score\n```\n\nThe engineering consequence: **cost per query is no longer fixed by model size**. A reasoning model may use 10x to 100x the output tokens of a chat model on hard prompts, so latency and spend become a routing decision (send easy questions to a cheap model, hard ones to a reasoning model with a thinking budget).\n\n## Trade-offs and limits\n- **Loss is not capability.** Scaling laws predict smooth loss; specific abilities can look sudden on thresholded metrics like exact match, which is part of the \"emergent abilities\" debate.\n- **Extrapolation is risky.** Curves fitted on small runs can bend; teams validate with intermediate runs. OpenAI's GPT-4 report says they predicted the final loss from runs using at most 1/10,000th of the compute, which shows it can work when the methodology is held fixed.\n- **Architecture-specific.** Mixture-of-experts models have different laws because active and total parameters differ.\n- **Data limits.** High-quality human text is finite; repetition, synthetic data and multimodal data are the levers.\n- **Test-time scaling needs verifiers.** Without a way to check answers, more samples mostly buy more confident wrong answers.\n\n## Common mistakes\n- Quoting \"20 tokens per parameter\" as how modern models are trained. It is the training-compute optimum, not what production models use.\n- Forgetting that C ≈ 6ND is for dense models; for MoE use active parameters for the FLOPs.\n- Treating benchmark gains as if they were loss gains, or ignoring contamination when comparing models.\n- Assuming more samples always help: majority voting saturates and reward models can be gamed.\n- Ignoring the inference bill when choosing a model size for a product.\n\n## In the interview\n**What they probe:** can you state the Kaplan versus Chinchilla difference precisely, do the 6ND arithmetic, and explain why real models are \"over-trained\"? For AI-engineer roles they increasingly ask about test-time compute because it changes how you budget latency and cost.\n\n**A 60-second answer outline:**\n1. Loss falls as a power law in parameters, data and compute; C ≈ 6ND for a dense transformer.\n2. Kaplan (2020) said to spend extra compute mostly on model size; Chinchilla (2022) showed parameters and tokens should scale equally, about 20 tokens per parameter, and a 70B model on 1.4T tokens beat 280B Gopher at equal compute.\n3. Production models go far past that (Llama 3 8B on 15T+ tokens) because inference cost dominates over a model's lifetime.\n4. Data quality shifts the curve; we are now data-limited more than compute-limited.\n5. Test-time compute (reasoning models, best-of-N with verifiers) is a second axis: trade latency and tokens per query for accuracy.\n\n**Follow-ups to expect:** why Kaplan's fit was biased; how you would pick a model size for a fixed GPU budget; how many GPU-hours a given run needs; when best-of-N stops helping; whether scaling laws apply to MoE or fine-tuning.",
+      "keyPoints": [
+        "Loss falls as a power law in parameters, tokens and compute; for dense transformers C is about 6 x N x D FLOPs",
+        "Chinchilla showed parameters and tokens should scale equally (about 20 tokens per parameter), overturning Kaplan's bigger-model-first advice",
+        "Production models are over-trained far past Chinchilla because lifetime inference cost scales with model size",
+        "Data quality, deduplication and mixtures shift the whole curve; repeated data stays useful for only a few epochs",
+        "Test-time compute (long reasoning, best-of-N with verifiers) buys accuracy per query, but needs a way to check answers"
+      ],
+      "interview": [
+        "What is the difference between the Kaplan and Chinchilla scaling laws, and why did Kaplan's advice turn out to be wrong?",
+        "Why are models like Llama 3 8B trained on far more tokens than Chinchilla-optimal?",
+        "How do you estimate the training compute and GPU-hours for a model?",
+        "What is test-time compute scaling, and when does spending more at inference beat using a bigger model?"
+      ],
+      "check": [
+        {
+          "q": "Roughly how many training FLOPs does a dense 7B-parameter model need for 2T tokens, using the standard approximation?",
+          "options": [
+            "About 1.4e22",
+            "About 8.4e22",
+            "About 8.4e25",
+            "About 1.4e19"
+          ],
+          "answer": 1,
+          "why": "C is about 6 x N x D = 6 x 7e9 x 2e12 = 8.4e22 FLOPs."
+        },
+        {
+          "q": "Chinchilla (70B, 1.4T tokens) beat Gopher (280B, 300B tokens). What did this show?",
+          "options": [
+            "Architecture changes matter more than scale",
+            "Bigger models always win at equal compute",
+            "Gopher had a bug in its tokenizer",
+            "At a fixed compute budget, Gopher was undertrained: tokens should grow as fast as parameters"
+          ],
+          "answer": 3,
+          "why": "Both used similar compute; spending it on more data and a smaller model gave lower loss and better benchmarks."
+        },
+        {
+          "q": "Repeated sampling raises the chance that at least one of k answers is correct. What do you need to turn that into higher accuracy?",
+          "options": [
+            "A longer context window",
+            "A higher temperature",
+            "A reliable verifier, such as unit tests or a checker, to pick the right sample",
+            "A larger tokenizer vocabulary"
+          ],
+          "answer": 2,
+          "why": "Coverage only becomes accuracy if you can identify the correct sample; voting and reward models plateau, verifiers do not."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Kaplan et al.: Scaling Laws for Neural Language Models",
+          "url": "https://arxiv.org/abs/2001.08361"
+        },
+        {
+          "title": "Hoffmann et al.: Training Compute-Optimal Large Language Models (Chinchilla)",
+          "url": "https://arxiv.org/abs/2203.15556"
+        },
+        {
+          "title": "Sardana et al.: Beyond Chinchilla-Optimal, accounting for inference",
+          "url": "https://arxiv.org/abs/2401.00448"
+        },
+        {
+          "title": "Muennighoff et al.: Scaling Data-Constrained Language Models",
+          "url": "https://arxiv.org/abs/2305.16264"
+        },
+        {
+          "title": "Snell et al.: Scaling LLM Test-Time Compute Optimally",
+          "url": "https://arxiv.org/abs/2408.03314"
+        },
+        {
+          "title": "Hugging Face: FineWeb, decanting the web for the finest text data",
+          "url": "https://huggingface.co/spaces/HuggingFaceFW/blogpost-fineweb-v1"
+        }
+      ]
+    },
+    {
+      "id": "llm-open-models",
+      "track": "llm",
+      "title": "Open-weight models: licences, quantisation and running them yourself",
+      "minutes": 20,
+      "summary": "Open-weight families and licences, memory sizing, GGUF vs GPTQ vs AWQ, running models with llama.cpp, Ollama and vLLM, and choosing a model.",
+      "body": "## The core idea\nAn **open-weight** model is one whose trained parameters you can download and run yourself. That gives you things no API can: data never leaves your machines, you control the version forever, you can fine-tune it, and at high steady volume it can be much cheaper. The price is that you now own serving: picking a model that fits your hardware, shrinking it with quantisation, choosing an inference engine, and reading a licence that may not be what \"open\" suggests.\n\nThree skills make up this lesson: knowing the main model families and their licences, understanding quantisation formats well enough to pick one, and running a model locally or on a GPU server with llama.cpp, Ollama or vLLM.\n\n## Open weights is not open source\n- **Open weights**: you get the parameters (and usually the tokenizer and an inference config) under some licence. Training data and full training code are usually not released.\n- **Open source AI** in the Open Source Initiative's sense (its Open Source AI Definition, 2024) also requires enough information about the training data and the code to rebuild the system. Few major models meet it; AllenAI's OLMo family is a well-known example that releases data, code and checkpoints.\n\nIn an interview, using the right term signals you have actually read the licences.\n\n## The main families (and how to think about them)\nModel versions change every few months, so learn the families and their licence pattern rather than memorising leaderboards. As of 2025-2026 the commonly used ones include:\n\n| Family | Publisher | Typical licence | Notes |\n|---|---|---|---|\n| Llama | Meta | Llama Community License | Custom terms: acceptable-use policy, attribution, and a separate licence needed above 700M monthly active users |\n| Qwen | Alibaba | Mostly Apache 2.0 (check each size) | Wide size range, strong multilingual and coding variants |\n| Mistral / Mixtral | Mistral AI | Apache 2.0 for many smaller models; others under research or commercial terms | Mixtral popularised open mixture-of-experts |\n| Gemma | Google | Gemma Terms of Use | Custom terms with a prohibited-use policy |\n| DeepSeek | DeepSeek | MIT for R1 weights | Large MoE models; R1 popularised open reasoning models |\n| Phi | Microsoft | MIT | Small models trained heavily on curated and synthetic data |\n| gpt-oss | OpenAI | Apache 2.0 | Open-weight MoE reasoning models (20B and 120B) |\n\nAlways read the licence of the **exact checkpoint**: within one family, different sizes and fine-tunes can carry different terms, and a community fine-tune inherits the base model's licence. Things to check: commercial use, user-count thresholds, acceptable-use restrictions, attribution requirements, and whether you may use outputs to train other models.\n\n## How big a model can I run?\nMemory for weights is simply parameters times bytes per parameter:\n\n```text\nweights_GB ~ params_in_billions * bits_per_weight / 8\n\n8B  model  @ BF16 (16 bit)  ~ 16 GB\n8B  model  @ 4.5 bit (Q4)   ~ 4.5-5 GB   -> fits a laptop\n70B model  @ BF16           ~ 140 GB     -> 2x 80 GB GPUs\n70B model  @ 4.5 bit        ~ 40 GB      -> one 48 GB GPU or a 64 GB Mac\n```\n\nThen add the **KV cache**, which grows with context length and concurrent requests:\n\n```text\nkv_bytes_per_token = 2 (K and V) * layers * kv_heads * head_dim * bytes_per_value\n\nLlama 3 8B: 32 layers, 8 KV heads (grouped-query attention), head_dim 128, FP16\n  = 2 * 32 * 8 * 128 * 2 bytes = 128 KB per token\n  8k context  -> ~1 GB per sequence;  32 sequences of 8k -> ~32 GB\n```\n\nA model that \"fits\" with a 2k context can run out of memory at 32k or under concurrency. Plan for weights plus KV cache plus some runtime overhead.\n\n## Quantisation formats you will meet\nQuantisation stores weights in fewer bits (int8, int4, sometimes lower) with per-group scale factors, so the model is smaller and memory-bandwidth-bound decoding is faster. The question is how to choose which values to round and how, while losing as little quality as possible.\n\n- **GGUF** is not an algorithm but the **file format** of llama.cpp (the successor to GGML). A single file holds weights, tokenizer, chat template and metadata. It supports many quant types: `Q8_0`, `Q6_K`, `Q5_K_M`, `Q4_K_M`, and lower-bit \"i-quants\" (`IQ3_M`, `IQ2_XS`) that can use an **importance matrix** computed from calibration text. The `K` types use block-wise scales with mixed precision across tensors. `Q4_K_M` is the common default: roughly 4.5 to 5 effective bits per weight and usually a small quality loss. GGUF runs on CPUs, Apple silicon and GPUs, which is why it dominates local use.\n- **GPTQ** (Frantar et al., 2022) is a one-shot post-training method for GPUs. It quantises a layer at a time and uses approximate second-order (Hessian) information from calibration data to adjust the remaining weights so each layer's output error stays small. Typical use: 4-bit, group size 128.\n- **AWQ** (Activation-aware Weight Quantization, Lin et al., 2023) observes that a small fraction of weight channels matter disproportionately, identified by **activation** magnitudes rather than weight magnitudes. It scales those channels before quantising so they lose less precision. No backpropagation, little calibration data, good generalisation; widely supported in vLLM and other GPU servers.\n- **bitsandbytes NF4** (popularised by QLoRA) quantises on load; handy for fine-tuning on one GPU, usually slower for serving than GPTQ or AWQ kernels.\n- **FP8** on Hopper-class and newer GPUs: near-lossless for many models at half the memory of BF16, with hardware support, so it is often the first choice on a data-centre GPU.\n\nRules of thumb: 8-bit is nearly lossless; 4-bit is the sweet spot for most local use; below about 3 bits quality drops noticeably, more so for small models. A bigger model at 4-bit often beats a smaller model at 16-bit for the same memory. And always **evaluate on your task**: averages hide regressions in maths, code and non-English text.\n\n## Running locally: llama.cpp, Ollama, vLLM\n\n```text\n                 laptop / Mac / CPU box                 GPU server, many users\n           +---------------------------------+     +-----------------------------+\n GGUF file | llama.cpp (llama-server)        |     | vLLM (or SGLang)            |\n           |   ^ wrapped by                  |     |  PagedAttention KV cache    |\n           | Ollama: pull/run/model registry |     |  continuous batching        |\n           +---------------------------------+     |  AWQ / GPTQ / FP8 weights   |\n              OpenAI-compatible HTTP API           +-----------------------------+\n                                                     OpenAI-compatible HTTP API\n```\n\n**llama.cpp** is a C/C++ inference engine for GGUF models. You can convert and quantise a Hugging Face checkpoint yourself, then serve it:\n\n```bash\n# convert a Hugging Face model to GGUF, then quantise to Q4_K_M\npython convert_hf_to_gguf.py ./Qwen2.5-7B-Instruct --outfile qwen7b-f16.gguf\n./llama-quantize qwen7b-f16.gguf qwen7b-Q4_K_M.gguf Q4_K_M\n\n# serve it: -c context length, -ngl number of layers offloaded to the GPU\n./llama-server -m qwen7b-Q4_K_M.gguf -c 8192 -ngl 99 --port 8080\n```\n\n**Ollama** wraps llama.cpp with a model registry, automatic download and a background server:\n\n```bash\nollama pull llama3.1:8b\nollama run llama3.1:8b \"Explain KV caching in two sentences\"\nollama ps        # what is loaded, and whether it is on GPU or CPU\n```\n\n**vLLM** is the high-throughput GPU server. PagedAttention manages the KV cache in blocks so memory is not wasted, and continuous batching keeps the GPU busy across many concurrent requests:\n\n```bash\nvllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \\\n  --max-model-len 16384 \\\n  --gpu-memory-utilization 0.90 \\\n  --tensor-parallel-size 1\n```\n\nAll three expose an **OpenAI-compatible** endpoint, so application code does not care which one is behind it:\n\n```python\nfrom openai import OpenAI\n\n# Ollama: http://localhost:11434/v1   llama-server: http://localhost:8080/v1   vLLM: http://localhost:8000/v1\nclient = OpenAI(base_url=\"http://localhost:11434/v1\", api_key=\"unused-locally\")\n\nresp = client.chat.completions.create(\n    model=\"llama3.1:8b\",\n    messages=[{\"role\": \"user\", \"content\": \"Give me three test cases for a date parser.\"}],\n    temperature=0.2,\n)\nprint(resp.choices[0].message.content)\n```\n\nWhich to use: Ollama for a developer laptop and quick experiments; llama.cpp directly when you need control (custom quantisation, grammars, CPU deployment, edge devices); vLLM or SGLang when serving many concurrent users on GPUs, where throughput per GPU decides your bill.\n\n## Choosing a model: a decision process\n1. **Write down constraints**: hardware (VRAM or unified memory), latency target, expected concurrency, context length, languages, and whether you need tool calling or vision.\n2. **Shortlist by licence first**: a model you cannot legally ship is not a candidate.\n3. **Pick a size that fits** with headroom for the KV cache at your context and concurrency.\n4. **Prefer instruct or chat variants** for applications; base models are for fine-tuning.\n5. **Run your own eval set** (50 to 200 real tasks with graded answers) across two or three candidates and quant levels. Public benchmarks are a filter, not a decision: contamination and benchmark tuning are common, and human-preference leaderboards measure chat style as much as capability.\n6. **Measure throughput and latency** on your hardware: tokens per second per user and in aggregate, and time to first token at your prompt length.\n7. **Compare with an API** on total cost: GPU rental at your real utilisation versus per-token pricing. Self-hosting usually wins only at high, steady volume or when data residency forces it.\n\n## Trade-offs and when not to self-host\n- Frontier closed models are still usually stronger on the hardest reasoning and agentic tasks; open models often match them on narrower tasks, especially after fine-tuning.\n- Self-hosting means owning uptime, scaling, security patches, abuse filtering and upgrades.\n- GPUs sitting idle at night still cost money; APIs bill per token.\n- Good fits: privacy-sensitive data, offline or edge use, high-volume narrow tasks (classification, extraction), fine-tuned specialists, and avoiding vendor lock-in.\n\n## Common mistakes and debugging\n- **Wrong chat template.** Each model expects specific special tokens around turns. A mismatch gives rambling, repeated or truncated answers. GGUF files and Hugging Face tokenizer configs embed the template; use the server's chat endpoint rather than formatting prompts by hand.\n- **Silent CPU fallback.** A model slightly too large for VRAM gets partly offloaded to CPU and becomes many times slower. Check `ollama ps` or the server logs for layers on GPU.\n- **Ignoring the KV cache** when sizing, then running out of memory under load.\n- **Comparing quantised local output with a full-precision API** and blaming the model family instead of the quantisation.\n- **Default context length** too small (some local runners default to a few thousand tokens), so long prompts are silently truncated.\n- **Licence assumptions**: \"it's on Hugging Face\" does not mean \"it's free for commercial use\".\n\n## In the interview\n**What they probe:** do you understand the memory arithmetic, the difference between a file format (GGUF) and a quantisation algorithm (GPTQ, AWQ), and the real trade-off between self-hosting and an API, including licences?\n\n**A 60-second answer outline:**\n1. Open-weight means downloadable parameters under a licence; check commercial terms per checkpoint.\n2. Size it: params times bits over eight, plus KV cache per token times context times concurrency.\n3. Quantise: GGUF Q4_K_M for local and CPU or Mac via llama.cpp or Ollama; AWQ, GPTQ or FP8 for GPU servers like vLLM.\n4. Choose with your own evals and measured latency, not leaderboards.\n5. Self-host when privacy, volume or customisation justify owning operations; otherwise an API is cheaper and stronger.\n\n**Follow-ups to expect:** how AWQ differs from GPTQ; why a 70B 4-bit model can beat a 13B 16-bit one; what PagedAttention and continuous batching do; how you would fine-tune and then serve a model; what the Llama licence restricts.",
+      "keyPoints": [
+        "Open weights is not open source: read the licence of the exact checkpoint for commercial use, user caps and usage rules",
+        "Memory is params x bits / 8 for weights plus the KV cache, which grows with context length and concurrency",
+        "GGUF is llama.cpp's file format; GPTQ and AWQ are post-training 4-bit quantisation algorithms aimed at GPU serving",
+        "Ollama and llama.cpp suit laptops and edge; vLLM suits many concurrent users on GPUs; all speak the OpenAI API",
+        "Choose with your own eval set and measured latency, then compare total cost against an API"
+      ],
+      "interview": [
+        "What is the difference between GGUF, GPTQ and AWQ, and when would you use each?",
+        "How would you decide between self-hosting an open-weight model and using a hosted API?",
+        "What should you check in an open-weight model's licence before shipping it?",
+        "How would you run an open-weight model locally, and what goes wrong most often?"
+      ],
+      "check": [
+        {
+          "q": "You have one 48 GB GPU. Which option most plausibly serves a 70B model with modest context?",
+          "options": [
+            "BF16 weights",
+            "4-bit weights (around 40 GB) with a small KV cache budget",
+            "FP8 weights",
+            "8-bit weights"
+          ],
+          "answer": 1,
+          "why": "70B at 16 bits is about 140 GB and at 8 bits about 70 GB; only around 4 bits fits in 48 GB with room for the KV cache."
+        },
+        {
+          "q": "What does AWQ use to decide which weights to protect from quantisation error?",
+          "options": [
+            "The magnitude of the weights themselves",
+            "Random selection",
+            "Activation magnitudes measured on calibration data",
+            "Gradients from full backpropagation"
+          ],
+          "answer": 2,
+          "why": "AWQ finds salient channels from activation statistics and scales them before quantising, without backpropagation."
+        },
+        {
+          "q": "A local model gives rambling answers that never stop cleanly, while the same model is fine on a hosted API. What is the most likely cause?",
+          "options": [
+            "The prompt is formatted with the wrong chat template",
+            "The GPU is too fast",
+            "The licence forbids local use",
+            "The temperature is exactly 0"
+          ],
+          "answer": 0,
+          "why": "Without the model's expected turn markers and end-of-turn token, it does not know when to stop."
+        }
+      ],
+      "resources": [
+        {
+          "title": "llama.cpp repository and docs",
+          "url": "https://github.com/ggml-org/llama.cpp"
+        },
+        {
+          "title": "Hugging Face: GGUF format documentation",
+          "url": "https://huggingface.co/docs/hub/gguf"
+        },
+        {
+          "title": "vLLM documentation",
+          "url": "https://docs.vllm.ai/en/latest/"
+        },
+        {
+          "title": "Lin et al.: AWQ, Activation-aware Weight Quantization",
+          "url": "https://arxiv.org/abs/2306.00978"
+        },
+        {
+          "title": "Frantar et al.: GPTQ, accurate post-training quantization for GPTs",
+          "url": "https://arxiv.org/abs/2210.17323"
+        },
+        {
+          "title": "Open Source Initiative: The Open Source AI Definition",
+          "url": "https://opensource.org/ai/open-source-ai-definition"
+        }
+      ]
+    }
+  ],
+  "projects": []
+}

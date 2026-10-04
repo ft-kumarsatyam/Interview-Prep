@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS as S, phaseForWeek, phasesFor, scaledWeek } from "@/lib/domain/plan-config";
-import { buildDailyPlan, dueSubtopics, type ProblemState, type SubtopicState } from "@/lib/domain/planner";
-import { assessFeasibility, availableMinutes } from "@/lib/domain/feasibility";
-import { applyRebalance, buildRebalance } from "@/lib/domain/rebalance";
-import { masteryByTopic, ratingFromStrength, strengthPct, topicWeights } from "@/lib/domain/topic-priority";
-import { DEFAULT_COSTS, hoursOn } from "@/lib/domain/time-budget";
-import type { TopicRating } from "@/lib/domain/planner-intake";
+import { DEFAULT_SETTINGS as S, phaseForWeek, phasesFor, scaledWeek } from "@/modules/planner/domain/plan-config";
+import { buildDailyPlan, dueSubtopics, type ProblemState, type SubtopicState } from "@/modules/planner/domain/planner";
+import { assessFeasibility, availableMinutes } from "@/modules/planner/domain/feasibility";
+import { applyRebalance, buildRebalance } from "@/modules/planner/domain/rebalance";
+import { masteryByTopic, ratingFromStrength, strengthPct, topicWeights } from "@/modules/planner/domain/topic-priority";
+import { DEFAULT_COSTS, hoursOn } from "@/modules/planner/domain/time-budget";
+import type { TopicRating } from "@/modules/planner/domain/planner-intake";
 
 const subs = (n: number, week = 1): SubtopicState[] => Array.from({ length: n }, (_, i) => ({ id: `t${i}:0`, week, position: i, done: false }));
 const problems: ProblemState[] = Array.from({ length: 40 }, (_, i) => ({ slug: `p${i}`, track: "main", order: i, solved: false, difficulty: "Medium" }));

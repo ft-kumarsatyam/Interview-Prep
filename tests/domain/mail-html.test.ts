@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { asciiBar, renderMail, type MailSpec } from "@/lib/domain/mail-html";
+import { asciiBar, renderMail, type MailSpec } from "@/modules/notifications/domain/mail-html";
 
 const base: MailSpec = {
   title: "Today's targets",

@@ -4,7 +4,7 @@ vi.mock("node:dns/promises", () => ({
   lookup: async (host: string) => (host === "internal.test" ? [{ address: "10.0.0.5", family: 4 }] : [{ address: "93.184.216.34", family: 4 }]),
 }));
 
-const { assertPublicHost, fetchSafe, readCapped, SafeFetchError } = await import("@/lib/http-safe");
+const { assertPublicHost, fetchSafe, readCapped, SafeFetchError } = await import("@/core/http-safe");
 
 afterEach(() => vi.unstubAllGlobals());
 

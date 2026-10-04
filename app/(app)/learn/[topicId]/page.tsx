@@ -4,20 +4,23 @@ import { notFound } from "next/navigation";
 import { Award, CalendarClock, Check, ChevronLeft, ChevronRight, ExternalLink, Lock, Network, Sparkles } from "lucide-react";
 import { LinkCard } from "@/components/shared/link-card";
 import { ToneBadge } from "@/components/shared/tone-badge";
-import { LEVELS, StatusRing } from "@/components/learn/topic-meta";
-import { TopicStudy } from "@/components/learn/topic-study";
+import { LEVELS, StatusRing } from "@/modules/learn/components/topic-meta";
+import { TopicStudy } from "@/modules/learn/components/topic-study";
 import { BackLink } from "@/components/shared/back-link";
 import { TrackChip } from "@/components/shared/badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { practiceCases, subtopicNotes, systemDesign, topicById, topics, trackById } from "@/lib/content";
-import { casePath } from "@/lib/domain/case-quiz";
-import { neighbours, topicProgress } from "@/lib/domain/learn";
-import { planClock } from "@/lib/plan-clock";
-import { getSubtopicProgressMap } from "@/lib/services/learn";
-import { getMasteryMap } from "@/lib/services/mastery";
-import { getSettings } from "@/lib/services/settings";
+import { practiceCases, subtopicNotes, systemDesign, topicById, topics, trackById } from "@/core/content";
+import { casePath } from "@/modules/design/domain/case-quiz";
+import { neighbours, topicProgress } from "@/modules/learn/domain/learn";
+import { planClock } from "@/core/plan-clock";
+import { getSubtopicProgressMap } from "@/modules/learn/services/learn";
+import { courseLessonByKey } from "@/core/courses";
+import { getAllDoneKeys } from "@/modules/course/services/progress";
+import { getMasteryMap } from "@/modules/progress/services/mastery";
+import { lessonForSubtopic } from "@/modules/progress/services/studied";
+import { getSettings } from "@/modules/settings/services/settings";
 
 export async function generateMetadata({ params }: PageProps<"/learn/[topicId]">): Promise<Metadata> {
   const { topicId } = await params;
@@ -52,6 +55,14 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
     return { id, title, done: !!progress[id], meta: m?.attempts ? `practice ${m.score}% · ${m.attempts} run${m.attempts === 1 ? "" : "s"}` : undefined };
   });
   const notes = Object.fromEntries(items.flatMap((it) => (progress[it.id]?.notes ? [[it.id, progress[it.id]!.notes]] : [])));
+  const doneLessons = await getAllDoneKeys();
+  const courseLessons = Object.fromEntries(
+    items.flatMap((it) => {
+      const key = lessonForSubtopic.get(it.id);
+      const lesson = key ? courseLessonByKey.get(key) : undefined;
+      return key && lesson ? [[it.id, { href: `/courses/${lesson.courseId}/${lesson.id}`, title: lesson.title, done: doneLessons.has(key) }]] : [];
+    }),
+  );
   const lessons = Object.fromEntries(items.flatMap((it) => (subtopicNotes.has(it.id) ? [[it.id, subtopicNotes.get(it.id)!]] : [])));
   const cases = [
     ...systemDesign.cases.filter((c) => c.topicId === topic.id).map((c) => ({ key: `hld:${c.slug}`, title: c.title, summary: c.summary, href: casePath("hld", c.slug) })),
@@ -96,7 +107,7 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
             <CardDescription>Tick each one once you can explain it. Practice runs a short quiz on just that subtopic.</CardDescription>
           </CardHeader>
           <CardContent>
-            <TopicStudy items={items} notes={notes} lessons={lessons} nextId={nextId} designTemplate={topic.track === "hld"} />
+            <TopicStudy items={items} notes={notes} lessons={lessons} courseLessons={courseLessons} nextId={nextId} designTemplate={topic.track === "hld"} />
           </CardContent>
         </Card>
 

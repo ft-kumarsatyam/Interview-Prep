@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { Award, Briefcase, Lock, RotateCcw, Sparkles } from "lucide-react";
-import { PracticeRunner, type NextStep } from "@/components/learn/practice-runner";
+import { PracticeRunner, type NextStep } from "@/modules/learn/components/practice-runner";
 import { BackLink } from "@/components/shared/back-link";
 import { TrackChip } from "@/components/shared/badges";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { topicById, topics, trackById } from "@/lib/content";
-import { CASE_QUIZ_SIZE } from "@/lib/domain/case-quiz";
-import { SUBTOPIC_PRACTICE_SIZE, TOPIC_QUIZ_SIZE } from "@/lib/domain/mastery";
-import { getMasteryMap } from "@/lib/services/mastery";
-import { MISTAKES_QUIZ_SIZE, resolvePracticeTarget, topicQuizEligibility, type PracticeTarget } from "@/lib/services/practice";
-import { getSettings } from "@/lib/services/settings";
+import { topicById, topics, trackById } from "@/core/content";
+import { CASE_QUIZ_SIZE } from "@/modules/design/domain/case-quiz";
+import { SUBTOPIC_PRACTICE_SIZE, TOPIC_QUIZ_SIZE } from "@/modules/progress/domain/mastery";
+import { getMasteryMap } from "@/modules/progress/services/mastery";
+import { MISTAKES_QUIZ_SIZE, resolvePracticeTarget, topicQuizEligibility, type PracticeTarget } from "@/modules/quiz/services/practice";
+import { getSettings } from "@/modules/settings/services/settings";
 
 export const metadata: Metadata = { title: "Practice" };
 
@@ -38,6 +38,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/learn/p
   const { ref } = await searchParams;
   const target = typeof ref === "string" ? resolvePracticeTarget(ref) : null;
   if (!target) notFound();
+  if (target.scope === "custom") redirect("/practice/quiz");
 
   const [settings, mastery, eligibility] = await Promise.all([
     getSettings(),
@@ -48,7 +49,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/learn/p
   const trackInfo = trackById.get(target.track);
   const track = trackInfo?.name ?? target.track;
   const passPct = target.scope === "topic" ? settings.topicMasteryPct : settings.quizPassPct;
-  const size = { topic: TOPIC_QUIZ_SIZE, case: CASE_QUIZ_SIZE, mistakes: MISTAKES_QUIZ_SIZE, subtopic: SUBTOPIC_PRACTICE_SIZE }[target.scope];
+  const size = { topic: TOPIC_QUIZ_SIZE, case: CASE_QUIZ_SIZE, mistakes: MISTAKES_QUIZ_SIZE, subtopic: SUBTOPIC_PRACTICE_SIZE, custom: 10 }[target.scope];
   const back =
     target.scope === "mistakes"
       ? { href: "/quiz/mistakes", label: "your mistakes" }

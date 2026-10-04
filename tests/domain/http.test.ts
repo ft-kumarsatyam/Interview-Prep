@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pLimit } from "@/lib/http";
+import { pLimit } from "@/core/http";
 
 describe("pLimit", () => {
   it("never runs more than n tasks at once and returns each result", async () => {

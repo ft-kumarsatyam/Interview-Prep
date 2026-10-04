@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChecklist, buildUnreachableChecklist, type SetupInput } from "@/lib/domain/setup";
+import { buildChecklist, buildUnreachableChecklist, type SetupInput } from "@/modules/planner/domain/setup";
 
 const now = new Date("2026-10-02T14:00:00Z");
 const hoursAgo = (h: number) => new Date(now.getTime() - h * 3_600_000);
@@ -111,5 +111,19 @@ describe("AI features item", () => {
     expect(c.items[0]).toMatchObject({ id: "database", status: "todo", required: true });
     expect(c.items[0]!.detail).toContain("connection refused");
     expect(c.items[0]!.detail).toContain("Network Access");
+  });
+});
+
+describe("job-search steps", () => {
+  it("are left out when unknown, optional, and reflect what is saved", () => {
+    expect(buildChecklist(healthy).items.some((i) => i.id === "resume" || i.id === "job-prefs")).toBe(false);
+    const none = { ...healthy, jobSearch: { hasResume: false, prefsSaved: false, jobsTracked: 0 } };
+    expect(item(none, "resume")).toMatchObject({ status: "todo", required: false });
+    expect(item(none, "job-prefs")).toMatchObject({ status: "todo", required: false });
+    expect(buildChecklist(none).requiredLeft).toBe(buildChecklist(healthy).requiredLeft);
+    const done = { ...healthy, jobSearch: { hasResume: true, prefsSaved: true, jobsTracked: 3 } };
+    expect(item(done, "resume").status).toBe("ok");
+    expect(item(done, "job-prefs")).toMatchObject({ status: "ok" });
+    expect(item(done, "job-prefs").detail).toContain("3 jobs are being tracked");
   });
 });

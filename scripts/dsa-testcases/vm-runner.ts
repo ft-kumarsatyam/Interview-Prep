@@ -4,8 +4,8 @@
  * (ListNode, TreeNode and the array encodings) so references see exactly what the browser sandbox provides.
  */
 import vm from "node:vm";
-import type { ArgType, ReturnKind } from "@/lib/domain/dsa-runner";
-import { WORKER_LIB_SOURCE } from "@/lib/sandbox/worker-lib";
+import type { ArgType, ReturnKind } from "@/modules/dsa/domain/dsa-runner";
+import { WORKER_LIB_SOURCE } from "@/core/sandbox/worker-lib";
 
 const TIMEOUT_MS = 2000;
 

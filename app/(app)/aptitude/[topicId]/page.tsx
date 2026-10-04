@@ -2,16 +2,16 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft, Lightbulb } from "lucide-react";
-import { AptitudeRunner } from "@/components/aptitude/aptitude-runner";
-import { DifficultyPicker } from "@/components/quiz/difficulty-picker";
+import { AptitudeRunner } from "@/modules/aptitude/components/aptitude-runner";
+import { DifficultyPicker } from "@/modules/quiz/components/difficulty-picker";
 import { Card, CardContent } from "@/components/ui/card";
-import { aptitudeBank } from "@/lib/content";
-import { bankDifficultyCounts } from "@/lib/domain/aptitude";
-import { percent } from "@/lib/domain/aptitude/progress";
-import { parseDifficulty } from "@/lib/domain/quiz";
-import type { Difficulty } from "@/lib/quiz/question";
-import { aptitudeCategoryById, aptitudeTopicById } from "@/lib/domain/aptitude/topics";
-import { bankHistory, drillQuestions, getAptitudeOverview, getTopicHistory, newSeed } from "@/lib/services/aptitude";
+import { aptitudeBank } from "@/core/content";
+import { bankDifficultyCounts } from "@/modules/aptitude/domain/aptitude";
+import { percent } from "@/modules/aptitude/domain/aptitude/progress";
+import { parseDifficulty } from "@/modules/quiz/domain/quiz";
+import type { Difficulty } from "@/modules/quiz/lib/question";
+import { aptitudeCategoryById, aptitudeTopicById } from "@/modules/aptitude/domain/aptitude/topics";
+import { bankHistory, drillQuestions, getAptitudeOverview, getTopicHistory, newSeed } from "@/modules/aptitude/services/aptitude";
 
 export async function generateMetadata({ params }: PageProps<"/aptitude/[topicId]">): Promise<Metadata> {
   const { topicId } = await params;

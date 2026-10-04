@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { careersUrl, detectBoard, isTechRole, JD_STORE_MAX, parseArbeitnow, parseAshby, parseBoard, parseGreenhouse, parseLever, parseRemoteOk, parseRemotive, parseSmartRecruiters, parseSmartRecruitersDetail, parseWorkable, postingKey, unescapeHtml, type CareerSource } from "@/lib/domain/job-postings";
+import { careersUrl, detectBoard, isTechRole, JD_STORE_MAX, parseArbeitnow, parseAshby, parseBoard, parseGreenhouse, parseLever, parseRemoteOk, parseRemotive, parseSmartRecruiters, parseSmartRecruitersDetail, parseWorkable, postingKey, unescapeHtml, type CareerSource } from "@/modules/jobs/domain/job-postings";
 
 const fx = (name: string) => JSON.parse(readFileSync(`tests/fixtures/jobs/${name}.json`, "utf8")) as unknown;
 const src = (ats: CareerSource["ats"], slug: string): CareerSource => ({ id: slug, name: slug, tier: "startup", ats, slug });

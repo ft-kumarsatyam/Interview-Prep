@@ -1,0 +1,240 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "mongo-schema-patterns",
+      "track": "mongo",
+      "title": "MongoDB schema design patterns",
+      "minutes": 18,
+      "summary": "Polymorphic, attribute, extended reference, subset, outlier, computed, bucket and schema versioning patterns, and the cost each one carries.",
+      "body": "## The core idea\nIn a relational database you normalise first and let joins reassemble data at query time. In MongoDB the guiding rule is the opposite: **data that is accessed together should be stored together**, shaped around the application's queries. The modelling lesson covered embed versus reference. This lesson covers the named **schema design patterns** MongoDB's own engineers documented in the \"Building with Patterns\" blog series and now in the official data modelling docs: reusable answers to the recurring problems of document size, read cost, write cost and change over time.\n\nEach pattern is a trade: you accept some duplication, some extra write work or some extra application logic in exchange for cheaper reads, bounded documents or easier evolution. Interviewers want to hear the trade, not just the name.\n\nTwo hard facts frame every decision:\n- A single document is limited to **16 MB**. Arrays that grow without bound eventually hit it, and long before that, large documents make every read and update more expensive (the whole document is loaded into cache and rewritten on update).\n- Writes to **one document are atomic**. Putting things that must change together in one document avoids multi-document transactions.\n\n## A map of the patterns\n```text\nproblem                                   pattern\n-----------------------------------------------------------------\nmany optional / varying fields            Attribute, Polymorphic\nread needs a few fields from another doc  Extended Reference\nhuge array, only recent items shown       Subset\na few docs are much bigger than the rest  Outlier\nexpensive aggregate read often            Computed (and Approximation)\nhigh-volume small events                  Bucket (or time series collections)\nschema changes over time                  Schema Versioning\nhierarchies                               Tree patterns (parent / ancestors / materialised path)\n```\n\n## Polymorphic pattern\nDocuments in one collection have **different shapes** but are queried together. A product catalogue holds books, laptops and shirts; an insurance system holds car, home and life policies.\n\n```js\n{ _id: 1, type: \"book\",   title: \"DDIA\", price: 45, isbn: \"978-1449373320\", pages: 616 }\n{ _id: 2, type: \"laptop\", title: \"X1\",   price: 1400, cpu: \"i7\", ramGb: 32 }\n{ _id: 3, type: \"shirt\",  title: \"Oxford\", price: 40, sizes: [\"S\",\"M\",\"L\"], colour: \"blue\" }\n```\n\nShared fields (`type`, `title`, `price`) power listing and search; type-specific fields live alongside. One collection, one query for \"everything under 50 dollars\", no 12-table join or entity-attribute-value mess. Use schema validation with `oneOf` per `type` if you want guardrails, and keep a discriminator field (`type`) indexed. Mongoose discriminators implement exactly this.\n\n## Attribute pattern\nWhen documents have **many similar optional fields** that you need to query, such as product specs or release dates per country, move them into an array of key/value pairs so one index covers them all.\n\n```js\n// Before: dozens of fields, an index per field\n{ title: \"Film\", release_US: ISODate(\"2026-05-01\"), release_FR: ISODate(\"2026-05-12\"), release_JP: ... }\n\n// After: one compound multikey index on { \"releases.k\": 1, \"releases.v\": 1 }\n{ title: \"Film\", releases: [ { k: \"US\", v: ISODate(\"2026-05-01\") }, { k: \"FR\", v: ISODate(\"2026-05-12\") } ] }\n\ndb.films.find({ releases: { $elemMatch: { k: \"FR\", v: { $gte: ISODate(\"2026-05-01\") } } } })\n```\n\nCost: queries are wordier and multikey indexes are larger. Use it when the set of keys is open-ended; for five fixed fields, keep plain fields.\n\n## Extended reference pattern\nYou reference another document, but every read needs a few of its fields. Instead of `$lookup` on every read, **copy those few fields** into the referencing document.\n\n```js\n// orders keep a snapshot of what they need from the customer\n{\n  _id: ObjectId(\"...\"),\n  customer: { _id: ObjectId(\"c42\"), name: \"Asha Rao\", city: \"Pune\" },  // extended reference\n  items: [ { sku: \"A1\", qty: 2, price: 499 } ],\n  total: 998\n}\n```\n\nChoose fields that **rarely change** or where a historical snapshot is actually correct (the shipping address at the time of the order should not change when the customer moves). For fields that do change (a display name), decide the staleness you can accept and update copies asynchronously, for example from a change stream on `customers`. The cost is duplication and an update fan-out; the win is single-document reads.\n\n## Subset pattern\nA document has a large array but the common read needs only part of it. A product with 5,000 reviews; the product page shows the 10 most recent.\n\n```js\n// products: embed only the newest 10\n{ _id: \"p1\", name: \"Headphones\", reviewCount: 5000, avgRating: 4.4,\n  recentReviews: [ { user: \"u9\", rating: 5, text: \"...\", at: ISODate(\"...\") } /* 10 max */ ] }\n\n// reviews: the full history, indexed by { productId: 1, at: -1 }\n{ _id: ObjectId(\"...\"), productId: \"p1\", user: \"u9\", rating: 5, text: \"...\", at: ISODate(\"...\") }\n```\n\nKeep the embedded subset bounded on write with `$push` plus `$each`, `$sort` and `$slice`:\n\n```js\ndb.products.updateOne(\n  { _id: \"p1\" },\n  { $push: { recentReviews: { $each: [review], $sort: { at: -1 }, $slice: 10 } },\n    $inc: { reviewCount: 1 } }\n);\n```\n\nThe working set shrinks (product documents stay small in cache), at the cost of writing reviews twice.\n\n## Outlier pattern\nMost documents are normal, a few are enormous: a book bought by 50 customers versus a bestseller bought by 2 million; a normal user versus a celebrity with 80 million followers. Designing everything for the outlier (always a separate collection) penalises the 99.9% case. Instead, embed normally and **flag the outliers** to overflow into extra documents.\n\n```js\n{ _id: \"book1\", title: \"Niche\", customers: [\"u1\", \"u2\", /* ... up to 1000 */] }\n{ _id: \"book2\", title: \"Bestseller\", customers: [/* first 1000 */], hasExtras: true }\n// overflow docs: { bookId: \"book2\", page: 1, customers: [/* next 1000 */] }\n```\n\nThe application checks `hasExtras` and fetches overflow pages only for outliers. Cost: two code paths. Benefit: the common case stays a single small read.\n\n## Computed pattern\nIf a value is **read far more often than its inputs change**, compute it on write (or periodically) and store it, instead of aggregating on every read.\n\n```js\n// On each new rating: maintain sum and count, derive average\ndb.products.updateOne(\n  { _id: \"p1\" },\n  [ { $set: { ratingSum: { $add: [\"$ratingSum\", 5] }, ratingCount: { $add: [\"$ratingCount\", 1] } } },\n    { $set: { avgRating: { $divide: [\"$ratingSum\", \"$ratingCount\"] } } } ]\n);\n```\n\nExamples: view counts, totals per order, follower counts, daily revenue rollups (computed by a scheduled `$merge` into a summary collection). The **approximation** variant updates a counter only every N events or samples, accepting small inaccuracy (page views) to cut write load. Cost: write amplification and the risk of drift; schedule a periodic recompute from source data if accuracy matters.\n\n## Bucket pattern (and time series collections)\nCovered briefly in the modelling lesson: group many small events into one document per entity per time window (for example one document per sensor per hour with an array of readings and precomputed `count`, `sum`, `min`, `max`). Fewer documents, smaller indexes, cheap range reads.\n\nSince MongoDB 5.0, **time series collections** implement bucketing internally: you insert one document per measurement, and the server stores them in compressed buckets keyed by a `metaField` and `timeField`. For metrics, IoT and event data, prefer them over hand-rolled buckets unless you need custom bucket logic.\n\n## Schema versioning pattern\nDocuments written over years have different shapes. Rather than a stop-the-world migration, add a **`schemaVersion`** field and let the application handle each version.\n\n```js\nfunction normalise(doc) {\n  switch (doc.schemaVersion ?? 1) {\n    case 1: return { ...doc, contact: { email: doc.email, phone: doc.phone }, schemaVersion: 2 };\n    case 2: return doc;\n  }\n}\n// read path: normalise; write path: always write v2 (\"lazy migration\")\n// background job: migrate remaining v1 docs in batches, then remove v1 code\n```\n\nPair with `$jsonSchema` validation using `validationLevel: \"moderate\"`, which validates inserts and updates to documents that already pass, so old documents do not block writes during the transition.\n\n## Tree patterns, briefly\nFor hierarchies (categories, org charts, comment threads): **parent reference** (simple, use `$graphLookup` to traverse), **array of ancestors** (`ancestors: [\"root\",\"electronics\",\"audio\"]`, indexed, fast breadcrumb and subtree queries), or **materialised path** (`path: \",root,electronics,audio,\"`, prefix regex queries). Pick based on whether reads or moves are more common.\n\n## Trade-offs and when not to use patterns\n- Every duplication pattern creates an **update fan-out** and a consistency question. Write it down: who updates the copy, how stale can it be, what reconciles drift?\n- If your data is highly relational with many-to-many relationships and ad-hoc reporting across them, contorting it into patterns may be worse than using Postgres.\n- Do not apply patterns speculatively. Start from the top queries and their frequency, then pick patterns that serve them.\n\n## Common mistakes\n- Unbounded arrays (comments, followers, events) embedded forever.\n- Extended references to fields that change often, with no update path.\n- Computed fields with no recompute job, drifting silently.\n- Hand-rolled bucketing where a time series collection would do.\n- Schema versioning without ever finishing the migration, leaving five code paths alive.\n\n## In the interview\n**What they probe:** whether you design from access patterns, know the named patterns and, above all, can state each one's cost.\n\n**A 60-second answer outline:**\n1. Start from queries and their ratios of reads to writes; store together what is read together; keep documents bounded.\n2. Polymorphic and attribute for varying shapes; extended reference to avoid `$lookup` on hot reads; subset and outlier to keep documents small; computed to precompute hot aggregates; bucket or time series for event data; schema versioning for evolution.\n3. Every pattern trades duplication or write work for read speed; name who keeps copies consistent.\n\n**Follow-ups to expect:**\n- How would you model followers for both normal users and celebrities?\n- What happens to an extended reference when the source changes?\n- When would you use a time series collection instead of the bucket pattern?\n- How do you migrate millions of documents to a new shape without downtime?",
+      "keyPoints": [
+        "Design from access patterns: store together what is read together, and keep documents bounded well below 16 MB",
+        "Polymorphic and attribute patterns handle documents with varying or open-ended fields",
+        "Extended reference, subset and outlier keep hot reads to one small document at the cost of duplication or extra code paths",
+        "Computed and bucket patterns move work from reads to writes; prefer time series collections for event data",
+        "Every duplication needs an owner for updates and a staleness budget; schema versioning enables lazy migrations"
+      ],
+      "interview": [
+        "How would you model a product catalogue where every product type has different attributes in MongoDB?",
+        "How would you model followers in MongoDB when most users have a few hundred and some have millions?",
+        "What is the extended reference pattern in MongoDB and what does it cost?",
+        "When would you use the computed pattern in MongoDB, and how do you keep computed values correct?"
+      ],
+      "check": [
+        {
+          "q": "A product page shows the 10 newest of up to 50,000 reviews. Which pattern fits best?",
+          "options": [
+            "Embed all reviews in the product document",
+            "Subset: embed the newest 10 with $push/$slice and keep all reviews in their own collection",
+            "Polymorphic pattern",
+            "Store reviews only in a separate collection and $lookup all of them on every page view"
+          ],
+          "answer": 1,
+          "why": "The subset keeps the product document small and the hot read single-document; the full history lives in a reviews collection."
+        },
+        {
+          "q": "Orders embed the customer's name and city copied from the customers collection. What is the main cost?",
+          "options": [
+            "Orders can no longer be indexed",
+            "Reads require a $lookup",
+            "The 16 MB limit is reached quickly",
+            "Duplicated data must be updated or accepted as stale when the customer changes"
+          ],
+          "answer": 3,
+          "why": "Extended references trade update fan-out and staleness for cheaper reads; choose rarely changing fields or snapshot semantics."
+        },
+        {
+          "q": "Why add a schemaVersion field to documents?",
+          "options": [
+            "So the application can read old and new shapes and migrate documents lazily instead of in one big migration",
+            "MongoDB requires it for schema validation",
+            "It enables multi-document transactions",
+            "It makes the WiredTiger cache store documents compressed"
+          ],
+          "answer": 0,
+          "why": "Versioned documents let readers normalise each shape while writers use the latest, and a background job finishes the migration."
+        }
+      ],
+      "resources": [
+        {
+          "title": "MongoDB docs: Schema design patterns",
+          "url": "https://www.mongodb.com/docs/manual/data-modeling/design-patterns/"
+        },
+        {
+          "title": "Building with Patterns: A Summary (MongoDB blog)",
+          "url": "https://www.mongodb.com/blog/post/building-with-patterns-a-summary"
+        },
+        {
+          "title": "MongoDB docs: Schema Validation",
+          "url": "https://www.mongodb.com/docs/manual/core/schema-validation/"
+        }
+      ]
+    },
+    {
+      "id": "mongo-performance",
+      "track": "mongo",
+      "title": "MongoDB performance: explain, working set and consistency costs",
+      "minutes": 18,
+      "summary": "Reading explain plans quantitatively, ESR in practice, the plan cache, the working set and WiredTiger cache, and the latency cost of write concern and read preference.",
+      "body": "## The core idea\nMongoDB performance comes down to three questions:\n1. **How much work does each query do?** Keys examined and documents examined versus documents returned, read from `explain()`.\n2. **Does the data the workload touches fit in memory?** The working set versus the WiredTiger cache.\n3. **What durability and consistency are you paying for?** Write concern, read concern and read preference each have latency costs.\n\nThe indexes lesson introduced the ESR rule and covered queries. This lesson builds the full method: reading explain output like a profiler, recognising the plan shapes that hurt, sizing memory, and pricing write concern and read preference choices.\n\n## Reading explain output\n```js\ndb.orders.find({ status: \"paid\", customerId: 42 })\n  .sort({ createdAt: -1 })\n  .limit(20)\n  .explain(\"executionStats\")\n```\n\nVerbosity modes: `\"queryPlanner\"` (chosen plan, no execution), `\"executionStats\"` (runs the winning plan and reports counts and time), `\"allPlansExecution\"` (also the trial runs of rejected candidates).\n\nThe numbers that matter in `executionStats`:\n\n| Field | Meaning | Healthy |\n|---|---|---|\n| `nReturned` | documents returned | the baseline |\n| `totalKeysExamined` | index entries scanned | close to nReturned |\n| `totalDocsExamined` | documents fetched from storage | close to nReturned, 0 if covered |\n| `executionTimeMillis` | server execution time | context dependent |\n\nThe **ratio** is the diagnosis. `nReturned: 20, totalKeysExamined: 20, totalDocsExamined: 20` is ideal. `nReturned: 20, totalDocsExamined: 480000` means the index (if any) is not selective for this query, or the sort forced reading everything.\n\nStage names in `winningPlan` (read from the innermost stage outward):\n- `COLLSCAN`: full collection scan. Fine for tiny collections and some analytics; a red flag on hot paths.\n- `IXSCAN`: index scan. Check `indexBounds`: tight bounds are good, `[MinKey, MaxKey]` on a field means the index is not narrowing it.\n- `FETCH`: loading documents after an index scan (often with a `filter` applied, meaning documents are read and then discarded).\n- `SORT`: an **in-memory, blocking sort**. All matching documents must be gathered before the first one is returned. Sorts above the memory limit (100 MB per stage) spill to disk if allowed, or error.\n- `PROJECTION_COVERED`: answered entirely from the index.\n- `SORT_MERGE`, `OR`: several index scans combined.\n- Recent versions can run some queries (notably aggregations with `$group` or `$lookup`) on the **slot-based execution engine (SBE)**, and their explain output is structured differently (for example a `slotBasedPlan` section); the same counters and the same ratio logic apply.\n\nA worked example:\n```text\nbefore: index { status: 1 }\n  IXSCAN status:[\"paid\",\"paid\"] -> FETCH filter customerId=42 -> SORT createdAt -> LIMIT\n  keysExamined 310000, docsExamined 310000, nReturned 20, 1900 ms\n\nafter: index { customerId: 1, status: 1, createdAt: -1 }   (Equality, Equality, Sort)\n  IXSCAN customerId:[42,42], status:[\"paid\",\"paid\"], createdAt:[MaxKey,MinKey] -> FETCH -> LIMIT\n  keysExamined 20, docsExamined 20, nReturned 20, 2 ms\n```\n\n## ESR in practice, and its exceptions\nThe Equality, Sort, Range guideline (MongoDB docs) orders compound index fields: equality predicates first, then the sort field, then range predicates. Putting the range before the sort makes the index unable to return documents in sort order, so a blocking `SORT` appears.\n\nNuances that come up in interviews:\n- **`$in` is equality for index bounds** but, combined with a sort, can require merging several sorted runs (`SORT_MERGE`) or an in-memory sort when the list is large. Small `$in` lists usually behave like equality.\n- **Selectivity still matters**: an equality on `status` with three possible values narrows little. ESR orders fields for correct sort and bounds; it does not make a low-selectivity field useful on its own.\n- **Range then sort on the same field** is fine: `{ createdAt: { $gte: d } }` sorted by `createdAt` uses one field for both.\n- **Negations** (`$ne`, `$nin`) and unanchored regexes scan most of the index.\n\n## The plan cache\nFor query shapes with several candidate indexes, the planner races them in a short trial and caches the winner per **query shape**. If data distribution changes (or the first run had unusual parameters), the cached plan can be bad for later queries. Clues: the same query is sometimes fast and sometimes slow. Tools: `db.collection.getPlanCache().clear()`, `planCacheClear` for one shape, or `hint()` as a last resort (hints rot as indexes change). Removing redundant overlapping indexes often fixes plan flipping.\n\n## Finding slow queries\n- **Slow query log**: operations slower than `slowms` (100 ms by default) are logged by `mongod`.\n- **Database profiler**: `db.setProfilingLevel(1, { slowms: 50 })` writes slow operations to `system.profile`, which you can query (`planSummary`, `keysExamined`, `docsExamined`).\n- **`$indexStats`**: per-index usage counts, to find unused indexes that only cost writes.\n- **Atlas Performance Advisor and Query Profiler**: suggest indexes from the slow log and highlight shapes with bad ratios.\n- `db.currentOp()` for long-running operations right now.\n\n## The working set and the WiredTiger cache\nThe **working set** is the data and indexes your workload touches frequently. WiredTiger keeps an internal cache, by default the larger of 50% of (RAM minus 1 GB) and 256 MB; the rest of RAM serves the filesystem cache, which holds compressed data files. Data in the WiredTiger cache is uncompressed.\n\nWhen the working set fits, reads are memory speed. When it does not:\n- Reads miss the cache and go to disk; latency jumps from sub-millisecond to milliseconds.\n- The cache fills with dirty pages faster than eviction can write them; WiredTiger makes application threads help with eviction, and write latency spikes.\n\nWhat to watch (in `serverStatus().wiredTiger.cache`, Atlas metrics, or your exporter): cache fill ratio, dirty ratio, pages read into cache per second, and disk IOPS and queue depth. Rules of thumb: **indexes in particular should fit in RAM**, since every indexed query walks them.\n\nWays to shrink the working set:\n- Drop unused indexes and avoid indexes on low-value fields.\n- Keep documents small: subset and outlier patterns, move cold large fields out of hot documents.\n- Archive cold data (Atlas Online Archive, a separate collection, TTL indexes for expiring data).\n- Use projections so the network carries less (though the server still loads the whole document into cache).\n- Shard when one machine's RAM can no longer hold the hot set.\n\n## Writes: index count and document growth\nEvery index adds work to every insert and to updates that touch indexed fields. A collection with 15 indexes can have write throughput a fraction of the same collection with 4. WiredTiger does not update documents in place on disk, so very large, frequently updated documents cost more cache space, eviction and write I/O than small ones.\n\n## Write concern costs\n| Write concern | Acknowledged when | Latency | Risk |\n|---|---|---|---|\n| `w: 0` | not at all | lowest | silent loss, no error reporting |\n| `w: 1` | primary applied it | low | lost if the primary fails before replicating (rolled back) |\n| `w: \"majority\"` | majority of voting members have it (default since 5.0) | adds a replication round trip, often a few ms in one region, much more across regions | survives failover |\n| `j: true` | also written to the on-disk journal | small extra | protects against process crash before journal flush |\n\n`\"majority\"` latency is set by the **second-fastest** member in a 3-node set (the primary plus one secondary). Spreading members across regions for disaster tolerance makes every majority write pay a cross-region round trip. That is a design decision, not a tuning knob. Use `wtimeout` so writes fail instead of hanging when a majority is unreachable, and remember that a timeout does not undo the write.\n\n## Read preference and read concern costs\n- **`primary`** (default): consistent with your writes, all load on one node.\n- **`primaryPreferred` / `secondary` / `secondaryPreferred`**: offload reads, but secondaries **lag**, so users can miss their own writes. Use `maxStalenessSeconds` (minimum 90) to avoid very stale secondaries, causal consistency sessions for read-your-writes, or keep user-facing reads on the primary.\n- **`nearest`**: lowest network latency, for geo-distributed reads that tolerate staleness.\n- Read concern **`local`** (default): fastest, may return data later rolled back. **`majority`**: only majority-committed data, small overhead. **`linearizable`**: confirms with a majority on every read, primary only, much slower; use for rare critical reads. **`snapshot`**: for transactions and point-in-time reads.\n\nSecondary reads do not scale writes and do not help if the working set does not fit; each secondary has the same data and cache pressure.\n\n## Trade-offs\n- More indexes speed reads and slow writes and consume RAM. Index for the top query shapes, not every possible filter.\n- Covered queries are fastest but need the index to include all projected fields and exclude `_id` unless indexed; wide indexes cost memory.\n- Majority writes cost latency; `w: 1` costs durability. Choose per operation if needed (logs vs payments).\n\n## Common mistakes and debugging\n- Reading only \"it uses an index\" (IXSCAN) without comparing keys and docs examined to returned.\n- Ignoring blocking `SORT` stages.\n- Leaving dozens of unused indexes.\n- Sending reads to secondaries and then debugging \"missing\" data.\n- Ignoring the cache dirty ratio during write-heavy incidents.\n- Debug method: slow log or profiler, then explain on the exact shape with realistic values, then index or reshape, then verify the ratio and watch cache metrics.\n\n## In the interview\n**What they probe:** can you read explain output quantitatively, design indexes for a query with sort, explain memory behaviour, and price consistency choices?\n\n**A 60-second answer outline:**\n1. Find slow shapes from the slow log, profiler or Performance Advisor.\n2. Run `explain(\"executionStats\")`: compare `totalKeysExamined` and `totalDocsExamined` with `nReturned`; look for `COLLSCAN` and in-memory `SORT`.\n3. Fix with an ESR-ordered compound index, a covered projection, or a reshaped query; recheck the ratio.\n4. Keep the working set, especially indexes, inside the WiredTiger cache; watch cache fill and dirty ratios.\n5. `w: \"majority\"` adds a replication round trip and depends on member placement; secondary reads trade freshness for load.\n\n**Follow-ups to expect:**\n- Why can a query with an IXSCAN still be slow?\n- What happens when the working set exceeds RAM?\n- How does member placement affect majority write latency?\n- How would you find indexes you can drop?",
+      "keyPoints": [
+        "The diagnosis is the ratio of totalKeysExamined and totalDocsExamined to nReturned, plus any COLLSCAN or blocking SORT",
+        "Order compound indexes Equality, Sort, Range; mind $in with sorts and low-selectivity fields",
+        "Keep the working set, especially indexes, in the WiredTiger cache; watch cache fill and dirty ratios",
+        "Every index slows writes and uses RAM; find unused ones with $indexStats",
+        "w: majority costs a replication round trip set by member placement; secondary reads trade freshness for load"
+      ],
+      "interview": [
+        "How do you read a MongoDB explain plan and tell whether a query is efficient?",
+        "Why can a MongoDB query that uses an index still be slow?",
+        "What is the working set in MongoDB, and what happens when it no longer fits in memory?",
+        "What do write concern and read preference choices cost in MongoDB?"
+      ],
+      "check": [
+        {
+          "q": "explain shows IXSCAN, nReturned: 20, totalKeysExamined: 250000, totalDocsExamined: 250000 and a SORT stage. What is the most likely fix?",
+          "options": [
+            "Add more RAM",
+            "Switch to read preference secondary",
+            "Create a compound index ordered by equality fields, then the sort field, then range fields",
+            "Use w: 1 for writes"
+          ],
+          "answer": 2,
+          "why": "The index is not selective for the query and cannot provide the sort order. An ESR-ordered index narrows bounds and removes the blocking sort."
+        },
+        {
+          "q": "In a three-member replica set with one secondary in another region, what mostly determines w: majority write latency?",
+          "options": [
+            "The slowest member",
+            "The round trip to the fastest secondary, since primary plus one secondary is a majority",
+            "The client's network only",
+            "The size of the oplog"
+          ],
+          "answer": 1,
+          "why": "Majority of three is two, so the write is acknowledged once the nearest secondary has it; if both secondaries are remote, every write pays a cross-region trip."
+        },
+        {
+          "q": "Write latency spikes and serverStatus shows a high WiredTiger dirty cache ratio. What is happening?",
+          "options": [
+            "Eviction cannot keep up, so application threads are drafted to evict pages",
+            "The query planner is re-planning every query",
+            "Read concern majority is blocking writes",
+            "The profiler is enabled"
+          ],
+          "answer": 0,
+          "why": "When dirty data fills the cache faster than it can be written, WiredTiger throttles by making application threads help evict, raising latency."
+        }
+      ],
+      "resources": [
+        {
+          "title": "MongoDB docs: Explain results",
+          "url": "https://www.mongodb.com/docs/manual/reference/explain-results/"
+        },
+        {
+          "title": "MongoDB docs: The ESR (Equality, Sort, Range) guideline",
+          "url": "https://www.mongodb.com/docs/manual/tutorial/equality-sort-range-guideline/"
+        },
+        {
+          "title": "MongoDB docs: WiredTiger storage engine",
+          "url": "https://www.mongodb.com/docs/manual/core/wiredtiger/"
+        },
+        {
+          "title": "MongoDB docs: Write concern",
+          "url": "https://www.mongodb.com/docs/manual/reference/write-concern/"
+        },
+        {
+          "title": "MongoDB docs: Read preference",
+          "url": "https://www.mongodb.com/docs/manual/core/read-preference/"
+        },
+        {
+          "title": "MongoDB docs: Analyzing MongoDB performance",
+          "url": "https://www.mongodb.com/docs/manual/administration/analyzing-mongodb-performance/"
+        }
+      ]
+    },
+    {
+      "id": "mongo-change-streams",
+      "track": "mongo",
+      "title": "Change streams, CDC, triggers and Atlas Search",
+      "minutes": 17,
+      "summary": "How change streams read the oplog, resume tokens and the oplog window, at-least-once consumers, CDC into Kafka and search, Atlas Triggers and Atlas Search.",
+      "body": "## The core idea\nA **change stream** is a cursor that delivers every insert, update, replace and delete on a collection, database or whole deployment, in order, as it happens. Instead of polling (\"give me rows changed since my last check\") or writing to two places from application code, a service subscribes to the database's own record of changes.\n\nUnder the hood a change stream reads the replica set's **oplog**, the same log secondaries replicate from, and exposes it through the aggregation framework with a stable, documented event format. That makes change streams the foundation for change data capture (CDC) into Kafka or a search index, cache invalidation, real-time UI updates, audit trails, and serverless database triggers.\n\nBecause it is a stream from a log with finite retention, the engineering questions are always the same: **where do I resume after a crash, what if I fall too far behind, and what happens if I process an event twice?**\n\n## How it works\n```text\n application writes -> primary -> oplog (capped, rolling window) -> secondaries\n                                     |\n                                     v\n                      change stream cursor (aggregation over the oplog)\n                      $match / $project run on the server\n                                     |\n                         events with _id = resume token\n                                     |\n                       consumer: process, then checkpoint token\n```\n\nFacts that shape every design:\n- Change streams need a **replica set or sharded cluster** (a single-node replica set works for local development; a standalone `mongod` does not).\n- They return only changes that are **majority-committed**, so you never see a write that is later rolled back in a failover.\n- Within a replica set, events arrive in oplog order. On a sharded cluster, `mongos` merges per-shard streams by cluster time, so you still get one globally ordered stream.\n- Each event's `_id` is a **resume token**, an opaque value that marks the position in the stream.\n\n## Opening a stream\n```js\nconst pipeline = [\n  { $match: { operationType: { $in: [\"insert\", \"update\", \"replace\", \"delete\"] },\n              \"fullDocument.status\": { $ne: \"draft\" } } },\n  { $project: { \"fullDocument.internalNotes\": 0 } },\n];\n\nconst stream = db.collection(\"products\").watch(pipeline, {\n  fullDocument: \"updateLookup\",\n  resumeAfter: await loadCheckpoint(\"products-indexer\"), // undefined on first run\n});\n\nfor await (const event of stream) {\n  await handle(event);                                   // must be idempotent\n  await saveCheckpoint(\"products-indexer\", event._id);   // after success\n}\n```\n\nAn update event looks roughly like:\n```json\n{\n  \"_id\": { \"_data\": \"8266F...\" },\n  \"operationType\": \"update\",\n  \"clusterTime\": { \"$timestamp\": { \"t\": 1790000000, \"i\": 3 } },\n  \"ns\": { \"db\": \"shop\", \"coll\": \"products\" },\n  \"documentKey\": { \"_id\": \"p1\" },\n  \"updateDescription\": { \"updatedFields\": { \"price\": 449 }, \"removedFields\": [], \"truncatedArrays\": [] },\n  \"fullDocument\": { \"_id\": \"p1\", \"name\": \"Headphones\", \"price\": 449, \"status\": \"live\" }\n}\n```\n\nFilter on the server with `$match` so the consumer does not receive and discard most events. You can `watch()` a collection, a database (`db.watch()`) or the whole deployment (`client.watch()`).\n\n## The full document question\nBy default an update event carries only the **delta** (`updateDescription`). Options:\n- **`fullDocument: \"updateLookup\"`**: the server looks up the current document when it returns the event. That is the document **as of the lookup**, not as of the change: if two updates happen quickly you may see the later state on both events, and if the document was deleted in between you get `null`.\n- **Pre- and post-images** (MongoDB 6.0+): enable `changeStreamPreAndPostImages` on the collection, then request `fullDocument: \"whenAvailable\"` or `\"required\"` for the exact post-image, and `fullDocumentBeforeChange` for the state before the change. Images are stored in a system collection, which costs storage and write work, and they expire according to cluster settings.\n\nFor \"sync this document to a search index\" the lookup is usually fine, because you want the latest state anyway. For an audit log or \"what exactly changed from what\", use pre/post images.\n\n## Resume tokens and the oplog window\nIf the consumer crashes, it restarts with the last token it **successfully processed**:\n- `resumeAfter: token`: continue after that event.\n- `startAfter: token`: like `resumeAfter`, but also works after an `invalidate` event (for example when the watched collection was dropped and recreated).\n- `startAtOperationTime: timestamp`: start from a cluster time, useful for \"snapshot then stream\" bootstraps.\n\nOfficial drivers automatically retry a resumable error once (for example during a primary election) using the latest token they saw, so short failovers are transparent.\n\nThe catch: the oplog is a **capped, rolling** log. Its window (how many hours of changes it holds) depends on oplog size and write volume. If your consumer is down longer than the window, the token's position no longer exists and resuming fails with a \"history lost\" error. Then the only safe recovery is a **full resync**: re-read the collection and restart the stream.\n\nMitigations:\n- Size the oplog for your worst realistic outage (`replSetResizeOplog`), or set a minimum retention period in hours (supported since 4.4).\n- Monitor the oplog window and **consumer lag** (now minus the `clusterTime` of the last processed event); alert well before lag approaches the window.\n- Design the resync path from day one; it will be needed.\n\n## Delivery semantics: at-least-once\nChange streams themselves deliver each event once per cursor, but your consumer can crash **after** acting on an event and **before** saving its token. On restart it replays from the older token. So, in practice, processing is **at-least-once**, and consumers must be **idempotent**:\n- Upsert by `documentKey._id` into the target (search index, cache, read model) rather than appending.\n- Use the event's resume token or `clusterTime` as a version and ignore events older than what the target already has.\n- When the side effect is in the same MongoDB deployment, write the result and the checkpoint in one transaction.\n\nGetting this wrong produces duplicate emails, double-counted analytics or out-of-order overwrites in the target.\n\n## CDC: getting changes into other systems\n**Kafka.** The MongoDB Kafka Connector's source connector and Debezium's MongoDB connector both read change streams and publish events to Kafka topics, handling offsets (resume tokens) for you. Kafka then fans out to many consumers with their own retention, so MongoDB serves one stream instead of many.\n\n**Search indexes and caches.** A small indexer service watches the collection and upserts into Elasticsearch or OpenSearch, or deletes cache keys. Bootstrap pattern:\n```text\n1. record current cluster time T (or open the stream and hold the first token)\n2. bulk copy the collection into the target\n3. start the stream at T; apply events idempotently (some will overlap the copy)\n```\n\n**Outbox, revisited.** The transactions lesson covered writing an outbox document in the same transaction as the business change. A change stream on the outbox collection is a clean relay: it publishes each outbox event to the broker, with the token as the checkpoint.\n\n**Change streams vs dual writes.** Writing to MongoDB and then to Kafka from application code can lose the second write on a crash, and two concurrent writers can apply in different orders. Deriving events from the database log gives one ordered source of truth.\n\n## Atlas Triggers\nOn MongoDB Atlas, **database triggers** run a serverless function for matching change events (built on change streams, with resume handled by the platform), and **scheduled triggers** run on a cron schedule. They are convenient for small reactions such as \"send a welcome email on user insert\" or \"denormalise a field into another collection\". Trade-offs: functions run in Atlas's JavaScript environment with execution time limits, they are harder to test and version than your own services, and a trigger that falls behind or fails repeatedly can be suspended and needs monitoring. For core business pipelines, many teams prefer their own consumer or Kafka.\n\n## Atlas Search overview\n**Atlas Search** adds Lucene-based full-text search to Atlas clusters. A separate search process (`mongot`) runs alongside `mongod` and keeps Lucene indexes in sync, using change streams internally, so search indexes are **eventually consistent** with the collection (usually seconds behind).\n\nYou query it with the `$search` aggregation stage, which must be the first stage:\n```js\ndb.products.aggregate([\n  { $search: {\n      index: \"products\",\n      compound: {\n        must: [{ text: { query: \"noise cancelling headphnes\", path: [\"name\", \"description\"],\n                         fuzzy: { maxEdits: 1 } } }],\n        filter: [{ range: { path: \"price\", lte: 500 } }],\n      },\n  } },\n  { $limit: 20 },\n  { $project: { name: 1, price: 1, score: { $meta: \"searchScore\" } } },\n]);\n```\n\nCompared with a classic `$text` index: analyzers per language, fuzzy matching for typos, autocomplete, synonyms, facets (`$searchMeta`), highlighting and relevance tuning, and no limit of one text index per collection. **Atlas Vector Search** (`$vectorSearch`) uses the same infrastructure for embedding similarity, which is how RAG systems keep vectors next to operational data. The alternative is running Elasticsearch or OpenSearch yourself and feeding it with a change stream indexer; Atlas Search removes that pipeline at the cost of being tied to Atlas and its sizing.\n\n## Trade-offs and limits\n- Each open change stream is a server-side cursor reading the oplog. Hundreds of streams (one per websocket client) can load the cluster; use one stream per service and fan out in your application.\n- Events larger than 16 MB fail (for example with large pre/post images); recent versions add a `$changeStreamSplitLargeEvent` stage to split them.\n- `updateLookup` adds a read per update event.\n- Change streams do not replace a durable queue: retention is bounded by the oplog, and there is no consumer group or per-message acknowledgement. Push into Kafka or a queue when you need those.\n\n## Common mistakes\n- Saving the resume token before processing (loses events on crash) or never saving it (reprocesses everything).\n- Non-idempotent consumers (appending, incrementing, emailing) without dedupe.\n- No resync path for oplog history loss.\n- Assuming `updateLookup` returns the document as of the change.\n- Opening a change stream per end user.\n\n## In the interview\n**What they probe:** do you understand that change streams sit on the oplog, how resume and the oplog window interact, what at-least-once means for consumers, and where Atlas Triggers and Atlas Search fit?\n\n**A 60-second answer outline:**\n1. Change streams are ordered, majority-committed change events from the oplog, filterable with an aggregation pipeline.\n2. Every event has a resume token; checkpoint after processing and resume with `resumeAfter` / `startAfter`; if downtime exceeds the oplog window, resync.\n3. Processing is at-least-once, so consumers upsert idempotently and ignore stale versions.\n4. Use them for CDC into Kafka (connectors), search indexing, cache invalidation and outbox relays; Atlas Triggers for small reactions; Atlas Search as managed Lucene kept in sync the same way.\n\n**Follow-ups to expect:**\n- What happens if the consumer is down for two days?\n- Why can `updateLookup` return a newer document than the event?\n- How do you bootstrap a new search index from an existing collection without missing changes?\n- Why not open a change stream per websocket connection?",
+      "keyPoints": [
+        "Change streams deliver ordered, majority-committed change events from the oplog, filtered server-side with $match",
+        "Checkpoint the resume token after processing; if downtime exceeds the oplog window, a full resync is required",
+        "Processing is at-least-once, so consumers must upsert idempotently and ignore stale versions",
+        "updateLookup returns the document at lookup time; use pre- and post-images (6.0+) for exact before and after states",
+        "Atlas Triggers and Atlas Search are built on the same change machinery; search indexes are eventually consistent"
+      ],
+      "interview": [
+        "How do resume tokens work, and what happens if a change stream consumer is down longer than the oplog window?",
+        "How would you keep a search index or Kafka topic in sync with a MongoDB collection reliably?",
+        "What delivery guarantees do MongoDB change streams give, and how do you make consumers safe?",
+        "How does Atlas Search differ from a regular MongoDB text index?"
+      ],
+      "check": [
+        {
+          "q": "A change stream consumer was offline for three days and now fails to resume with a history-lost error. What is the correct recovery?",
+          "options": [
+            "Resume from the latest token anyway and skip the gap",
+            "Increase the batch size and retry",
+            "Switch to read preference secondary",
+            "Do a full resync of the target from the collection, then start a new stream"
+          ],
+          "answer": 3,
+          "why": "The token's position has rolled out of the oplog, so changes in the gap cannot be replayed. Only a fresh copy restores correctness."
+        },
+        {
+          "q": "Why must change stream consumers usually be idempotent?",
+          "options": [
+            "A crash after processing but before saving the token replays events on restart",
+            "Change streams randomly duplicate events",
+            "The oplog stores each write twice",
+            "Majority read concern returns each event once per replica"
+          ],
+          "answer": 0,
+          "why": "Checkpointing after side effects gives at-least-once processing; replays must not double-apply."
+        },
+        {
+          "q": "With fullDocument: 'updateLookup', two quick updates to the same document arrive. What might both events contain?",
+          "options": [
+            "The exact pre-image of each update",
+            "Only the changed fields, never the full document",
+            "The document's current state at lookup time, possibly reflecting the later update on both",
+            "An error, because lookups are not allowed on updates"
+          ],
+          "answer": 2,
+          "why": "updateLookup reads the latest majority-committed document when the event is returned, not the state at the time of that change."
+        }
+      ],
+      "resources": [
+        {
+          "title": "MongoDB docs: Change Streams",
+          "url": "https://www.mongodb.com/docs/manual/changeStreams/"
+        },
+        {
+          "title": "MongoDB docs: Change events reference",
+          "url": "https://www.mongodb.com/docs/manual/reference/change-events/"
+        },
+        {
+          "title": "MongoDB Kafka Connector",
+          "url": "https://www.mongodb.com/docs/kafka-connector/current/"
+        },
+        {
+          "title": "Debezium connector for MongoDB",
+          "url": "https://debezium.io/documentation/reference/stable/connectors/mongodb.html"
+        },
+        {
+          "title": "Atlas Triggers",
+          "url": "https://www.mongodb.com/docs/atlas/atlas-ui/triggers/"
+        },
+        {
+          "title": "MongoDB Search (Atlas Search) docs",
+          "url": "https://www.mongodb.com/docs/atlas/atlas-search/"
+        }
+      ]
+    }
+  ],
+  "projects": []
+}

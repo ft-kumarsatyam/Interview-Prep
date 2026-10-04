@@ -1,14 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { subtopics } from "@/lib/content";
-import { correctAnswerKey, isAnswerCorrect } from "@/lib/domain/quiz";
-import { jsonProvider } from "@/lib/llm";
-import { Quiz } from "@/lib/models/day";
-import { Mastery, PracticeAttempt } from "@/lib/models/learning";
-import { recomputeDay } from "@/lib/services/day";
-import { ensureToday } from "@/lib/services/plan";
-import { startPractice, submitPractice } from "@/lib/services/practice";
-import { recordSolve, toggleSubtopic } from "@/lib/services/progress";
-import { getQuizReview, startQuiz, submitQuiz } from "@/lib/services/quiz";
+import { subtopics } from "@/core/content";
+import { correctAnswerKey, isAnswerCorrect } from "@/modules/quiz/domain/quiz";
+import { jsonProvider } from "@/core/llm";
+import { Quiz } from "@/core/models/day";
+import { Mastery, PracticeAttempt } from "@/core/models/learning";
+import { recomputeDay } from "@/modules/planner/services/day";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { startPractice, submitPractice } from "@/modules/quiz/services/practice";
+import { recordSolve, toggleSubtopic } from "@/modules/progress/services/progress";
+import { getQuizReview, startQuiz, submitQuiz } from "@/modules/quiz/services/quiz";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

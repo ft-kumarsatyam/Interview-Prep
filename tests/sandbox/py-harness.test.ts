@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { PY_HARNESS } from "@/lib/sandbox/py-worker-source";
+import { PY_HARNESS } from "@/core/sandbox/py-worker-source";
 
 /**
  * The Python half of the harness, run by a local CPython (the browser runs the same source in Pyodide).

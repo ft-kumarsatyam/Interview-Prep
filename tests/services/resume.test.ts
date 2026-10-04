@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { roastFromRules, roastPrompt, resumeRoastSchema } from "@/lib/domain/resume-ai";
-import { scoreResume } from "@/lib/domain/ats";
-import { Resume } from "@/lib/models/resume";
-import { Settings } from "@/lib/models/system";
-import { exportBackup } from "@/lib/services/export";
-import { createVersion, deleteVersion, getBaseResume, getResumeById, listVersions, MAX_VERSIONS, roastBaseResume, saveBaseResume, tailorBaseResume } from "@/lib/services/resume";
-import { invalidateSettings } from "@/lib/services/settings";
+import { roastFromRules, roastPrompt, resumeRoastSchema } from "@/modules/resume/domain/resume-ai";
+import { scoreResume } from "@/modules/jobs/domain/ats";
+import { Resume } from "@/core/models/resume";
+import { Settings } from "@/core/models/system";
+import { exportBackup } from "@/core/services/export";
+import { createVersion, deleteVersion, getBaseResume, getResumeById, listVersions, MAX_VERSIONS, roastBaseResume, saveBaseResume, tailorBaseResume } from "@/modules/resume/services/resume";
+import { invalidateSettings } from "@/modules/settings/services/settings";
 import { resetDb, startDb, stopDb } from "./db";
 
 const TEXT = `Aarav Sharma

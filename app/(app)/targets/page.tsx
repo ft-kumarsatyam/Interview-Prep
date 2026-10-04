@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CalendarClock, Target as TargetIcon } from "lucide-react";
-import { AddTarget } from "@/components/targets/add-target";
-import { CompanyExplorer } from "@/components/targets/company-explorer";
+import { AddTarget } from "@/modules/targets/components/add-target";
+import { CompanyExplorer } from "@/modules/targets/components/company-explorer";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionHeading } from "@/components/shared/section-heading";
@@ -10,12 +10,12 @@ import { ToneBadge } from "@/components/shared/tone-badge";
 import type { Tone } from "@/components/shared/stat-tile";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { companyCatalog, tierProfiles } from "@/lib/content";
-import { PRIORITY_LABEL, primaryTier } from "@/lib/domain/companies";
-import { diffDays } from "@/lib/domain/dates";
-import { todayIn } from "@/lib/services/plan";
-import { getSettings } from "@/lib/services/settings";
-import { MAX_TARGETS, getTargetsOverview } from "@/lib/services/targets";
+import { companyCatalog, tierProfiles } from "@/core/content";
+import { PRIORITY_LABEL, primaryTier } from "@/modules/targets/domain/companies";
+import { diffDays } from "@/core/domain/dates";
+import { todayIn } from "@/modules/planner/services/plan";
+import { getSettings } from "@/modules/settings/services/settings";
+import { MAX_TARGETS, getTargetsOverview } from "@/modules/targets/services/targets";
 
 export const metadata: Metadata = { title: "Targets" };
 

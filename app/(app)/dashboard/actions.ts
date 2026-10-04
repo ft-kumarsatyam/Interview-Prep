@@ -2,12 +2,12 @@
 
 import { refresh } from "next/cache";
 import { z } from "zod";
-import { requireSession } from "@/lib/auth/dal";
-import { isDateStr } from "@/lib/domain/dates";
-import { syncLeetCode } from "@/lib/services/leetcode-sync";
-import { REPLAN_MAX_HOURS, REPLAN_MIN_HOURS, replanToday, todayIn } from "@/lib/services/plan";
-import { recordSolve, saveProblemNotes, saveSubtopicNotes, toggleSubtopic as toggle } from "@/lib/services/progress";
-import { getSettings } from "@/lib/services/settings";
+import { requireSession } from "@/core/auth/dal";
+import { isDateStr } from "@/core/domain/dates";
+import { syncLeetCode } from "@/modules/dsa/services/leetcode-sync";
+import { REPLAN_MAX_HOURS, REPLAN_MIN_HOURS, replanToday, todayIn } from "@/modules/planner/services/plan";
+import { recordSolve, saveProblemNotes, saveSubtopicNotes, toggleSubtopic as toggle } from "@/modules/progress/services/progress";
+import { getSettings } from "@/modules/settings/services/settings";
 
 export type ActionResult<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 

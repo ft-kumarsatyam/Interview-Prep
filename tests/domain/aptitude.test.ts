@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import aptitudeBankJson from "@/data/aptitude-bank.json";
-import { buildMockQuestions, buildTopicQuestions, hasConventionalOrder, hasQuestions, maxQuestions, questionIdentity, type AptitudeBank } from "@/lib/domain/aptitude";
-import { syllogismFollows } from "@/lib/domain/aptitude/logical";
-import { MASTERY_WINDOW, topicStats, type SessionRecord } from "@/lib/domain/aptitude/progress";
-import { frac } from "@/lib/domain/aptitude/question";
-import { APTITUDE_CATEGORIES, APTITUDE_TOPICS, topicsIn } from "@/lib/domain/aptitude/topics";
+import { buildMockQuestions, buildTopicQuestions, hasConventionalOrder, hasQuestions, maxQuestions, questionIdentity, type AptitudeBank } from "@/modules/aptitude/domain/aptitude";
+import { syllogismFollows } from "@/modules/aptitude/domain/aptitude/logical";
+import { MASTERY_WINDOW, topicStats, type SessionRecord } from "@/modules/aptitude/domain/aptitude/progress";
+import { frac } from "@/modules/aptitude/domain/aptitude/question";
+import { APTITUDE_CATEGORIES, APTITUDE_TOPICS, topicsIn } from "@/modules/aptitude/domain/aptitude/topics";
 
 const bank = aptitudeBankJson as unknown as AptitudeBank;
 
@@ -146,7 +146,7 @@ describe("topicStats", () => {
 
 describe("summarizeRun", () => {
   it("counts correct, skipped and within-target answers and ranks weak topics first", async () => {
-    const { summarizeRun } = await import("@/lib/domain/aptitude/progress");
+    const { summarizeRun } = await import("@/modules/aptitude/domain/aptitude/progress");
     const s = summarizeRun([
       { topic: "percentage", choice: 1, answerIndex: 1, ms: 20_000 },
       { topic: "percentage", choice: 2, answerIndex: 1, ms: 30_000 },

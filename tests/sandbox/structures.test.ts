@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { workerLib } from "@/lib/sandbox/worker-lib-node";
+import { workerLib } from "@/core/sandbox/worker-lib-node";
 import { runWorker } from "./helpers";
 
 const lib = workerLib();

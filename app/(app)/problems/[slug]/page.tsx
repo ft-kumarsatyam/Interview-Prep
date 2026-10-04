@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
-import { CustomProblemIde } from "@/components/problems/custom-problem-ide";
-import { getCustomProblem } from "@/lib/services/custom-problems";
-import { cn } from "@/lib/utils";
+import { CustomProblemIde } from "@/modules/dsa/components/problems/custom-problem-ide";
+import { getCustomProblem } from "@/modules/dsa/services/custom-problems";
+import { cn } from "@/core/utils";
 
 const DIFF_CLASS = { Easy: "text-success", Medium: "text-warning", Hard: "text-destructive" } as const;
 

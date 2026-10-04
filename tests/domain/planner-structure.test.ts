@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildIndicators, type IndicatorInput } from "@/lib/domain/indicators";
-import { carryOverChange, diffPlannerChanges, replanChange, type PlannerState } from "@/lib/domain/plan-changes";
-import { DEFAULT_PROFILE, plannerInputSchema, validatePlannerWindow, weeklyHours } from "@/lib/domain/planner-profile";
-import { dayItems, sprintRange, summarizeSprint, type SprintDay } from "@/lib/domain/sprint";
+import { buildIndicators, type IndicatorInput } from "@/modules/progress/domain/indicators";
+import { carryOverChange, diffPlannerChanges, replanChange, type PlannerState } from "@/modules/planner/domain/plan-changes";
+import { DEFAULT_PROFILE, plannerInputSchema, validatePlannerWindow, weeklyHours } from "@/modules/planner/domain/planner-profile";
+import { dayItems, sprintRange, summarizeSprint, type SprintDay } from "@/modules/planner/domain/sprint";
 
 const day = (date: string, over: Partial<SprintDay> = {}): SprintDay => ({
   date,

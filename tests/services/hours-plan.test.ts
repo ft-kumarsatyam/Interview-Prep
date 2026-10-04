@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { problems } from "@/lib/content";
-import { DEFAULT_COSTS } from "@/lib/domain/time-budget";
-import { DailyPlan, Quiz } from "@/lib/models/day";
-import { ProblemProgress } from "@/lib/models/progress";
-import { ensureToday, loadCosts, replanToday } from "@/lib/services/plan";
-import { recordSolve } from "@/lib/services/progress";
-import { getSettings, saveSettings, updateSettings } from "@/lib/services/settings";
+import { problems } from "@/core/content";
+import { DEFAULT_COSTS } from "@/modules/planner/domain/time-budget";
+import { DailyPlan, Quiz } from "@/core/models/day";
+import { ProblemProgress } from "@/core/models/progress";
+import { ensureToday, loadCosts, replanToday } from "@/modules/planner/services/plan";
+import { recordSolve } from "@/modules/progress/services/progress";
+import { getSettings, saveSettings, updateSettings } from "@/modules/settings/services/settings";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

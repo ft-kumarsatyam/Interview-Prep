@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Notification, PushSubscriptionModel } from "@/lib/models/system";
-import { webPushChannel } from "@/lib/notify/web-push";
-import { getNotificationDetail, notify } from "@/lib/services/notifications";
-import { listPushDevices, savePushSubscription } from "@/lib/services/push-subscriptions";
+import { Notification, PushSubscriptionModel } from "@/core/models/system";
+import { webPushChannel } from "@/core/notify/web-push";
+import { getNotificationDetail, notify } from "@/modules/notifications/services/notifications";
+import { listPushDevices, savePushSubscription } from "@/modules/notifications/services/push-subscriptions";
 import { resetDb, startDb, stopDb } from "./db";
 
 const sendNotification = vi.hoisted(() => vi.fn());

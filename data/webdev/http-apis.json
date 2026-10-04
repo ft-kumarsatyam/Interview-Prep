@@ -1,0 +1,811 @@
+{
+  "tracks": [
+    {
+      "id": "http-apis",
+      "name": "HTTP and API design",
+      "color": "orange",
+      "blurb": "HTTP versions and caching, REST, GraphQL and gRPC, pagination, versioning, rate limits, idempotency and API contracts, explained the way platform teams actually build them.",
+      "area": "backend"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "api-http-deep",
+      "track": "http-apis",
+      "title": "HTTP in depth: versions, TLS, semantics and caching",
+      "minutes": 25,
+      "summary": "HTTP/1.1 vs 2 vs 3 and why each exists, the TLS 1.3 handshake, keep-alive, method and status code semantics, and caching headers that actually work.",
+      "body": "## The core idea\nEvery API you design rides on HTTP, and most \"API design\" decisions are really HTTP decisions: which method, which status code, which headers, whether a response can be cached, whether a retry is safe. HTTP itself is two separate things that people mix up:\n\n- **Semantics** (RFC 9110): methods, status codes, headers, content negotiation, conditional requests. These are the same in every version.\n- **Wire format and transport**: how those messages are framed and carried. HTTP/1.1 (RFC 9112) is text over TCP, HTTP/2 (RFC 9113) is binary frames multiplexed over one TCP connection, HTTP/3 (RFC 9114) is the same idea over QUIC on UDP.\n\nSo \"should this be a PUT or a POST\" is a semantics question and has one answer regardless of version. \"Why is this page slow on a lossy mobile network\" is a transport question, and the version matters a lot. Caching (RFC 9111) sits on top of semantics and is the piece most backend engineers under-use.\n\n## HTTP/1.1: text, one request at a time per connection\nAn HTTP/1.1 message is plain text: a request line, headers, a blank line, an optional body.\n\n```text\nGET /v1/orders/ord_123 HTTP/1.1\nHost: api.example.com\nAccept: application/json\nAuthorization: Bearer eyJ...\n\nHTTP/1.1 200 OK\nContent-Type: application/json\nCache-Control: private, max-age=0, must-revalidate\nETag: \"v42\"\nContent-Length: 187\n\n{\"id\":\"ord_123\",\"status\":\"paid\",...}\n```\n\n**Keep-alive** (persistent connections) is the default in HTTP/1.1: the TCP and TLS connection is reused for the next request instead of paying the handshake again. But on one connection, responses must come back in order, so a slow response blocks everything queued behind it. That is **head-of-line (HOL) blocking at the HTTP layer**. Pipelining never worked in practice, so browsers open about six connections per origin, and sites sharded domains and built sprite sheets, hacks that hurt under HTTP/2.\n\nFor server-to-server calls keep-alive matters even more: a new connection per outbound request pays DNS, TCP and TLS each time and can exhaust ephemeral ports. Use a pooled agent (Node's `fetch` uses undici, which pools by default) and keep your idle timeout **shorter** than the upstream load balancer's, or you will sporadically write to a closed socket and see `ECONNRESET`.\n\n## HTTP/2: binary frames and multiplexing\nHTTP/2 keeps the semantics and replaces the wire format. Ilya Grigorik's *High Performance Browser Networking* (free at hpbn.co) still has the clearest explanation:\n\n- Messages are split into **frames** (HEADERS, DATA, SETTINGS, RST_STREAM, ...) that belong to numbered **streams**.\n- Many streams are interleaved on **one** TCP connection, so a slow response no longer blocks others at the HTTP layer.\n- Headers are compressed with **HPACK** (static and dynamic tables plus Huffman coding), which matters because cookies and auth headers repeat on every request.\n- **Flow control** per stream and per connection lets a receiver push back.\n- **Server push** was removed by browsers (Chrome, 2022); `103 Early Hints` replaces it.\n\n```text\nHTTP/1.1 (one connection)         HTTP/2 (one connection, many streams)\nreq A ----> resp A (slow)         [H1][H3][D1][H5][D3][D1][D5][D3] ...\nreq B waits ...                   frames of streams 1, 3, 5 interleaved\nreq C waits ...                   a lost TCP segment still stalls ALL streams\n```\n\nThe catch is in the last line. HTTP/2 moved HOL blocking down to TCP: TCP delivers bytes in order, so one lost packet stalls every stream on the connection until it is retransmitted. On clean networks HTTP/2 wins; on lossy mobile networks with 1-2% loss, one connection can do worse than six HTTP/1.1 connections.\n\nSecurity note: the 2023 **Rapid Reset** attack (CVE-2023-44487) opened and instantly cancelled streams to bypass concurrent-stream limits, producing record request floods. Keep your HTTP/2 servers patched.\n\n## HTTP/3: QUIC over UDP\nHTTP/3 maps HTTP semantics onto **QUIC** (RFC 9000), a transport built on UDP that does what TCP plus TLS did, with several changes:\n\n- **Streams are independent at the transport layer.** A lost packet only stalls the stream it belongs to. This removes TCP HOL blocking.\n- **TLS 1.3 is built in.** The transport and crypto handshakes are combined, so a new connection takes **1 RTT** before the request can be sent (versus TCP's 1 RTT plus TLS 1.3's 1 RTT). Resumed connections can use **0-RTT**.\n- **Connection IDs** instead of the IP/port 4-tuple, so a phone moving from Wi-Fi to cellular can keep its connection (connection migration).\n- Header compression is **QPACK** (RFC 9204), a variant of HPACK that tolerates out-of-order delivery.\n- Clients discover HTTP/3 through the `Alt-Svc` response header or an `HTTPS` DNS record, then race or switch to QUIC. If UDP is blocked (some corporate networks), they fall back to HTTP/2.\n\nCloudflare's \"HTTP/3: the past, the present, and the future\" explains why QUIC exists. In 2026 browsers and CDNs speak HTTP/3 widely, so your **edge** usually does already. Between your own services you mostly run HTTP/1.1 or HTTP/2 (gRPC requires HTTP/2): inside a data center the problems QUIC solves are small and TCP tooling is mature.\n\n## The TLS 1.3 handshake\nTLS 1.3 (RFC 8446) cut the full handshake from 2 round trips (TLS 1.2) to 1.\n\n```text\nClient                                         Server\nClientHello  (versions, cipher suites,\n              key_share = client ECDHE public key,\n              SNI = api.example.com, ALPN = h2,http/1.1)  --->\n                              <---  ServerHello (chosen suite, key_share)\n                                    {EncryptedExtensions (ALPN = h2)}\n                                    {Certificate chain}\n                                    {CertificateVerify = signature over transcript}\n                                    {Finished}\n{Finished}  + first HTTP request  --->\n```\n\nWhat each piece does:\n\n- **Key exchange**: both sides send ephemeral (EC)DHE public keys in the first flight and derive the same shared secret. Because keys are ephemeral, recording traffic and stealing the server's private key later does not decrypt it (**forward secrecy**). TLS 1.3 removed static RSA key exchange entirely.\n- **Authentication**: the server sends its certificate chain and signs the handshake transcript with the certificate's private key. The client checks the chain up to a trusted root, that the name matches SNI, and that it has not expired. That signature is how the client knows it is talking to the real server, not just someone with a copy of the certificate.\n- **SNI** picks the certificate on a shared IP; **ALPN** negotiates `h2` or `http/1.1` at no extra round trip.\n- **0-RTT resumption** lets a returning client send a request in its first flight using a pre-shared key. The data is **replayable** by an attacker, so servers should only accept 0-RTT for safe, idempotent requests (RFC 8470 defines `425 Too Early` for rejecting it).\n\nTotal cost of a cold HTTPS request over TCP: DNS (0-1 RTT, often cached), TCP (1 RTT), TLS 1.3 (1 RTT), then the request (1 RTT). At 100 ms RTT that is roughly 300 ms before the first byte, which is why connection reuse, CDNs close to users and HTTP/3 all matter.\n\n## Methods and status codes: the semantics that clients rely on\nRFC 9110 defines two properties that clients, proxies and retry libraries depend on:\n\n- **Safe**: the client does not request a state change. GET, HEAD, OPTIONS, TRACE. Crawlers, prefetchers and link previews call safe methods freely, so a `GET /unsubscribe?id=` that mutates state will get triggered by a mail scanner.\n- **Idempotent**: sending the same request N times has the same intended effect as once. All safe methods plus **PUT** and **DELETE**. POST is neither. PATCH is not idempotent in general (a JSON Patch `add` to an array appends twice), though a specific merge-patch can be.\n\nIdempotency is what makes automatic retries safe: clients and proxies may retry idempotent requests after a dropped connection. POST needs an idempotency key (see the rate limits lesson). A safe `QUERY` method with a body is an IETF draft; until it is widely supported, people use `POST /search`.\n\nStatus codes worth knowing precisely:\n\n| Code | Meaning | Note |\n|---|---|---|\n| 200 / 201 / 202 / 204 | OK / Created / Accepted / No Content | 201 with `Location`; 202 for async work with a status URL |\n| 301 / 308 | Permanent redirect | 308 keeps the method and body; 301 may turn POST into GET |\n| 302 / 307 | Temporary redirect | 307 keeps the method |\n| 304 | Not Modified | Response to a conditional GET; no body |\n| 400 / 422 | Malformed / semantically invalid | 422 \"Unprocessable Content\" is now in RFC 9110 |\n| 401 / 403 | Not authenticated / not allowed | 401 must carry `WWW-Authenticate` |\n| 404 / 405 / 409 / 410 | Missing / wrong method / conflict / gone | 405 must carry `Allow` |\n| 412 / 428 | Precondition failed / required | Optimistic concurrency with `If-Match` |\n| 429 | Too Many Requests | Add `Retry-After` |\n| 502 / 503 / 504 | Bad gateway / unavailable / gateway timeout | 503 with `Retry-After` during overload |\n\n## Caching headers\nRFC 9111 caching is free performance and free load shedding if you set headers deliberately. The web.dev guide on HTTP caching and MDN's caching guide cover the browser side well.\n\n- `Cache-Control: max-age=60` lets any cache reuse the response for 60 s. `s-maxage` overrides it for shared caches (CDNs) only.\n- `public` / `private`: `private` means only the end user's browser may store it. Anything personalised or behind `Authorization` should be `private` (shared caches do not store authorised responses unless explicitly allowed, but be explicit).\n- `no-cache` means \"store it but revalidate before every use\", not \"do not cache\". `no-store` means do not store at all (use for secrets and very sensitive data).\n- `stale-while-revalidate=30` (RFC 5861) serves a stale copy while refreshing in the background. `stale-if-error` serves stale during origin failures.\n- `immutable` (RFC 8246) says the body will never change; perfect for content-hashed assets with `max-age=31536000`.\n- **Validators**: `ETag` (opaque version) and `Last-Modified`. A client sends `If-None-Match: \"v42\"`; if unchanged the server returns `304` with no body. On writes, `If-Match: \"v42\"` gives optimistic concurrency: the server returns `412` if someone else changed it.\n- `Vary: Accept-Encoding, Accept-Language` tells caches which request headers change the response. `Vary: Cookie` or `Vary: Authorization` effectively disables shared caching.\n\n```ts\n// Express-style handler: conditional GET plus optimistic concurrency on update\napp.get(\"/v1/products/:id\", async (req, res) => {\n  const p = await products.get(req.params.id);\n  if (!p) return res.status(404).type(\"application/problem+json\").json({ title: \"Not found\", status: 404 });\n  const etag = `\"${p.version}\"`;\n  res.set({ ETag: etag, \"Cache-Control\": \"public, max-age=60, stale-while-revalidate=300\" });\n  if (req.get(\"If-None-Match\") === etag) return res.status(304).end();\n  res.json(p);\n});\n\napp.put(\"/v1/products/:id\", async (req, res) => {\n  const ifMatch = req.get(\"If-Match\");\n  if (!ifMatch) return res.status(428).json({ title: \"If-Match required\", status: 428 });\n  const updated = await products.updateIfVersion(req.params.id, Number(ifMatch.replaceAll('\"', \"\")), req.body);\n  if (!updated) return res.status(412).json({ title: \"Version conflict\", status: 412 });\n  res.set(\"ETag\", `\"${updated.version}\"`).json(updated);\n});\n```\n\n## Trade-offs and when not to bother\n- HTTP/3 between internal services rarely pays off; spend the effort on connection pooling and timeouts.\n- Long `max-age` on API responses makes invalidation your problem. Prefer short `max-age` plus `stale-while-revalidate`, or validators, unless the URL is versioned.\n- `ETag`s from hashing the body save bandwidth but not server work; a version column is cheaper.\n## Common mistakes and debugging\n- Returning `200` with `{\"error\": ...}` breaks every client, proxy, retry policy and monitoring dashboard that reads status codes.\n- `Cache-Control: no-cache` used to mean \"never cache\". It forces revalidation, which is often what you want, but know the difference from `no-store`.\n- Missing `Vary` on a response that differs by `Accept-Encoding` or language, so a CDN serves Brotli to a client that cannot decode it, or French to an English user.\n- Pool idle timeout longer than the load balancer's (AWS ALB defaults to 60 s).\n- Debug with `curl -v --http2` or `--http3`, `curl -w \"%{time_connect} %{time_appconnect} %{time_starttransfer}\"` to split connect, TLS and server time, and the browser's Network panel \"Protocol\" column.\n\n## In the interview\nThey probe whether you understand **why** each version exists, not a list of features: what HOL blocking is and where it moved, what the TLS handshake actually authenticates, and whether you use method semantics and caching deliberately.\n\n**Model 60-second answer** (versions): \"Semantics are the same across versions; the transport changed. HTTP/1.1 is text with one in-flight response per connection, so browsers opened six connections. HTTP/2 multiplexes binary frames over one TCP connection with HPACK, which fixes HTTP-level HOL blocking but a lost TCP packet still stalls every stream. HTTP/3 runs over QUIC on UDP with independent streams, TLS 1.3 built in for a 1-RTT handshake, 0-RTT resumption and connection migration. At the edge I let the CDN do HTTP/3; internally I use HTTP/2 or keep-alive HTTP/1.1 and focus on pooling and timeouts.\"\n\n**Follow-ups to expect**: Why is 0-RTT data dangerous? What does `no-cache` really do? How does the client know the certificate belongs to the server? When would HTTP/2 be slower than HTTP/1.1? Which status code for a version conflict, and how does the client avoid lost updates?",
+      "keyPoints": [
+        "HTTP semantics (RFC 9110) are the same in every version; HTTP/1.1, 2 and 3 only change framing and transport.",
+        "HTTP/2 fixes HTTP-level head-of-line blocking but a lost TCP packet still stalls all streams; QUIC in HTTP/3 makes streams independent.",
+        "TLS 1.3 is a 1-RTT handshake with ephemeral key exchange (forward secrecy); 0-RTT resumption is replayable, so only allow it for safe requests.",
+        "Safe and idempotent are contracts: clients and proxies retry idempotent methods automatically, so GET must never mutate and POST needs idempotency keys.",
+        "no-cache means revalidate, no-store means never store; ETag plus If-None-Match gives 304s and If-Match gives optimistic concurrency with 412."
+      ],
+      "interview": [
+        "How do HTTP/1.1, HTTP/2 and HTTP/3 differ, and what problem does each version solve?",
+        "Walk through what happens on the wire for a first HTTPS request: DNS, TCP, TLS 1.3 and the request itself.",
+        "How would you design caching headers for an API that serves both public catalog data and per-user data?"
+      ],
+      "check": [
+        {
+          "q": "A mobile app on a network with 2% packet loss is slower over HTTP/2 than it was over HTTP/1.1 with several connections. What is the most likely cause?",
+          "options": [
+            "HPACK header compression adds CPU overhead on the phone",
+            "All HTTP/2 streams share one TCP connection, so each lost packet stalls every stream until it is retransmitted",
+            "HTTP/2 disables keep-alive",
+            "HTTP/2 requires a new TLS handshake per request"
+          ],
+          "answer": 1,
+          "why": "HTTP/2 moved head-of-line blocking from HTTP to TCP. With loss, one connection stalls all streams, while six HTTP/1.1 connections stall independently. QUIC (HTTP/3) fixes this."
+        },
+        {
+          "q": "Which response header combination is right for a per-user dashboard JSON that should never be stored by a CDN but can be revalidated cheaply by the browser?",
+          "options": [
+            "Cache-Control: public, max-age=3600",
+            "Cache-Control: no-store",
+            "Cache-Control: s-maxage=60",
+            "Cache-Control: private, no-cache plus an ETag"
+          ],
+          "answer": 3,
+          "why": "private keeps it out of shared caches, no-cache makes the browser revalidate every time, and the ETag lets the server answer 304 with no body when nothing changed."
+        },
+        {
+          "q": "Why should a server only accept TLS 1.3 0-RTT early data for safe, idempotent requests?",
+          "options": [
+            "Early data is not encrypted",
+            "Early data can be replayed by an attacker who captured it, so a non-idempotent request could execute twice",
+            "0-RTT skips certificate validation",
+            "Early data is limited to 16 bytes"
+          ],
+          "answer": 1,
+          "why": "0-RTT data is encrypted with a resumption key but has no protection against replay. RFC 8470 defines 425 Too Early so servers can reject risky early requests."
+        }
+      ],
+      "resources": [
+        {
+          "title": "RFC 9110: HTTP Semantics",
+          "url": "https://www.rfc-editor.org/rfc/rfc9110.html"
+        },
+        {
+          "title": "High Performance Browser Networking: HTTP/2 (Ilya Grigorik)",
+          "url": "https://hpbn.co/http2/"
+        },
+        {
+          "title": "HTTP/3: the past, the present, and the future (Cloudflare)",
+          "url": "https://blog.cloudflare.com/http3-the-past-present-and-future/"
+        },
+        {
+          "title": "Prevent unnecessary network requests with the HTTP Cache (web.dev)",
+          "url": "https://web.dev/articles/http-cache"
+        },
+        {
+          "title": "MDN: HTTP caching",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching"
+        },
+        {
+          "title": "RFC 8446: TLS 1.3",
+          "url": "https://www.rfc-editor.org/rfc/rfc8446.html"
+        }
+      ]
+    },
+    {
+      "id": "api-rest-design",
+      "track": "http-apis",
+      "title": "REST API design: resources, status codes and errors",
+      "minutes": 22,
+      "summary": "Resource modelling and naming, non-CRUD actions, precise status codes, RFC 9457 problem details for errors, and an honest take on HATEOAS.",
+      "body": "## The core idea\nREST, as Roy Fielding defined it in his 2000 dissertation, is an architectural style with constraints: client-server, stateless requests, cacheable responses, a uniform interface, layered systems and (optionally) code on demand. The \"uniform interface\" part includes **hypermedia as the engine of application state** (HATEOAS): clients discover what they can do next from links in responses.\n\nWhat the industry calls a \"REST API\" today is narrower and more pragmatic: **resources identified by URLs, manipulated with standard HTTP methods, with status codes and headers used as HTTP intends, and JSON bodies.** Martin Fowler's write-up of the Richardson Maturity Model names the levels: level 0 is one endpoint taking RPC-style POSTs, level 1 introduces resources, level 2 uses HTTP verbs and status codes properly, level 3 adds hypermedia. Almost every successful public API (Stripe, GitHub, Twilio) lives at level 2, with a few links sprinkled in. That is the target for this lesson.\n\nGood REST design is about **predictability**. A developer who has used three of your endpoints should be able to guess the fourth: its URL, its method, its error shape and how to page through it.\n\n## Resources and naming\nModel the nouns of your domain, not the functions of your backend.\n\n```text\nGET    /v1/customers                     list (paginated)\nPOST   /v1/customers                     create        -> 201 + Location\nGET    /v1/customers/{id}                read\nPATCH  /v1/customers/{id}                partial update\nDELETE /v1/customers/{id}                delete        -> 204\nGET    /v1/customers/{id}/orders         sub-collection (orders of one customer)\nGET    /v1/orders?customer_id={id}       same data, flat (often better)\nPOST   /v1/orders/{id}/cancel            action that does not fit CRUD\n```\n\nRules that hold up in practice (the Zalando, Microsoft and Google API guidelines all converge on these):\n\n- **Plural nouns for collections**, ids for items: `/orders/{id}`. No verbs in paths except for explicit actions.\n- **Nest at most one level.** `/customers/{id}/orders` is fine; `/customers/{id}/orders/{oid}/items/{iid}` couples the URL to a hierarchy that will change. Items with their own global id get a top-level URL.\n- **Opaque, stable ids.** Stripe's prefixed ids (`cus_...`, `ch_...`) are a good pattern: they tell humans and logs what kind of object an id is, and they are not sequential integers that leak volume or invite enumeration.\n- **Consistent casing.** Pick `snake_case` or `camelCase` for JSON fields and never mix. Kebab-case for multi-word path segments.\n- **Timestamps in RFC 3339 UTC** (`2026-10-04T06:07:00Z`), money as integer minor units plus currency (`{\"amount\": 1999, \"currency\": \"usd\"}`), never floats.\n- **Envelopes for lists only**: `{\"data\": [...], \"has_more\": true, \"next_cursor\": \"...\"}`. Single resources return the object directly.\n\n### Actions that are not CRUD\nNot everything is a noun. Three honest options:\n\n1. **Model the state change as a field**: `PATCH /orders/{id} {\"status\": \"cancelled\"}`. Fine when the transition is simple and has no extra parameters.\n2. **Action sub-resource**: `POST /orders/{id}/cancel` with a reason. Stripe does this (`/payment_intents/{id}/confirm`, `/capture`). It is clear, auditable, and the server can enforce the state machine.\n3. **Model the process as a resource**: `POST /exports` returns `202 Accepted` with `Location: /exports/exp_9`, and the client polls `GET /exports/exp_9` until `status: \"succeeded\"` with a download URL. This is the right shape for anything that takes more than a couple of seconds.\n\n### PUT vs PATCH\n`PUT` replaces the whole resource with the body (idempotent). `PATCH` applies a partial change. Use JSON Merge Patch (RFC 7396, `application/merge-patch+json`, where `null` means delete the field) for most APIs; JSON Patch (RFC 6902) when you need array operations. Most public APIs only offer PATCH (or POST-to-update like Stripe) because full replacement forces clients to send fields they do not understand.\n\n## Status codes: be precise, and be consistent\nThe goal is that a client can branch on the status code alone and only read the body for details.\n\n| Situation | Code |\n|---|---|\n| Created a resource | `201` + `Location` header |\n| Accepted async work | `202` + status URL |\n| Success with no body (delete) | `204` |\n| JSON does not parse, wrong types | `400` |\n| Parses, but fails business validation | `422` (or `400` consistently; pick one) |\n| No or invalid credentials | `401` + `WWW-Authenticate` |\n| Authenticated, not allowed | `403` (or `404` to hide existence) |\n| Duplicate, or state does not allow it | `409` |\n| Stale `If-Match` version | `412` |\n| Rate limited | `429` + `Retry-After` |\n| Our bug | `500`; never leak stack traces |\n| Dependency down / overloaded | `503` + `Retry-After` |\n\nThe 4xx/5xx split is a contract about **who must change**: 4xx says the client must change the request, so retrying unchanged is pointless (except 408, 409 in some cases, 425, 429); 5xx says the server failed and a retry may succeed. Retry libraries, alerting and SLOs are built on that split. Returning `500` for validation errors pages your on-call; returning `400` for a database outage hides an incident.\n\n## Errors with RFC 9457 problem details\nRFC 9457 (which obsoletes RFC 7807) standardises a JSON error format with media type `application/problem+json`:\n\n```json\n{\n  \"type\": \"https://api.example.com/problems/insufficient-funds\",\n  \"title\": \"Insufficient funds\",\n  \"status\": 422,\n  \"detail\": \"Account acc_12 has a balance of 30.00 USD; the transfer needs 50.00 USD.\",\n  \"instance\": \"/v1/transfers/req_8f2c\",\n  \"balance\": 3000,\n  \"errors\": [\n    { \"pointer\": \"/amount\", \"detail\": \"must be less than or equal to the available balance\" }\n  ]\n}\n```\n\n- `type` is a URI identifying the problem **kind**; clients branch on it (or on a stable `code` extension), never on the human `title` or `detail` text, which you must be free to reword.\n- `status` mirrors the HTTP status for convenience.\n- `instance` identifies this occurrence; put a request id here or in a separate field and log it, so support can find the trace.\n- **Extensions** are allowed: field-level validation errors, the current balance, a `retry_after`.\n\n```ts\nimport { z } from \"zod\";\n\nconst CreateTransfer = z.object({\n  from: z.string().startsWith(\"acc_\"),\n  to: z.string().startsWith(\"acc_\"),\n  amount: z.number().int().positive(),\n  currency: z.enum([\"usd\", \"eur\", \"inr\"]),\n});\n\nexport function problem(status: number, type: string, title: string, extra: object = {}) {\n  return Response.json(\n    { type: `https://api.example.com/problems/${type}`, title, status, ...extra },\n    { status, headers: { \"Content-Type\": \"application/problem+json\" } },\n  );\n}\n\nexport async function POST(req: Request) {\n  const parsed = CreateTransfer.safeParse(await req.json().catch(() => null));\n  if (!parsed.success)\n    return problem(400, \"validation\", \"Invalid request\", {\n      errors: parsed.error.issues.map((i) => ({ pointer: \"/\" + i.path.join(\"/\"), detail: i.message })),\n    });\n  // ... business rules, then 201 with Location\n}\n```\n\nWhatever format you choose, the non-negotiables are: one error shape across every endpoint, machine-readable codes, field pointers for validation errors, a request id, and no internals (SQL, stack traces, hostnames) in the response.\n\n## HATEOAS: the reality\nPure HATEOAS says a client should start from a root URL and follow links (`\"_links\": {\"cancel\": {\"href\": \"...\"}}`) without hard-coding URLs. The benefits are real in theory: the server can move resources, and links can reflect state (no `cancel` link once an order shipped). In practice:\n\n- Almost no client is generic. Mobile and web apps are written against specific endpoints and hard-code URL templates anyway.\n- The hard part of an API is the **semantics** of each field and transition, which links do not convey; documentation and SDKs do.\n- Hypermedia formats (HAL, JSON:API, Siren) add weight and tooling friction.\n\nWhat survives and is genuinely useful: **pagination links** (`next` URLs or RFC 8288 `Link` headers, as GitHub does), `Location` on create, URLs to related resources and status pages for async jobs, and state-dependent \"available actions\" lists where a UI needs to know which buttons to show. Saying this nuance out loud in an interview is a strong signal; claiming that every API should be level 3, or that HATEOAS is useless, is not.\n\n## Trade-offs and when not to use REST\n- REST is great for resource-shaped public APIs, cacheable reads and broad client compatibility (curl works).\n- Chatty UIs that need many resources per screen suffer over-fetching and under-fetching; GraphQL or a backend-for-frontend fits better.\n- High-throughput internal service calls with strict schemas often fit gRPC better.\n- Real-time push is not REST at all: use webhooks for server-to-server, SSE or WebSockets for clients.\n\n## Common mistakes and debugging\n- Verbs in URLs (`/getUser`, `/createOrder`) and inconsistent pluralisation.\n- `200 OK` with an error body, or a different error JSON shape per team.\n- Leaking database ids, internal enum names or column names into the contract, which then can never change.\n- Unbounded list endpoints with no pagination: fine at launch, an outage at 10 million rows.\n- Booleans that should be enums (`is_active` then later `is_suspended`); prefer `status: \"active\" | \"suspended\" | \"closed\"` from day one, and document that new values may appear.\n- Not validating `Content-Type`, accepting anything and failing deep inside.\n\n## In the interview\nThey probe consistency and judgement: can you design a coherent resource model on the spot, pick status codes with a reason, and give errors a real contract? Senior candidates are expected to discuss non-CRUD actions, async operations and the HATEOAS reality without dogma.\n\n**Model 60-second answer** (designing an orders API): \"I start from nouns: customers, orders, line items, payments. Collections are plural, items by opaque prefixed id, one level of nesting at most, plus filters on the flat collection. CRUD maps to POST/GET/PATCH/DELETE with 201 + Location on create and 204 on delete. Transitions like cancel are explicit action endpoints so the server enforces the state machine, and slow work like exports returns 202 with a job resource. Every error is RFC 9457 problem JSON with a stable type, field pointers and a request id. Lists are cursor-paginated, writes accept an idempotency key, and the whole thing is described in OpenAPI.\"\n\n**Follow-ups to expect**: 401 vs 403 vs 404 for a resource the user cannot see? PUT vs PATCH? How do you return multiple validation errors? How would you model a bulk operation with partial failure? Is your API RESTful if it has no hypermedia?",
+      "keyPoints": [
+        "Most successful public APIs are Richardson level 2: resources plus correct HTTP methods and status codes, with a few useful links.",
+        "Plural nouns, opaque stable ids, one level of nesting, one casing style, RFC 3339 timestamps and integer money.",
+        "Model non-CRUD transitions as action endpoints or job resources (202 + status URL) so the server owns the state machine.",
+        "4xx means the client must change the request, 5xx means the server failed; retries, alerts and SLOs depend on that split.",
+        "Use one error shape everywhere, ideally RFC 9457 application/problem+json with a stable type, field pointers and a request id."
+      ],
+      "interview": [
+        "How do you name resources and pick status codes for a REST API that manages orders?",
+        "How should a REST API return errors? Describe RFC 9457 problem details.",
+        "Is HATEOAS worth it in practice? What does 'RESTful' really mean to you?"
+      ],
+      "check": [
+        {
+          "q": "A client asks to export 2 million rows as CSV, which takes several minutes. What is the best REST shape?",
+          "options": [
+            "GET /export and hold the connection open until the file is ready",
+            "POST /exports returns 202 Accepted with a Location for an export resource the client polls until it has a download URL",
+            "POST /exports returns 200 with the CSV body",
+            "POST /exports returns 500 if it takes more than 30 seconds"
+          ],
+          "answer": 1,
+          "why": "Long work becomes a resource: 202 plus a status URL decouples the request from the job, survives timeouts and lets the client poll or receive a webhook."
+        },
+        {
+          "q": "In RFC 9457 problem details, what should client code branch on to handle a specific error?",
+          "options": [
+            "The title string",
+            "The detail string",
+            "The type URI (or a stable code extension)",
+            "The instance field"
+          ],
+          "answer": 2,
+          "why": "type identifies the kind of problem and is stable. title and detail are human text you must be free to reword; instance identifies one occurrence."
+        },
+        {
+          "q": "Your service returns 500 when a request body fails validation. What is the main operational harm?",
+          "options": [
+            "Nothing, as long as the body explains the error",
+            "Browsers will cache the 500",
+            "The response cannot contain JSON",
+            "Client mistakes count as server errors, triggering retries, pages and SLO burn for problems the server cannot fix"
+          ],
+          "answer": 3,
+          "why": "The 4xx/5xx split tells retry logic and monitoring who must act. Validation failures are 400/422; marking them 5xx pollutes error rates and causes pointless retries."
+        }
+      ],
+      "resources": [
+        {
+          "title": "RFC 9457: Problem Details for HTTP APIs",
+          "url": "https://www.rfc-editor.org/rfc/rfc9457.html"
+        },
+        {
+          "title": "Richardson Maturity Model (Martin Fowler)",
+          "url": "https://martinfowler.com/articles/richardsonMaturityModel.html"
+        },
+        {
+          "title": "Zalando RESTful API and Event Guidelines",
+          "url": "https://opensource.zalando.com/restful-api-guidelines/"
+        },
+        {
+          "title": "Web API design best practices (Microsoft Azure Architecture Center)",
+          "url": "https://learn.microsoft.com/en-us/azure/architecture/best-practices/api-design"
+        },
+        {
+          "title": "Fielding's dissertation, chapter 5: REST",
+          "url": "https://ics.uci.edu/~fielding/pubs/dissertation/rest_arch_style.htm"
+        },
+        {
+          "title": "Google API Design Guide",
+          "url": "https://cloud.google.com/apis/design"
+        }
+      ]
+    },
+    {
+      "id": "api-graphql",
+      "track": "http-apis",
+      "title": "GraphQL: schemas, resolvers, N+1, security and federation",
+      "minutes": 24,
+      "summary": "How GraphQL executes queries, why naive resolvers cause N+1 and how DataLoader fixes it, persisted queries and cost limits, federation, and when not to use it.",
+      "body": "## The core idea\nGraphQL is a query language and runtime for APIs. The server publishes a **typed schema** of everything that can be asked for; the client sends a **query** that names exactly the fields it wants, possibly across many related objects, and gets back JSON in the same shape. One endpoint (usually `POST /graphql`), one round trip per screen, no over-fetching.\n\nFacebook built it in 2012 for its mobile News Feed, where REST round trips on slow networks and constantly changing UI data needs were the pain. That origin explains both its strengths (client-driven data fetching for product UIs) and its costs (the server must defend against arbitrary queries, and HTTP caching mostly stops working).\n\n```graphql\nquery OrderPage($id: ID!) {\n  order(id: $id) {\n    id\n    status\n    total { amount currency }\n    customer { id name }\n    items(first: 20) {\n      edges { node { quantity product { id title imageUrl } } }\n      pageInfo { hasNextPage endCursor }\n    }\n  }\n}\n```\n\nThe REST equivalent is `GET /orders/1`, `GET /customers/7`, `GET /orders/1/items`, then N calls to `/products/...`, or a bespoke `/order-page` endpoint that one team owns forever.\n\n## How it works step by step\n\n```text\nclient query --> parse --> validate against schema --> execute\n                                  |                       |\n                       unknown field? wrong type?    for each field, call its resolver\n                       -> errors, no execution       (parent, args, context, info)\n                                                          |\n                                         resolvers fetch from DB / services / caches\n                                                          |\n                                     { \"data\": {...}, \"errors\": [...] }  (HTTP 200 usually)\n```\n\n1. **Schema** (SDL): types, fields, arguments, nullability. `Query` for reads, `Mutation` for writes, `Subscription` for push.\n2. **Validation** happens before any execution, against the schema: unknown fields, wrong argument types and missing variables are rejected up front. This is a big win over hand-validated REST payloads.\n3. **Execution** walks the query tree. Each field has a **resolver**: a function `(parent, args, context, info) => value`. If you do not write one, the default resolver reads `parent[fieldName]`.\n4. **Response**: `data` mirrors the query; `errors` lists field-level failures with a `path`. A failing nullable field becomes `null` and the rest of the response still returns. A failing non-null field nulls its nearest nullable parent. That partial-success model is powerful and also why nullability design matters: making everything non-null means one flaky service blanks the whole page.\n\n```ts\nconst typeDefs = /* GraphQL */ `\n  type Order { id: ID!  status: OrderStatus!  customer: Customer!  items(first: Int = 20, after: String): ItemConnection! }\n  type Customer { id: ID!  name: String! }\n  enum OrderStatus { PENDING PAID SHIPPED CANCELLED }\n  type Query { order(id: ID!): Order  orders(first: Int = 20, after: String): OrderConnection! }\n`;\n\nconst resolvers = {\n  Query: {\n    order: (_: unknown, { id }: { id: string }, ctx: Ctx) => ctx.db.orders.byId(id, ctx.user),\n  },\n  Order: {\n    customer: (order: OrderRow, _: unknown, ctx: Ctx) => ctx.loaders.customer.load(order.customerId),\n  },\n};\n```\n\n## The N+1 problem and DataLoader\nResolvers are called per object. Query 50 orders and ask for `customer` on each, and the naive `Order.customer` resolver runs 50 separate `SELECT * FROM customers WHERE id = ?` after the one query for orders: **1 + N** queries. Nested lists multiply it.\n\n**DataLoader** (the reference implementation is `graphql/dataloader`, originally from Facebook) fixes this with two ideas:\n\n- **Batching**: `loader.load(id)` does not query immediately. It collects every key requested during the current tick of the event loop, then calls your batch function once with all of them: `SELECT * FROM customers WHERE id = ANY($1)`.\n- **Per-request memoisation**: the same key requested twice in one request returns the same promise.\n\n```ts\nimport DataLoader from \"dataloader\";\n\nexport function makeLoaders(db: Db) {\n  return {\n    customer: new DataLoader<string, Customer | null>(async (ids) => {\n      const rows = await db.customers.whereIdIn([...ids]);\n      const byId = new Map(rows.map((r) => [r.id, r]));\n      return ids.map((id) => byId.get(id) ?? null); // same length and order as ids\n    }),\n  };\n}\n\n// create new loaders per request, inside the context factory\nconst context = async ({ req }: { req: Request }) => ({ user: await auth(req), loaders: makeLoaders(db) });\n```\n\nThe batch function must return results **in the same order and length** as the keys. Loaders must be **per request**: a global loader caches data across users, which is both a staleness bug and a data leak if authorisation differs. DataLoader reduces N+1 to one query per level of the tree; it does not fix a query that fans out to five levels deep, which is what cost limits are for.\n\n## Protecting the server: persisted queries, depth and cost\nA public GraphQL endpoint accepts arbitrary programs. Defences, roughly in order of strength:\n\n- **Persisted queries / operation allowlists.** At build time, extract every query your clients use, register their hashes, and at runtime accept only known hashes (`{\"id\": \"sha256:...\"}` instead of the query text). Arbitrary queries are rejected. This is the strongest defence for first-party APIs and also shrinks request size. Apollo's **automatic persisted queries** (APQ) is a different thing: it only caches query text by hash to save bandwidth, and still accepts any new query, so it is not a security control.\n- **Depth and complexity limits**: reject queries deeper than N or whose estimated cost (fields times list sizes) exceeds a budget. GitHub's public GraphQL API publishes a node limit and a points-based rate limit calculated from query cost; Shopify's GraphQL Admin API uses calculated query cost with a leaky bucket.\n- **Pagination required on every list field** with a max `first`. The Relay cursor connections spec (`edges`, `node`, `pageInfo`, `first/after`) is the common convention.\n- **Timeouts and per-resolver limits**, and disabling introspection in production for private APIs (it is not a security boundary, but it removes a free map).\n- **Authorisation in the business layer**, not in resolvers ad hoc. Every path to a `Customer` (via order, via search, via node(id:)) must apply the same check.\n\n## Caching, errors and HTTP\nGraphQL over `POST` defeats URL-based HTTP caching. Options: send persisted queries as `GET` with the hash and variables in the query string so CDNs can cache them; use `@cacheControl` hints to compute a response `Cache-Control`; and rely on **normalised client caches** (Apollo Client, Relay, urql's graphcache) that store objects by `__typename:id` and update every view when a mutation returns a changed object.\n\nErrors usually come back with HTTP 200 and an `errors` array, which breaks status-code-based monitoring. Model expected business failures in the schema (union result types like `TransferResult = TransferSuccess | InsufficientFunds`) and reserve `errors` for unexpected failures, and make your observability per operation name, not per URL.\n\n## Federation\nAt scale, one schema owned by one team becomes a bottleneck. **Federation** (Apollo Federation v2 is the dominant spec; others such as GraphQL Fusion exist) splits the graph into **subgraphs** owned by different teams. A **router** composes them into one supergraph and plans each query across subgraphs.\n\n```text\nclient --> router (query planner) --+--> orders subgraph   (Order, Order.items)\n                                    +--> users subgraph    (Customer @key(fields: \"id\"))\n                                    +--> catalog subgraph  (Product, extends Order item)\n```\n\nEntities are shared with `@key`: the orders subgraph returns `{ __typename: \"Customer\", id: \"7\" }`, and the router asks the users subgraph to resolve the rest via `_entities`. Costs: a composition step in CI that must catch breaking changes across teams, query plans that can fan out into sequential subgraph calls (latency), distributed tracing becoming mandatory, and a governance process for shared types. Federation solves an organisational problem; do not adopt it with two teams.\n\n## When not to use GraphQL\n- **Public APIs for third parties** that want simple, cacheable, curl-able endpoints and stable rate limits. Many companies keep REST for public use and GraphQL for their own apps (GitHub offers both).\n- **Service-to-service** calls: gRPC or REST with a fixed contract is simpler and faster.\n- **File uploads, streaming downloads, webhooks**: awkward in GraphQL; use plain HTTP.\n- **Small teams with one client**: a BFF with a few REST endpoints is less machinery than a schema, resolvers, loaders, cost analysis and a normalised cache.\n- **Heavily cacheable read traffic** at the CDN edge.\n\n## Common mistakes and debugging\n- No DataLoader, or a global one. Watch query counts per operation in your traces.\n- Exposing your database schema one-to-one as GraphQL types. Design the schema for clients.\n- Everything non-null, so one failing field nulls the whole response; or everything nullable, so clients null-check everything. Make fields non-null when the server can always guarantee them.\n- Unbounded lists, no cost limits, introspection open on an internal API exposed by accident.\n- Treating HTTP 200 as success in monitoring. Track `errors` by operation and error code.\n\n## In the interview\nThey test whether you understand the execution model (resolvers per field, hence N+1), the security cost of letting clients write queries, and when GraphQL is the wrong tool.\n\n**Model 60-second answer**: \"GraphQL gives clients one typed endpoint where they ask for exactly the fields a screen needs, which removes over- and under-fetching and gives schema validation for free. Execution calls a resolver per field, so naive resolvers cause N+1 queries; DataLoader batches keys per tick into one query and memoises per request, and loaders must be per request for correctness and auth. Because clients write arbitrary queries, I use persisted-query allowlists for first-party apps, plus depth and cost limits and required pagination for anything public. HTTP caching mostly goes away, so I rely on a normalised client cache and GET for persisted queries. I would pick it for product UIs with many clients and fast-changing data needs, and avoid it for public partner APIs, service-to-service calls and simple one-client apps.\"\n\n**Follow-ups to expect**: How does DataLoader know when to dispatch the batch? What is the difference between APQ and an allowlist? How do you do authorisation consistently? How does federation resolve an entity across subgraphs? How do you version a GraphQL schema (answer: you mostly do not; add fields, deprecate with `@deprecated`, and track field usage before removal)?",
+      "keyPoints": [
+        "The server validates every query against a typed schema, then calls a resolver per field; partial failures null fields and land in the errors array.",
+        "Per-field resolvers cause N+1 queries; DataLoader batches keys within one tick and memoises per request. Never share loaders across requests.",
+        "Persisted-query allowlists are the strongest defence for first-party clients; APQ only saves bandwidth. Add depth, cost and pagination limits for public graphs.",
+        "POST-based GraphQL loses URL caching; use GET for persisted queries, cache hints and normalised client caches keyed by type and id.",
+        "Federation splits one graph across team-owned subgraphs behind a router; it solves an org problem and adds composition, latency and tracing costs."
+      ],
+      "interview": [
+        "What is the N+1 problem in GraphQL and how does DataLoader solve it?",
+        "How do you protect a public GraphQL API from expensive or malicious queries?",
+        "When would you choose GraphQL over REST, and when would you avoid it?"
+      ],
+      "check": [
+        {
+          "q": "Why must DataLoader instances be created per request rather than shared globally?",
+          "options": [
+            "DataLoader cannot be imported at module scope",
+            "A shared loader caches results across users, serving stale data and possibly data the next user is not authorised to see",
+            "Global loaders disable batching",
+            "Per-request loaders use less memory in total"
+          ],
+          "answer": 1,
+          "why": "DataLoader memoises by key. Shared across requests it becomes an unbounded cache with no invalidation and no awareness of per-user authorisation."
+        },
+        {
+          "q": "Which control actually prevents clients from sending arbitrary new queries to your GraphQL server?",
+          "options": [
+            "Automatic persisted queries (APQ)",
+            "Disabling introspection",
+            "Gzip compression",
+            "A persisted-query allowlist that only executes operations registered at build time"
+          ],
+          "answer": 3,
+          "why": "APQ registers any unknown query on first use, so it is a bandwidth optimisation. An allowlist rejects everything not registered; introspection off only hides the schema."
+        },
+        {
+          "q": "A query for 100 orders, each with its customer, triggers 101 SQL queries. With a correct DataLoader for customers, roughly how many queries run?",
+          "options": [
+            "2: one for orders and one batched query for all customer ids",
+            "101, because DataLoader only caches",
+            "1, because DataLoader joins tables",
+            "100, because the orders query is cached"
+          ],
+          "answer": 0,
+          "why": "DataLoader collects all load(id) calls from the same tick and calls the batch function once with every id, so the tree costs one query per level."
+        }
+      ],
+      "resources": [
+        {
+          "title": "GraphQL: Learn (official docs)",
+          "url": "https://graphql.org/learn/"
+        },
+        {
+          "title": "graphql/dataloader (README explains batching and caching)",
+          "url": "https://github.com/graphql/dataloader"
+        },
+        {
+          "title": "GraphQL performance: N+1, persisted queries, cost (graphql.org)",
+          "url": "https://graphql.org/learn/performance/"
+        },
+        {
+          "title": "Relay GraphQL Cursor Connections Specification",
+          "url": "https://relay.dev/graphql/connections.htm"
+        },
+        {
+          "title": "Apollo Federation docs",
+          "url": "https://www.apollographql.com/docs/federation/"
+        },
+        {
+          "title": "GraphQL specification",
+          "url": "https://spec.graphql.org/"
+        }
+      ]
+    },
+    {
+      "id": "api-grpc",
+      "track": "http-apis",
+      "title": "gRPC and Protocol Buffers",
+      "minutes": 22,
+      "summary": "Protobuf contracts and encoding, the four gRPC streaming modes, deadlines and cancellation, status codes, load balancing, gRPC-Web and Connect, and gRPC versus REST.",
+      "body": "## The core idea\ngRPC is a remote procedure call framework: you define services and messages in a `.proto` file, generate client and server code in many languages, and call remote methods as if they were local functions. Under the hood it sends **Protocol Buffers** (a compact binary encoding) over **HTTP/2**, which gives it multiplexing, streaming in both directions and a strict, code-generated contract.\n\nWhere REST asks \"which resource and which verb?\", gRPC asks \"which method on which service?\". It came out of Google's internal Stubby system and is the default for service-to-service calls in many backends (and in Kubernetes, etcd and Envoy's control APIs). It is rarely the right choice for a public, browser-facing API.\n\n## Protobuf: the contract and the encoding\n\n```protobuf\nsyntax = \"proto3\";\npackage orders.v1;\n\nimport \"google/protobuf/timestamp.proto\";\n\nservice OrderService {\n  rpc GetOrder(GetOrderRequest) returns (Order);                       // unary\n  rpc WatchOrder(WatchOrderRequest) returns (stream OrderEvent);       // server streaming\n  rpc UploadLineItems(stream LineItem) returns (UploadSummary);        // client streaming\n  rpc Chat(stream ChatMessage) returns (stream ChatMessage);           // bidirectional\n}\n\nmessage Order {\n  string id = 1;\n  OrderStatus status = 2;\n  int64 total_minor = 3;          // money as integer minor units\n  string currency = 4;\n  google.protobuf.Timestamp created_at = 5;\n  repeated LineItem items = 6;\n  optional string coupon_code = 7; // proto3 optional: presence is tracked\n  reserved 8;                      // removed field; number can never be reused\n  reserved \"legacy_notes\";\n}\n\nenum OrderStatus {\n  ORDER_STATUS_UNSPECIFIED = 0;    // zero value must be a safe \"unknown\"\n  ORDER_STATUS_PENDING = 1;\n  ORDER_STATUS_PAID = 2;\n}\n```\n\nHow the encoding works, briefly: each field is written as a **tag** (field number plus wire type) followed by the value. Integers use variable-length encoding, so small numbers take one byte. Field names never go on the wire, only numbers. Consequences you must internalise:\n\n- **Field numbers are the contract.** Renaming a field is wire-compatible; changing its number or type is not. Never reuse a number: mark removed fields `reserved`. Numbers 1-15 encode in one byte, so give them to frequent fields.\n- **Unknown fields are preserved and skipped**, so old binaries tolerate new fields. This is what makes additive evolution safe.\n- In proto3, scalar fields without `optional` have no presence: `0`, `\"\"` and `false` are indistinguishable from \"not set\". Use `optional` or wrapper types when \"unset\" means something.\n- Enum zero values should be `..._UNSPECIFIED` because an unknown or missing enum decodes to 0.\n\nThe protobuf \"Dos and Don'ts\" page is short and worth reading in full. Tools like `buf breaking` check a `.proto` change against the last released version in CI and fail on wire- or source-incompatible changes.\n\n## The four call types\n\n```text\nunary             client --req-->            server       GetOrder\n                  client <--resp--           server\n\nserver streaming  client --req-->            server       WatchOrder: status events, large result sets\n                  client <--msg, msg, msg--  server\n\nclient streaming  client --msg, msg, msg-->  server       UploadLineItems: telemetry, bulk ingest\n                  client <--resp--           server\n\nbidi streaming    client <==msgs both ways==> server      Chat, live collaboration, interactive\n                                                          speech recognition\n```\n\nEach call is one HTTP/2 stream: request metadata as HEADERS, messages as length-prefixed DATA frames, and the final `grpc-status` and `grpc-message` as **trailers**. Streams are long-lived and flow-controlled, so a slow consumer applies back-pressure to the producer instead of buffering unboundedly.\n\nStreaming is great for server-pushed events and large or unbounded result sets. It is also operationally harder: load balancers see long-lived streams, deploys must drain them, and you need to handle reconnection and resumption (send a cursor or last-seen sequence number in the request) yourself.\n\n## Deadlines and cancellation\ngRPC has no default timeout: a call without a deadline can wait forever. Every client call should set a **deadline** (an absolute point in time, sent as the `grpc-timeout` header). The gRPC blog post on deadlines explains the key property: when the server calls downstream services, it should **propagate the remaining deadline**, not start a fresh timeout. If the user-facing request has 300 ms left, a downstream call with a 1 s timeout is wasted work.\n\n```ts\n// @connectrpc/connect in Node: deadline per call, propagated via the context signal\nconst order = await ordersClient.getOrder({ id }, { timeoutMs: 300 });\n\n// in a handler, pass the incoming signal so cancellation and deadlines flow downstream\nasync function getOrder(req: GetOrderRequest, ctx: HandlerContext) {\n  const inventory = await inventoryClient.check({ sku: req.sku }, { signal: ctx.signal });\n  // ...\n}\n```\n\n```go\n// Go: context carries the deadline across every hop\nctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)\ndefer cancel()\nresp, err := client.GetOrder(ctx, &ordersv1.GetOrderRequest{Id: id})\nif status.Code(err) == codes.DeadlineExceeded { /* degrade or fail fast */ }\n```\n\nWhen a client cancels or the deadline passes, the server sees its context cancelled and should stop work. Combined with retries (only for idempotent methods, with backoff, configurable per method in the gRPC service config), deadlines are the main defence against cascading failures.\n\n## Status codes\ngRPC has its own 17 status codes instead of HTTP statuses: `OK`, `INVALID_ARGUMENT`, `NOT_FOUND`, `ALREADY_EXISTS`, `PERMISSION_DENIED`, `UNAUTHENTICATED`, `RESOURCE_EXHAUSTED` (rate limits, quotas), `FAILED_PRECONDITION`, `ABORTED` (concurrency conflicts), `DEADLINE_EXCEEDED`, `UNAVAILABLE` (transient, usually safe to retry), `INTERNAL`, `UNIMPLEMENTED` and others. Pick them as carefully as HTTP codes: `UNAVAILABLE` tells clients to retry, `FAILED_PRECONDITION` tells them not to. Rich error details (field violations, retry info) go in `google.rpc.Status` details.\n\n## Load balancing: the classic gotcha\nHTTP/2 keeps one long-lived connection and multiplexes every call over it. A **layer 4** load balancer (or a Kubernetes `ClusterIP` Service) balances **connections**, not requests, so each client pins to one backend and new pods get no traffic. Fixes:\n\n- An **L7 proxy** that understands HTTP/2 and balances per request (Envoy, Linkerd, Istio, NGINX, cloud L7 load balancers).\n- **Client-side load balancing**: the gRPC client resolves all backend addresses (DNS on a headless Service, or xDS) and uses `round_robin` across them.\n- Setting a maximum connection age on servers so clients reconnect and rebalance periodically.\n\n## gRPC in the browser\nBrowsers do not expose HTTP/2 framing or trailers to JavaScript, so native gRPC cannot run there. **gRPC-Web** is a variant protocol that a proxy (Envoy has a filter for it) translates to gRPC; it supports unary and server-streaming calls but **not** client or bidirectional streaming. The **Connect** protocol (connectrpc.com, from Buf) is a newer option: the same `.proto` services served over plain HTTP/1.1 or HTTP/2 with JSON or binary bodies, callable with `curl`, and Connect servers also speak gRPC and gRPC-Web. Many teams now use Connect for browser-to-backend and gRPC between services.\n\n## gRPC versus REST\n\n| | gRPC | REST + JSON |\n|---|---|---|\n| Contract | `.proto`, code-generated, enforced | OpenAPI, optional, often drifts |\n| Payload | binary, compact, fast to parse | text, larger, human-readable |\n| Streaming | four modes, first-class | SSE, WebSockets, chunked responses |\n| Browser | needs gRPC-Web or Connect | native |\n| Caching | none at HTTP level | HTTP caching, CDNs |\n| Debugging | needs `grpcurl`, reflection | `curl`, browser devtools |\n| Best fit | internal service mesh, polyglot backends, streaming | public APIs, web clients, partners |\n\nPerformance claims deserve care: protobuf is smaller and cheaper to parse than JSON, but for most services the database dominates latency. The stronger arguments for gRPC are the enforced contract, generated clients in every language, deadlines and streaming.\n\n## Common mistakes and debugging\n- No deadlines, or fresh timeouts at every hop instead of propagating the remaining budget.\n- Reusing or renumbering protobuf fields, or changing a field's type, which silently corrupts data for old clients.\n- Using `0` / empty string as meaningful values without `optional`.\n- L4 load balancing with long-lived HTTP/2 connections, so one pod gets all the traffic.\n- Retrying non-idempotent methods automatically.\n- Debug with `grpcurl` plus server reflection, `GRPC_TRACE` / `GRPC_VERBOSITY` env vars, and OpenTelemetry's gRPC instrumentation for per-method latency and status codes.\n\n## In the interview\nThey check that you know what gRPC actually is (protobuf over HTTP/2 with codegen), the four streaming modes and when each fits, how deadlines and schema evolution work, and the operational gotchas (load balancing, browsers).\n\n**Model 60-second answer**: \"gRPC defines services in protobuf, generates typed clients and servers, and runs each call as an HTTP/2 stream with binary messages and status in trailers. It supports unary, server streaming, client streaming and bidirectional calls. Field numbers are the wire contract, so evolution is additive: new fields with new numbers, removed ones reserved, checked by buf breaking in CI. Every call needs a deadline, and servers propagate the remaining deadline downstream so work stops when the caller gives up. Because HTTP/2 connections are long-lived, I need L7 or client-side load balancing. I use it between services; for browsers and partners I use REST or Connect, since native gRPC does not run in browsers.\"\n\n**Follow-ups to expect**: Why can't browsers speak gRPC? What happens if you change a field from `int32` to `string`? Why did all traffic go to one pod after scaling up? Which status codes are safe to retry? How do you resume a server stream after a disconnect?",
+      "keyPoints": [
+        "gRPC is protobuf messages over HTTP/2 streams with generated clients; status comes back in trailers.",
+        "Protobuf field numbers are the wire contract: add fields, reserve removed numbers, never renumber or change types, and check with buf breaking.",
+        "Unary, server streaming, client streaming and bidirectional streaming each map to one flow-controlled HTTP/2 stream.",
+        "Always set deadlines and propagate the remaining deadline downstream so cancelled work stops instead of piling up.",
+        "Long-lived HTTP/2 connections defeat L4 load balancing; use an L7 proxy or client-side round robin. Browsers need gRPC-Web or Connect."
+      ],
+      "interview": [
+        "What are gRPC's four call types and when would you use streaming?",
+        "Why do gRPC deadlines matter and how should they propagate across services?",
+        "How do you evolve a protobuf schema without breaking clients?"
+      ],
+      "check": [
+        {
+          "q": "After scaling a gRPC backend from 3 to 10 pods behind a Kubernetes ClusterIP Service, the new pods get almost no traffic. Why?",
+          "options": [
+            "The new pods failed readiness checks",
+            "Protobuf messages are too large for the new pods",
+            "Clients hold long-lived HTTP/2 connections and the L4 Service balances connections, not individual calls",
+            "gRPC only supports three backends per service"
+          ],
+          "answer": 2,
+          "why": "kube-proxy balances at connection level. Existing HTTP/2 connections multiplex all calls to the original pods. Use L7 balancing, client-side round robin or max connection age."
+        },
+        {
+          "q": "Which protobuf change is safe for existing clients and servers?",
+          "options": [
+            "Adding a new field with a previously unused field number",
+            "Changing field 3 from int32 to string",
+            "Reusing the number of a deleted field for a new field",
+            "Renumbering fields to keep them in order"
+          ],
+          "answer": 0,
+          "why": "Unknown field numbers are skipped by old readers, so additive changes are safe. Type changes and reused or renumbered fields make old and new binaries misread each other."
+        },
+        {
+          "q": "A frontend request has 250 ms left in its budget and calls service A, which calls service B. What should A do?",
+          "options": [
+            "Call B with a fixed 2 second timeout",
+            "Call B with no deadline so it can always finish",
+            "Retry B up to five times immediately on any error",
+            "Propagate the remaining deadline (under 250 ms) to B so B stops when the caller can no longer use the result"
+          ],
+          "answer": 3,
+          "why": "Deadline propagation bounds the total work to the user's budget and cancels downstream calls when the caller gives up, which prevents wasted work and cascading overload."
+        }
+      ],
+      "resources": [
+        {
+          "title": "gRPC core concepts, architecture and lifecycle",
+          "url": "https://grpc.io/docs/what-is-grpc/core-concepts/"
+        },
+        {
+          "title": "gRPC and Deadlines (grpc.io blog)",
+          "url": "https://grpc.io/blog/deadlines/"
+        },
+        {
+          "title": "Protocol Buffers: Proto Best Practices (Dos and Don'ts)",
+          "url": "https://protobuf.dev/programming-guides/dos-donts/"
+        },
+        {
+          "title": "gRPC status codes",
+          "url": "https://grpc.io/docs/guides/status-codes/"
+        },
+        {
+          "title": "Connect RPC introduction",
+          "url": "https://connectrpc.com/docs/introduction"
+        },
+        {
+          "title": "Buf breaking change detection",
+          "url": "https://buf.build/docs/breaking/"
+        }
+      ]
+    },
+    {
+      "id": "api-pagination-filtering",
+      "track": "http-apis",
+      "title": "Pagination, filtering and sorting",
+      "minutes": 20,
+      "summary": "Offset versus cursor and keyset pagination, writing the keyset query and index, opaque cursors, whitelisted sorting and filtering, counts and consistency under writes.",
+      "body": "## The core idea\nEvery list endpoint must be paginated from day one, because collections only grow and an unbounded `SELECT` eventually becomes an outage. The real design questions are: how does the client ask for the next page, how expensive is page 5,000, and what happens to page boundaries when rows are inserted or deleted while someone is paging?\n\nThere are two families:\n\n- **Offset pagination**: `?limit=20&offset=40` (or `page=3`). Simple, supports \"jump to page 37\", and gets slower and less correct as data grows and changes.\n- **Cursor pagination**, usually implemented as **keyset** (or \"seek\") pagination: `?limit=20&cursor=<opaque>`, where the cursor encodes the sort key of the last row seen. Constant cost per page and stable under writes, but no random access.\n\nMarkus Winand's \"No Offset\" page on use-the-index-luke.com is the classic explanation of why keyset wins at scale, and Slack's engineering post \"Evolving API Pagination at Slack\" describes a real migration from offset to cursors.\n\n## Why offset breaks down\n\n```sql\nSELECT * FROM orders WHERE account_id = $1 ORDER BY created_at DESC LIMIT 20 OFFSET 100000;\n```\n\nThe database cannot jump to row 100,000. It must produce and throw away 100,000 rows (walking an index or sorting), then return 20. Cost grows linearly with the offset, so deep pages and bots crawling them hurt the whole database.\n\nOffset is also **incorrect under writes**:\n\n```text\npage 1 (offset 0)   : [A B C D E]        new row Z inserted at the top\npage 2 (offset 5)   : [E F G H I]        E appears twice (everything shifted down by one)\n\npage 1 (offset 0)   : [A B C D E]        row B deleted\npage 2 (offset 5)   : [G H I J K]        F is never shown (everything shifted up by one)\n```\n\nFor an admin table with page numbers over a few thousand rows, none of this matters and offset is fine. For feeds, sync, exports and public APIs, it does.\n\n## Keyset pagination step by step\nInstead of \"skip N rows\", say \"give me rows after the last one I saw\" in the sort order.\n\n```sql\n-- index that matches the filter and the sort, with a unique tie-breaker\nCREATE INDEX orders_account_created_id ON orders (account_id, created_at DESC, id DESC);\n\n-- first page\nSELECT id, created_at, total FROM orders\nWHERE account_id = $1\nORDER BY created_at DESC, id DESC\nLIMIT 21;                                   -- fetch one extra to know has_more\n\n-- next page: cursor = (created_at, id) of the last row returned\nSELECT id, created_at, total FROM orders\nWHERE account_id = $1\n  AND (created_at, id) < ($2, $3)           -- row-value comparison (PostgreSQL, MySQL 8)\nORDER BY created_at DESC, id DESC\nLIMIT 21;\n```\n\nKey details:\n\n- **The sort must be total.** `created_at` alone is not unique; two rows with the same timestamp straddling a page boundary get skipped or duplicated. Always add a unique tie-breaker (`id`) to both the `ORDER BY` and the cursor.\n- **The index must match** the equality filters first, then the sort columns in the same direction. Then each page is an index range scan that reads about `limit` rows regardless of depth.\n- **Row-value comparison** `(a, b) < (x, y)` is concise and index-friendly in PostgreSQL. Where unsupported, expand it: `a < x OR (a = x AND b < y)`.\n- **Fetch `limit + 1`** to compute `has_more` without a `COUNT(*)`.\n- **Make the cursor opaque**: base64url-encode a small JSON or binary blob (`{\"c\":\"2026-10-04T06:00:00.123Z\",\"i\":\"ord_9\"}`), optionally signed or encrypted so clients cannot craft cursors or depend on the format. Include the sort and filter in it (or validate that the next request repeats them) so a cursor cannot be replayed against a different query.\n\n```ts\nimport { z } from \"zod\";\n\nconst Cursor = z.object({ c: z.string().datetime(), i: z.string() });\nconst encode = (c: z.infer<typeof Cursor>) => Buffer.from(JSON.stringify(c)).toString(\"base64url\");\nconst decode = (s: string) => Cursor.parse(JSON.parse(Buffer.from(s, \"base64url\").toString()));\n\nexport async function listOrders(accountId: string, limit = 20, cursor?: string) {\n  const take = Math.min(Math.max(limit, 1), 100);\n  const after = cursor ? decode(cursor) : null;\n  const rows = await sql<OrderRow[]>`\n    SELECT id, created_at, total FROM orders\n    WHERE account_id = ${accountId}\n      ${after ? sql`AND (created_at, id) < (${after.c}, ${after.i})` : sql``}\n    ORDER BY created_at DESC, id DESC\n    LIMIT ${take + 1}`;\n  const page = rows.slice(0, take);\n  const last = page.at(-1);\n  return {\n    data: page,\n    has_more: rows.length > take,\n    next_cursor: rows.length > take && last ? encode({ c: last.created_at.toISOString(), i: last.id }) : null,\n  };\n}\n```\n\nThe same pattern works in MongoDB with a compound index and `{ $or: [{ createdAt: { $lt: c } }, { createdAt: c, _id: { $lt: i } }] }`.\n\n### Response shapes in the wild\n- **Stripe**: `limit`, `starting_after` / `ending_before` (object ids), response has `data` and `has_more`.\n- **Slack**: `cursor` and `limit`, response has `response_metadata.next_cursor`.\n- **GitHub REST**: RFC 8288 `Link` headers with `rel=\"next\"`, `rel=\"last\"`.\n- **GraphQL Relay connections**: `first`/`after`, `edges { cursor node }`, `pageInfo { hasNextPage endCursor }`.\n- **Google AIP-158**: `page_size`, `page_token`, `next_page_token`; the server may return fewer items than requested, and an empty token means the end.\n\nAll of them return an opaque token and a \"more\" signal. None of them promise a total count by default.\n\n## Sorting\n- Allow sorting only on a **whitelist** of fields that have supporting indexes: `?sort=-created_at` or `?order_by=created_at desc`. Arbitrary sort fields mean arbitrary full scans.\n- Always append the unique tie-breaker internally.\n- Cursors are tied to a sort. Changing the sort means starting from the first page.\n- Sorting by a mutable field (`updated_at`, `score`) under keyset means rows can move across the cursor while paging: an item updated after you passed it reappears later. For sync use cases that is often exactly what you want (\"changes since cursor\"); for display lists, document it.\n\n## Filtering\n- Simple equality and range filters as query parameters: `?status=paid&created_gte=2026-01-01&created_lt=2026-02-01&customer_id=cus_1`. Use consistent suffixes (`_gte`, `_lt`) or bracket syntax (`created[gte]=`) and document which fields are filterable.\n- For richer needs, a small filter language like Google AIP-160 (`filter=status = \"PAID\" AND total > 1000`), parsed on the server into a safe AST. Never splice filter strings into SQL.\n- **Every filter combination you allow must be index-backed** or limited. A filter on an unindexed column over a 100 million row table is a denial-of-service endpoint. Put a hard cap on `limit` (for example 100) and a statement timeout on list queries.\n- Full-text search and faceting belong in a search engine (Postgres full-text search, Elasticsearch/OpenSearch, Atlas Search), exposed as a separate `/search` endpoint with its own pagination semantics.\n\n## Consistency under writes and total counts\nKeyset pagination is stable in the sense that matters: no duplicates and no skips for rows that existed throughout, because the boundary is a value, not a position. Rows inserted ahead of your cursor (newer items in a newest-first feed) are not shown until you refresh from the top; feeds usually solve this with a \"new items\" banner that fetches with `ending_before` the first id.\n\nIf you need a **true snapshot** (an export that must be consistent), options are: a long-running transaction with repeatable-read isolation (not across HTTP requests), filtering on `created_at <= snapshot_time` captured in the first cursor, or generating the export asynchronously as a file.\n\n**Total counts**: `COUNT(*)` on a large filtered set can cost as much as the query itself. Return counts only when cheap, cap them (\"10,000+\"), use estimates (PostgreSQL's planner row estimate), or make them a separate, cacheable call.\n\n## Common mistakes and debugging\n- Offset pagination on a public or high-traffic endpoint; deep pages show up as slow-query log entries with huge `OFFSET` values.\n- Keyset without a unique tie-breaker, producing duplicates or gaps at timestamp collisions.\n- An index that does not match the sort direction or column order. Check with `EXPLAIN (ANALYZE, BUFFERS)`: you want an index scan reading about `limit + 1` rows, not a sort node.\n- Transparent cursors (`?after_id=123`) that clients start constructing, so you can never change the sort.\n- No max page size, so one client asks for `limit=100000`.\n\n## In the interview\nThey probe whether you know why offset degrades (cost and correctness), can write the keyset `WHERE` clause with a tie-breaker, and think about the index, filters and counts.\n\n**Model 60-second answer**: \"Offset is fine for small admin tables with page numbers, but the database scans and discards every skipped row, so deep pages are slow, and inserts or deletes shift rows so pages duplicate or skip items. For feeds and public APIs I use keyset pagination: order by a total order like created_at desc, id desc, and the next page is WHERE (created_at, id) < (last values) LIMIT n+1, served by a matching composite index so every page costs the same. The cursor is opaque base64, bound to the sort and filters, and the response returns next_cursor and has_more instead of a total count. Filters and sorts are whitelisted and index-backed, and limit is capped.\"\n\n**Follow-ups to expect**: How do you support \"previous page\" with keyset? (Reverse the comparison and order, then reverse the results.) What about sorting by a non-unique, mutable column? How do you show a total count cheaply? How would you paginate a merged result from two services?",
+      "keyPoints": [
+        "Offset pagination scans and discards every skipped row and shifts under inserts and deletes, causing duplicates and gaps.",
+        "Keyset pagination seeks past the last seen sort key: WHERE (created_at, id) < ($c, $i) ORDER BY created_at DESC, id DESC LIMIT n+1.",
+        "The sort must be total (unique tie-breaker) and a composite index must match the filters and sort direction.",
+        "Cursors should be opaque, bound to the sort and filters, and paired with has_more instead of an expensive total count.",
+        "Whitelist filterable and sortable fields that are index-backed, cap the page size and add statement timeouts."
+      ],
+      "interview": [
+        "Compare offset and cursor (keyset) pagination. Which would you use for an infinite feed?",
+        "How do you keep pagination correct when items are inserted or deleted while a client pages through?"
+      ],
+      "check": [
+        {
+          "q": "A keyset-paginated list ordered only by created_at sometimes skips items at page boundaries. What is the fix?",
+          "options": [
+            "Switch to offset pagination",
+            "Add a unique tie-breaker such as id to both the ORDER BY and the cursor comparison",
+            "Increase the page size",
+            "Cache each page for 60 seconds"
+          ],
+          "answer": 1,
+          "why": "Rows sharing a created_at value can straddle a boundary. A unique tie-breaker makes the order total so the cursor identifies exactly one position."
+        },
+        {
+          "q": "Why does LIMIT 20 OFFSET 500000 get slower as the offset grows?",
+          "options": [
+            "The database must produce and discard all 500,000 preceding rows before returning 20",
+            "LIMIT disables indexes",
+            "OFFSET forces a full table lock",
+            "The network sends all skipped rows to the client"
+          ],
+          "answer": 0,
+          "why": "There is no way to jump to a position in an ordered result without walking it. Keyset pagination seeks directly in the index to the last seen key instead."
+        },
+        {
+          "q": "Which index best supports WHERE account_id = $1 AND (created_at, id) < ($2, $3) ORDER BY created_at DESC, id DESC?",
+          "options": [
+            "(created_at)",
+            "(id, account_id)",
+            "(account_id, created_at DESC, id DESC)",
+            "(created_at, account_id)"
+          ],
+          "answer": 2,
+          "why": "Equality columns first, then the sort columns in order and direction, so each page is a short index range scan with no sort step."
+        }
+      ],
+      "resources": [
+        {
+          "title": "No Offset: keyset pagination explained (Markus Winand, use-the-index-luke.com)",
+          "url": "https://use-the-index-luke.com/no-offset"
+        },
+        {
+          "title": "Evolving API Pagination at Slack",
+          "url": "https://slack.engineering/evolving-api-pagination-at-slack/"
+        },
+        {
+          "title": "Stripe API reference: Pagination",
+          "url": "https://docs.stripe.com/api/pagination"
+        },
+        {
+          "title": "Google AIP-158: Pagination",
+          "url": "https://google.aip.dev/158"
+        },
+        {
+          "title": "Google AIP-160: Filtering",
+          "url": "https://google.aip.dev/160"
+        }
+      ]
+    },
+    {
+      "id": "api-versioning-evolution",
+      "track": "http-apis",
+      "title": "API versioning and evolution",
+      "minutes": 20,
+      "summary": "Breaking versus compatible changes, path, header and date-based versioning, Stripe-style version pinning, expand-contract migrations, and running deprecations with Deprecation and Sunset headers.",
+      "body": "## The core idea\nOnce an API has clients you do not control, every response shape becomes a promise. Hyrum's Law states it bluntly: with enough users, every observable behaviour of your system will be depended on by somebody, including field order, error message wording and timing. API evolution is the discipline of changing the system without breaking those promises, and versioning is the escape hatch for the rare changes that must break them.\n\nThe best APIs version **rarely**. They make almost every change backward compatible, and when they must break something, they let each client move on its own schedule. Stripe's post \"APIs as infrastructure: future-proofing Stripe with versioning\" is the canonical description of doing this at scale.\n\n## What counts as a breaking change\nA change is breaking if a correctly written existing client can fail or misbehave after it. Google's AIP-180 on backwards compatibility is a precise reference.\n\n| Usually safe (additive) | Breaking |\n|---|---|\n| Add a new endpoint or resource | Remove or rename an endpoint or field |\n| Add an optional request field or query param | Make an optional request field required |\n| Add a response field | Change a field's type or format (`\"42\"` to `42`, cents to dollars) |\n| Add a new error `type` for a new situation | Change the status code or error type for an existing situation |\n| Relax validation (accept longer strings) | Tighten validation (reject what used to work) |\n| Add a value to an output enum (only if clients were told to expect it) | Change default values or default sort order |\n| | Change semantics with the same shape (a `total` that now includes tax) |\n| | Change pagination, auth or rate-limit behaviour |\n\nTwo subtleties:\n\n- **Enums**: adding a new `status` value breaks clients that `switch` exhaustively and crash on unknown values. Document from day one that enums are open and clients must handle unknown values, and generate SDKs that do.\n- **Semantic changes are the dangerous ones**, because no schema diff tool catches them. A field that keeps its name but changes meaning is worse than a removed field.\n\nThe client side of the bargain is Martin Fowler's **Tolerant Reader**: ignore unknown fields, do not depend on field order, treat unknown enum values gracefully, and only validate what you actually use.\n\n## Versioning strategies\n\n**1. URL path versioning**: `/v1/orders`, `/v2/orders`.\nVisible, trivially routable, easy to cache and to reason about in logs. Downsides: a major version is a whole new API surface, so teams avoid bumping it and hold breaking changes for years, or v2 becomes a rewrite clients never migrate to. Most public APIs use a path prefix as the coarse major version (Stripe has stayed on `/v1` for over a decade while evolving underneath).\n\n**2. Header or media-type versioning**: `Accept: application/vnd.example.v2+json`, or a custom header.\nKeeps URLs clean and lets versions differ per representation. Harder to test in a browser, easy to forget, and caches need `Vary` on the header.\n\n**3. Date-based versions pinned per client** (Stripe, and GitHub's `X-GitHub-Api-Version: 2022-11-28`):\nEach breaking change ships as a new dated version. An account is pinned to the version that was current when it first integrated; it can override per request with a header and upgrade when ready. Internally, Stripe describes keeping only the newest code path and a chain of **version change modules** that transform requests and responses backwards, one step per version, so the core code does not fork per version. Since 2024 Stripe names its releases with a date plus a name (for example `2024-09-30.acacia`) and separates breaking major releases from additive monthly ones.\n\n**4. No versions, only evolution** (common for GraphQL and internal APIs):\nOnly additive changes; fields are deprecated with `@deprecated(reason: ...)` and removed after usage drops to zero. Works when you can see every client (internal) or when the schema language makes additions cheap.\n\n```text\nRequest  --> [auth] --> [pin version: header or account default]\n         --> transform request  2026-04 -> 2026-07 -> latest\n         --> core handler (only knows the latest shape)\n         --> transform response latest -> 2026-07 -> 2026-04\nResponse <--\n```\n\nA practical recommendation for most teams: a `/v1` path prefix as a safety valve, additive evolution as the default, and, if you are a platform with many external integrators, per-client version pinning with response transforms.\n\n## Expand-contract (parallel change)\nFor a breaking change you control end to end (between your own services, or an API plus its database), Martin Fowler's **Parallel Change** pattern splits it into three safe steps:\n\n```text\nEXPAND    add the new shape alongside the old\n          (write both, read old; new field `full_name` next to `first_name` + `last_name`)\nMIGRATE   move every client and data to the new shape\n          (backfill, ship clients that read `full_name`, measure old-field usage)\nCONTRACT  remove the old shape once usage is zero\n          (stop writing `first_name`/`last_name`, drop columns, delete code)\n```\n\nEach step is independently deployable and reversible, and at no point do old and new versions of any component disagree. The same pattern applies to renaming a database column during a zero-downtime deploy, changing an event schema on a Kafka topic, or splitting an endpoint.\n\n```ts\n// Expand: serve both shapes while measuring who still reads the old one\nfunction serializeCustomer(c: CustomerRow, version: string) {\n  const out: Record<string, unknown> = { id: c.id, full_name: c.fullName, email: c.email };\n  if (version < \"2026-07-01\") {\n    out.first_name = c.firstName;   // deprecated in 2026-07-01\n    out.last_name = c.lastName;\n    metrics.increment(\"deprecated_field_served\", { field: \"first_name\", client: c.apiClientId });\n  }\n  return out;\n}\n```\n\n## Deprecation and sunset\nRemoving something used by thousands of clients is a project, not a commit:\n\n1. **Measure first.** Per-client usage of the endpoint or field (from logs or the instrumentation above). You cannot deprecate what you cannot see.\n2. **Announce** with a date, a migration guide and the replacement, in the changelog, docs, email to the affected API keys and the dashboard.\n3. **Signal in-band**: the `Deprecation` header (RFC 9745, for example `Deprecation: @1788134400` as a structured-field date) says the resource is deprecated, the `Sunset` header (RFC 8594, an HTTP date) says when it will stop working, and a `Link` with `rel=\"deprecation\"` points at the docs. SDKs can log warnings when they see them.\n4. **Brownouts**: before the sunset date, fail a small and growing percentage of requests (or all requests for an hour on a scheduled day) with a clear error. It finds the clients who ignored every email, while the damage is still reversible.\n5. **Remove**, return `410 Gone` with a problem-details body pointing to the replacement, and keep it for a while.\n\nTimelines depend on the audience: weeks for internal services, 6 to 12 months or more for public APIs, and forever for some paying customers. Pinning-based schemes like Stripe's let old versions live much longer because their cost is a small transform, not a forked codebase.\n\n## Trade-offs and when not to version\n- Path versions are simple but encourage big-bang rewrites; date pinning is flexible but needs serious infrastructure (transforms, tests per version, docs per version).\n- Internal APIs with a handful of known consumers rarely need versions at all; use expand-contract and contract tests.\n- Mobile apps are the hardest clients: old versions stay installed for years. Keep backward compatibility for every app version above your forced-upgrade floor.\n- A new major version is justified when the model itself is wrong (resources, auth scheme, pagination), not for renaming a field.\n\n## Common mistakes and debugging\n- Treating \"added a field\" as risk-free when clients use strict schema validation that rejects unknown fields (common with some generated clients). Document the tolerant-reader expectation.\n- Changing semantics without changing shape.\n- Versioning the whole API for one endpoint's change, forcing every client to migrate.\n- No usage telemetry per client, so deprecations are guesses and removals cause surprise outages.\n- Removing the old field in the same deploy that adds the new one (skipping expand-contract), breaking clients that have not updated, or breaking rollback.\n\n## In the interview\nThey test whether you can classify changes as breaking or not (including the subtle ones), pick a strategy with reasons, and run a deprecation as an operational process.\n\n**Model 60-second answer**: \"My default is to avoid breaking changes: add fields and endpoints, never remove or change meaning, and require clients to be tolerant readers that ignore unknown fields and handle unknown enum values. For a public API I keep a /v1 prefix as a safety valve, and if we have many integrators I prefer Stripe-style date versions pinned per account, with the core code on the latest shape and transforms translating older versions. For a change I control on both sides, I use expand-contract: add the new shape, migrate clients and data while measuring usage of the old one, then remove it. Deprecations get usage telemetry, announcements, Deprecation and Sunset headers, brownouts and finally 410 Gone.\"\n\n**Follow-ups to expect**: Is adding an enum value breaking? How do you test that v2026-04 responses still look right? How do you handle a mobile client from three years ago? How would you rename a database column with zero downtime?",
+      "keyPoints": [
+        "Hyrum's Law: every observable behaviour gets depended on, so prefer additive changes and version rarely.",
+        "Breaking includes removals, type and format changes, tighter validation, new defaults and semantic changes with the same shape.",
+        "Clients should be tolerant readers: ignore unknown fields and handle unknown enum values, which you must document from day one.",
+        "Date-based versions pinned per client with backwards response transforms let a platform evolve without forking its core code.",
+        "Expand-contract makes breaking changes safe in steps; deprecate with usage telemetry, Deprecation and Sunset headers, brownouts, then 410."
+      ],
+      "interview": [
+        "What API versioning strategies exist and which would you choose for a public API?",
+        "Which API changes are backward compatible and which are breaking?",
+        "How would you deprecate and remove an API field used by thousands of clients?"
+      ],
+      "check": [
+        {
+          "q": "Which of these changes to a public JSON API is backward compatible for well-behaved clients?",
+          "options": [
+            "Making an optional request parameter required",
+            "Changing amount from integer cents to a decimal dollars string",
+            "Adding a new optional field to the response",
+            "Changing the default sort order of a list endpoint"
+          ],
+          "answer": 2,
+          "why": "Tolerant readers ignore unknown response fields. The others change what existing requests must send or what existing responses mean."
+        },
+        {
+          "q": "In Stripe-style date versioning, how does the server usually avoid maintaining a full code path per version?",
+          "options": [
+            "It deploys one service per version",
+            "The core handles only the latest shape and a chain of version change modules transforms requests and responses back to the client's pinned version",
+            "It stores every response in each version's format in the database",
+            "It forbids breaking changes entirely"
+          ],
+          "answer": 1,
+          "why": "Stripe describes encapsulating each breaking change as a small backwards transformation applied in sequence, so old versions cost a transform rather than a fork."
+        },
+        {
+          "q": "What is the main purpose of a brownout before an API sunset date?",
+          "options": [
+            "To reduce server costs before shutdown",
+            "To test the load balancer",
+            "To give the new endpoint time to warm its cache",
+            "To surface clients that missed every announcement while failures are still temporary and reversible"
+          ],
+          "answer": 3,
+          "why": "Scheduled, partial failures make unmigrated clients notice the deprecation in their own monitoring before permanent removal."
+        }
+      ],
+      "resources": [
+        {
+          "title": "APIs as infrastructure: future-proofing Stripe with versioning",
+          "url": "https://stripe.com/blog/api-versioning"
+        },
+        {
+          "title": "Parallel Change (expand-contract), Martin Fowler",
+          "url": "https://martinfowler.com/bliki/ParallelChange.html"
+        },
+        {
+          "title": "Google AIP-180: Backwards compatibility",
+          "url": "https://google.aip.dev/180"
+        },
+        {
+          "title": "Hyrum's Law",
+          "url": "https://www.hyrumslaw.com/"
+        },
+        {
+          "title": "RFC 9745: The Deprecation HTTP Response Header Field",
+          "url": "https://www.rfc-editor.org/rfc/rfc9745.html"
+        },
+        {
+          "title": "Tolerant Reader, Martin Fowler",
+          "url": "https://martinfowler.com/bliki/TolerantReader.html"
+        }
+      ]
+    },
+    {
+      "id": "api-rate-limits-idempotency",
+      "track": "http-apis",
+      "title": "Rate limits, idempotency keys and safe retries",
+      "minutes": 25,
+      "summary": "Token bucket and other limiters across a fleet, 429 and rate limit headers, Stripe-style idempotency keys done atomically, and client retries with exponential backoff, jitter and budgets.",
+      "body": "## The core idea\nNetworks fail in the worst possible way: a request can succeed on the server while the response is lost. The client cannot tell \"never arrived\" from \"done, but the reply vanished\", so it retries. Meanwhile, some clients send far more traffic than your system can serve. Three mechanisms make an API survive both facts:\n\n- **Rate limiting** protects the server (and other tenants) from too many requests, and tells clients clearly when to slow down.\n- **Idempotency keys** make retries of non-idempotent operations (POST a payment) safe: the second attempt returns the first result instead of charging twice.\n- **Retries with exponential backoff and jitter** let clients recover from transient failures without turning a blip into a self-inflicted outage.\n\nThey are designed together. Stripe's engineering posts \"Scaling your API with rate limiters\" and \"Designing robust and predictable APIs with idempotency\", plus the AWS Builders' Library article on timeouts, retries and backoff with jitter, are the three best reads.\n\n## Rate limiting algorithms\n\n```text\nfixed window      count per calendar minute          simple; allows 2x burst at window edges\nsliding log       store every timestamp              exact; memory grows with traffic\nsliding window    weighted current + previous window  close to exact, two counters per key\ntoken bucket      tokens refill at rate r, cap b      allows bursts up to b, average r\nleaky bucket      queue drained at constant rate      smooths output; adds latency\nconcurrency       max in-flight requests per key     protects slow endpoints regardless of rate\n```\n\n**Token bucket** is the usual choice for APIs because it matches what clients actually do (bursty) while bounding the average. Each key (API key, user, IP, tenant) has a bucket of capacity `b` that refills at `r` tokens per second. A request takes one token (or a cost-weighted number, as GitHub and Shopify do for GraphQL); if the bucket is empty, reject with `429`.\n\nYou do not need a timer to refill. Store `tokens` and `last_refill`; on each request, add `elapsed * r` capped at `b`, then try to take. In a fleet of servers, state must be shared and the read-modify-write must be atomic, which is why the standard implementation is a Redis Lua script:\n\n```lua\n-- KEYS[1] = bucket key; ARGV = capacity, refill_per_sec, now_ms, cost\nlocal b = redis.call(\"HMGET\", KEYS[1], \"tokens\", \"ts\")\nlocal cap, rate, now, cost = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4])\nlocal tokens = tonumber(b[1]) or cap\nlocal ts = tonumber(b[2]) or now\ntokens = math.min(cap, tokens + (now - ts) / 1000 * rate)\nlocal allowed = tokens >= cost\nif allowed then tokens = tokens - cost end\nredis.call(\"HSET\", KEYS[1], \"tokens\", tokens, \"ts\", now)\nredis.call(\"PEXPIRE\", KEYS[1], math.ceil(cap / rate * 1000) + 1000)\nreturn { allowed and 1 or 0, math.floor(tokens) }\n```\n\nDesign decisions around the algorithm matter more than the algorithm:\n\n- **What is the key?** Per API key for authenticated traffic, per IP (carefully: NAT and IPv6) for anonymous traffic, per tenant for fairness. Usually several limits stack: per key per endpoint, per tenant, global.\n- **Fail open or closed?** If Redis is down, most APIs fail open (allow) with a local in-memory fallback limiter, because a rate limiter outage should not become a full outage. Security-sensitive limits (login attempts) may fail closed.\n- **Where?** At the edge (CDN or API gateway) for coarse abuse protection, in the application for business limits that need the authenticated identity.\n- **Rate limits are not load shedding.** Stripe describes four layers: a request rate limiter, a concurrent-requests limiter, and two load shedders that drop low-priority traffic when the fleet or workers are saturated. A per-client limit does not save you when the sum of well-behaved clients exceeds capacity.\n\n## Telling clients about limits\nReturn `429 Too Many Requests` with `Retry-After` (seconds or an HTTP date) and a problem-details body. Also tell clients their budget on every response so they can pace themselves. Two conventions:\n\n```text\nHTTP/1.1 429 Too Many Requests\nRetry-After: 12\nContent-Type: application/problem+json\n\n# legacy, de facto (GitHub style)\nX-RateLimit-Limit: 5000\nX-RateLimit-Remaining: 0\nX-RateLimit-Reset: 1791100800        # epoch seconds\n\n# IETF httpapi draft (structured fields, recent drafts)\nRateLimit-Policy: \"default\";q=100;w=60\nRateLimit: \"default\";r=0;t=12\n```\n\nThe IETF `RateLimit` header draft is still a draft, so many APIs send the `X-RateLimit-*` set; whichever you choose, document it and keep it consistent. Use `503` with `Retry-After` (not `429`) when the whole service is overloaded rather than one client being over its quota.\n\n## Idempotency keys\nHTTP already makes GET, PUT and DELETE idempotent by definition. For POST, the client generates a unique key (a UUIDv4 or v7) per logical operation and sends it with every retry of that operation:\n\n```text\nPOST /v1/payments\nIdempotency-Key: 5f1c2e8a-3c1b-4f0e-9a51-1d2f3b4c5d6e\n{\"amount\": 5000, \"currency\": \"usd\", \"source\": \"card_123\"}\n```\n\nServer behaviour (Stripe's documented semantics, and the IETF `Idempotency-Key` header draft):\n\n1. First request with a new key: record the key with a hash of the request, execute, store the status and body, return.\n2. Retry with the same key and same parameters: return the **stored** response (even if it was an error), without executing again.\n3. Same key, **different** parameters: reject (`422`, or `400`), because it is a client bug.\n4. Same key while the first request is still running: return `409 Conflict` so the client retries later; never execute twice in parallel.\n5. Keys expire after a window (Stripe prunes keys after they are at least 24 hours old).\n\nThe implementation must be **atomic with the side effect**, which is the hard part. Brandur Leach's \"Implementing Stripe-like Idempotency Keys in Postgres\" walks through it with recovery points:\n\n```sql\nCREATE TABLE idempotency_keys (\n  account_id     text        NOT NULL,\n  key            text        NOT NULL,\n  request_hash   text        NOT NULL,\n  locked_at      timestamptz,\n  response_code  int,\n  response_body  jsonb,\n  created_at     timestamptz NOT NULL DEFAULT now(),\n  PRIMARY KEY (account_id, key)          -- scope keys per client\n);\n```\n\n```ts\nexport async function createPayment(accountId: string, key: string, body: PaymentInput) {\n  const hash = sha256(canonicalJson(body));\n  return db.tx(async (tx) => {\n    const inserted = await tx.oneOrNone(\n      `INSERT INTO idempotency_keys (account_id, key, request_hash, locked_at)\n       VALUES ($1, $2, $3, now()) ON CONFLICT DO NOTHING RETURNING key`, [accountId, key, hash]);\n    if (!inserted) {\n      const row = await tx.one(`SELECT * FROM idempotency_keys WHERE account_id=$1 AND key=$2 FOR UPDATE`, [accountId, key]);\n      if (row.request_hash !== hash) return { status: 422, body: problem(\"idempotency-key-reuse\") };\n      if (row.response_code === null) return { status: 409, body: problem(\"request-in-progress\") };\n      return { status: row.response_code, body: row.response_body };\n    }\n    const payment = await tx.one(`INSERT INTO payments (...) VALUES (...) RETURNING *`, [/* ... */]);\n    await tx.none(`UPDATE idempotency_keys SET response_code=201, response_body=$3, locked_at=NULL\n                   WHERE account_id=$1 AND key=$2`, [accountId, key, payment]);\n    return { status: 201, body: payment };\n  });\n}\n```\n\nWhen the operation calls an external system (a card network), a single local transaction cannot cover it. Then you need the external call itself to be idempotent (pass your own key downstream, as payment processors allow) and recovery logic for a crash between \"charged\" and \"recorded\", which is where Brandur's recovery-point design and an outbox pattern come in.\n\n## Retries with backoff and jitter\nRules for a client (or service) that retries:\n\n- **Only retry what is retryable**: connection errors, timeouts, `429`, `503`, `502`/`504`, gRPC `UNAVAILABLE`. Never retry `400`, `401`, `403`, `404`, `422`.\n- **Only retry safe operations**: idempotent methods or requests carrying an idempotency key.\n- **Exponential backoff with jitter**. The AWS Architecture Blog post \"Exponential Backoff And Jitter\" (Marc Brooker) showed that without jitter, clients that failed together retry together in synchronised waves. \"Full jitter\" spreads them out: `sleep = random(0, min(cap, base * 2^attempt))`.\n- **Honour `Retry-After`** when the server sends it.\n- **Cap attempts and total time**, and respect the caller's deadline.\n- **Retry budgets**: limit retries to a fraction of traffic (the Google SRE book's chapter on handling overload suggests capping retries per request and at roughly 10% of requests per client), and retry at **one** layer. Three retries at each of five layers can multiply load on the bottom service by 4^5 = 1,024 times during an outage.\n\n```ts\nexport async function withRetry<T>(fn: (attempt: number) => Promise<Response>, opts = { max: 4, baseMs: 100, capMs: 5000 }) {\n  for (let attempt = 0; ; attempt++) {\n    let res: Response | undefined;\n    try { res = await fn(attempt); } catch (e) { if (attempt >= opts.max) throw e; }\n    if (res && ![429, 502, 503, 504].includes(res.status)) return res;\n    if (attempt >= opts.max) return res!;\n    const retryAfter = Number(res?.headers.get(\"retry-after\"));\n    const backoff = Math.random() * Math.min(opts.capMs, opts.baseMs * 2 ** attempt);   // full jitter\n    await new Promise((r) => setTimeout(r, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : backoff));\n  }\n}\n// The caller creates the Idempotency-Key once, outside the loop, and sends the same key on every attempt.\n```\n\n## Trade-offs and common mistakes\n- Generating a new idempotency key per **attempt** instead of per **operation** makes it useless.\n- Storing the key in a separate store (Redis) from the side effect (Postgres) without a recovery plan leaves windows where one succeeds and the other does not.\n- Not scoping keys per client lets two customers collide.\n- Rate limiting by IP only behind a proxy that hides client IPs, so everyone shares one bucket (or trusting a spoofable `X-Forwarded-For`).\n- Fixed windows that let a client send double the limit across a window boundary.\n- Retries without jitter, retries on `4xx`, and retries at every layer.\n- Debug with per-key limiter metrics (allowed versus rejected), a `429` rate dashboard per client, and logging the idempotency key (not the body) on every write.\n\n## In the interview\nThey want the algorithm, but mostly the system around it: where state lives, what happens when the limiter's store fails, how clients learn their budget, and how idempotency stays correct under concurrency and crashes.\n\n**Model 60-second answer** (idempotency): \"Clients generate one key per logical operation and send it on every retry. The server stores the key scoped to the client with a hash of the request, executes once, and saves the status and body; a retry with the same key and body gets the saved response, a different body is rejected, and a concurrent duplicate gets 409. The key row and the side effect are written in the same database transaction, so we cannot charge without recording it; for external calls, we pass our key downstream and have recovery for partial failures. Keys expire after about 24 hours. Clients retry only retryable errors with exponential backoff and full jitter, honour Retry-After, and have a retry budget.\"\n\n**Follow-ups to expect**: Token bucket versus sliding window? How do you rate limit across regions? Fail open or closed when Redis is down? What exactly do you store for an idempotent request that failed with a 500? Why does jitter help?",
+      "keyPoints": [
+        "Token bucket allows bursts up to capacity while bounding the average rate; implement it atomically in shared state such as a Redis Lua script.",
+        "Return 429 with Retry-After and expose remaining budget in headers; use 503 when the whole service is overloaded.",
+        "An idempotency key is generated once per logical operation, scoped per client, stored with a request hash and the saved response.",
+        "Write the idempotency record and the side effect in the same transaction; concurrent duplicates get 409, mismatched bodies are rejected.",
+        "Retry only retryable errors on safe requests, with exponential backoff and full jitter, honouring Retry-After, at one layer with a budget."
+      ],
+      "interview": [
+        "How does a token bucket rate limiter work, and how would you implement it across many servers?",
+        "How do idempotency keys work, and how would you implement them for a payments API?",
+        "How should clients retry failed requests safely?"
+      ],
+      "check": [
+        {
+          "q": "A client retries a POST /payments after a timeout, generating a fresh Idempotency-Key for each attempt. What happens?",
+          "options": [
+            "The server deduplicates by request body automatically",
+            "Each attempt looks like a new operation, so the customer can be charged more than once",
+            "The second attempt returns 409 Conflict",
+            "The server returns the cached first response"
+          ],
+          "answer": 1,
+          "why": "The key identifies the logical operation. A new key per attempt defeats deduplication; the key must be created once and reused on every retry."
+        },
+        {
+          "q": "Why add jitter to exponential backoff?",
+          "options": [
+            "To make retries faster on average",
+            "Because servers reject retries that arrive at exact intervals",
+            "To spread out clients that failed at the same moment so they do not retry in synchronised waves",
+            "To encrypt the retry timing"
+          ],
+          "answer": 2,
+          "why": "Without jitter, clients that failed together retry together, recreating the spike. Full jitter randomises each sleep between zero and the exponential cap."
+        },
+        {
+          "q": "Your token bucket limiter stores state in Redis, and Redis becomes unreachable. What is the most common choice for general API traffic?",
+          "options": [
+            "Fail open with a local in-memory fallback limiter, so a limiter outage does not become a full API outage",
+            "Reject all requests until Redis recovers",
+            "Disable authentication",
+            "Switch every client to a fixed window limit stored in cookies"
+          ],
+          "answer": 0,
+          "why": "Most APIs prefer availability for general traffic and keep a coarse local limiter; security-critical limits like login attempts may fail closed instead."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Designing robust and predictable APIs with idempotency (Stripe)",
+          "url": "https://stripe.com/blog/idempotency"
+        },
+        {
+          "title": "Implementing Stripe-like Idempotency Keys in Postgres (Brandur Leach)",
+          "url": "https://brandur.org/idempotency-keys"
+        },
+        {
+          "title": "Scaling your API with rate limiters (Stripe)",
+          "url": "https://stripe.com/blog/rate-limiters"
+        },
+        {
+          "title": "Exponential Backoff And Jitter (AWS Architecture Blog)",
+          "url": "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
+        },
+        {
+          "title": "Timeouts, retries, and backoff with jitter (Amazon Builders' Library)",
+          "url": "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/"
+        },
+        {
+          "title": "Handling Overload (Google SRE book)",
+          "url": "https://sre.google/sre-book/handling-overload/"
+        }
+      ]
+    },
+    {
+      "id": "api-docs-contracts",
+      "track": "http-apis",
+      "title": "API docs, contracts, SDKs and reviews",
+      "minutes": 20,
+      "summary": "OpenAPI 3.1 design-first versus code-first, linting and breaking-change checks, SDK generation, consumer-driven contract testing with Pact, and running API design reviews.",
+      "body": "## The core idea\nAn API is a contract between teams that may never talk to each other. The contract has to exist somewhere other than in the server's code and the client author's head, otherwise every change is a guess and every integration starts with reading source code. Mature API teams treat the contract as a first-class artefact:\n\n- **Described** in a machine-readable spec (OpenAPI for HTTP/JSON, protobuf for gRPC, the SDL for GraphQL, AsyncAPI for events).\n- **Checked** automatically: linted for style, diffed for breaking changes, and verified against the running implementation.\n- **Consumed** through generated documentation, SDKs, mocks and tests, so the spec cannot silently drift.\n- **Reviewed** by people before it ships, because the expensive mistakes in APIs are design mistakes you cannot fix later.\n\n## OpenAPI in practice\nOpenAPI 3.1 describes HTTP APIs in YAML or JSON: paths, operations, parameters, request and response bodies, auth schemes and reusable schemas. 3.1 aligned its schema objects with JSON Schema 2020-12, so the same schemas can validate payloads at runtime.\n\n```yaml\nopenapi: 3.1.0\ninfo: { title: Orders API, version: \"2026-10-01\" }\nservers: [{ url: https://api.example.com/v1 }]\nsecurity: [{ bearerAuth: [] }]\npaths:\n  /orders:\n    post:\n      operationId: createOrder\n      parameters:\n        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, maxLength: 255 } }\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema: { $ref: \"#/components/schemas/CreateOrder\" }\n      responses:\n        \"201\":\n          description: Created\n          headers: { Location: { schema: { type: string } } }\n          content: { application/json: { schema: { $ref: \"#/components/schemas/Order\" } } }\n        \"422\": { $ref: \"#/components/responses/Problem\" }\n        \"429\": { $ref: \"#/components/responses/Problem\" }\ncomponents:\n  securitySchemes:\n    bearerAuth: { type: http, scheme: bearer }\n  schemas:\n    CreateOrder:\n      type: object\n      required: [customer_id, items]\n      properties:\n        customer_id: { type: string, pattern: \"^cus_\" }\n        items: { type: array, minItems: 1, maxItems: 100, items: { $ref: \"#/components/schemas/LineItem\" } }\n    Order:\n      type: object\n      required: [id, status, total]\n      properties:\n        id: { type: string, examples: [\"ord_8f2c\"] }\n        status: { type: string, enum: [pending, paid, shipped, cancelled], description: \"Open enum: handle unknown values.\" }\n        total: { $ref: \"#/components/schemas/Money\" }\n  responses:\n    Problem:\n      description: RFC 9457 problem details\n      content: { application/problem+json: { schema: { $ref: \"#/components/schemas/Problem\" } } }\n```\n\n### Design-first versus code-first\n- **Design-first**: write (or generate from a higher-level language like TypeSpec) the spec, review it as a pull request, then implement against it. Reviewers see the contract without reading handler code, frontend and backend can build in parallel against a mock server, and the spec is the source of truth. Cost: you must keep the implementation honest, so add request and response validation middleware or contract tests that fail when code and spec differ.\n- **Code-first**: generate the spec from code annotations or schemas (FastAPI from Pydantic models, NestJS decorators, zod schemas through a generator). Always in sync with what the code does, faster for small teams. Cost: the API design is shaped by framework convenience, and reviewers only see the contract after it is implemented.\n\nA pragmatic middle path that many teams land on: code-first from runtime schemas (so one zod or Pydantic definition drives validation and the spec), with the **generated spec committed to the repo** so every pull request shows a reviewable contract diff, plus lint and breaking-change checks on that diff.\n\n### Tooling around the spec\n- **Linting**: Spectral rulesets encode your style guide (casing, pagination parameters, required `operationId`, problem-details errors, no verbs in paths) and fail CI.\n- **Breaking-change detection**: diff the spec against the last released version (oasdiff for OpenAPI, `buf breaking` for protobuf, schema checks for GraphQL) and block removals and type changes unless the change is explicitly versioned.\n- **Docs**: rendered from the spec (Redoc, Scalar, Swagger UI) with real examples, plus hand-written guides for authentication, pagination, errors, idempotency and webhooks. The reference tells you what each field is; the guides tell you how to accomplish a task.\n- **Mocks**: a mock server from the spec (Prism is a common one) lets frontend teams and partners start before the backend exists.\n- **Fuzzing**: Schemathesis generates property-based tests from the spec and finds 500s, schema violations and crashes on edge-case inputs.\n\n## SDK generation\nMost developers integrate through an SDK, not raw HTTP. Generating SDKs from the spec keeps them in sync, but generated code is only as good as the spec and the generator:\n\n- `openapi-typescript` generates TypeScript types from a spec; paired with a small typed fetch client it gives compile-time checked calls with almost no runtime cost.\n- `openapi-generator` covers dozens of languages with variable quality.\n- Commercial generators (Stainless, Speakeasy, Fern) produce idiomatic SDKs with retries, pagination helpers and typed errors; Stainless generates the official OpenAI and Anthropic SDKs, for example.\n\nA good SDK handles what every client gets wrong by hand: auth, retries with backoff for retryable errors, automatic idempotency keys on POST, auto-pagination iterators, typed errors from problem details, timeouts, and forward compatibility (unknown enum values and fields must not throw).\n\n```ts\nimport createClient from \"openapi-fetch\";\nimport type { paths } from \"./generated/orders-api\"; // from: npx openapi-typescript openapi.yaml -o ...\n\nconst api = createClient<paths>({ baseUrl: \"https://api.example.com/v1\", headers: { Authorization: `Bearer ${token}` } });\n\nconst { data, error } = await api.POST(\"/orders\", {\n  params: { header: { \"Idempotency-Key\": crypto.randomUUID() } },\n  body: { customer_id: \"cus_1\", items: [{ sku: \"sku_9\", quantity: 2 }] },   // type-checked against the spec\n});\nif (error) console.error(error.title);   // typed problem details\n```\n\n## Contract testing with Pact\nEnd-to-end tests across many services are slow, flaky and need every service deployed together. **Consumer-driven contract testing** (Ian Robinson's article on martinfowler.com introduced the idea) replaces most of them:\n\n```text\nCONSUMER (web app) test                     PROVIDER (orders service) CI\n  - runs against a Pact mock server          - fetches pacts for its consumers from the broker\n  - records: \"GET /orders/ord_1 ->            - replays each interaction against the real provider\n     200 {id, status}\"                          (with provider states: \"order ord_1 exists\")\n  - writes a pact file (JSON contract)        - publishes verification results\n        |                                              |\n        +--------------> Pact Broker <-----------------+\n                              |\n              can-i-deploy?  checks the matrix of versions before each deploy\n```\n\nWhat it buys you: each consumer states exactly which fields and interactions it relies on, the provider learns precisely which changes would break which consumer, and `can-i-deploy` prevents shipping an incompatible pair. It is consumer-driven: the provider is free to change anything no consumer uses.\n\nWhen it is worth it: many internal services and teams with independent deploys, where integration breakage is a recurring cost. When it is not: a single team owning both sides (a typed shared client or a monorepo type check is enough), or public APIs with unknown consumers (use spec-based breaking-change checks and versioning instead). Pact also has a learning curve (provider states, broker hosting, versioning conventions). PactFlow's bi-directional contract testing compares consumer pacts against the provider's OpenAPI spec instead of replaying against the provider, which suits teams that already maintain a validated spec.\n\n## API reviews\nAn API design review before implementation is the cheapest place to catch problems. Google's API design guide, Microsoft's REST API guidelines and Zalando's guidelines are effectively public checklists. A review should answer:\n\n1. **Model**: are the resources the right nouns? Will this shape still make sense when the feature grows (multiple currencies, multiple addresses, teams instead of users)?\n2. **Consistency**: naming, casing, pagination, filtering, errors and ids match the rest of the API.\n3. **Evolution**: are enums documented as open, are booleans going to need a third state, is anything exposing internal implementation (database ids, table names)?\n4. **Safety**: idempotency for writes, rate limits, authorisation per resource (not just per endpoint), limits on payload sizes and list lengths.\n5. **Operations**: async shape for slow work, webhooks for events, observability (request ids), deprecation path.\n6. **Developer experience**: can a new developer accomplish the main task from the docs in 15 minutes? Are examples realistic?\n\nKeep reviews lightweight (a written proposal plus the spec diff, reviewed asynchronously by a small group that owns the guidelines) and automate everything mechanical with linting, so humans spend time on the model and semantics.\n\n## Common mistakes and debugging\n- A spec written once for launch and never updated; docs describe fields that no longer exist.\n- Code-first specs with no review step, so framework defaults leak into the public contract.\n- Generated SDKs that throw on unknown enum values, turning every additive change into a client outage.\n- Contract tests that assert the provider's entire response instead of only what the consumer uses, so they break on harmless additions.\n- Debug drift with response validation in staging (log every response that does not match the spec) and Schemathesis runs in CI.\n\n## In the interview\nThey probe whether you have run APIs with real consumers: how you keep spec, code, docs and SDKs in sync, how you catch breaking changes before release, and when contract testing is worth its cost.\n\n**Model 60-second answer**: \"The contract lives in an OpenAPI spec committed to the repo. I like generating it from runtime schemas so validation and spec share one source, but the generated diff is reviewed in every pull request like design-first. CI lints it with Spectral against our style guide, diffs it against the last release to block breaking changes, and fuzzes the implementation with Schemathesis. Docs, mocks and SDKs are generated from it, and SDKs handle retries, idempotency keys, pagination and unknown enum values. Between internal services with independent deploys, I add Pact consumer-driven contracts with can-i-deploy, so a provider knows exactly which change breaks which consumer. New endpoints go through a short written API review focused on the resource model and evolution.\"\n\n**Follow-ups to expect**: Design-first or code-first, and why? What does a provider state mean in Pact? How do you stop a generated SDK from breaking on a new enum value? What would you put in an API style guide?",
+      "keyPoints": [
+        "Keep a machine-readable contract (OpenAPI, protobuf, GraphQL SDL) in the repo and review its diff in every pull request.",
+        "Lint the spec against a style guide, diff it against the last release to block breaking changes, and fuzz the implementation from it.",
+        "Generated SDKs should handle auth, retries, idempotency keys, pagination, typed errors and unknown enum values.",
+        "Pact consumer-driven contracts let providers know exactly which consumers a change breaks; can-i-deploy gates releases.",
+        "API reviews focus humans on the resource model, consistency and evolution; automate everything mechanical."
+      ],
+      "interview": [
+        "Design-first or code-first OpenAPI: which do you prefer and why?",
+        "What is consumer-driven contract testing and when is it worth it?",
+        "What do you look for when reviewing a new API design?"
+      ],
+      "check": [
+        {
+          "q": "In Pact consumer-driven contract testing, where are the interactions in the contract defined?",
+          "options": [
+            "In the consumer's tests, which run against a Pact mock and produce a pact file the provider later verifies",
+            "In the provider's OpenAPI spec only",
+            "In a shared end-to-end environment",
+            "In the API gateway configuration"
+          ],
+          "answer": 0,
+          "why": "Consumers record exactly what they rely on; the provider replays those interactions against its real implementation and publishes verification results to the broker."
+        },
+        {
+          "q": "A provider adds a new value to an output enum and several partner integrations crash. What most likely caused it?",
+          "options": [
+            "The spec was in YAML instead of JSON",
+            "Rate limiting on the new value",
+            "Generated SDKs or clients treated the enum as closed and threw on unknown values",
+            "HTTP caching of the old enum"
+          ],
+          "answer": 2,
+          "why": "Additive enum changes are only safe if clients are tolerant readers. Document enums as open and generate SDKs that map unknown values to a fallback."
+        },
+        {
+          "q": "What is the main weakness of code-first OpenAPI without any review of the generated spec?",
+          "options": [
+            "The spec is always out of date",
+            "Framework defaults and internal details can leak into the public contract before anyone reviews the design",
+            "Code-first cannot describe authentication",
+            "Code-first specs cannot generate SDKs"
+          ],
+          "answer": 1,
+          "why": "Code-first stays in sync with the code, but the design is only visible after implementation. Committing and reviewing the generated diff restores the design-review step."
+        }
+      ],
+      "resources": [
+        {
+          "title": "OpenAPI Specification 3.1.0",
+          "url": "https://spec.openapis.org/oas/v3.1.0"
+        },
+        {
+          "title": "Pact documentation",
+          "url": "https://docs.pact.io/"
+        },
+        {
+          "title": "Consumer-Driven Contracts: A Service Evolution Pattern (martinfowler.com)",
+          "url": "https://martinfowler.com/articles/consumerDrivenContracts.html"
+        },
+        {
+          "title": "Spectral: OpenAPI and AsyncAPI linter",
+          "url": "https://github.com/stoplightio/spectral"
+        },
+        {
+          "title": "openapi-typescript",
+          "url": "https://openapi-ts.dev/"
+        },
+        {
+          "title": "Microsoft REST API Guidelines",
+          "url": "https://github.com/microsoft/api-guidelines"
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "public-api-platform",
+      "title": "Public API platform with keys, limits, idempotency and versioned contracts",
+      "level": "advanced",
+      "hours": 50,
+      "stack": [
+        "TypeScript",
+        "Node.js (Fastify or NestJS)",
+        "PostgreSQL",
+        "Redis (optional, Postgres fallback)",
+        "OpenAPI 3.1 + Spectral + oasdiff",
+        "openapi-typescript SDK",
+        "Pact",
+        "OpenTelemetry"
+      ],
+      "summary": "A Stripe-style public REST API for a small domain (orders and payments) with API keys, per-key token bucket rate limits, idempotency keys, cursor pagination, RFC 9457 errors, date-based versioning with response transforms, webhooks, a generated TypeScript SDK and contract checks in CI.",
+      "why": "Most portfolio APIs are CRUD with JWTs. This one shows the problems platform teams actually get paid to solve: retries that never double-charge, fair rate limits across a fleet, pagination that stays correct at depth, a contract that cannot break silently, and versions that let old clients keep working. Every interview question about API design maps to a decision you implemented, tested and can show in a dashboard.",
+      "architecture": "```text\nclient / SDK --HTTPS--> edge (TLS, coarse IP limit)\n   --> API service\n        auth (hashed API key -> account, scopes)\n        rate limiter (token bucket: Redis Lua, Postgres fallback, fail open)\n        version pinning (Stripe-Version style header or account default)\n        request transforms  old -> latest\n        handlers (zod validation, problem+json errors)\n        idempotency (keys table in same tx as side effect)\n        response transforms latest -> old\n   --> Postgres (accounts, api_keys, orders, payments, idempotency_keys, outbox)\n   --> outbox relay --> webhook dispatcher (signed, retries with jitter, DLQ)\n\nCI: zod schemas -> openapi.yaml -> Spectral lint -> oasdiff vs last release\n    -> SDK generation -> Pact verification -> Schemathesis fuzz\n```\nKey decisions: the idempotency record and the business write share one Postgres transaction; Redis is an optimisation with a Postgres fallback; the core handlers only know the latest shape and dated transforms serve older versions; every list endpoint uses keyset cursors; webhooks go through a transactional outbox so an event is never sent for a rolled-back write.",
+      "lessons": [
+        "api-rest-design",
+        "api-rate-limits-idempotency",
+        "api-pagination-filtering",
+        "api-versioning-evolution",
+        "api-docs-contracts",
+        "api-http-deep"
+      ],
+      "milestones": [
+        {
+          "id": "m1",
+          "title": "Resource model, errors and OpenAPI contract",
+          "details": [
+            "Model accounts, customers, orders and payments with prefixed opaque ids, integer money and RFC 3339 timestamps.",
+            "Define zod schemas once and generate openapi.yaml from them; commit the generated spec.",
+            "Return RFC 9457 problem+json for every error with a stable type, field pointers and a request id.",
+            "Checkable: Spectral passes with your custom ruleset and every endpoint returns problem+json on a bad request."
+          ]
+        },
+        {
+          "id": "m2",
+          "title": "API keys and authentication",
+          "details": [
+            "Issue keys like sk_test_... once, store only a SHA-256 hash plus a short prefix for display, support rotation with overlap.",
+            "Scope keys (read-only versus read-write) and enforce per-resource authorisation by account.",
+            "Checkable: integration tests prove a key from account A gets 404 on account B's order and a revoked key gets 401."
+          ]
+        },
+        {
+          "id": "m3",
+          "title": "Token bucket rate limiting across instances",
+          "details": [
+            "Implement the token bucket as a Redis Lua script with a per-key and a per-account limit and cost weights per endpoint.",
+            "Fall back to a Postgres or in-memory limiter when Redis is unavailable (fail open for general traffic).",
+            "Send 429 with Retry-After and rate limit headers on every response.",
+            "Checkable: a k6 script with 3 API instances shows the combined allowed rate stays within 5% of the configured limit."
+          ]
+        },
+        {
+          "id": "m4",
+          "title": "Idempotency keys for every POST",
+          "details": [
+            "Store key, request hash, lock and saved response in the same transaction as the write.",
+            "Return the saved response on replay, 422 on a different body with the same key, 409 while in progress; expire keys after 24 hours.",
+            "Checkable: a test fires 50 concurrent identical POSTs with one key and asserts exactly one payment row and 50 identical response bodies or 409s."
+          ]
+        },
+        {
+          "id": "m5",
+          "title": "Cursor pagination and filtering",
+          "details": [
+            "Keyset pagination on (created_at, id) with opaque, signed cursors bound to the filters; limit capped at 100.",
+            "Whitelisted filters (status, customer, created ranges) all backed by composite indexes.",
+            "Checkable: EXPLAIN shows an index range scan on page 1 and page 10,000 with similar latency on a seeded 5 million row table."
+          ]
+        },
+        {
+          "id": "m6",
+          "title": "Date-based versioning with transforms",
+          "details": [
+            "Pin each account to its first version; allow a per-request version header override.",
+            "Implement two breaking changes (split name into given and family names, rename a status value) as backwards transforms.",
+            "Send Deprecation and Sunset headers on a deprecated endpoint and log per-account usage.",
+            "Checkable: snapshot tests for each version prove old responses are unchanged after the new version ships."
+          ]
+        },
+        {
+          "id": "m7",
+          "title": "Webhooks via a transactional outbox",
+          "details": [
+            "Write events to an outbox table in the same transaction as the change; a relay delivers them.",
+            "Sign payloads with HMAC and a timestamp, retry with exponential backoff and jitter, move to a dead-letter list after N attempts.",
+            "Checkable: killing the relay mid-delivery and restarting delivers every event at least once, and a receiver dedupes by event id."
+          ]
+        },
+        {
+          "id": "m8",
+          "title": "SDK, contract checks and observability",
+          "details": [
+            "Generate a TypeScript SDK with auto idempotency keys, retries, auto-pagination and tolerant enum handling.",
+            "CI blocks breaking spec changes with oasdiff, verifies Pact contracts from a sample consumer, and runs Schemathesis.",
+            "OpenTelemetry traces and metrics: p95 latency, 429 rate and idempotent replay rate per account.",
+            "Checkable: a pull request that removes a response field fails CI with a clear breaking-change message."
+          ]
+        }
+      ],
+      "stretch": [
+        "Add a GraphQL endpoint for the dashboard with DataLoader and a persisted-query allowlist.",
+        "Expose an internal gRPC service for payments with deadlines propagated from the HTTP request.",
+        "Add a concurrency limiter and a priority-based load shedder in front of expensive endpoints.",
+        "Build a developer dashboard showing request logs, key rotation and webhook delivery attempts.",
+        "Run a scheduled brownout of a deprecated version and measure which accounts notice."
+      ],
+      "resume": [
+        "Built a Stripe-style public REST API with idempotency keys and token bucket rate limiting across [N] instances, sustaining [X] req/s at p95 [Y ms] with zero duplicate writes under concurrent retries.",
+        "Implemented keyset pagination over [Z] million rows, keeping deep-page latency flat at [Y ms] versus [W ms] for offset pagination.",
+        "Shipped date-based API versioning with backwards response transforms, supporting [N] versions from one code path with snapshot tests per version.",
+        "Added contract gates (OpenAPI diff, Pact, Schemathesis) that blocked [X] breaking changes in CI and generated a typed TypeScript SDK."
+      ],
+      "talking": [
+        "Why the idempotency record must live in the same transaction as the side effect, and what happens with external calls.",
+        "How the token bucket stays atomic across instances and why the limiter fails open.",
+        "Why keyset pagination needs a unique tie-breaker and a matching composite index.",
+        "How version transforms let the core code stay on the latest shape.",
+        "Why webhooks go through an outbox instead of being sent from the request handler."
+      ],
+      "features": [
+        "API key issuing, hashing, scoping and rotation with per-account authorisation",
+        "Per-key token bucket limits with 429, Retry-After and rate limit headers",
+        "Idempotent POSTs that survive concurrent retries without duplicate writes",
+        "Cursor-paginated, filterable list endpoints with capped page sizes",
+        "RFC 9457 problem details on every error with request ids",
+        "Date-pinned API versions, Deprecation and Sunset headers",
+        "Signed webhooks with retries, jitter and a dead-letter list",
+        "Generated TypeScript SDK and a CI pipeline that blocks breaking changes"
+      ],
+      "deepDives": [
+        {
+          "title": "Idempotency under concurrency and crashes",
+          "body": "The naive version (check Redis for the key, run the handler, store the response) has two races. Two concurrent requests with the same key both see \"not found\" and both execute. And a crash after the payment insert but before storing the response leaves a charged customer and no record, so the retry charges again.\n\nThe fix is to make the key row and the business write one atomic unit:\n\n```text\nBEGIN\n  INSERT idempotency_keys (account, key, hash, locked_at) ON CONFLICT DO NOTHING\n  if conflict: SELECT ... FOR UPDATE\n      hash differs        -> 422\n      response is null    -> 409 (in progress)\n      else                -> return saved response\n  INSERT payment ...\n  UPDATE idempotency_keys SET response = ...\nCOMMIT\n```\n\nThe primary key on (account, key) serialises concurrent attempts; the transaction guarantees the payment exists if and only if the saved response exists. When the handler calls an external processor, one transaction cannot span it, so split the work into recovery points (as in Brandur Leach's design): record \"started\", call the processor with our own idempotency key, record \"charged\", then finish. A background job resumes keys stuck at a recovery point. Test it with 50 concurrent requests and with a process kill between steps."
+        },
+        {
+          "title": "Rate limiting that is fair, atomic and survivable",
+          "body": "Per-key token buckets live in Redis as a hash of tokens and last-refill time. A Lua script computes the refill, takes the cost and writes back atomically, so concurrent requests on different instances cannot both spend the last token. Costs are weighted (a list call costs more than a read), and two limits stack: per key and per account, so one customer cannot exhaust capacity by creating many keys.\n\nFailure modes decide the design. If Redis times out (budget: a few milliseconds), the limiter falls back to a local in-memory bucket sized at the per-instance share of the limit, and the API keeps serving; login and key-creation limits fail closed instead. Clients see `429` with `Retry-After` and budget headers on every response so well-behaved SDKs can pace themselves. Per-client limits do not protect against total overload, so a separate concurrency limiter sheds low-priority work when the database pool is saturated, returning `503`. Measure: allowed versus rejected per key, limiter latency and fallback activations."
+        },
+        {
+          "title": "Versioning with backwards transforms",
+          "body": "Each account is pinned to the API version current when it created its first key; a request header can override it. Handlers produce only the latest representation. Each breaking change is a small module with a date, a description, and `up(request)` / `down(response)` functions:\n\n```ts\nexport const splitName: VersionChange = {\n  version: \"2026-07-01\",\n  description: \"customer.name split into given_name and family_name\",\n  down: (res) => res.object === \"customer\"\n    ? { ...omit(res, [\"given_name\", \"family_name\"]), name: `${res.given_name} ${res.family_name}`.trim() }\n    : res,\n};\n```\n\nFor a client pinned to an older version, the server applies `down` for every change newer than the pin, newest first. The cost of an old version is a transform and a snapshot test, not a forked code path. Transforms must cover nested objects, list envelopes and webhook payloads too, which is the part people forget. Usage per version per account drives deprecation: when an old version has no traffic, its transforms can finally be deleted."
+        },
+        {
+          "title": "Keeping the contract honest in CI",
+          "body": "The spec is generated from the same zod schemas the handlers validate with, then committed. CI runs four gates on every pull request:\n\n1. **Spectral** with a house ruleset: snake_case fields, plural collection paths, cursor pagination parameters on list operations, problem+json for 4xx and 5xx, an `Idempotency-Key` header on every POST.\n2. **oasdiff** against the spec of the last released tag; removals, type changes and new required request fields fail unless the change is registered as a version change module.\n3. **Pact** verification of the sample consumer's contracts against the running provider with seeded provider states.\n4. **Schemathesis** fuzzing a disposable instance, failing on any 500 or response that does not match the spec.\n\nThe SDK is regenerated on merge, and its tests include a fixture with an unknown enum value and an unknown field to prove forward compatibility."
+        }
+      ]
+    }
+  ]
+}

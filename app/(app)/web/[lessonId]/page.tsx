@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronLeft, ChevronRight, ExternalLink, Lightbulb, MessageCircleQuestion } from "lucide-react";
-import { LessonCheck } from "@/components/web/lesson-check";
-import { ArticleMarkdown } from "@/components/news/article-markdown";
+import { LessonCheck } from "@/modules/learn/components/web/lesson-check";
+import { ArticleMarkdown } from "@/modules/news/components/article-markdown";
 import { BackLink } from "@/components/shared/back-link";
 import { InlineCode } from "@/components/shared/inline-code";
 import { ToneBadge } from "@/components/shared/tone-badge";
-import { interviewQuestions, webLessonById, webLessons, webProjects, webTracks } from "@/lib/content";
-import { getDoneLessons } from "@/lib/services/webdev";
+import { interviewQuestions, webLessonById, webLessons, webProjects, webTracks } from "@/core/content";
+import { getDoneLessons } from "@/modules/learn/services/webdev";
 
 export async function generateMetadata({ params }: PageProps<"/web/[lessonId]">): Promise<Metadata> {
   const { lessonId } = await params;
@@ -30,7 +30,7 @@ export default async function LessonPage({ params }: PageProps<"/web/[lessonId]"
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
-        <BackLink href="/web">Web development</BackLink>
+        <BackLink href={track ? `/web?area=${track.area}` : "/web"}>Web & AI</BackLink>
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{lesson.title}</h1>
           {done.has(lesson.id) && <ToneBadge tone="success">Done</ToneBadge>}

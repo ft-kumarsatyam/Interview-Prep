@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 import type { Tone } from "./stat-tile";
 
 const TONE_BADGE: Record<Tone, string> = {

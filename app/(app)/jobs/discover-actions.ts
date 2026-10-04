@@ -3,14 +3,14 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { jobPrefsSchema, type JobPrefs } from "@/lib/domain/job-match";
-import type { SyncSummary } from "@/lib/services/job-sync";
-import { alertNewJobs } from "@/lib/services/job-alerts";
-import { addCustomSource, markPostingApplied, refreshSources, removeCustomSource, saveJobPrefs, savePosting, setDismissed, setSourceEnabled } from "@/lib/services/job-discovery";
-import { todayIn } from "@/lib/services/plan";
-import { limited } from "@/lib/services/rate-limit";
-import { getSettings } from "@/lib/services/settings";
+import { requireSession } from "@/core/auth/dal";
+import { jobPrefsSchema, type JobPrefs } from "@/modules/jobs/domain/job-match";
+import type { SyncSummary } from "@/modules/jobs/services/job-sync";
+import { alertNewJobs } from "@/modules/jobs/services/job-alerts";
+import { addCustomSource, markPostingApplied, refreshSources, removeCustomSource, saveJobPrefs, savePosting, setDismissed, setSourceEnabled } from "@/modules/jobs/services/job-discovery";
+import { todayIn } from "@/modules/planner/services/plan";
+import { limited } from "@/core/services/rate-limit";
+import { getSettings } from "@/modules/settings/services/settings";
 
 const id = z.string().regex(/^[a-f0-9]{24}$/i, "Unknown job");
 const fail = (err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : "Something went wrong" });

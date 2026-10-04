@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { dayProgress, groupByWeek, summarizeMonth, type CalendarViewDay } from "@/lib/domain/calendar-view";
-import { defaultCheckSelection, diagnosticVerdict, impliedRating, spreadPick } from "@/lib/domain/diagnostic";
-import { daysUntilExpiry, describeSnapshot, resetStartDate, restoredWindow, snapshotExpiry } from "@/lib/domain/planner-snapshot";
-import { seededRng } from "@/lib/domain/sampling";
+import { dayProgress, groupByWeek, summarizeMonth, type CalendarViewDay } from "@/modules/planner/domain/calendar-view";
+import { defaultCheckSelection, diagnosticVerdict, impliedRating, spreadPick } from "@/modules/progress/domain/diagnostic";
+import { daysUntilExpiry, describeSnapshot, resetStartDate, restoredWindow, snapshotExpiry } from "@/modules/planner/domain/planner-snapshot";
+import { seededRng } from "@/core/domain/sampling";
 
 describe("planner snapshots", () => {
   const now = new Date("2026-10-03T06:00:00Z");

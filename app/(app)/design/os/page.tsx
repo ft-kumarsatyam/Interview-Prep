@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { PracticeCaseList } from "@/components/design/practice-case-list";
+import { PracticeCaseList } from "@/modules/design/components/practice-case-list-section";
 
 export const metadata: Metadata = { title: "Operating Systems" };
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isPassing, scoreQuiz } from "@/lib/domain/quiz";
-import { nextReviewAt } from "@/lib/domain/srs";
+import { isPassing, scoreQuiz } from "@/modules/quiz/domain/quiz";
+import { nextReviewAt } from "@/modules/quiz/domain/srs";
 
 describe("nextReviewAt", () => {
   it("brings struggled problems back at 3, 7, then 21 days", () => {

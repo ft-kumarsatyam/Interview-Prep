@@ -2,16 +2,20 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Download, Sparkles } from "lucide-react";
-import { ApplyPanel } from "@/components/jobs/apply-panel";
-import { JobControls } from "@/components/jobs/job-controls";
+import { ApplyPanel } from "@/modules/jobs/components/apply-panel";
+import { FollowUpPanel } from "@/modules/jobs/components/follow-up-panel";
+import { InterviewPanel } from "@/modules/jobs/components/interview-panel";
+import { JobControls } from "@/modules/jobs/components/job-controls";
 import { BackLink } from "@/components/shared/back-link";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { scoreResume } from "@/lib/domain/ats";
-import { SOURCE_LABEL, STATUS_LABEL } from "@/lib/domain/jobs";
-import { getJob } from "@/lib/services/jobs";
-import { getBaseResume } from "@/lib/services/resume";
+import { scoreResume } from "@/modules/jobs/domain/ats";
+import { ACTIVE_STATUSES, followUpDraft, SOURCE_LABEL, STATUS_LABEL } from "@/modules/jobs/domain/jobs";
+import { todayIn } from "@/modules/planner/services/plan";
+import { getSettings } from "@/modules/settings/services/settings";
+import { getJob } from "@/modules/jobs/services/jobs";
+import { getBaseResume } from "@/modules/resume/services/resume";
 
 export const metadata: Metadata = { title: "Job" };
 
@@ -20,6 +24,7 @@ export default async function JobPage({ params }: PageProps<"/jobs/[id]">) {
   const job = await getJob(id);
   if (!job) notFound();
   const base = await getBaseResume();
+  const today = todayIn(await getSettings());
   const match = base && job.jd.length > 40 ? scoreResume(base.text, { jd: job.jd }) : null;
 
   return (
@@ -65,6 +70,8 @@ export default async function JobPage({ params }: PageProps<"/jobs/[id]">) {
           </CardHeader>
           <CardContent className="space-y-4">
             <JobControls id={job.id} status={job.status} notes={job.notes} />
+            {ACTIVE_STATUSES.includes(job.status) && job.status !== "saved" && <InterviewPanel id={job.id} interviewOn={job.interviewOn} round={job.interviewRound} contact={job.contact} today={today} />}
+            {ACTIVE_STATUSES.includes(job.status) && job.status !== "saved" && <FollowUpPanel id={job.id} followUpOn={job.followUpOn} today={today} draft={followUpDraft({ status: job.status, title: job.title, company: job.company, appliedOn: job.appliedOn })} />}
             {job.statusLog.length > 0 && (
               <ol className="space-y-1 border-t pt-3 text-xs text-muted-foreground">
                 {job.statusLog.map((s, i) => (

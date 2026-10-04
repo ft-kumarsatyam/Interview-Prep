@@ -1,0 +1,287 @@
+{
+  "chapter": {
+    "id": "data-and-messaging",
+    "title": "Data and messaging",
+    "summary": "Partitioning, replication and consistency, and asynchronous messaging: how data and work are spread across many machines."
+  },
+  "lessons": [
+    {
+      "id": "sharding-consistent-hashing",
+      "title": "Sharding and consistent hashing",
+      "minutes": 16,
+      "summary": "Splitting data across machines, why naive hashing breaks when nodes change, and how a consistent hash ring fixes it.",
+      "parts": [
+        {
+          "id": "hld",
+          "label": "HLD",
+          "body": "## Why partition\n\nOne database server has limits: storage, write throughput, memory. **Replication** copies the same data to many nodes (more read capacity and availability) but every node still holds *everything*. When data or writes outgrow one machine you **partition** (shard): split the data so each node owns a **subset**. Reads *and* writes then scale out.\n\n## Choosing how to split\n\n**Range partitioning**: keys A-F on shard 1, G-M on shard 2... Preserves order, so range queries are efficient. Risk: **hot spots** (all new users have increasing ids and hit the last shard).\n\n**Hash partitioning**: `shard = hash(key) mod N`. Spreads load evenly, but loses key order (range queries touch every shard).\n\n**Directory (lookup) partitioning**: a service maps each key (or tenant) to a shard. Flexible, but the directory is a dependency and a possible bottleneck.\n\n## The shard key is the most important decision\n\nA good shard key has **high cardinality**, **spreads writes evenly**, and keeps the data a query needs **together** (so most queries hit one shard). Bad choices: a timestamp (all writes go to the newest shard), a boolean, a country (a few huge shards). Changing the key later means a painful full resharding.\n\n## The problem with `hash(key) mod N`\n\nWith N = 4 shards, `hash(k) mod 4` decides placement. Add a fifth server and the formula becomes `mod 5`: **almost every key maps to a different shard**. Roughly `N/(N+1)` of the data must move, and caches go cold at once. That is catastrophic for a live system.\n\n## Consistent hashing\n\nImagine the hash space as a **ring** (0 to 2³²-1, wrapping around).\n\n1. Hash each **server** onto the ring.\n2. Hash each **key** onto the ring.\n3. A key belongs to the **first server clockwise** from its position.\n\nNow adding or removing a server affects only the keys **between it and its predecessor**: on average `1/N` of the data moves, instead of nearly all of it.\n\n### Virtual nodes\n\nWith few servers the ring's gaps are uneven, so some servers get much more load. Fix: place each physical server on the ring **many times** (100-200 virtual nodes, hashes of `server#0`, `server#1` ...). Load evens out, and a bigger machine can simply get more virtual nodes (weighting). When a server dies, its load spreads across *many* neighbours instead of dumping on one.\n\n### Replication on the ring\n\nStore each key on the next `R` distinct physical servers clockwise (Dynamo, Cassandra). Reads and writes use quorums (`R + W > N` for strong reads).\n\n## Real systems\n\n- **Cassandra, DynamoDB, Riak**: consistent hashing with virtual nodes.\n- **Redis Cluster**: 16,384 fixed **hash slots** mapped to nodes (a fixed-slot variant, easier to rebalance in chunks).\n- **Memcached clients, CDNs, load balancers**: consistent hashing to keep cache locality.\n- **MongoDB, Vitess/MySQL**: range or hash shard keys with chunk migration.\n\n## Problems sharding creates\n\n- **Cross-shard queries and joins** are slow or impossible; denormalise or use a search/analytics store.\n- **Cross-shard transactions** need 2PC or sagas.\n- **Rebalancing and resharding** moves data online; plan for it from day one.\n- **Hot keys / hot shards** (a celebrity user): split the hot key, add a cache, or salt the key.\n- **Operational complexity**: monitoring, backups and schema changes multiply by N.\n\n## When *not* to shard\n\nShard last. First try: indexes, caching, read replicas, a bigger machine, archiving old data. Premature sharding is expensive to undo.",
+          "diagrams": [
+            {
+              "title": "Consistent hashing ring: keys go to the next server clockwise",
+              "code": "flowchart LR\n  K1[\"key A\"] --> SB[\"server B\"]\n  K2[\"key B\"] --> SC[\"server C\"]\n  K3[\"key C\"] --> SA[\"server A\"]\n  SA --- SB --- SC --- SA"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "lld",
+          "label": "LLD",
+          "body": "## Design a consistent hash ring\n\n**Requirements**: `addNode(id)`, `removeNode(id)`, `getNode(key)`; virtual nodes; fast lookups; deterministic.\n\n## Data structure\n\nKeep the ring as a **sorted structure of hash positions** mapping to node ids. To find a key's owner, hash the key and find the **first ring position greater than or equal** to it (wrap to the first position if none). That is a **binary search**: `O(log M)` for `M` total virtual nodes.\n\n- Sorted array of positions + a map from position to node (rebuild on change, since changes are rare), or\n- A balanced tree map (`TreeMap.ceilingEntry` in Java, `std::map::lower_bound` in C++).\n\n## Classes\n\n- `HashRing { replicas, ring: sorted positions, owners: Map<position, nodeId> }`\n- `addNode(id)`: for `i` in `0..replicas`, compute `hash(id + '#' + i)`, insert.\n- `removeNode(id)`: remove all its positions.\n- `getNode(key)`: `h = hash(key)`; binary search for the first position `>= h`; wrap to index 0 if past the end.\n\n## Choosing the hash\n\nUse a **well-distributed, fast, non-cryptographic hash** (murmur3, xxHash, FNV). Do **not** use a language's built-in string hash if it is not stable across processes (it must give the same answer on every machine and restart). Collisions between virtual node positions are rare but handle them (re-hash with a salt).\n\n## Extension points\n\n- **Weights**: more replicas for bigger nodes.\n- **Replication**: `getNodes(key, n)` walks clockwise collecting `n` *distinct physical* nodes.\n- **Thread safety**: reads vastly outnumber writes, so use an immutable snapshot swapped atomically (copy-on-write) or a read-write lock.\n- **Bounded loads**: cap a node's load and spill to the next (consistent hashing with bounded loads).\n\n## Edge cases\n\nEmpty ring (`getNode` returns null or throws), a single node, duplicate `addNode`, a key hashing exactly onto a position (it belongs to that node), and wrap-around past the largest position.",
+          "diagrams": [
+            {
+              "title": "Lookup: binary search the sorted ring, wrap at the end",
+              "code": "flowchart TD\n  A[\"hash the key\"] --> B[\"binary search first position >= hash\"]\n  B --> C{\"found?\"}\n  C -- \"yes\" --> D[\"owner of that position\"]\n  C -- \"no, past the end\" --> E[\"wrap to the first position\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// FNV-1a 32-bit: small, fast and stable across processes\nfunction hash32(s: string): number {\n  let h = 0x811c9dc5;\n  for (let i = 0; i < s.length; i++) {\n    h ^= s.charCodeAt(i);\n    h = Math.imul(h, 0x01000193) >>> 0;\n  }\n  return h >>> 0;\n}\n\nclass HashRing {\n  private positions: number[] = [];            // sorted\n  private owner = new Map<number, string>();   // position -> node id\n  constructor(private replicas = 100) {}\n\n  addNode(id: string): void {\n    for (let i = 0; i < this.replicas; i++) {\n      const pos = hash32(`${id}#${i}`);\n      if (this.owner.has(pos)) continue;          // rare collision: skip\n      this.owner.set(pos, id);\n      this.positions.push(pos);\n    }\n    this.positions.sort((a, b) => a - b);\n  }\n\n  removeNode(id: string): void {\n    this.positions = this.positions.filter((p) => {\n      const keep = this.owner.get(p) !== id;\n      if (!keep) this.owner.delete(p);\n      return keep;\n    });\n  }\n\n  getNode(key: string): string | null {\n    if (this.positions.length === 0) return null;\n    const h = hash32(key);\n    let lo = 0, hi = this.positions.length;       // first position >= h\n    while (lo < hi) {\n      const mid = (lo + hi) >> 1;\n      if (this.positions[mid] >= h) hi = mid;\n      else lo = mid + 1;\n    }\n    const pos = this.positions[lo % this.positions.length]; // wrap around\n    return this.owner.get(pos)!;\n  }\n}\n\nconst ring = new HashRing();\n['cache-a', 'cache-b', 'cache-c'].forEach((n) => ring.addNode(n));\nring.getNode('user:42'); // always the same node until the ring changes"
+            },
+            {
+              "lang": "python",
+              "source": "import bisect\n\ndef fnv1a(s: str) -> int:\n    h = 0x811C9DC5\n    for b in s.encode():\n        h ^= b\n        h = (h * 0x01000193) & 0xFFFFFFFF\n    return h\n\nclass HashRing:\n    def __init__(self, replicas=100):\n        self.replicas = replicas\n        self.positions = []   # sorted\n        self.owner = {}       # position -> node id\n\n    def add_node(self, node):\n        for i in range(self.replicas):\n            pos = fnv1a(f'{node}#{i}')\n            if pos in self.owner:\n                continue\n            self.owner[pos] = node\n            bisect.insort(self.positions, pos)\n\n    def remove_node(self, node):\n        keep = [p for p in self.positions if self.owner[p] != node]\n        for p in set(self.positions) - set(keep):\n            del self.owner[p]\n        self.positions = keep\n\n    def get_node(self, key):\n        if not self.positions:\n            return None\n        i = bisect.bisect_left(self.positions, fnv1a(key))\n        return self.owner[self.positions[i % len(self.positions)]]"
+            },
+            {
+              "lang": "java",
+              "source": "class HashRing {\n    private final TreeMap<Integer, String> ring = new TreeMap<>();\n    private final int replicas;\n    HashRing(int replicas) { this.replicas = replicas; }\n\n    void addNode(String id) {\n        for (int i = 0; i < replicas; i++) ring.put(hash(id + \"#\" + i), id);\n    }\n    void removeNode(String id) {\n        for (int i = 0; i < replicas; i++) ring.remove(hash(id + \"#\" + i));\n    }\n    String getNode(String key) {\n        if (ring.isEmpty()) return null;\n        Map.Entry<Integer, String> e = ring.ceilingEntry(hash(key)); // first >= hash\n        return (e != null ? e : ring.firstEntry()).getValue();        // wrap around\n    }\n    private int hash(String s) { return s.hashCode() * 0x9E3779B1; /* use murmur3 in production */ }\n}"
+            },
+            {
+              "lang": "cpp",
+              "source": "class HashRing {\n    std::map<uint32_t, std::string> ring;\n    int replicas;\n    static uint32_t fnv1a(const std::string& s) {\n        uint32_t h = 2166136261u;\n        for (unsigned char c : s) { h ^= c; h *= 16777619u; }\n        return h;\n    }\npublic:\n    explicit HashRing(int r = 100) : replicas(r) {}\n    void addNode(const std::string& id) {\n        for (int i = 0; i < replicas; i++) ring[fnv1a(id + \"#\" + std::to_string(i))] = id;\n    }\n    void removeNode(const std::string& id) {\n        for (int i = 0; i < replicas; i++) ring.erase(fnv1a(id + \"#\" + std::to_string(i)));\n    }\n    std::string getNode(const std::string& key) const {\n        if (ring.empty()) return \"\";\n        auto it = ring.lower_bound(fnv1a(key));\n        return (it == ring.end() ? ring.begin() : it)->second;\n    }\n};"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        { "op": "getNode (sorted array + binary search)", "time": "O(log M)", "space": "O(M)" },
+        { "op": "getNode (TreeMap ceiling)", "time": "O(log M)", "space": "O(M)" },
+        { "op": "addNode / removeNode", "time": "O(V log M) or O(M) to re-sort", "space": "O(V)" },
+        { "op": "Keys moved when a node joins (consistent)", "time": "≈ K / N", "space": "-" },
+        { "op": "Keys moved when N changes (hash mod N)", "time": "≈ K · N/(N+1)", "space": "-" }
+      ],
+      "keyPoints": [
+        "Partitioning splits data across nodes so both reads and writes scale; replication alone does not.",
+        "Pick a shard key with high cardinality, even write spread and queries that stay on one shard.",
+        "hash(key) mod N reshuffles almost all keys when N changes; consistent hashing moves only about 1/N.",
+        "Virtual nodes smooth out load, enable weighting and spread a failed node's load across many peers.",
+        "Look up the owner with a binary search on the sorted ring and wrap around at the end."
+      ],
+      "problems": ["binary-search"],
+      "practiceRef": "hld-partitioning:1",
+      "check": [
+        {
+          "q": "Why is hash(key) mod N a poor sharding scheme when N changes?",
+          "options": [
+            "Hashes are slow",
+            "Almost every key maps to a different node, forcing massive data movement",
+            "It cannot spread load evenly",
+            "It needs a directory"
+          ],
+          "answer": 1,
+          "why": "Changing N changes the modulus for nearly all keys, so most data must be re-placed."
+        },
+        {
+          "q": "What problem do virtual nodes solve in consistent hashing?",
+          "options": [
+            "Hash collisions between keys",
+            "Uneven load caused by few nodes landing at uneven ring positions",
+            "Slow lookups",
+            "Encryption"
+          ],
+          "answer": 1,
+          "why": "Placing each server many times on the ring averages out the gaps, balancing keys across servers."
+        },
+        {
+          "q": "Which is a poor shard key for write-heavy data?",
+          "options": ["User id", "A monotonically increasing timestamp", "A random UUID", "Hash of the user id"],
+          "answer": 1,
+          "why": "All new writes land on the shard owning the latest timestamp range, creating a hot spot."
+        }
+      ],
+      "sources": [
+        { "title": "Dynamo: Amazon's highly available key-value store", "url": "https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf" },
+        { "title": "Consistent hashing with bounded loads (Google)", "url": "https://research.google/blog/consistent-hashing-with-bounded-loads/" }
+      ]
+    },
+    {
+      "id": "replication-consistency",
+      "title": "Replication and consistency",
+      "minutes": 18,
+      "summary": "Leader and follower replication, replication lag, quorums and the consistency models that follow, with a versioned register in code.",
+      "parts": [
+        {
+          "id": "hld",
+          "label": "HLD",
+          "body": "## Why replicate\n\nKeeping copies of data on several nodes gives you **availability** (survive a node or zone failure), **read scaling** (spread reads over copies) and **lower latency** (copies near users). The cost: the copies must be kept in sync, and that is where all the difficulty lives.\n\n## Three replication topologies\n\n**1. Single-leader (primary-replica).** One node accepts **writes**; it streams changes to followers, which serve **reads**. Simple and the default (PostgreSQL, MySQL, MongoDB replica sets). If the leader fails, **failover** promotes a follower.\n\n**2. Multi-leader.** Several nodes accept writes (often one per region) and sync with each other. Good for multi-region latency and offline clients; the price is **write conflicts** that must be resolved (last-write-wins, merge, CRDTs).\n\n**3. Leaderless (Dynamo style).** Any replica accepts reads and writes; clients/coordinators send to several replicas and use **quorums**. Highly available; repairs divergence with read repair and anti-entropy.\n\n## Synchronous vs asynchronous\n\n- **Synchronous**: the leader waits for a follower's ack before confirming. No data loss on failover, but writes are slower and a slow follower blocks writes.\n- **Asynchronous**: the leader confirms immediately and ships changes later. Fast, but a leader crash can **lose recent writes**, and followers lag.\n- **Semi-synchronous**: wait for *one* follower, async for the rest. A common compromise.\n\n## Replication lag and its anomalies\n\nWith async replicas, a read from a follower can return old data:\n\n- **Read-your-writes violation**: you post a comment, refresh, and it is gone. Fix: read your own recent writes from the leader, or track a log position/timestamp.\n- **Monotonic reads violation**: you see newer data, then older. Fix: pin a user to one replica.\n- **Consistent prefix**: effects seen before causes. Fix: causal ordering.\n\n## Quorums\n\nWith `N` replicas, write to `W` and read from `R`. If **`R + W > N`**, every read overlaps at least one up-to-date replica. Common: `N=3, W=2, R=2`. Tune: `W=1` for fast writes, `R=1` for fast reads (weaker guarantees). Quorums still allow edge-case staleness (sloppy quorums, concurrent writes), so they are not full linearizability.\n\n## Consistency models (weak to strong)\n\n- **Eventual**: replicas converge if writes stop. Fast and available.\n- **Causal**: causally related operations are seen in order.\n- **Sequential / Linearizable (strong)**: behaves like a single copy; every read sees the latest write. Costs latency and availability.\n\n## CAP and PACELC\n\nDuring a **partition** you must choose: stay **consistent** (refuse some requests) or stay **available** (serve possibly stale data). PACELC adds: *even with no partition*, you trade **latency** against **consistency**. Know examples: Cassandra and DynamoDB lean AP (tunable), ZooKeeper/etcd and Spanner lean CP.\n\n## Failover hazards\n\n**Split brain** (two nodes both think they are leader) corrupts data; prevent it with consensus-based election (Raft, Paxos), **fencing tokens** and quorum-based leader leases. Also: promoting a lagging follower loses writes; detection timeouts that are too aggressive cause needless failovers.\n\n## Conflict resolution (multi-leader / leaderless)\n\n**Last-write-wins** (by timestamp; simple, silently drops data and depends on clocks), **vector clocks** (detect concurrency, keep siblings for the app to merge), **CRDTs** (data types that always merge, such as counters and sets).",
+          "diagrams": [
+            {
+              "title": "Single-leader replication with an async follower",
+              "code": "flowchart LR\n  C1[\"Client write\"] --> L[\"Leader\"]\n  L -- \"sync ack\" --> F1[\"Follower 1\"]\n  L -. \"async stream\" .-> F2[\"Follower 2 (may lag)\"]\n  C2[\"Client read\"] --> F1\n  C3[\"Client read\"] --> F2"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "lld",
+          "label": "LLD",
+          "body": "## Design a replicated, versioned register\n\nA small, interview-sized model of leaderless replication: a **key-value store with N replicas**, writes needing `W` acks, reads querying `R` replicas and returning the **newest version**, with **read repair**.\n\n## Entities\n\n- `Versioned<V> { value, version, timestamp }`: every write carries a monotonically increasing version (a Lamport counter, hybrid logical clock or the coordinator's timestamp).\n- `Replica`: holds `Map<key, Versioned>`; `put(key, versioned)` keeps the *higher* version; `get(key)`. Can be marked **down** for tests.\n- `Coordinator { replicas, N, W, R }`: `write(key, value)` and `read(key)`.\n\n## Algorithms\n\n**write**: create a new version (`max seen + 1`), send to all replicas in parallel, succeed once **`W`** acknowledge, else fail with `QuorumNotReached`.\n\n**read**: query replicas, wait for **`R`** answers, pick the response with the **highest version**. **Read repair**: send that newest value to any replica that returned something older.\n\nWith `R + W > N` the read set always includes a replica that saw the latest successful write.\n\n## Design points\n\n- **Merge rule must be deterministic**: higher version wins; break ties by node id, so every replica converges.\n- **Idempotent `put`**: re-delivering the same write is harmless (only a higher version overwrites).\n- Replicas are an interface (`Replica`) so you can swap an in-memory fake, a network client or a disk-backed store (**Strategy / dependency inversion**).\n- Timeouts and retries belong in the coordinator, not in the replica.\n\n## Concurrency and failure\n\nTwo coordinators may write the same key concurrently; with plain versions one silently wins (last-write-wins). To detect true conflicts upgrade `version` to a **vector clock** and return siblings. Mention hinted handoff (store writes for a down replica and replay later) and anti-entropy (Merkle trees) as follow-ups.\n\n## Edge cases\n\nFewer than `W` replicas reachable, fewer than `R` responses, all responses missing the key (return not found), equal versions with different values (tie-break), and replicas rejoining with stale data.",
+          "diagrams": [
+            {
+              "title": "Quorum write then read with read repair",
+              "code": "sequenceDiagram\n  participant C as Coordinator\n  participant A as Replica A\n  participant B as Replica B\n  participant D as Replica C\n  C->>A: put(k, v2)\n  C->>B: put(k, v2)\n  A-->>C: ack\n  B-->>C: ack\n  Note over C: W=2 reached, write succeeds\n  C->>A: get(k)\n  C->>D: get(k)\n  A-->>C: v2\n  D-->>C: v1 (stale)\n  C->>D: repair put(k, v2)"
+            }
+          ],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "interface Versioned<V> { value: V; version: number }\n\ninterface Replica<V> {\n  put(key: string, v: Versioned<V>): boolean;     // false if the replica is down\n  get(key: string): Versioned<V> | null | undefined; // undefined = no answer (down)\n}\n\nclass MemoryReplica<V> implements Replica<V> {\n  private data = new Map<string, Versioned<V>>();\n  down = false;\n  put(key: string, v: Versioned<V>): boolean {\n    if (this.down) return false;\n    const cur = this.data.get(key);\n    if (!cur || v.version > cur.version) this.data.set(key, v); // higher version wins\n    return true;\n  }\n  get(key: string) {\n    if (this.down) return undefined;\n    return this.data.get(key) ?? null;\n  }\n}\n\nclass Coordinator<V> {\n  private counter = 0;\n  constructor(private replicas: Replica<V>[], private W: number, private R: number) {}\n\n  write(key: string, value: V): void {\n    const v = { value, version: ++this.counter };\n    const acks = this.replicas.filter((r) => r.put(key, v)).length;\n    if (acks < this.W) throw new Error('write quorum not reached');\n  }\n\n  read(key: string): V | null {\n    const answers = this.replicas\n      .map((r) => ({ r, v: r.get(key) }))\n      .filter((a) => a.v !== undefined) as Array<{ r: Replica<V>; v: Versioned<V> | null }>;\n    if (answers.length < this.R) throw new Error('read quorum not reached');\n    const newest = answers.reduce<Versioned<V> | null>((best, a) => (a.v && (!best || a.v.version > best.version) ? a.v : best), null);\n    if (newest) for (const a of answers) if (!a.v || a.v.version < newest.version) a.r.put(key, newest); // read repair\n    return newest ? newest.value : null;\n  }\n}\n\n// N=3, W=2, R=2  =>  R + W > N, reads see the latest write\nconst nodes = [new MemoryReplica<string>(), new MemoryReplica<string>(), new MemoryReplica<string>()];\nconst store = new Coordinator(nodes, 2, 2);"
+            },
+            {
+              "lang": "python",
+              "source": "class MemoryReplica:\n    def __init__(self):\n        self.data = {}\n        self.down = False\n\n    def put(self, key, value, version):\n        if self.down:\n            return False\n        cur = self.data.get(key)\n        if cur is None or version > cur[1]:   # higher version wins\n            self.data[key] = (value, version)\n        return True\n\n    def get(self, key):\n        if self.down:\n            raise ConnectionError\n        return self.data.get(key)             # None if missing\n\nclass Coordinator:\n    def __init__(self, replicas, w, r):\n        self.replicas, self.w, self.r, self.counter = replicas, w, r, 0\n\n    def write(self, key, value):\n        self.counter += 1\n        acks = sum(rep.put(key, value, self.counter) for rep in self.replicas)\n        if acks < self.w:\n            raise RuntimeError('write quorum not reached')\n\n    def read(self, key):\n        answers = []\n        for rep in self.replicas:\n            try:\n                answers.append((rep, rep.get(key)))\n            except ConnectionError:\n                pass\n        if len(answers) < self.r:\n            raise RuntimeError('read quorum not reached')\n        newest = max((v for _, v in answers if v), key=lambda v: v[1], default=None)\n        if newest:\n            for rep, v in answers:            # read repair\n                if v is None or v[1] < newest[1]:\n                    rep.put(key, *newest)\n        return newest[0] if newest else None"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        { "op": "Quorum write (parallel)", "time": "O(1) round trips, waits for W acks", "space": "O(N) copies" },
+        { "op": "Quorum read + repair", "time": "O(1) round trips, waits for R replies", "space": "O(1)" },
+        { "op": "Storage overhead", "time": "-", "space": "N × data size" },
+        { "op": "Strong read guarantee", "time": "needs R + W > N", "space": "-" }
+      ],
+      "keyPoints": [
+        "Replication buys availability and read scale; the hard part is keeping copies consistent.",
+        "Single-leader is simplest; multi-leader and leaderless need conflict resolution.",
+        "Async replication is fast but can lose writes on failover and shows stale reads (lag anomalies).",
+        "With N replicas, R + W > N guarantees a read overlaps the latest successful write.",
+        "During a partition choose consistency or availability (CAP); otherwise trade latency for consistency (PACELC)."
+      ],
+      "problems": [],
+      "practiceRef": "hld-consistency:0",
+      "check": [
+        {
+          "q": "With N = 5 replicas, which setting guarantees reads overlap the latest write?",
+          "options": ["W = 1, R = 1", "W = 2, R = 2", "W = 3, R = 3", "W = 1, R = 4"],
+          "answer": 2,
+          "why": "R + W must exceed N: 3 + 3 = 6 > 5, so any read set shares a replica with any write set."
+        },
+        {
+          "q": "A user posts a comment and immediately refreshes but does not see it. Which anomaly is this?",
+          "options": ["Split brain", "Read-your-writes violation from replication lag", "Hot partition", "Deadlock"],
+          "answer": 1,
+          "why": "The read went to a follower that had not received the write yet."
+        },
+        {
+          "q": "What prevents split brain during leader failover?",
+          "options": [
+            "Faster timeouts",
+            "Consensus-based election with quorums and fencing tokens",
+            "More followers",
+            "Caching"
+          ],
+          "answer": 1,
+          "why": "A majority quorum can elect only one leader at a time, and fencing tokens make stale leaders' writes be rejected."
+        }
+      ],
+      "sources": [
+        { "title": "Jepsen: consistency models", "url": "https://jepsen.io/consistency" },
+        { "title": "Designing Data-Intensive Applications, chapters 5 and 9", "url": "https://dataintensive.net/" }
+      ]
+    },
+    {
+      "id": "message-queues-pubsub",
+      "title": "Message queues and pub/sub",
+      "minutes": 17,
+      "summary": "Decoupling producers and consumers: queues versus logs, delivery guarantees, retries, and an in-memory pub/sub broker in code.",
+      "parts": [
+        {
+          "id": "hld",
+          "label": "HLD",
+          "body": "## Why messaging\n\nIf service A calls service B synchronously, A is only as fast and as available as B. A **message broker** sits between them: A **publishes** a message and moves on; B **consumes** it when ready.\n\nBenefits: **decoupling** (they don't need to be up at the same time), **buffering / load levelling** (absorb spikes), **retries and durability**, **fan-out** (one event, many consumers), and **independent scaling**.\n\nCosts: eventual consistency, ordering and duplicate-delivery questions, and one more system to run.\n\n## Two models\n\n**Message queue (point-to-point).** Each message is delivered to **one** consumer among a group, then removed. Use for **task distribution**: sending emails, resizing images, background jobs. Examples: RabbitMQ, Amazon SQS.\n\n**Publish / subscribe.** A message is delivered to **every subscriber** of a topic. Use for **events**: `OrderPlaced` should notify billing, inventory and analytics independently. Examples: SNS, Google Pub/Sub, RabbitMQ fanout exchanges.\n\n**Log-based streaming (Kafka, Kinesis, Pulsar).** An append-only, partitioned, **retained** log. Consumers track their own **offset** and can **replay**. Each consumer *group* sees every message once, spread over its members; different groups are independent (pub/sub semantics with queue-like scaling).\n\n| | Queue (SQS/RabbitMQ) | Log (Kafka) |\n|---|---|---|\n| Message after consumption | deleted | retained for days/forever |\n| Replay | no | yes |\n| Ordering | best effort / per queue | strict **per partition** |\n| Throughput | high | very high |\n| Per-message routing, priorities, delays | rich | limited |\n\n## Kafka in a paragraph\n\nA **topic** is split into **partitions**; each partition is an ordered log on a broker, replicated for durability. A producer chooses the partition (usually by hashing a **key**, so all events for one entity stay in order). Consumers in a **consumer group** divide the partitions among themselves; one partition is read by one member of a group at a time. Throughput scales by adding partitions and consumers; **ordering is guaranteed only within a partition**.\n\n## Delivery guarantees\n\n- **At-most-once**: send and forget; messages can be lost, never duplicated.\n- **At-least-once** (the practical default): retry until acknowledged; messages are never lost but can be **duplicated**.\n- **Exactly-once**: only achievable as *effectively-once*: at-least-once delivery plus **idempotent consumers** (dedupe by message id, or make the operation naturally repeatable). Kafka offers transactions within its own ecosystem.\n\n**Design rule: assume duplicates and make handlers idempotent.**\n\n## Reliability patterns\n\n- **Acknowledge after processing**, not before, so a crash redelivers.\n- **Retries with exponential backoff and jitter.**\n- **Dead-letter queue (DLQ)**: after N failures park the poison message for inspection instead of blocking the queue.\n- **Visibility timeout** (SQS): a received message is hidden for a while; if not acked it reappears.\n- **Back-pressure**: bounded queues, consumer scaling on queue depth, rate limiting producers.\n- **Transactional outbox**: write the business change and the event to the *same* database transaction, and a relay publishes it, so you never lose or invent an event.\n\n## Ordering\n\nGlobal ordering does not scale. Partition by an entity key to get **per-entity ordering** (all events for `order-42` in one partition). Retries can reorder messages; design consumers to tolerate it (version numbers).\n\n## When to use which\n\nBackground jobs and work distribution: a queue. Domain events to several consumers, audit logs, stream processing, event sourcing: a log. Very low latency request/response: do not use a broker, call directly.",
+          "diagrams": [
+            {
+              "title": "Pub/sub fan-out with consumer groups",
+              "code": "flowchart LR\n  P[\"Producer: order service\"] --> T[\"Topic: orders (3 partitions)\"]\n  T --> G1[\"Group: billing (2 consumers)\"]\n  T --> G2[\"Group: inventory (1 consumer)\"]\n  T --> G3[\"Group: analytics (4 consumers)\"]\n  G1 -. \"failed 5x\" .-> DLQ[\"Dead-letter queue\"]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "lld",
+          "label": "LLD",
+          "body": "## Design an in-memory pub/sub broker\n\n**Requirements**: create topics; `publish(topic, message)`; `subscribe(topic, handler)` and `unsubscribe`; every subscriber of a topic receives every message; a slow or failing subscriber must not block the others; optional ordering per subscriber.\n\n## Entities\n\n- `Message { id, topic, payload, timestamp }`\n- `Subscriber` (interface): `onMessage(message)`; or a plain callback.\n- `Topic { name, subscribers: Set }`\n- `Broker`: `Map<topicName, Topic>`; `publish`, `subscribe`, `unsubscribe`.\n\nPattern: the **Observer** pattern (a topic is the subject; subscribers are observers) with the broker as a mediator.\n\n## Key design decisions\n\n1. **Delivery isolation.** Give each subscriber its **own queue** and worker (or async task). `publish` only enqueues, so a slow subscriber backs up *its* queue, not the publisher or its peers. This is also where **back-pressure** policy lives (bounded queue: block, drop oldest, or reject).\n2. **Ordering.** One queue per subscriber processed by a single worker preserves per-subscriber order.\n3. **Failure handling.** Catch exceptions from handlers; retry with backoff up to N times, then move to a **dead-letter** list. Never let a handler exception kill the broker.\n4. **Thread safety.** Subscriber sets change while publishing: iterate over a snapshot or use a concurrent collection.\n5. **At-least-once with acks** (optional extension): keep an in-flight set per subscriber and re-deliver on timeout; handlers must be idempotent.\n\n## Extensions interviewers ask for\n\n- **Wildcard topics** (`orders.*`) with a trie or regex index.\n- **Message filtering** by predicate per subscription.\n- **Consumer groups** (competing consumers): subscribers in one group share the messages round-robin.\n- **Persistence and replay**: append messages to a log and track a per-subscriber offset (this is Kafka in miniature).\n- **TTL and retention.**\n\n## Edge cases\n\nPublishing to a topic with no subscribers (drop or retain?), subscribing after messages were published (replay or not?), unsubscribing during delivery, a subscriber that throws, and extremely large payloads.",
+          "diagrams": [
+            {
+              "title": "Each subscriber has its own queue so a slow one cannot block the rest",
+              "code": "classDiagram\n  class Broker {\n    +subscribe(topic, handler)\n    +unsubscribe(topic, id)\n    +publish(topic, payload)\n  }\n  class Topic {\n    -name\n    -subscriptions\n  }\n  class Subscription {\n    -queue\n    -handler\n    +deliver(message)\n  }\n  Broker \"1\" o-- \"*\" Topic\n  Topic \"1\" o-- \"*\" Subscription"
+            }
+          ],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "type Handler<T> = (msg: T) => void | Promise<void>;\n\nclass Subscription<T> {\n  private queue: T[] = [];\n  private running = false;\n  constructor(readonly id: number, private handler: Handler<T>, private maxRetries = 3, private onDead?: (m: T, e: unknown) => void) {}\n\n  deliver(msg: T): void {\n    this.queue.push(msg);          // publisher never waits on the handler\n    void this.drain();\n  }\n\n  private async drain(): Promise<void> {\n    if (this.running) return;       // single worker keeps per-subscriber order\n    this.running = true;\n    while (this.queue.length) {\n      const msg = this.queue.shift()!;\n      for (let attempt = 1; ; attempt++) {\n        try { await this.handler(msg); break; }\n        catch (err) {\n          if (attempt >= this.maxRetries) { this.onDead?.(msg, err); break; } // dead-letter\n          await new Promise((r) => setTimeout(r, 2 ** attempt * 10));          // backoff\n        }\n      }\n    }\n    this.running = false;\n  }\n}\n\nclass Broker<T = unknown> {\n  private topics = new Map<string, Map<number, Subscription<T>>>();\n  private nextId = 1;\n  readonly deadLetters: Array<{ topic: string; msg: T }> = [];\n\n  subscribe(topic: string, handler: Handler<T>): () => void {\n    const subs = this.topics.get(topic) ?? new Map();\n    this.topics.set(topic, subs);\n    const id = this.nextId++;\n    subs.set(id, new Subscription<T>(id, handler, 3, (msg) => this.deadLetters.push({ topic, msg })));\n    return () => subs.delete(id);   // unsubscribe\n  }\n\n  publish(topic: string, msg: T): number {\n    const subs = this.topics.get(topic);\n    if (!subs) return 0;\n    for (const s of [...subs.values()]) s.deliver(msg); // iterate a snapshot\n    return subs.size;\n  }\n}\n\nconst broker = new Broker<{ orderId: string }>();\nconst off = broker.subscribe('orders', async (m) => console.log('billing', m.orderId));\nbroker.subscribe('orders', async (m) => console.log('inventory', m.orderId));\nbroker.publish('orders', { orderId: 'o-1' });"
+            },
+            {
+              "lang": "python",
+              "source": "import queue, threading\n\nclass Subscription:\n    def __init__(self, handler, max_retries=3, on_dead=None):\n        self.q = queue.Queue()\n        self.handler, self.max_retries, self.on_dead = handler, max_retries, on_dead\n        threading.Thread(target=self._run, daemon=True).start()  # one worker keeps order\n\n    def deliver(self, msg):\n        self.q.put(msg)                      # publisher never waits on the handler\n\n    def _run(self):\n        while True:\n            msg = self.q.get()\n            for attempt in range(1, self.max_retries + 1):\n                try:\n                    self.handler(msg)\n                    break\n                except Exception as e:\n                    if attempt == self.max_retries and self.on_dead:\n                        self.on_dead(msg, e)  # dead-letter\n\nclass Broker:\n    def __init__(self):\n        self._topics = {}\n        self._lock = threading.Lock()\n        self.dead_letters = []\n\n    def subscribe(self, topic, handler):\n        sub = Subscription(handler, on_dead=lambda m, e: self.dead_letters.append((topic, m)))\n        with self._lock:\n            self._topics.setdefault(topic, []).append(sub)\n        return sub\n\n    def publish(self, topic, msg):\n        with self._lock:\n            subs = list(self._topics.get(topic, []))   # snapshot\n        for s in subs:\n            s.deliver(msg)\n        return len(subs)"
+            },
+            {
+              "lang": "java",
+              "source": "class Subscription<T> {\n    private final BlockingQueue<T> queue = new LinkedBlockingQueue<>();\n    Subscription(Consumer<T> handler) {\n        Thread worker = new Thread(() -> {\n            try {\n                while (true) {\n                    T msg = queue.take();          // one worker per subscriber keeps order\n                    try { handler.accept(msg); } catch (Exception e) { /* retry / dead-letter */ }\n                }\n            } catch (InterruptedException ignored) {}\n        });\n        worker.setDaemon(true);\n        worker.start();\n    }\n    void deliver(T msg) { queue.offer(msg); }     // publisher never blocks on the handler\n}\n\nclass Broker<T> {\n    private final Map<String, List<Subscription<T>>> topics = new ConcurrentHashMap<>();\n    void subscribe(String topic, Consumer<T> handler) {\n        topics.computeIfAbsent(topic, k -> new CopyOnWriteArrayList<>()).add(new Subscription<>(handler));\n    }\n    void publish(String topic, T msg) {\n        for (Subscription<T> s : topics.getOrDefault(topic, List.of())) s.deliver(msg);\n    }\n}"
+            }
+          ]
+        }
+      ],
+      "complexity": [
+        { "op": "publish (enqueue per subscriber)", "time": "O(S) for S subscribers", "space": "O(S) message references" },
+        { "op": "subscribe / unsubscribe", "time": "O(1)", "space": "O(1)" },
+        { "op": "Kafka partition append / read", "time": "O(1) sequential", "space": "retention-bounded" },
+        { "op": "Ordering guarantee", "time": "-", "space": "per partition or subscriber only" }
+      ],
+      "keyPoints": [
+        "A broker decouples producers and consumers, buffers spikes and enables retries and fan-out.",
+        "Queues deliver each message to one consumer; pub/sub delivers to all subscribers; logs retain messages and allow replay.",
+        "Assume at-least-once delivery and make consumers idempotent; true exactly-once is really effectively-once.",
+        "Ack after processing, retry with backoff, and park poison messages in a dead-letter queue.",
+        "Ordering is only per partition (or per subscriber queue); partition by an entity key to keep related events in order."
+      ],
+      "problems": [],
+      "practiceRef": "hld-messaging:1",
+      "check": [
+        {
+          "q": "Which tool lets a new consumer replay historical messages?",
+          "options": ["A work queue that deletes on ack", "A retained log such as Kafka", "A load balancer", "An in-memory cache"],
+          "answer": 1,
+          "why": "Logs keep messages for a retention period and consumers track their own offsets, so they can rewind."
+        },
+        {
+          "q": "Why must message consumers usually be idempotent?",
+          "options": [
+            "To run faster",
+            "At-least-once delivery can deliver the same message more than once",
+            "Brokers drop duplicates automatically",
+            "Idempotency is needed only for pub/sub"
+          ],
+          "answer": 1,
+          "why": "Retries after a timeout or crash redeliver messages, so handling one twice must be harmless."
+        },
+        {
+          "q": "In the LLD broker, why does each subscription have its own queue and worker?",
+          "options": [
+            "To use more threads",
+            "So one slow or failing subscriber cannot block the publisher or other subscribers",
+            "To guarantee global ordering across topics",
+            "Because topics require it"
+          ],
+          "answer": 1,
+          "why": "Publishing only enqueues, isolating consumers; each worker also preserves that subscriber's order."
+        }
+      ],
+      "sources": [
+        { "title": "Apache Kafka: introduction", "url": "https://kafka.apache.org/documentation/#introduction" },
+        { "title": "AWS Builders Library: avoiding insurmountable queue backlogs", "url": "https://aws.amazon.com/builders-library/avoiding-insurmountable-queue-backlogs/" }
+      ]
+    }
+  ]
+}

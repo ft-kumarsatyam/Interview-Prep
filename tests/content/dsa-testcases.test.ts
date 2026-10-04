@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { problemBySlug, testcaseBySlug } from "@/lib/content";
-import { EDGE_IDS } from "@/lib/domain/edge-cases";
+import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { EDGE_IDS } from "@/modules/dsa/domain/edge-cases";
 import { buildEntry } from "../../scripts/dsa-testcases/build";
 import { lintSpec } from "../../scripts/dsa-testcases/lint";
 import { ALL_SPECS } from "../../scripts/dsa-testcases/specs";

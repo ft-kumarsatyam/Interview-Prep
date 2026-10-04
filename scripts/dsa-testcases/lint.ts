@@ -1,4 +1,4 @@
-import { EDGE_IDS } from "@/lib/domain/edge-cases";
+import { EDGE_IDS } from "@/modules/dsa/domain/edge-cases";
 import type { ProblemSpec } from "./types";
 
 export const MIN_HIDDEN_SHARE = 0.4;

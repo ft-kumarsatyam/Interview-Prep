@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { AptitudeRunner, type TopicMeta } from "@/components/aptitude/aptitude-runner";
-import { aptitudeCategoryById, APTITUDE_TOPICS, isCategoryId } from "@/lib/domain/aptitude/topics";
-import { bankHistory, mockQuestions, newSeed } from "@/lib/services/aptitude";
+import { AptitudeRunner, type TopicMeta } from "@/modules/aptitude/components/aptitude-runner";
+import { aptitudeCategoryById, APTITUDE_TOPICS, isCategoryId } from "@/modules/aptitude/domain/aptitude/topics";
+import { bankHistory, mockQuestions, newSeed } from "@/modules/aptitude/services/aptitude";
 
 export const metadata: Metadata = { title: "Aptitude mock test" };
 

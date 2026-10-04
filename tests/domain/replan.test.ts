@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addWeeklyHours, extendEndDate } from "@/lib/domain/replan";
+import { addWeeklyHours, extendEndDate } from "@/modules/planner/domain/replan";
 
 const week = [0, 2, 2, 2, 2, 2, 3]; // Sunday first
 

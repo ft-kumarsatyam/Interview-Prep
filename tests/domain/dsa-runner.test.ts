@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { problemBySlug, testcaseBySlug } from "@/lib/content";
-import { describeFailure, edgeCaseIndices, effectiveCases, nextHint, normaliseHints, pickRevealCase, remapSubset, remapToFullIndex, summarizeCases, visibleCases } from "@/lib/domain/dsa-runner";
+import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { describeFailure, edgeCaseIndices, effectiveCases, nextHint, normaliseHints, pickRevealCase, remapSubset, remapToFullIndex, summarizeCases, visibleCases } from "@/modules/dsa/domain/dsa-runner";
 
 describe("summarizeCases", () => {
   it("counts passes and only reports allPassed when every case ran and passed", () => {

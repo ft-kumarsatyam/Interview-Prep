@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Brain, Timer } from "lucide-react";
-import { TopicCard } from "@/components/aptitude/topic-card";
+import { TopicCard } from "@/modules/aptitude/components/topic-card";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { aptitudeBank } from "@/lib/content";
-import { hasQuestions } from "@/lib/domain/aptitude";
-import { percent } from "@/lib/domain/aptitude/progress";
-import { aptitudeCategoryById, APTITUDE_CATEGORIES, APTITUDE_TOPICS, isCategoryId, topicsIn, type AptitudeCategoryId } from "@/lib/domain/aptitude/topics";
-import { getAptitudeOverview } from "@/lib/services/aptitude";
-import { cn } from "@/lib/utils";
+import { aptitudeBank } from "@/core/content";
+import { hasQuestions } from "@/modules/aptitude/domain/aptitude";
+import { percent } from "@/modules/aptitude/domain/aptitude/progress";
+import { aptitudeCategoryById, APTITUDE_CATEGORIES, APTITUDE_TOPICS, isCategoryId, topicsIn, type AptitudeCategoryId } from "@/modules/aptitude/domain/aptitude/topics";
+import { getAptitudeOverview } from "@/modules/aptitude/services/aptitude";
+import { cn } from "@/core/utils";
 
 export const metadata: Metadata = { title: "Aptitude" };
 

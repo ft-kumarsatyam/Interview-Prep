@@ -5,7 +5,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { getMistakesOverview } from "@/lib/services/practice";
+import { getMistakesOverview } from "@/modules/quiz/services/practice";
 
 export const metadata: Metadata = { title: "Mistakes" };
 

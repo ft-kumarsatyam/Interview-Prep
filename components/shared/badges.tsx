@@ -1,5 +1,5 @@
-import { cn } from "@/lib/utils";
-import type { Difficulty } from "@/lib/content";
+import { cn } from "@/core/utils";
+import type { Difficulty } from "@/core/content";
 
 const DIFFICULTY_CLASS: Record<Difficulty, string> = {
   Easy: "bg-success/10 text-success",

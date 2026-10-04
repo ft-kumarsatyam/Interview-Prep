@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { designCaseBySlug } from "@/lib/content";
-import { Design, Mastery } from "@/lib/models/learning";
-import { SubtopicProgress } from "@/lib/models/progress";
-import { Article, Settings } from "@/lib/models/system";
+import { designCaseBySlug } from "@/core/content";
+import { Design, Mastery } from "@/core/models/learning";
+import { SubtopicProgress } from "@/core/models/progress";
+import { Article, Settings } from "@/core/models/system";
 import {
   addDesignMinutes,
   getDesign,
@@ -10,8 +10,8 @@ import {
   relatedArticlesForCase,
   saveDesignSection,
   setDesignRubric,
-} from "@/lib/services/designs";
-import { exportBackup } from "@/lib/services/export";
+} from "@/modules/design/services/designs";
+import { exportBackup } from "@/core/services/export";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

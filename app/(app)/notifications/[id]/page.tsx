@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { MailView } from "@/components/notifications/mail-view";
+import { MailView } from "@/modules/notifications/components/mail-view";
 import { BackLink } from "@/components/shared/back-link";
-import { requireSession } from "@/lib/auth/dal";
-import { toLocalDate } from "@/lib/domain/dates";
-import { env } from "@/lib/env";
-import { formatDate } from "@/lib/plan-clock";
-import { getNotificationDetail } from "@/lib/services/notifications";
+import { requireSession } from "@/core/auth/dal";
+import { toLocalDate } from "@/core/domain/dates";
+import { env } from "@/core/env";
+import { formatDate } from "@/core/plan-clock";
+import { getNotificationDetail } from "@/modules/notifications/services/notifications";
 
 export const metadata: Metadata = { title: "Message" };
 

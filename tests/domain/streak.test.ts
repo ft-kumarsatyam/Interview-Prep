@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addDays, eachDay } from "@/lib/domain/dates";
+import { addDays, eachDay } from "@/core/domain/dates";
 import {
   bestStreak,
   currentStreak,
@@ -8,7 +8,7 @@ import {
   settleDays,
   type DayProgress,
   type DayRecord,
-} from "@/lib/domain/streak";
+} from "@/modules/progress/domain/streak";
 
 const base: DayProgress = { kind: "study", dsaTarget: 3, dsaSolved: 3, theoryTarget: 2, theoryDone: 2, quizPassed: true };
 

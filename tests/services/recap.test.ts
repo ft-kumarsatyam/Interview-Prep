@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Quiz } from "@/lib/models/day";
-import { Notification, Settings } from "@/lib/models/system";
-import type { NotifyChannel } from "@/lib/notify";
-import { runEvening, runMorning } from "@/lib/services/cron";
-import { buildMorningDigest } from "@/lib/services/digest";
-import { ensureToday } from "@/lib/services/plan";
-import { recordSolve, toggleSubtopic } from "@/lib/services/progress";
-import { buildEveningRecap, carryOverFromYesterday, localHourOf } from "@/lib/services/recap";
+import { Quiz } from "@/core/models/day";
+import { Notification, Settings } from "@/core/models/system";
+import type { NotifyChannel } from "@/core/notify";
+import { runEvening, runMorning } from "@/core/services/cron";
+import { buildMorningDigest } from "@/modules/notifications/services/digest";
+import { ensureToday } from "@/modules/planner/services/plan";
+import { recordSolve, toggleSubtopic } from "@/modules/progress/services/progress";
+import { buildEveningRecap, carryOverFromYesterday, localHourOf } from "@/modules/progress/services/recap";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

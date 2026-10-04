@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AGGREGATOR_MIN_INTERVAL_MIN, BOARD_MIN_INTERVAL_MIN, dueSources, healthLabel, MAX_COOLDOWN_HOURS, nextHealth, selectPostings, type SourceState } from "@/lib/domain/job-sync";
-import type { NormalizedPosting } from "@/lib/domain/job-postings";
+import { AGGREGATOR_MIN_INTERVAL_MIN, BOARD_MIN_INTERVAL_MIN, dueSources, healthLabel, MAX_COOLDOWN_HOURS, nextHealth, selectPostings, type SourceState } from "@/modules/jobs/domain/job-sync";
+import type { NormalizedPosting } from "@/modules/jobs/domain/job-postings";
 
 const NOW = new Date("2026-10-05T12:00:00Z");
 const min = (m: number) => new Date(NOW.getTime() - m * 60_000);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSession, type SessionToday } from "@/lib/domain/session";
+import { buildSession, type SessionToday } from "@/core/domain/session";
 
 const base: SessionToday = { kind: "study", dsaSolved: 0, dsaTarget: 3, theoryDone: 0, theoryTarget: 2, quizPassed: false, quizUnlocked: false };
 

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Check, Circle, Pin } from "lucide-react";
-import { PinButton } from "@/components/targets/pin-button";
-import { TargetSettings } from "@/components/targets/target-settings";
+import { PinButton } from "@/modules/targets/components/pin-button";
+import { TargetSettings } from "@/modules/targets/components/target-settings";
 import { BackLink } from "@/components/shared/back-link";
 import { DifficultyBadge } from "@/components/shared/badges";
 import { SectionHeading } from "@/components/shared/section-heading";
@@ -11,9 +11,9 @@ import { StatTile } from "@/components/shared/stat-tile";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { tierProfiles } from "@/lib/content";
-import { PRIORITY_LABEL } from "@/lib/domain/companies";
-import { getTargetDetail } from "@/lib/services/targets";
+import { tierProfiles } from "@/core/content";
+import { PRIORITY_LABEL } from "@/modules/targets/domain/companies";
+import { getTargetDetail } from "@/modules/targets/services/targets";
 
 export const metadata: Metadata = { title: "Target" };
 

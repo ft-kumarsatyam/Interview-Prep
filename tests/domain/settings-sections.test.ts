@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SETTINGS_SECTION_IDS, SETTINGS_SECTION_KEYS, changedSections, mergeSections, sectionOfPath, settingsInputSchema } from "@/lib/domain/settings";
+import { SETTINGS_SECTION_IDS, SETTINGS_SECTION_KEYS, changedSections, mergeSections, sectionOfPath, settingsInputSchema } from "@/modules/settings/domain/settings";
 
 const base = {
   startDate: "2026-10-05",

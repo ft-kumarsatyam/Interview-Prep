@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CHAIN, PAID_MAX_TOKENS, describeProviders, parseChain, resolveProviders } from "@/lib/llm/providers";
+import { DEFAULT_CHAIN, PAID_MAX_TOKENS, describeProviders, parseChain, resolveProviders } from "@/core/llm/providers";
 
 const ids = (e: Parameters<typeof resolveProviders>[0]) => resolveProviders(e).map((d) => d.id);
 const META = { META_LLAMA_API_KEY: "meta-key-123456", META_LLAMA_BASE_URL: "https://llama.example.com/v1", META_LLAMA_MODEL: "some-model" };

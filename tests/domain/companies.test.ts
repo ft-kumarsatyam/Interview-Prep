@@ -3,7 +3,7 @@ import companiesJson from "@/data/companies.json";
 import problemsJson from "@/data/dsa-problems.json";
 import systemDesignJson from "@/data/system-design.json";
 import syllabusJson from "@/data/syllabus.json";
-import type { BacklogItem } from "@/lib/domain/backlog-items";
+import type { BacklogItem } from "@/modules/progress/domain/backlog-items";
 import {
   TIER_IDS,
   blueprintGaps,
@@ -21,7 +21,7 @@ import {
   type Company,
   type PoolProblem,
   type TierProfile,
-} from "@/lib/domain/companies";
+} from "@/modules/targets/domain/companies";
 
 const tiers = companiesJson.tiers as unknown as TierProfile[];
 const companies = companiesJson.companies as Company[];

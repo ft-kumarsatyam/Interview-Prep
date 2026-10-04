@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Settings } from "@/lib/models/system";
-import { drillQuestions, getAptitudeOverview, getTopicHistory, mockQuestions, recordAptitudeResults } from "@/lib/services/aptitude";
-import { exportBackup } from "@/lib/services/export";
+import { Settings } from "@/core/models/system";
+import { drillQuestions, getAptitudeOverview, getTopicHistory, mockQuestions, recordAptitudeResults } from "@/modules/aptitude/services/aptitude";
+import { exportBackup } from "@/core/services/export";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

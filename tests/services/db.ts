@@ -16,7 +16,7 @@ export async function startDb(): Promise<void> {
   });
   // A developer's shell may export this; tests expect "no username" unless they set one.
   delete process.env.LEETCODE_USERNAME;
-  const { connectDb } = await import("@/lib/db");
+  const { connectDb } = await import("@/core/db");
   await connectDb();
 }
 

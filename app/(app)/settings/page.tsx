@@ -1,18 +1,18 @@
-import { DEFAULT_HOURS } from "@/lib/domain/time-budget";
+import { DEFAULT_HOURS } from "@/modules/planner/domain/time-budget";
 import type { Metadata } from "next";
 import { Settings } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
-import { AiPanel } from "@/components/settings/ai-panel";
-import { SettingsForm } from "@/components/settings/settings-form";
-import { SettingsNav } from "@/components/settings/settings-nav";
-import { PushCard } from "@/components/settings/push-card";
-import { SettingsTools } from "@/components/settings/settings-tools";
-import { news } from "@/lib/content";
-import { env } from "@/lib/env";
-import { providerRows, usageToday } from "@/lib/services/ai";
-import { todayIn } from "@/lib/services/plan";
-import { listPushDevices } from "@/lib/services/push-subscriptions";
-import { getSettings } from "@/lib/services/settings";
+import { AiPanel } from "@/modules/settings/components/ai-panel";
+import { SettingsForm } from "@/modules/settings/components/settings-form";
+import { SettingsNav } from "@/modules/settings/components/settings-nav";
+import { PushCard } from "@/modules/settings/components/push-card";
+import { SettingsTools } from "@/modules/settings/components/settings-tools";
+import { news } from "@/core/content";
+import { env } from "@/core/env";
+import { providerRows, usageToday } from "@/modules/ai/services/ai";
+import { todayIn } from "@/modules/planner/services/plan";
+import { listPushDevices } from "@/modules/notifications/services/push-subscriptions";
+import { getSettings } from "@/modules/settings/services/settings";
 
 export const metadata: Metadata = { title: "Settings" };
 

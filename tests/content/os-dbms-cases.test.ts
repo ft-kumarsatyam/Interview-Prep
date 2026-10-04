@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { practiceCases, subtopicById, topicById } from "@/lib/content";
-import { EXPLAIN_MINUTES, EXPLAIN_RUBRIC, EXPLAIN_SECTION_IDS, explainSectionsAttempted, practiceStatus } from "@/lib/domain/practice-cases";
+import { practiceCases, subtopicById, topicById } from "@/core/content";
+import { EXPLAIN_MINUTES, EXPLAIN_RUBRIC, EXPLAIN_SECTION_IDS, explainSectionsAttempted, practiceStatus } from "@/modules/design/domain/practice-cases";
 
 const words = (n: number) => Array(n).fill("word").join(" ");
 

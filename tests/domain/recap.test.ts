@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS } from "@/lib/domain/plan-config";
+import { DEFAULT_SETTINGS } from "@/modules/planner/domain/plan-config";
 import {
   carryOverLine,
   dayGap,
@@ -10,8 +10,8 @@ import {
   streakLine,
   streakStanding,
   type RecapInput,
-} from "@/lib/domain/recap";
-import type { DayProgress } from "@/lib/domain/streak";
+} from "@/modules/progress/domain/recap";
+import type { DayProgress } from "@/modules/progress/domain/streak";
 
 const study = (over: Partial<DayProgress> = {}): DayProgress => ({ kind: "study", dsaTarget: 3, dsaSolved: 1, theoryTarget: 2, theoryDone: 2, quizPassed: false, ...over });
 

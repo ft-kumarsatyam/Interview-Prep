@@ -3,9 +3,9 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { DIFFICULTIES, type Difficulty } from "@/lib/quiz/question";
-import { startPractice, submitPractice, type PracticeResult, type PracticeStart } from "@/lib/services/practice";
+import { requireSession } from "@/core/auth/dal";
+import { DIFFICULTIES, type Difficulty } from "@/modules/quiz/lib/question";
+import { startPractice, submitPractice, type PracticeResult, type PracticeStart } from "@/modules/quiz/services/practice";
 
 function fail(err: unknown): { ok: false; error: string } {
   return { ok: false, error: err instanceof Error ? err.message : "Something went wrong, try again" };

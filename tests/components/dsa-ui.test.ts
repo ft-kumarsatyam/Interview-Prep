@@ -1,10 +1,10 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { EdgeCasesPanel } from "@/components/dsa/edge-cases-panel";
-import { HintReveal } from "@/components/dsa/hint-reveal";
-import { TestCasePanel } from "@/components/dsa/test-case-panel";
-import type { HintLevel } from "@/lib/domain/dsa-runner";
+import { EdgeCasesPanel } from "@/modules/dsa/components/edge-cases-panel";
+import { HintReveal } from "@/modules/dsa/components/hint-reveal";
+import { TestCasePanel } from "@/modules/dsa/components/test-case-panel";
+import type { HintLevel } from "@/modules/dsa/domain/dsa-runner";
 
 const hints: HintLevel[] = [
   { level: 1, kind: "nudge", text: "think about lookups" },

@@ -1,10 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkLimit, windowKey } from "@/lib/domain/rate-limit";
-import { FallbackKv } from "@/lib/kv/fallback";
-import { MemoryKv } from "@/lib/kv/memory";
-import { MongoKv } from "@/lib/kv/mongo";
-import type { KvStore } from "@/lib/kv/types";
-import { UpstashKv } from "@/lib/kv/upstash";
+import { checkLimit, windowKey } from "@/core/domain/rate-limit";
+import { FallbackKv } from "@/core/kv/fallback";
+import { MemoryKv } from "@/core/kv/memory";
+import { MongoKv } from "@/core/kv/mongo";
+import type { KvStore } from "@/core/kv/types";
+import { UpstashKv } from "@/core/kv/upstash";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);
@@ -220,7 +220,7 @@ describe("rate limiting", () => {
 
 describe("limited() guard", () => {
   it("allows up to the limit then blocks with a wait message, per action", async () => {
-    const { limited, LIMITS } = await import("@/lib/services/rate-limit");
+    const { limited, LIMITS } = await import("@/core/services/rate-limit");
     for (let i = 0; i < LIMITS.jobRefresh.max; i++) expect(await limited("jobRefresh")).toBeNull();
     expect(await limited("jobRefresh")).toMatch(/Too many requests. Try again in \d+ (seconds|minutes)/);
     expect(await limited("addSource")).toBeNull();

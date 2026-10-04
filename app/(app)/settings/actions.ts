@@ -3,16 +3,16 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { SETTINGS_SECTION_IDS, mergeSections, settingsInputSchema, type SettingsInput, type SettingsSectionId } from "@/lib/domain/settings";
-import { settingsToInput } from "@/lib/services/settings-input";
-import { lookupLeetCodeStats } from "@/lib/services/leetcode-sync";
-import { seedContent } from "@/lib/services/seed";
-import { MAIL_KINDS } from "@/lib/domain/mail-prefs";
-import { ROAST_LEVELS, type RoastLevel } from "@/lib/domain/roast";
-import { getSettings, saveSettings, setMailPref, setRoastLevel, setRoastMode } from "@/lib/services/settings";
-import { pushSubscriptionSchema, removePushSubscription, savePushSubscription } from "@/lib/services/push-subscriptions";
-import { sendTestMail } from "@/lib/services/test-mail";
+import { requireSession } from "@/core/auth/dal";
+import { SETTINGS_SECTION_IDS, mergeSections, settingsInputSchema, type SettingsInput, type SettingsSectionId } from "@/modules/settings/domain/settings";
+import { settingsToInput } from "@/modules/settings/services/settings-input";
+import { lookupLeetCodeStats } from "@/modules/dsa/services/leetcode-sync";
+import { seedContent } from "@/core/services/seed";
+import { MAIL_KINDS } from "@/modules/notifications/domain/mail-prefs";
+import { ROAST_LEVELS, type RoastLevel } from "@/modules/resume/domain/roast";
+import { getSettings, saveSettings, setMailPref, setRoastLevel, setRoastMode } from "@/modules/settings/services/settings";
+import { pushSubscriptionSchema, removePushSubscription, savePushSubscription } from "@/modules/notifications/services/push-subscriptions";
+import { sendTestMail } from "@/modules/notifications/services/test-mail";
 
 const sectionsSchema = z.object({
   sections: z.array(z.enum(SETTINGS_SECTION_IDS as [SettingsSectionId, ...SettingsSectionId[]])).min(1),

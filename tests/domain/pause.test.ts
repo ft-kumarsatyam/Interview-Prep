@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { addDays } from "@/lib/domain/dates";
-import { futureRestCount, pauseDays, pauseNext, planWeekEnd, resume, skipRestOfWeek } from "@/lib/domain/pause";
-import { MAX_REST_DAYS, mergeRestDays } from "@/lib/domain/settings";
+import { addDays } from "@/core/domain/dates";
+import { futureRestCount, pauseDays, pauseNext, planWeekEnd, resume, skipRestOfWeek } from "@/modules/planner/domain/pause";
+import { MAX_REST_DAYS, mergeRestDays } from "@/modules/settings/domain/settings";
 
 const W = { planStart: "2026-10-05", planEnd: "2027-03-21", revisionStart: "2027-03-01" };
 const today = "2026-10-07"; // Wednesday of week 1

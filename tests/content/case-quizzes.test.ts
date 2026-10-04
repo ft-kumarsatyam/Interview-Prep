@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { designCaseBySlug, practiceCaseBySlug, practiceCases, systemDesign } from "@/lib/content";
-import { CASE_ANCHORS, MIN_QUESTIONS_PER_CASE, caseRef, parseCaseRef } from "@/lib/domain/case-quiz";
-import { caseBank, learnMoreFor } from "@/lib/quiz/case-bank";
-import { correctAnswerKey } from "@/lib/domain/quiz";
+import { designCaseBySlug, practiceCaseBySlug, practiceCases, systemDesign } from "@/core/content";
+import { CASE_ANCHORS, MIN_QUESTIONS_PER_CASE, caseRef, parseCaseRef } from "@/modules/design/domain/case-quiz";
+import { caseBank, learnMoreFor } from "@/modules/quiz/lib/case-bank";
+import { correctAnswerKey } from "@/modules/quiz/domain/quiz";
 
 const allRefs = [...systemDesign.cases.map((c) => caseRef("hld", c.slug)), ...practiceCases.map((c) => caseRef(c.kind, c.slug))];
 

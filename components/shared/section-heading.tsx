@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn } from "@/core/utils";
 
 /**
  * The one heading style for a page section. `level` picks the element (h2 for page sections, h3 inside

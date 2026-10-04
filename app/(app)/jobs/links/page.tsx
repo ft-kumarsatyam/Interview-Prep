@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import { Briefcase } from "lucide-react";
-import { JobsTabs } from "@/components/jobs/jobs-tabs";
-import { SearchLinks } from "@/components/jobs/search-links";
+import { JobsTabs } from "@/modules/jobs/components/jobs-tabs";
+import { SearchLinks } from "@/modules/jobs/components/search-links";
 import { PageHeader } from "@/components/shared/page-header";
-import { careerDeepLinks, tierProfiles } from "@/lib/content";
-import { getJobPrefs } from "@/lib/services/job-discovery";
-import { listJobs } from "@/lib/services/jobs";
+import { careerDeepLinks, tierProfiles } from "@/core/content";
+import { getJobPrefs } from "@/modules/jobs/services/job-discovery";
+import { listJobs } from "@/modules/jobs/services/jobs";
 
 export const metadata: Metadata = { title: "Job search links" };
 

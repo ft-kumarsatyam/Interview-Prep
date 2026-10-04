@@ -4,8 +4,8 @@
  *   node --import tsx scripts/check-quiz-authored.ts --list <topicId> [...]
  */
 import path from "node:path";
-import { subtopics, topicById } from "@/lib/content";
-import { bank } from "@/lib/quiz/bank";
+import { subtopics, topicById } from "@/core/content";
+import { bank } from "@/modules/quiz/lib/bank";
 import { buildAllAuthored, readAuthored } from "./quiz-bank/authored";
 
 const MIN_AUTHORED_PER_SUBTOPIC = 10;

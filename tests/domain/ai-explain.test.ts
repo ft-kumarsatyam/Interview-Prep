@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { explainInputSchema, explainOutputSchema, explainPrompt, normaliseExplainInput } from "@/lib/domain/ai-explain";
-import { askSubjectForRef } from "@/lib/quiz/subject";
+import { explainInputSchema, explainOutputSchema, explainPrompt, normaliseExplainInput } from "@/modules/ai/domain/ai-explain";
+import { askSubjectForRef } from "@/modules/quiz/lib/subject";
 
 const input = { prompt: "Which isolation level prevents phantoms in Postgres?", options: ["READ COMMITTED", "REPEATABLE READ", "READ UNCOMMITTED", "None"], chosen: [0], correct: [1], explanation: "RR is snapshot isolation." };
 

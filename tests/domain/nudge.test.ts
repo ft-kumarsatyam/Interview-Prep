@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eveningNudge, type NudgeInput } from "@/lib/domain/nudge";
+import { eveningNudge, type NudgeInput } from "@/modules/progress/domain/nudge";
 
 const base: NudgeInput = {
   date: "2026-10-06",

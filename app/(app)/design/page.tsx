@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
 import { AlertTriangle, ChevronDown, ExternalLink, Network } from "lucide-react";
 import { LinkCard } from "@/components/shared/link-card";
-import { CaseBrowser } from "@/components/design/case-browser";
-import { CaseOverview, JumpLinks, type CaseCardData } from "@/components/design/case-overview";
-import { DesignTabs } from "@/components/design/design-tabs";
-import { OpenHashDetails } from "@/components/design/open-hash-details";
+import { CaseBrowser } from "@/modules/design/components/case-browser";
+import { CaseOverview, JumpLinks, type CaseCardData } from "@/modules/design/components/case-overview";
+import { DesignTabs } from "@/modules/design/components/design-tabs";
+import { OpenHashDetails } from "@/modules/design/components/open-hash-details";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { PageHeader } from "@/components/shared/page-header";
-import { DESIGN_CATEGORIES, engineeringBlogs, systemDesign } from "@/lib/content";
-import { DESIGN_SECTION_IDS } from "@/lib/domain/design";
-import { getDesignOverview } from "@/lib/services/designs";
+import { DESIGN_CATEGORIES, engineeringBlogs, systemDesign } from "@/core/content";
+import { DESIGN_SECTION_IDS } from "@/modules/design/domain/design";
+import { getDesignOverview } from "@/modules/design/services/designs";
 
 export const metadata: Metadata = { title: "System Design" };
 

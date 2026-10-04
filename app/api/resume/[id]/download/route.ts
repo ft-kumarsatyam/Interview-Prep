@@ -1,10 +1,10 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth/dal";
-import { parseResumeText } from "@/lib/domain/resume";
-import { resumeToDocx } from "@/lib/resume/export-docx";
-import { resumeToPdf } from "@/lib/resume/export-pdf";
-import { getResumeById } from "@/lib/services/resume";
+import { requireSession } from "@/core/auth/dal";
+import { parseResumeText } from "@/modules/resume/domain/resume";
+import { resumeToDocx } from "@/modules/resume/lib/export-docx";
+import { resumeToPdf } from "@/modules/resume/lib/export-pdf";
+import { getResumeById } from "@/modules/resume/services/resume";
 
 export const maxDuration = 30;
 

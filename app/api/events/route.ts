@@ -1,8 +1,8 @@
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth/session";
-import { resumeId } from "@/lib/domain/live-events";
-import { getKv } from "@/lib/kv";
-import { liveStream } from "@/lib/realtime/stream";
+import { SESSION_COOKIE, verifySession } from "@/core/auth/session";
+import { resumeId } from "@/core/domain/live-events";
+import { getKv } from "@/core/kv";
+import { liveStream } from "@/core/realtime/stream";
 
 export const dynamic = "force-dynamic";
 /** Hobby functions are capped at a minute, so a connection lives about 50 s and the browser reconnects with Last-Event-ID. */

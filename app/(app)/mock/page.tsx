@@ -1,16 +1,16 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Timer } from "lucide-react";
-import { MockHistory } from "@/components/mock/mock-history";
-import { MockPicker } from "@/components/mock/mock-picker";
-import { WeeklyMocksCard } from "@/components/mock/weekly-mocks-card";
+import { MockHistory } from "@/modules/mock/components/mock-history";
+import { MockPicker } from "@/modules/mock/components/mock-picker";
+import { WeeklyMocksCard } from "@/modules/mock/components/weekly-mocks-card";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { MOCK_CONFIG } from "@/lib/domain/mock";
-import { countCustomProblems } from "@/lib/services/custom-problems";
-import { freeAiConfigured, listMocks, weeklyMocks } from "@/lib/services/mock";
-import { todayIn } from "@/lib/services/plan";
-import { getSettings } from "@/lib/services/settings";
+import { MOCK_CONFIG } from "@/modules/mock/domain/mock";
+import { countCustomProblems } from "@/modules/dsa/services/custom-problems";
+import { freeAiConfigured, listMocks, weeklyMocks } from "@/modules/mock/services/mock";
+import { todayIn } from "@/modules/planner/services/plan";
+import { getSettings } from "@/modules/settings/services/settings";
 
 export const metadata: Metadata = { title: "Mock interviews" };
 

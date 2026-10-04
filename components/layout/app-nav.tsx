@@ -5,8 +5,8 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Check, Code2, ListChecks, LogOut, Menu } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import type { NavBadges, NavToday } from "@/lib/services/nav";
-import { cn } from "@/lib/utils";
+import type { NavBadges, NavToday } from "@/core/services/nav";
+import { cn } from "@/core/utils";
 import { MOBILE_HUB_IDS, NAV_HUBS, hubFor, isHubLanding, type NavHub } from "./nav-items";
 
 export type Badge = NavBadges[keyof NavBadges];

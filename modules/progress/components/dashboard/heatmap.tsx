@@ -1,0 +1,63 @@
+import Link from "next/link";
+import type { HeatCell, HeatState } from "@/modules/progress/domain/heatmap";
+import { formatDate } from "@/core/plan-clock";
+import { cn } from "@/core/utils";
+
+const STATE_CLASS: Record<HeatState, string> = {
+  future: "bg-muted/40",
+  idle: "bg-muted ring-1 ring-primary/60",
+  missed: "bg-day-missed-dot",
+  partial: "bg-day-left-dot",
+  complete: "bg-day-done-dot",
+  rest: "bg-day-rest-dot",
+  "caught-up": "bg-day-caught-dot",
+  freeze: "bg-muted ring-1 ring-chart-5",
+};
+
+const STATE_LABEL: Record<HeatState, string> = {
+  future: "upcoming",
+  idle: "today, in progress",
+  missed: "missed",
+  partial: "something left",
+  complete: "done",
+  rest: "rest day",
+  "caught-up": "caught up",
+  freeze: "freeze used",
+};
+
+/** Plan window as week columns (Mon → Sun rows). */
+export function Heatmap({ cells }: { cells: HeatCell[] }) {
+  const weeks: HeatCell[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  const count = (s: HeatState) => cells.filter((c) => c.state === s).length;
+  const summary = `Activity: ${count("complete")} complete, ${count("partial")} partial, ${count("missed")} missed, ${count("freeze")} freeze days`;
+  return (
+    <div>
+      <div className="flex gap-1 overflow-x-auto pb-1" role="img" aria-label={summary}>
+        {weeks.map((week, wi) => (
+          <div key={wi} className="flex flex-col gap-1" aria-hidden>
+            {week.map((cell) => (
+              <Link
+                key={cell.date}
+                href={`/calendar/${cell.date}`}
+                tabIndex={-1}
+                title={`${formatDate(cell.date)} · ${STATE_LABEL[cell.state]} · ${cell.dsaSolved} solved · ${cell.theoryDone} theory`}
+                className={cn("size-3 rounded-[3px] transition-transform hover:scale-125 sm:size-3.5", STATE_CLASS[cell.state])}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+        {(["missed", "partial", "complete", "caught-up", "rest", "freeze"] as const).map((s) => (
+          <span key={s} className="flex items-center gap-1.5">
+            <span className={cn("size-3 rounded-[3px]", STATE_CLASS[s])} /> {STATE_LABEL[s]}
+          </span>
+        ))}
+        <Link href="/calendar" className="ml-auto text-primary hover:underline">
+          Open calendar
+        </Link>
+      </div>
+    </div>
+  );
+}

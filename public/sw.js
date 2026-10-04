@@ -28,7 +28,7 @@ self.addEventListener("activate", (event) => {
 });
 
 /*
- * Push: the server sends { title, body, tag, url, actions, actionUrls } (lib/domain/push-payload.ts).
+ * Push: the server sends { title, body, tag, url, actions, actionUrls } (modules/notifications/domain/push-payload.ts).
  * Tapping opens the full message; an action button opens its own path. An open PrepOS window is
  * reused instead of opening a new one.
  */

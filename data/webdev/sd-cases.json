@@ -1,0 +1,922 @@
+{
+  "tracks": [
+    {
+      "id": "sd-cases",
+      "name": "System design case studies",
+      "color": "indigo",
+      "blurb": "Backend system design interviews worked end to end: estimation, APIs, data models, architecture and deep dives for URL shorteners, feeds, chat, Uber, video, payments and more.",
+      "area": "architecture"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "sdc-framework",
+      "track": "sd-cases",
+      "title": "The system design interview framework",
+      "minutes": 25,
+      "summary": "A repeatable 45-minute structure for backend design rounds: requirements, estimation with real numbers, API, data model, high-level design, deep dives and trade-offs.",
+      "body": "## What the round is really testing\nA backend system design interview gives you a vague product (\"design Twitter\", \"design a rate limiter\") and 45-60 minutes. There is no single right answer. The interviewer is watching how you turn ambiguity into a concrete, defensible design: whether you ask the right questions, size the problem with numbers, pick storage that fits the access patterns, and reason about failure and trade-offs under follow-up pressure.\n\nIt is closer to a design review with a senior colleague than an exam. You lead; they steer. A common failure is the \"box recital\": drawing load balancer, cache, Kafka and Cassandra in the first five minutes without ever saying why. Another is going so deep on one component that you never finish an end-to-end design.\n\n## The structure\nUse the same skeleton every time and say it out loud at the start. It shows you have a plan and lets the interviewer redirect you cheaply.\n\n| Step | Output on the board | Rough time (45 min) |\n|---|---|---|\n| 1. Requirements | Functional list, non-functional targets, out of scope | 5-7 min |\n| 2. Estimation | QPS, storage, bandwidth, memory: only numbers that matter | 3-5 min |\n| 3. API | 3-6 endpoints or events with key fields | 3-5 min |\n| 4. Data model | Entities, keys, partition key, chosen store | 4-6 min |\n| 5. High-level design | 6-10 boxes, the read path and the write path traced | 8-10 min |\n| 6. Deep dives | 2-3 hard parts, chosen with the interviewer | 12-15 min |\n| 7. Wrap-up | Bottlenecks, failure modes, what you would do next | 2-3 min |\n\nMany people compress 3 and 4, or do estimation after the API. That is fine. What matters is that requirements come first and deep dives get real time.\n\n## Step 1: requirements\nSplit them into two lists and write both down.\n\n**Functional**: the 3-5 user-visible capabilities that are in scope. For a chat app: 1:1 messages, group chats up to N members, delivery and read receipts, online presence, history sync across devices. Then explicitly park things: \"out of scope: voice calls, end-to-end encryption key management, search.\" Writing out-of-scope items is a signal of maturity, and it gives the interviewer a chance to say \"actually, I want you to cover search.\"\n\n**Non-functional**: the qualities that drive architecture.\n- **Scale**: DAU, peak factor, read/write ratio, data growth.\n- **Latency**: targets per path, usually as a percentile (\"p99 redirect under 50 ms\").\n- **Availability**: 99.9% is about 43 minutes of downtime a month, 99.99% about 4.3 minutes. Say which paths need which.\n- **Consistency**: where is stale data acceptable (feed, like counts) and where is it not (payments, inventory)?\n- **Durability**: can we ever lose a write? Messages and payments: no. View counters: occasionally fine.\n\nIf the interviewer says \"you decide\", state an assumption with a number and move on. Silence while you deliberate costs more than an imperfect assumption.\n\n## Step 2: back-of-envelope estimation\nEstimation is not arithmetic theatre. Each number should feed a decision: do we need sharding, does the hot set fit in memory, is bandwidth the real cost, can a single primary take the writes?\n\nUseful constants to have in your head:\n\n```text\n1 day            = 86,400 s  ~ 10^5 s  (use 10^5 for speed)\n1 month          ~ 2.5 x 10^6 s\n1 year           ~ 3 x 10^7 s\n1 million / day  ~ 12 per second\nPeak             ~ 2-3x average (more for spiky events)\n\nSizes:   1 KB = 10^3 B, 1 MB = 10^6, 1 GB = 10^9, 1 TB = 10^12, 1 PB = 10^15\nLatency (orders of magnitude, from Jeff Dean's list):\n  main memory reference          ~100 ns\n  read 1 MB sequentially, memory ~ a few microseconds to ~250 us (era-dependent)\n  SSD random read                ~ 16-150 us\n  round trip within a datacenter ~ 0.5 ms\n  round trip US coast to coast   ~ 40-70 ms; transatlantic ~ 80-150 ms\n```\n\nThe exact latency values have shifted since Jeff Dean's original list (the gist by Jonas Bonér is the common reference); what matters in an interview is the ratios: memory is roughly 1000x faster than a network hop in the same datacenter, and a cross-continent round trip is tens of milliseconds you cannot engineer away.\n\n### A worked example: 100 million DAU social app\nAssume each user views their feed 10 times a day and posts once every 5 days, average post 1 KB of text plus metadata, 20% of posts include a 500 KB image.\n\n```text\nReads:   10^8 users x 10 views     = 10^9 feed reads/day\n         10^9 / 10^5 s             = ~10^4 QPS average, ~3 x 10^4 peak\nWrites:  10^8 / 5                  = 2 x 10^7 posts/day\n         2 x 10^7 / 10^5           = ~200 writes/s average, ~600 peak\nRatio:   ~50:1 read heavy  -> caching and precomputation pay off\n\nText storage per day:  2 x 10^7 x 1 KB    = 20 GB/day  -> ~7 TB/year\nImages per day:        4 x 10^6 x 500 KB  = 2 TB/day   -> ~730 TB/year\n                       -> object storage + CDN, not the database\n\nFeed egress:  3 x 10^4 peak QPS x 20 posts x 1 KB = ~600 MB/s of JSON at peak\n```\n\nConclusions you say out loud: writes are trivially small for a sharded store; reads dominate, so precomputed feeds and caching matter; images dominate storage and bandwidth, so they go to object storage behind a CDN and never through the API servers. That is three design decisions from two minutes of maths.\n\nSkip numbers that change nothing. If the whole dataset is 50 GB, say \"fits on one primary with replicas; I won't shard for size\" and move on.\n\n## Step 3: API\nWrite the external contract before drawing internals. It forces precise thinking about what the system actually does.\n\n```text\nPOST /v1/posts                 { text, mediaIds[] }         -> 201 { postId, createdAt }\nGET  /v1/feed?cursor=&limit=20                              -> { posts[], nextCursor }\nPOST /v1/posts/{id}/likes      Idempotency-Key header       -> 204\nWS   /v1/stream                server pushes { type: \"new_post\", postId }\n```\n\nThings interviewers notice: cursor pagination instead of offsets for anything that changes under you; idempotency keys on mutating calls that clients retry; auth (the user id comes from the token, never from the body); and whether real-time delivery is a push channel or polling.\n\n## Step 4: data model\nList entities with their primary key and the queries they must serve. The **access pattern decides the store**, not fashion.\n\n```text\nusers      (user_id PK, handle UNIQUE, created_at, ...)\nposts      (post_id PK, author_id, created_at, text, media[])   query: by author, newest first\nfollows    (follower_id, followee_id, created_at)               query: followers of X, followees of X\ntimelines  (user_id, post_id, score)                            query: top N for user\n```\n\nThen say how you would partition: posts by `author_id` keeps \"a user's posts\" on one shard; follows stored twice (by follower and by followee) so both directions are single-partition reads. This is the moment to discuss SQL vs a wide-column store: relational for transactions and flexible queries at moderate scale; a wide-column or key-value store when the access pattern is \"fetch by key, sorted by time\" at very high write volume (Discord's move from Cassandra to ScyllaDB for messages is a well-documented example).\n\n## Step 5: high-level design\nDraw the minimum set of boxes that serves every functional requirement, then trace a write and a read through it.\n\n```text\n            clients (web, iOS, Android)\n                     |\n                  CDN (static, media)\n                     |\n              L7 load balancer / API gateway  (TLS, auth, rate limits)\n                     |\n     +---------------+----------------+\n     |               |                |\n post service   feed service    media service --> object storage\n     |               |                               (S3-like)\n     v               v\n posts DB       timeline cache  <-- fan-out workers <-- queue (Kafka)\n (sharded)      (Redis)                                  ^\n     |                                                   |\n     +-------------- post created event -----------------+\n```\n\nNarrate it: \"A post write goes to the post service, which stores it and emits an event; fan-out workers push the post id into followers' cached timelines; a feed read hits the timeline cache and hydrates post bodies from a post cache.\" Every box should have a reason to exist. If you cannot explain why the queue is there, remove it.\n\n## Step 6: deep dives\nThis is where most of the signal is, especially for senior levels. Pick 2-3 topics that are genuinely hard for this product, and ask the interviewer which they prefer. Typical menu:\n- **Scaling the hot path**: caching strategy, hot keys, sharding and rebalancing.\n- **Consistency**: what happens on concurrent writes, read-your-own-writes, ordering.\n- **Failure**: a node dies, a region goes down, the queue backs up. What degrades, what is lost?\n- **The product-specific problem**: celebrities in a feed, matching in Uber, idempotency in payments, transcoding in video.\n\nFor each deep dive use a mini-structure: the problem, two or three options, the trade-off table in words, your choice, and how it fails.\n\n## Trade-offs: how to talk about them\nEvery interesting decision has a cost. Strong candidates say it before being asked:\n- \"I'm caching timelines in Redis. The cost is memory, roughly 800 post ids per active user, and staleness of a few seconds, which this product accepts.\"\n- \"I'm choosing at-least-once delivery with idempotent consumers rather than trying for exactly-once, because exactly-once across a network is really deduplication anyway.\"\n- \"Async fan-out means a new post can take a few seconds to appear for followers. If the product needs instant, we'd pay for it with synchronous writes on the post path.\"\n\nThe Google SRE book's chapter on cascading failures is worth reading for the failure-mode vocabulary: overload, retries amplifying load, and load shedding.\n\n## How interviewers score it\nRubrics at large companies differ in wording but share axes:\n\n| Axis | Weak signal | Strong signal |\n|---|---|---|\n| Problem exploration | Starts drawing immediately | Scopes, quantifies, states assumptions |\n| Design quality | Boxes without reasons | Simple design that meets requirements, traced end to end |\n| Technical depth | Buzzwords (\"use Kafka\") | Explains partitioning, consistency, failure behaviour |\n| Trade-offs | One option presented as obvious | Alternatives compared against requirements |\n| Communication | Monologue or silence | Checks in, adapts when steered |\n\nLevel calibration matters. A mid-level candidate is expected to produce a working, reasonable design. A senior candidate is expected to drive, find the hardest problems unprompted, and discuss operations: rollout, monitoring, failure handling, cost. Staff-level answers add organisational and evolutionary concerns: how the system changes over two years, which parts are bets.\n\n## Common mistakes\n- **Solving at Google scale when 1,000 QPS was the requirement.** Over-engineering is as bad as under-engineering.\n- **Estimation that leads nowhere.** Five minutes of numbers and no conclusion.\n- **No read/write path walkthrough.** The interviewer cannot tell if the design actually works.\n- **Naming technology instead of properties.** \"Cassandra\" is not an answer; \"a store partitioned by user id with time-sorted clustering, tolerant of eventual consistency\" is, and then you can name an example.\n- **Ignoring failure.** What happens when the cache is cold, the queue lags, or a shard is down?\n- **Not managing time.** Glance at the clock at each transition.\n\n## In the interview\n**What they probe:** whether you can scope, whether your numbers lead to decisions, whether your design works end to end, and how you react when they push on a weak point.\n\n**Model 60-second opening:**\n1. \"Let me confirm the core use cases and the scale, then I'll do quick estimates, sketch the API and data model, draw a high-level design and spend the second half on the hardest parts.\"\n2. Ask 4-6 targeted questions, write functional and non-functional lists, park the rest.\n3. Estimate QPS, storage and the hot set; draw one conclusion from each.\n4. API and data model with partition keys.\n5. Boxes, write path, read path.\n6. \"The interesting problems here are X and Y. Which would you like me to go deeper on?\"\n\n**Follow-ups to expect:** \"What if traffic grows 10x?\", \"Where is the single point of failure?\", \"What happens when this component is down?\", \"How would you monitor this?\", \"What would you build first with a team of three?\"",
+      "keyPoints": [
+        "Spend the first 5-8 minutes on functional and non-functional requirements; write explicit out-of-scope items so the interviewer can redirect early.",
+        "Estimate only what changes the design: QPS (peak, read/write split), storage over years, bandwidth and memory for the hot set. 1 day is roughly 10^5 seconds.",
+        "Define the API and data model before drawing boxes; access patterns decide the database and the partition key.",
+        "Draw the simplest working design first, then spend half the round on 2-3 deep dives the interviewer cares about.",
+        "Every choice is scored as a trade-off: name the alternative, why you rejected it, and the failure mode of what you picked."
+      ],
+      "interview": [
+        "How do you structure a 45-minute backend system design interview?",
+        "Walk me through a back-of-envelope estimate for a service with 100 million daily active users.",
+        "What separates a senior system design answer from a mid-level one?"
+      ],
+      "check": [
+        {
+          "q": "A service has 100 million DAU and each user makes 10 reads per day. What is the average read QPS, roughly?",
+          "options": [
+            "About 1,200",
+            "About 12,000",
+            "About 120,000",
+            "About 1.2 million"
+          ],
+          "answer": 1,
+          "why": "10^8 users x 10 reads = 10^9 reads per day. Divided by about 10^5 seconds per day gives about 10^4, roughly 11,600 QPS average. Peak is usually 2-3x that."
+        },
+        {
+          "q": "When is it reasonable to skip a detailed storage estimate in a design round?",
+          "options": [
+            "Never, every number must be computed",
+            "When the interviewer is junior",
+            "When you plan to use a NoSQL database",
+            "When the data obviously fits on one machine and storage does not drive any decision"
+          ],
+          "answer": 3,
+          "why": "Estimation exists to drive decisions such as sharding, caching or tiering. If the total is a few hundred GB, say so in one line and move on."
+        },
+        {
+          "q": "What is the most common reason strong engineers fail system design rounds?",
+          "options": [
+            "Choosing PostgreSQL instead of Cassandra",
+            "Jumping into components before agreeing on requirements and then running out of time for depth",
+            "Not knowing the exact latency of an L1 cache hit",
+            "Drawing too few boxes"
+          ],
+          "answer": 1,
+          "why": "Without scoped requirements the design solves the wrong problem, and without time management there is no time for the deep dives that carry most of the senior signal."
+        }
+      ],
+      "resources": [
+        {
+          "title": "The System Design Primer (Donne Martin)",
+          "url": "https://github.com/donnemartin/system-design-primer"
+        },
+        {
+          "title": "Latency numbers every programmer should know (Jeff Dean, via Jonas Bonér)",
+          "url": "https://gist.github.com/jboner/2841832"
+        },
+        {
+          "title": "Designing Data-Intensive Applications (Martin Kleppmann)",
+          "url": "https://dataintensive.net/"
+        },
+        {
+          "title": "Google SRE book: Addressing cascading failures",
+          "url": "https://sre.google/sre-book/addressing-cascading-failures/"
+        },
+        {
+          "title": "Patterns of Distributed Systems (Unmesh Joshi, martinfowler.com)",
+          "url": "https://martinfowler.com/articles/patterns-of-distributed-systems/"
+        }
+      ]
+    },
+    {
+      "id": "sdc-url-shortener",
+      "track": "sd-cases",
+      "title": "Design a URL shortener",
+      "minutes": 25,
+      "summary": "The classic warm-up design: key generation without collisions, a read path that serves redirects from cache in milliseconds, 301 vs 302, analytics and abuse.",
+      "body": "## The core idea\nA URL shortener maps a short code to a long URL: `sho.rt/aZ3kQ9x` redirects to `https://example.com/some/very/long/path?utm=...`. Underneath, it is a key-value store with two operations: create a mapping (rare) and resolve a code (very frequent). The interview is a warm-up, but it hides three real problems: generating unique codes cheaply, serving redirects with very low latency at high read volume, and counting clicks without slowing the redirect.\n\nInterviewers use it to see whether you can run the full framework on a small problem and still find depth: key generation, caching, HTTP semantics and abuse.\n\n## Requirements\n**Functional**\n- Create a short link for a long URL; optionally a custom alias and an expiry.\n- Redirect a short code to the long URL.\n- Per-link click analytics (counts over time, referrer, country).\n- Out of scope unless asked: user accounts beyond an API key, link editing, QR codes.\n\n**Non-functional**\n- Redirect p99 under about 50 ms at the server (users perceive a redirect as part of page load).\n- High availability on the read path; creating links can degrade a little.\n- Codes must never collide and ideally should not be trivially enumerable.\n- Durable: a created link must keep working for years.\n\n## Estimation\nAssume 100 million new links per month and a 100:1 read to write ratio.\n\n```text\nWrites:   10^8 / (2.5 x 10^6 s)          = ~40 creates/s average, ~100-200 peak\nReads:    40 x 100                       = ~4,000 redirects/s average, ~10-20k peak\nStorage:  10^8 links/month x 12 x 5 years = 6 x 10^9 links\n          x ~500 B (code, URL, metadata)  = ~3 TB over 5 years\nCode space: 6 x 10^9 needed; base62^7 = 3.5 x 10^12  -> 7 chars is plenty\nCache:    links follow a power law. Caching the hottest ~20% of a day's\n          traffic: 4,000/s x 10^5 s x 0.2 x 500 B = ~40 GB  -> fits a small Redis cluster\n```\n\nConclusions: writes are tiny (one database could take them); reads are moderate but latency-sensitive, so cache aggressively; 3 TB is too much for a comfortable single node over time, so plan to partition by code.\n\n## API\n\n```text\nPOST /v1/links\n  Authorization: Bearer <api key>\n  Idempotency-Key: <uuid>\n  { \"url\": \"https://...\", \"alias\": \"launch-2026\"?, \"expiresAt\": \"...\"? }\n  -> 201 { \"code\": \"aZ3kQ9x\", \"shortUrl\": \"https://sho.rt/aZ3kQ9x\" }\n\nGET /{code}\n  -> 302 Location: https://...        (or 404 / 410 Gone if expired)\n\nGET /v1/links/{code}/stats?from=&to=&granularity=day\n  -> { \"clicks\": [...], \"topReferrers\": [...], \"countries\": [...] }\n```\n\nThe idempotency key matters: a mobile client that times out and retries should not create two codes for the same request.\n\n## Data model\n\n```text\nlinks\n  code        PK  (string, 7 chars)\n  long_url        (text, validated, max ~2-8 KB)\n  owner_id\n  created_at\n  expires_at      (nullable)\n\nclick_events (append-only, to a log / warehouse, not the OLTP store)\n  code, ts, referrer, country, user_agent_class\n\nclick_rollups\n  (code, day) PK -> count\n```\n\nThe only hot query is `get by code`, which is a pure key lookup. That fits a key-value or wide-column store (DynamoDB, Cassandra) partitioned by `code`, or a relational database sharded by hash of `code`. PostgreSQL is perfectly reasonable at this scale with a few shards; say so rather than reaching for a NoSQL store by reflex.\n\n## High-level design\n\n```text\n                 client / browser\n                       |\n           +-----------+------------+\n           |                        |\n     GET /{code}               POST /v1/links\n           |                        |\n   edge / CDN (optional cache   API gateway (auth, rate limit)\n   of 302s with short TTL)          |\n           |                  link service ---- ID range allocator\n   redirect service                 |           (DB sequence / ZooKeeper / etcd)\n     |       |                      v\n     |   Redis cache  <------  links DB (sharded by code, replicated)\n     |   (code -> url)\n     |\n     +--> click log (Kafka / Kinesis) --> stream aggregator --> rollups DB\n                                      \\-> object storage / warehouse\n```\n\n**Write path**: authenticate, validate the URL (scheme allow-list, length, safe-browsing check), obtain a code, insert `code -> url` with a uniqueness constraint, return. Optionally write through to the cache.\n\n**Read path**: look up the code in Redis; on a miss read a replica of the links DB and populate the cache; respond with a redirect; emit a click event to the log without waiting for acknowledgement beyond the local buffer. The redirect service is stateless and horizontally scaled.\n\n## Deep dive 1: generating codes\nThis is the question interviewers push on. Three families:\n\n**1. Hash the URL** (MD5/SHA-256, take the first 7 base62 characters). Deterministic, so the same URL maps to the same code, which can be nice. But truncation causes collisions; with billions of links the birthday bound makes them certain, so you need a check-and-retry (append a salt, rehash). And two users shortening the same URL would share a code, which breaks per-user analytics unless you hash `url + user`.\n\n**2. Random codes.** Generate 7 random base62 characters (from a CSPRNG), insert with a unique constraint, retry on conflict. At 6 billion used out of 3.5 trillion, the conflict probability per insert is about 0.2%, so retries are rare. Simple and not enumerable. Cost: every write needs a uniqueness check, which is cheap with a primary key.\n\n**3. Counter plus base62 encoding.** A global integer counter, encoded in base62. Never collides, no check needed. A single counter is a bottleneck, so use **range leasing**: each link-service instance asks the allocator for a block (say 10,000 IDs), then mints locally. The allocator can be a database sequence incremented by the block size, a Redis `INCRBY`, or a ZooKeeper/etcd node. A crashed server loses its unused range, which is harmless. Twitter's Snowflake is a related approach: 64-bit IDs from timestamp, worker id and sequence, no coordination per ID.\n\n```ts\nconst ALPHABET = \"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\";\n\nexport function toBase62(n: bigint): string {\n  if (n === 0n) return \"0\";\n  let out = \"\";\n  while (n > 0n) {\n    out = ALPHABET[Number(n % 62n)] + out;\n    n /= 62n;\n  }\n  return out;\n}\n\nclass RangeAllocator {\n  private next = 0n;\n  private end = 0n;\n  constructor(private lease: (size: bigint) => Promise<bigint>, private size = 10_000n) {}\n\n  async nextId(): Promise<bigint> {\n    if (this.next >= this.end) {\n      const start = await this.lease(this.size); // e.g. Redis INCRBY returns the new end\n      this.next = start - this.size;\n      this.end = start;\n    }\n    return this.next++;\n  }\n}\n```\n\nSequential codes are enumerable: anyone can walk `aZ3kQ9x`, `aZ3kQ9y` and scrape every link. If links may be private, either use random codes or permute the counter through a reversible bijection (for example a small Feistel network or multiplying by a large odd constant modulo 62^7) so consecutive IDs look unrelated. That keeps the no-collision property and hides the order.\n\n**Custom aliases** share the namespace: insert with the same unique constraint; reserve words like `api`, `admin`, `login`; and ensure generated codes cannot collide with aliases (for example, different length or a prefix rule).\n\n## Deep dive 2: 301 vs 302 vs 307\n- **301 Moved Permanently**: browsers and proxies may cache it indefinitely. Repeat visits skip your service entirely: less load, lower latency, but you lose click analytics and cannot change or disable the link for those clients.\n- **302 Found / 307 Temporary Redirect**: not cached by default; every click hits you. 307 guarantees the method is preserved, which matters only for non-GET requests.\n- A middle ground: 302 with `Cache-Control: private, max-age=300` lets a browser reuse the redirect for a few minutes.\n\nBitly-style products that sell analytics use non-permanent redirects. State the trade-off explicitly; interviewers love this question because it connects HTTP semantics to a business requirement.\n\n## Deep dive 3: the read path at scale\n- **Cache**: `code -> url` in Redis with an LRU or LFU policy. Hit rates above 90% are realistic because of the power-law popularity. Negative caching (store \"not found\" for a minute) blocks scanners hammering random codes.\n- **Hot keys**: a link going viral can push one key to tens of thousands of requests per second. An in-process LRU in each redirect instance (a few seconds TTL) absorbs that before it reaches Redis.\n- **Edge**: for global latency, serve redirects from edge functions or CDN caches near users. A 302 with a short `s-maxage` can be cached at the CDN while still counting clicks via CDN logs.\n- **Database**: reads go to replicas; the dataset is partitioned by hash of code so no shard gets the \"newest\" codes all at once (range partitioning on sequential codes would create a hot shard).\n\n## Deep dive 4: analytics without slowing redirects\nNever increment a counter row synchronously on every click. Instead, append a click event to a log (Kafka, Kinesis) or to a local buffer that flushes in batches. A stream processor (Flink, Kafka Streams, or a simple consumer) aggregates per code per minute and upserts rollups. Raw events land in object storage for ad-hoc analysis. Losing a few clicks during a crash is usually acceptable; say so, it is a requirement decision.\n\n## Abuse and safety\nShorteners are used for phishing and malware. Check new URLs against a safe-browsing list, rate-limit creation per API key and IP, allow only `http`/`https` schemes (never `javascript:`), and support takedown: a disabled link returns 410 and is purged from caches. Note how a 301 makes takedown impossible for clients that cached it.\n\n## Trade-offs and common mistakes\n- Choosing a hash and forgetting collisions.\n- A single global counter with no range leasing: a bottleneck and single point of failure.\n- Range-partitioning sequential codes and creating a hot shard.\n- Writing analytics synchronously on the redirect path.\n- Over-engineering: at 40 writes per second, a distributed consensus system per write is unnecessary.\n\n## In the interview\n**What they probe:** code generation and collisions, cache design and hit rate, 301 vs 302, sharding key choice, and whether analytics is decoupled.\n\n**60-second outline:** scope (create, redirect, analytics, expiry); estimate (~40 writes/s, ~4k reads/s, ~3 TB over 5 years, 7-char base62); API (POST links with idempotency key, GET code returns 302); data model keyed by code; design (stateless redirect service, Redis cache, sharded DB, click log to aggregator); deep dive on code generation via leased counter ranges with an optional bijection, then caching and hot keys.\n\n**Follow-ups to expect:** \"How do you stop enumeration?\", \"What if a link goes viral?\", \"How would you make redirects fast globally?\", \"How do you delete expired links?\" (TTL index or background sweeper plus cache purge), \"What happens if the ID allocator is down?\" (servers keep minting from their current lease; leases are large enough to ride out a short outage).",
+      "keyPoints": [
+        "It is a read-heavy key-value lookup: 100:1 reads to writes is a typical assumption, so the redirect path must be served from cache or an edge.",
+        "Base62 with 7 characters gives 62^7, about 3.5 trillion codes; the hard part is generating them without collisions or coordination on every write.",
+        "Counter-based IDs (ranges handed out per server) avoid collisions without a lookup; hashing needs collision checks; random codes need a unique constraint and retry.",
+        "301 lets browsers cache the redirect forever and hides clicks from analytics; 302 or 307 keeps every click visible at the cost of more traffic.",
+        "Click analytics must be asynchronous (log or queue to an aggregator) so the redirect never waits on a write."
+      ],
+      "interview": [
+        "Design a URL shortener like bit.ly.",
+        "How do you generate short codes without collisions at scale?",
+        "Should a URL shortener return 301 or 302, and why does it matter?"
+      ],
+      "check": [
+        {
+          "q": "Roughly how many distinct codes does a 7-character base62 alphabet allow?",
+          "options": [
+            "About 78 billion",
+            "About 218 trillion",
+            "About 3.5 trillion",
+            "About 56 million"
+          ],
+          "answer": 2,
+          "why": "62^7 is about 3.52 x 10^12. Six characters give about 5.7 x 10^10 (57 billion), eight about 2.2 x 10^14."
+        },
+        {
+          "q": "Why do many designs hand out ID ranges (for example blocks of 1,000 counter values) to each app server?",
+          "options": [
+            "So each server can mint unique codes locally without a network call per write",
+            "To make codes guessable",
+            "Because databases cannot store integers",
+            "To make 301 redirects work"
+          ],
+          "answer": 0,
+          "why": "A central counter hit on every write is a bottleneck and single point of failure. Leasing ranges amortises coordination: one call per thousand codes, and a crash only wastes the unused part of a range."
+        },
+        {
+          "q": "The product team wants an accurate click count per link. Which redirect status is the better default?",
+          "options": [
+            "301 Moved Permanently",
+            "200 with a meta refresh",
+            "302 Found (or 307)",
+            "404 with a Location header"
+          ],
+          "answer": 2,
+          "why": "Browsers may cache a 301 indefinitely and stop contacting the shortener, so repeat clicks are invisible. A 302/307 sends every click through the service, where it can be counted."
+        }
+      ],
+      "resources": [
+        {
+          "title": "MDN: 301 Moved Permanently",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/301"
+        },
+        {
+          "title": "MDN: 302 Found",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/302"
+        },
+        {
+          "title": "Snowflake: Twitter's distributed ID generator (archived source)",
+          "url": "https://github.com/twitter-archive/snowflake"
+        },
+        {
+          "title": "Redis INCR command (and the counter pattern)",
+          "url": "https://redis.io/docs/latest/commands/incr/"
+        },
+        {
+          "title": "The System Design Primer: Pastebin / bit.ly walkthrough",
+          "url": "https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/pastebin/README.md"
+        }
+      ]
+    },
+    {
+      "id": "sdc-news-feed",
+      "track": "sd-cases",
+      "title": "Design a news feed (Twitter / Instagram home timeline)",
+      "minutes": 28,
+      "summary": "Fan-out on write vs fan-out on read, the celebrity problem and the hybrid that solves it, timeline caches, hydration and how ranking changes the design.",
+      "body": "## The core idea\nA home feed shows a user recent (or relevant) posts from the accounts they follow. The interesting part is not storing posts; it is assembling a personalised list quickly for hundreds of millions of users, where the follow graph is extremely skewed. Most accounts have a few hundred followers; a handful have tens of millions.\n\nThere are two basic strategies:\n- **Fan-out on write (push)**: when someone posts, insert the post id into every follower's precomputed timeline. Reading is a single lookup.\n- **Fan-out on read (pull)**: store posts per author; at read time, fetch recent posts from everyone the user follows and merge them.\n\nMartin Kleppmann uses exactly this example in the first chapter of *Designing Data-Intensive Applications*, based on Twitter's 2012 numbers: read traffic was two orders of magnitude higher than write traffic, so Twitter moved to fan-out on write, then had to treat celebrities differently.\n\n## Requirements\n**Functional**: post (text, media), follow/unfollow, home timeline (reverse chronological first, ranked as an extension), user timeline (a user's own posts).\n**Out of scope**: search, trends, DMs, ads, notifications (mention them as separate systems).\n\n**Non-functional**: timeline load p99 under ~200 ms server-side; a new post visible to followers within a few seconds (eventual consistency is fine); very high availability for reads; the posting user must see their own post immediately (read-your-own-writes).\n\n## Estimation\nAssume 300 million DAU, each opens the feed 5 times a day, 20% of DAU post once a day, average 200 followers per poster.\n\n```text\nFeed reads:   3 x 10^8 x 5 / 10^5 s       = 15,000 QPS avg, ~45,000 peak\nPosts:        6 x 10^7 / 10^5 s           = 600 posts/s avg, ~2,000 peak\nFan-out:      600 posts/s x 200 followers = 120,000 timeline inserts/s avg\n              (peaks and celebrities push this much higher)\nTimeline cache: keep 800 ids x 8 bytes = ~6.4 KB per user\n              x 3 x 10^8 active users     = ~2 TB raw; with Redis overhead\n              plan for several TB -> sharded cache cluster, active users only\nPosts storage: 6 x 10^7 x 1 KB/day = 60 GB/day, ~22 TB/year (text + metadata)\n```\n\nThe 800-entry cap echoes Twitter's 2012 talk, where home timelines in Redis were capped at roughly that size. Conclusion: fan-out is the dominant write load, timeline storage is large but affordable if limited to active users, and reads must be served almost entirely from memory.\n\n## API\n\n```text\nPOST /v1/posts                    { text, mediaIds[] }       -> { postId }\nGET  /v1/timeline/home?cursor=&limit=20                      -> { items[], nextCursor }\nGET  /v1/users/{id}/posts?cursor=&limit=20\nPOST /v1/users/{id}/follow        DELETE /v1/users/{id}/follow\n```\n\nCursor is an opaque encoding of the last post id or score seen. Offsets break as new posts arrive at the head.\n\n## Data model\n\n```text\nposts       post_id (Snowflake-style: time-sortable 64-bit), author_id, created_at, text, media\n            partition by author_id or post_id; query \"posts by author, newest first\"\nfollows     stored twice: by follower (who do I follow) and by followee (who follows me)\n            followee -> followers list is what fan-out reads; can be millions long\nhome_tl     Redis sorted set or list per user: user_id -> [post_id ...] capped at ~800\npost_cache  post_id -> post object; user_cache: user_id -> profile; counters separately\n```\n\nTime-sortable ids (Snowflake puts a millisecond timestamp in the high bits) let you sort timelines by id instead of storing a separate timestamp, and let the cursor be just an id.\n\n## High-level design\n\n```text\n client\n   |\n API gateway ---------------------------------+\n   |                                          |\n post service --> posts DB (sharded)      timeline service\n   |                                       |        |\n   +--> \"post_created\" event (Kafka)       |   home timeline cache (Redis, sharded by user)\n              |                            |        ^\n        fan-out workers ------------------+--------+   (push ids into followers' lists)\n              |  reads follower lists from graph service / follows store\n              |\n        skip followers who are inactive; skip authors flagged \"celebrity\"\n\n timeline read: timeline cache ids  +  celebrity posts pulled  -> merge -> hydrate\n                                                                  (post cache, user cache,\n                                                                   counters, viewer's like state)\n```\n\n**Write path**: the post service persists the post, then publishes an event. Fan-out workers page through the author's follower list and append the post id to each follower's timeline (Redis `LPUSH` + `LTRIM`, or `ZADD` + `ZREMRANGEBYRANK`). The author's own timeline is updated synchronously so they see their post at once.\n\n**Read path**: read the cached id list, merge in pulled celebrity posts, take the top N, hydrate in batch (multi-get from post and user caches), filter (deleted posts, blocked users, muted words), return with a cursor.\n\n## Deep dive 1: push vs pull vs hybrid\n\n| | Fan-out on write | Fan-out on read |\n|---|---|---|\n| Write cost | O(followers) per post | O(1) |\n| Read cost | O(1) lookup | O(followees) queries + merge |\n| Freshness | Delay = fan-out time | Always fresh |\n| Wasted work | Fan-out to users who never log in | None |\n| Bad case | Celebrities | Users following thousands |\n\n**Hybrid** is the standard answer and what Twitter described: push for most authors; for accounts above a follower threshold (say 100k-1M), skip fan-out and pull their recent posts at read time. Each user follows only a handful of celebrities, so the read-time merge is small: fetch \"recent posts by these 5 authors\" from a per-author cache and merge with the precomputed list.\n\nTwo more optimisations:\n- **Skip inactive users.** Do not fan out to users who have not logged in for 30 days; rebuild their timeline on demand (pull) when they return.\n- **Prioritise fan-out**: process posts from accounts with fewer followers first, so a celebrity's job does not delay everyone else.\n\n## Deep dive 2: the celebrity problem in detail\nA 50-million-follower account under pure push means 50 million cache writes per post. At, say, a million inserts per second across the fan-out fleet, that is about a minute of the whole fleet's capacity, and the last followers see the post a minute late. With pull for celebrities, the cost moves to reads, so the celebrity's recent posts must be extremely hot in cache (replicated across cache nodes or held in-process) because every timeline read touches them. This is the classic hot key problem; the mitigation is replication of that key or a local cache with a short TTL.\n\n## Deep dive 3: ranking\nMoving from chronological to ranked changes the architecture into a pipeline:\n\n```text\ncandidate generation  ->  feature hydration  ->  scoring  ->  filtering & mixing\n (in-network: timeline       (author affinity,     (ML model,   (diversity, dedup,\n  cache, celebrity pulls;     post age, engagement,  light then   ads, policy)\n  out-of-network: recs)       viewer history)        heavy)\n```\n\n- Candidates: a few hundred to a few thousand post ids from the precomputed timeline plus other sources (posts from similar users, trending).\n- Features: counts, affinity between viewer and author, recency, media type. Fetched in bulk from feature stores.\n- Scoring: a cheap model prunes to a few hundred, a heavier model scores the rest. Twitter's 2023 open-sourced recommendation code and its overview describe this shape: candidate sources, a light ranker, a heavy neural ranker, then heuristics and filters.\n- Ranked feeds break simple cursor pagination because scores change; one solution is to rank a page set once per session and paginate over that snapshot.\n\n## Deep dive 4: consistency and edge cases\n- **Read-your-own-writes**: write the author's own timeline synchronously, or have the client insert its new post locally.\n- **Deletes**: do not chase the id through millions of timelines; filter at hydration (the post cache returns \"deleted\") and let the id age out.\n- **Unfollow**: filter at read time against the current follow set, or lazily rebuild.\n- **New follow**: backfill a few recent posts of the newly followed account into the timeline asynchronously.\n- **Cache loss**: a lost timeline shard is rebuilt from the posts store (pull) on next read. This is why the cache is a cache, not the source of truth.\n\n## Failure modes\n- Fan-out lag during spikes (big live events): the queue absorbs bursts; monitor consumer lag; degrade by temporarily pulling for more authors.\n- Hot celebrity keys: replicate, local cache.\n- Thundering herd on cold cache after a deploy: request coalescing so one rebuild per user.\n\n## Common mistakes\n- Picking pure push or pure pull and not noticing the skew problem.\n- Storing full post objects in every timeline.\n- Fanning out to all followers including dormant accounts.\n- Forgetting the author's own post visibility.\n- Talking about ranking only as \"use ML\" without the candidate / score / filter pipeline.\n\n## In the interview\n**What they probe:** the push/pull trade-off quantified, the celebrity fix, cache sizing, hydration and how ranking fits.\n\n**60-second outline:** scope (post, follow, home timeline, chronological first); estimate (~15k reads/s, ~600 posts/s, ~120k fan-out inserts/s, timeline of 800 ids per active user); data model (time-sortable post ids, follows both directions, Redis lists of ids); hybrid fan-out with celebrity threshold and inactive-user skip; read path merges, hydrates and filters; ranking as candidate generation plus scoring.\n\n**Follow-ups to expect:** \"What is your celebrity threshold and how do you pick it?\", \"How do you handle a user who follows 5,000 accounts?\", \"How do you delete a post everywhere?\", \"What happens when the timeline cache cluster loses a node?\", \"How would you paginate a ranked feed?\"",
+      "keyPoints": [
+        "Fan-out on write precomputes each follower's timeline at post time: cheap reads, expensive writes for accounts with millions of followers.",
+        "Fan-out on read merges followees' recent posts at read time: cheap writes, expensive and slow reads for users who follow many accounts.",
+        "The standard answer is hybrid: push for normal accounts, pull for celebrities at read time, merged in the feed service.",
+        "Timelines cache only post ids (a few hundred per user); post bodies, authors and counts are hydrated from separate caches.",
+        "Ranking turns the feed into candidate generation, feature fetch and scoring; precomputed timelines become one candidate source among several."
+      ],
+      "interview": [
+        "Design the home timeline for a Twitter-like service.",
+        "Fan-out on write or fan-out on read: how do you choose, and what do you do about celebrities?",
+        "How would you add ranking to a chronological feed?"
+      ],
+      "check": [
+        {
+          "q": "A user with 50 million followers posts. Under pure fan-out on write, what is the main problem?",
+          "options": [
+            "The post cannot be stored",
+            "Followers cannot read the post",
+            "The post id overflows",
+            "One post triggers 50 million timeline writes, delaying delivery and spiking load"
+          ],
+          "answer": 3,
+          "why": "Write amplification equals follower count. A celebrity post becomes tens of millions of cache inserts, which takes minutes and competes with all other fan-out work."
+        },
+        {
+          "q": "In a hybrid feed, what happens when a normal user opens their timeline?",
+          "options": [
+            "The service reads only the precomputed timeline",
+            "The service reads the precomputed timeline and merges in recent posts from the celebrities they follow",
+            "The service queries every followee's posts",
+            "The client fetches each followee separately"
+          ],
+          "answer": 1,
+          "why": "Pushed posts from normal accounts are already in the cached timeline; posts from the few high-follower accounts are pulled at read time and merged by time or score."
+        },
+        {
+          "q": "Why do timeline caches usually store post ids rather than full post objects?",
+          "options": [
+            "Ids sort faster",
+            "Redis cannot store JSON",
+            "It makes ranking impossible",
+            "Full objects would be duplicated across millions of timelines and edits or deletes would have to update every copy"
+          ],
+          "answer": 3,
+          "why": "Storing ids keeps each timeline small (8 bytes per entry) and keeps one source of truth per post; hydration fetches bodies, author info and counts from shared caches."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Timelines at Scale (Raffi Krikorian, InfoQ, Twitter 2012)",
+          "url": "https://www.infoq.com/presentations/Twitter-Timeline-Scalability/"
+        },
+        {
+          "title": "TAO: Facebook's distributed data store for the social graph",
+          "url": "https://engineering.fb.com/2013/06/25/core-infra/tao-the-power-of-the-graph/"
+        },
+        {
+          "title": "TAO paper (USENIX ATC 2013)",
+          "url": "https://www.usenix.org/conference/atc13/technical-sessions/presentation/bronson"
+        },
+        {
+          "title": "Twitter's recommendation algorithm (open-sourced code and overview)",
+          "url": "https://github.com/twitter/the-algorithm"
+        },
+        {
+          "title": "Designing Data-Intensive Applications, chapter 1 (the Twitter fan-out example)",
+          "url": "https://dataintensive.net/"
+        }
+      ]
+    },
+    {
+      "id": "sdc-chat",
+      "track": "sd-cases",
+      "title": "Design a chat system (WhatsApp / Slack)",
+      "minutes": 28,
+      "summary": "Persistent connections and gateways, message storage partitioned by conversation, per-conversation ordering, delivery and read receipts, presence and group fan-out.",
+      "body": "## The core idea\nA chat system moves small messages between users in near real time, stores them durably, and syncs them across every device a user owns. The hard parts are not the messages themselves; they are **connections** (millions of long-lived sockets), **routing** (which server holds the recipient's socket right now), **ordering and delivery guarantees** over unreliable mobile networks, **presence**, and **group fan-out**.\n\nWhatsApp and Slack sit at two ends of the design space. WhatsApp is mostly 1:1 and small groups, phone-first, with end-to-end encryption and messages held on the server only until delivered (historically). Slack is channel-first: large channels, persistent searchable history, many integrations. Clarify which one the interviewer means.\n\n## Requirements\n**Functional**: 1:1 and group messaging (groups up to, say, 500 members; ask about larger channels), message history synced across devices, delivery and read receipts, online/last-seen presence, push notifications when offline, media attachments.\n**Out of scope**: voice/video calls, end-to-end key management details, search (mention it as a separate index).\n\n**Non-functional**: end-to-end latency under ~300 ms when both are online; no lost messages once the server acknowledged them; ordering correct within a conversation; high availability; mobile-friendly (battery, flaky networks).\n\n## Estimation\nAssume 500 million DAU, 40 messages sent per user per day, average message 200 bytes with metadata, 30% of DAU connected at peak.\n\n```text\nMessages:    5 x 10^8 x 40 = 2 x 10^10/day  -> 2 x 10^5 msg/s avg, ~5 x 10^5 peak\nDeliveries:  group messages multiply this; assume avg 3 recipients -> ~1.5M deliveries/s peak\nStorage:     2 x 10^10 x 200 B = 4 TB/day   -> ~1.5 PB/year if history kept forever\nConnections: 1.5 x 10^8 concurrent sockets\n             at ~100k-1M sockets per gateway (depends on runtime and memory)\n             -> hundreds to low thousands of gateway servers\n```\n\nWhatsApp famously ran around 2 million connections per server on tuned FreeBSD/Erlang around 2012; on general-purpose stacks, plan for far fewer per box. The conclusions: connections are a first-class scaling dimension, storage is petabyte-class if history is retained, and writes are high enough that the message store must be partitioned and write-optimised.\n\n## API\nMostly over the socket, with HTTP for history and uploads.\n\n```text\nWS  connect: wss://chat.example.com/ws  (auth token, device id, last_seq per conversation)\n\nclient -> server\n  { type: \"send\", clientMsgId, conversationId, body, attachments[] }\n  { type: \"ack\", conversationId, seq }               // delivered to this device\n  { type: \"read\", conversationId, seq }              // read up to seq\n  { type: \"typing\", conversationId }\n\nserver -> client\n  { type: \"sent\", clientMsgId, conversationId, seq, ts }   // server accepted\n  { type: \"message\", conversationId, seq, senderId, body, ts }\n  { type: \"receipt\", conversationId, userId, kind: \"delivered\"|\"read\", upToSeq }\n  { type: \"presence\", userId, status, lastSeen }\n\nHTTP\n  GET  /v1/conversations/{id}/messages?afterSeq=&limit=100\n  POST /v1/uploads  -> presigned URL for media (goes straight to object storage)\n```\n\n## Data model\n\n```text\nconversations   conversation_id, type (direct|group), created_at\nmembers         (conversation_id, user_id) + role, last_read_seq, muted\nuser_convs      (user_id, conversation_id, last_activity) -> inbox list\nmessages        PK (conversation_id, bucket), clustering seq DESC\n                fields: seq, sender_id, client_msg_id, body, attachments, ts, edited, deleted\ndedup           (sender_id, client_msg_id) -> seq   (TTL a few days)\n```\n\nPartitioning by conversation keeps a conversation's messages together for range reads (\"give me everything after seq 4182\"). A bucket (for example by time window) prevents one enormous partition for a very old, busy channel; Discord described exactly this pattern (channel id plus a time bucket) when explaining its Cassandra and later ScyllaDB message store. Wide-column stores fit because the dominant access is append and range-scan by key.\n\n## High-level design\n\n```text\n devices --- WSS ---> gateway servers (hold sockets, auth, heartbeats)\n                         |     ^\n             publish     |     |  deliver to socket\n                         v     |\n                 chat service (per-conversation owner)\n                  | assigns seq, dedups, persists\n                  v\n            message store (wide-column, partitioned by conversation)\n                  |\n                  +--> fan-out: look up members -> session registry\n                  |       (user_id -> [gateway, device] in Redis)\n                  |       online  -> push to that gateway\n                  |       offline -> notification service (APNs / FCM)\n                  |\n                  +--> event log (Kafka) -> search indexer, analytics\n\n presence service <-- heartbeats from gateways; TTL keys per user\n```\n\n**Send path**: the device sends `{clientMsgId, conversationId, body}` over its socket. The gateway forwards to the chat service instance that owns that conversation (by consistent hashing on conversation id, or a partition in a log). The owner checks dedup, assigns the next sequence number, persists, then acknowledges `sent` with the seq. Only after the durable write does the sender see one tick.\n\n**Deliver path**: the owner looks up members and their sessions in the registry, pushes the message to each recipient's gateway, which writes it to the socket. The recipient's device acks; that becomes a `delivered` receipt routed back to the sender. Offline recipients get a push notification and fetch on reconnect.\n\nSlack's write-up describes a similar shape: gateway servers hold websockets and subscribe to channels; channel servers, assigned by consistent hashing, own each channel's message flow.\n\n## Deep dive 1: ordering\nGlobal ordering across all chats is unnecessary and expensive. Users only perceive order within one conversation. So:\n- Give each conversation a **single sequencer**: the chat-service owner for that conversation, or a single log partition keyed by conversation id. It assigns `seq = last + 1` atomically.\n- Clients render by seq, not timestamp. Timestamps are for display only.\n- Gaps are detectable: if a device has seq 10 and receives 12, it fetches 11 over HTTP.\n- On owner failover, the new owner reads the last persisted seq before accepting writes. A lease or fencing token prevents two owners assigning the same seq during a split.\n\nWhat about two people sending at the same moment? Whichever reaches the owner first gets the lower seq. Both devices then see the same order, which is the real requirement (consistency across participants, not \"true\" time).\n\n## Deep dive 2: delivery guarantees and receipts\nNetworks drop. The protocol is at-least-once with idempotency:\n1. Device generates `clientMsgId` (UUID) and stores the message locally as \"pending\".\n2. Sends; retries with the same id until it receives `sent`.\n3. Server dedups on `(sender, clientMsgId)`, returning the existing seq for duplicates.\n4. Recipient devices ack seq; the server records per-device delivery and emits a receipt.\n\nThe familiar ticks map to state: one tick = server persisted; two ticks = delivered to at least one recipient device; blue/read = recipient read up to that seq. In groups, store `last_read_seq` per member rather than per-message rows: \"read up to 4182\" covers every earlier message and is one small update. A group's \"read by\" view is computed from members' `last_read_seq`.\n\nExactly-once delivery to the UI is achieved by dedup on the client too: the device ignores a seq it already has.\n\n## Deep dive 3: connections and routing\n- Gateways are stateful (they hold sockets) but contain no business logic. Keep them thin so they can be redeployed by draining connections gradually; clients reconnect with exponential backoff and jitter so a gateway restart does not cause a thundering herd.\n- The **session registry** maps `user_id -> [(gateway_id, device_id)]`, stored in Redis with a TTL refreshed by heartbeats. Stale entries expire if a gateway dies.\n- Heartbeats every 30-60 seconds keep NAT mappings alive and detect dead connections; mobile platforms limit background sockets, so offline delivery relies on APNs/FCM pushes.\n- On reconnect, the client sends its last seq per active conversation; the server streams what is missing (or the client pages through HTTP for long gaps).\n\n## Deep dive 4: group fan-out\nFor a 500-member group, one send becomes 500 deliveries. Options:\n- **Fan-out on write to inboxes**: copy a pointer into each member's inbox. Simple reads; heavy for big groups.\n- **Fan-out on delivery only**: store the message once per conversation, push to online members via the registry, and let offline members pull by seq on reconnect. This is what makes the conversation-partitioned store attractive.\n- For huge channels (Slack channels with 100k members, Discord servers), gateways subscribe to channels they have members for, so the channel server publishes once per gateway rather than once per user. Discord has written about fanning out to very large guilds using Elixir processes per guild and relays.\n\n## Deep dive 5: presence\nNaively, every status change goes to every contact: N users times C contacts updates per change. Better:\n- Gateways send heartbeats; the presence service stores `user_id -> online` with a TTL (say 60 seconds). Missing heartbeats mean offline without an explicit disconnect.\n- Only push presence to users who are **actively viewing** a conversation list or chat with that person (subscribe on view, unsubscribe on leave).\n- Debounce flapping (mobile networks drop for seconds); show \"last seen\" with coarse granularity.\n- For very large groups, do not show live presence of every member; show a count.\n\n## Storage, media and retention\nMedia goes directly to object storage via presigned URLs; messages hold references, and a CDN serves downloads. For end-to-end encrypted designs, the server stores ciphertext only and cannot search or moderate content, which changes features like search and multi-device sync (each device has its own keys; senders encrypt per device). Mention this trade-off if WhatsApp is the target.\n\n## Failure modes\n- Gateway crash: clients reconnect elsewhere; the registry TTL removes stale sessions; messages are already persisted so nothing is lost.\n- Chat-service owner crash: ownership moves (consistent hashing or partition reassignment); the new owner reloads the last seq.\n- Message store slow: back-pressure on sends; the sender keeps \"pending\" state and retries.\n\n## Common mistakes\n- Using timestamps for ordering.\n- Acknowledging before the durable write.\n- Promising exactly-once without dedup ids.\n- Broadcasting presence to everyone.\n- One giant partition per channel forever (no bucketing).\n- Forgetting multi-device: receipts and sync are per device.\n\n## In the interview\n**What they probe:** connection management and routing, ordering, the receipt protocol, storage layout, presence cost, and group fan-out.\n\n**60-second outline:** scope (1:1 and groups, receipts, presence, multi-device, offline push); estimate (~200k msgs/s, ~150M sockets, PB-scale history); WebSocket gateways plus session registry; per-conversation owner assigns seq after dedup and persists to a conversation-partitioned store; deliver via registry or push notification; receipts as last-delivered/last-read seq per member; presence via heartbeats with TTL, sent only to active viewers.\n\n**Follow-ups to expect:** \"How do you handle a 100k-member channel?\", \"What happens when a gateway dies mid-send?\", \"How does a new device get history?\", \"How would end-to-end encryption change this?\", \"How do you edit or delete a message?\" (an edit is a new event referencing the original seq).",
+      "keyPoints": [
+        "Clients hold a long-lived WebSocket to a gateway; a session registry maps user to gateway so any service can route a message to the right connection.",
+        "Ordering is only meaningful per conversation: assign a monotonically increasing sequence number per conversation at a single owner (a partition or channel server).",
+        "Delivery is at-least-once with client-generated message ids for dedup; receipts are just more messages flowing back (sent, delivered, read).",
+        "Store messages partitioned by conversation id and clustered by sequence; offline devices sync by asking for everything after their last seen sequence.",
+        "Presence is expensive at scale: use heartbeats with TTLs and fan presence out only to users who are currently looking."
+      ],
+      "interview": [
+        "Design a chat system like WhatsApp or Slack.",
+        "How do you guarantee message ordering and delivery receipts in a chat system?",
+        "How do you implement online presence for millions of users?"
+      ],
+      "check": [
+        {
+          "q": "Why is a per-conversation sequence number preferred over client timestamps for ordering?",
+          "options": [
+            "Client clocks drift and can be wrong, and two messages can share a millisecond; a single sequencer gives a total order within the conversation",
+            "Timestamps are too large to store",
+            "Sequence numbers are encrypted",
+            "WebSockets do not support timestamps"
+          ],
+          "answer": 0,
+          "why": "Clocks on phones are unreliable and concurrent sends are common. A single owner per conversation (a partition leader or channel server) assigns seq 1, 2, 3, which every device can sort and detect gaps with."
+        },
+        {
+          "q": "A phone loses connection right after sending and retries the same message. How does the server avoid storing it twice?",
+          "options": [
+            "It cannot; duplicates are unavoidable",
+            "The server delays all messages by 5 seconds",
+            "The client attaches a unique client message id and the server dedups on (sender, client id)",
+            "The server uses 301 redirects"
+          ],
+          "answer": 2,
+          "why": "Retries make delivery at-least-once. A client-generated idempotency id lets the server return the original sequence number instead of inserting a duplicate."
+        },
+        {
+          "q": "What is the main cost driver of naive presence in a large system?",
+          "options": [
+            "Broadcasting every online/offline change to every contact, including those who are not looking",
+            "Storing a boolean per user",
+            "TLS handshakes",
+            "Message encryption"
+          ],
+          "answer": 0,
+          "why": "Presence changes constantly; pushing each change to all contacts multiplies into enormous fan-out. Sending presence only to active viewers, batching and using TTL heartbeats cut it dramatically."
+        }
+      ],
+      "resources": [
+        {
+          "title": "How Discord stores trillions of messages",
+          "url": "https://discord.com/blog/how-discord-stores-trillions-of-messages"
+        },
+        {
+          "title": "Real-time messaging at Slack (Slack Engineering)",
+          "url": "https://slack.engineering/real-time-messaging/"
+        },
+        {
+          "title": "RFC 6455: The WebSocket Protocol",
+          "url": "https://datatracker.ietf.org/doc/html/rfc6455"
+        },
+        {
+          "title": "MDN: The WebSocket API",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API"
+        },
+        {
+          "title": "How Discord scaled Elixir to 5,000,000 concurrent users",
+          "url": "https://discord.com/blog/how-discord-scaled-elixir-to-5-000-000-concurrent-users"
+        }
+      ]
+    },
+    {
+      "id": "sdc-ride-hailing",
+      "track": "sd-cases",
+      "title": "Design a ride-hailing service (Uber / Lyft)",
+      "minutes": 28,
+      "summary": "High-frequency driver location updates, geospatial indexing with geohash, quadtrees and H3, nearby search, dispatch and matching, and the trip state machine.",
+      "body": "## The core idea\nA ride-hailing system continuously tracks where available drivers are, and when a rider requests a trip, finds good candidate drivers nearby, offers the trip, and manages the trip until payment. The defining problems are a **very high rate of location writes**, **fast spatial queries** over moving points, and **matching** that is correct (no driver assigned twice) and good (low pickup time, high acceptance).\n\nThe interviewer wants to see you separate the ephemeral, eventually consistent world (locations, ETAs) from the strongly consistent world (trip assignment, payments), and that you know at least one geospatial indexing technique in depth.\n\n## Requirements\n**Functional**: drivers go online and stream location; riders see nearby cars and an ETA; rider requests a ride; the system offers it to a driver who accepts or declines; live tracking during pickup and trip; fare calculation and payment at the end.\n**Out of scope**: pooling, scheduled rides, surge pricing details (mention them as extensions), driver onboarding.\n\n**Non-functional**: match within a few seconds; location freshness within ~5 seconds; never assign one driver to two trips; high availability per city; tolerate a city-level spike (concerts, rain).\n\n## Estimation\nAssume 5 million drivers online at global peak, location update every 4 seconds, 20 million trips a day.\n\n```text\nLocation writes: 5 x 10^6 / 4 s        = 1.25 x 10^6 updates/s at peak\nUpdate size:     ~100 B (driver id, lat, lng, heading, speed, ts, status)\nIngest bandwidth: 1.25 x 10^6 x 100 B   = ~125 MB/s\nLive index memory: 5 x 10^6 drivers x ~200 B = ~1 GB  -> fits in memory, partition by city/region for locality\nTrip requests:   2 x 10^7 / 10^5 s      = 200 req/s avg; peaks in one city can be far higher\nLocation history: 1.25 x 10^6 x 100 B x 10^5 s = ~12 TB/day if every point is kept\n                  -> cold storage, sampled or compressed\n```\n\nConclusion: the live index is small but must absorb more than a million writes per second; keep it in memory, partitioned geographically, and write history asynchronously to cheap storage. Requests are comparatively few, so matching can afford more computation per request.\n\n## API\n\n```text\nDriver app\n  WS / gRPC stream: { lat, lng, heading, speed, ts, status }   every ~4 s\n  POST /v1/drivers/me/status  { status: \"online\"|\"offline\" }\n  receives: { type: \"offer\", tripId, pickup, expiresAt }\n  POST /v1/offers/{tripId}/accept | /decline\n\nRider app\n  GET  /v1/nearby?lat=&lng=          -> { drivers: [{ lat, lng, heading }], etaSeconds }\n  POST /v1/trips  { pickup, dropoff, product }  Idempotency-Key  -> { tripId, status: \"matching\" }\n  WS   trip updates: { status, driverLocation, eta }\n```\n\n## Data model\n\n```text\nlive driver index (in memory, per region)\n  cell_id -> set of driver_ids\n  driver_id -> { lat, lng, cell_id, status, ts, vehicle }\n\ndrivers (durable)   driver_id, vehicle, rating, city\ntrips (durable, strongly consistent)\n  trip_id, rider_id, driver_id, status, pickup, dropoff, requested_at, fare, version\ndriver_state (strongly consistent)\n  driver_id -> available | offered(trip_id, expires) | on_trip(trip_id) , version\nlocation_history (append-only, object storage / time-series), partitioned by trip and day\n```\n\n## Geospatial indexing: the main deep dive\nA naive `SELECT ... WHERE distance(lat, lng, ?) < 2 km` scans every row. Spatial indexes map 2D points to keys so \"nearby\" becomes a few key lookups.\n\n### Geohash\nGeohash interleaves the bits of longitude and latitude and encodes them in base32. Each extra character subdivides the cell, so a longer shared prefix means a smaller shared cell.\n\n```text\nprecision  approx cell size\n   4       ~39 km x 20 km\n   5       ~4.9 km x 4.9 km\n   6       ~1.2 km x 0.61 km\n   7       ~153 m x 153 m\n```\n\nNearby search: compute the rider's geohash at a precision whose cell is about the search radius (say 6), look up drivers in that cell **and its 8 neighbours**, then compute real distances and sort. Edge cases:\n- **Boundary problem**: two points a metre apart can straddle a cell edge and share no prefix (worst case at the equator or the prime meridian, where even the first character differs). Always search neighbours.\n- **Non-uniform cells**: cells are defined in degrees, so they shrink east-west towards the poles.\n- **Density varies**: a 1 km cell in Manhattan can hold hundreds of drivers, in rural areas zero. Expand the search ring until you have enough candidates.\n\nRedis implements this pattern for you: `GEOADD` stores members in a sorted set with a 52-bit geohash score, and `GEOSEARCH ... BYRADIUS 2 km ASC COUNT 20` returns nearby members. A sharded Redis keyed by city is a reasonable interview answer for the live index.\n\n### Quadtrees\nA quadtree recursively splits a region into four children until each leaf holds at most K points. It adapts to density: Manhattan becomes deep, deserts stay shallow. Search walks down to the rider's leaf and checks neighbouring leaves. The downside for moving drivers is churn: a million updates per second means constant removal and insertion, and splits/merges. It works best in memory per region, rebuilt or updated in place, and was a common answer in older Uber-style write-ups.\n\n### H3 and S2\nUber built **H3**, a hexagonal hierarchical index: the globe is divided into hexagons at 16 resolutions (0 to 15), each cell has a 64-bit id, and every hexagon's six neighbours are equidistant from it. That makes \"k-ring\" searches (all cells within k steps) uniform, which matters for surge pricing and demand forecasting where you smooth values across neighbouring cells. At resolution 9 a cell averages roughly 0.1 square kilometres. To tile a sphere, every resolution contains exactly 12 pentagons, placed over oceans. Google's **S2** uses a cube projected onto the sphere with a Hilbert curve, giving square-ish cells and good locality for range scans.\n\n| Technique | Strengths | Weaknesses |\n|---|---|---|\n| Geohash | Simple, string prefix, Redis support | Edge effects, distortion |\n| Quadtree | Adapts to density | Updates churn, custom structure |\n| H3 | Uniform neighbours, hierarchy, analytics | Not exact parent/child containment |\n| S2 | Precise containment, Hilbert locality | Square cells, more complex API |\n\nA good answer: \"I'd key the live index by H3 resolution 8 or 9 cells (or geohash 6). Driver updates move the driver between cell sets when they cross a boundary. A nearby search queries the rider's cell plus a k-ring of neighbours, expanding until we have enough candidates.\"\n\n```python\nimport h3\n\ndef candidate_cells(lat: float, lng: float, k: int = 1, res: int = 9) -> set[str]:\n    origin = h3.latlng_to_cell(lat, lng, res)\n    return set(h3.grid_disk(origin, k))   # origin plus all cells within k steps\n\ndef on_location(driver_id: str, lat: float, lng: float, index, drivers) -> None:\n    cell = h3.latlng_to_cell(lat, lng, 9)\n    prev = drivers.get(driver_id)\n    if prev and prev[\"cell\"] != cell:\n        index[prev[\"cell\"]].discard(driver_id)\n    index.setdefault(cell, set()).add(driver_id)\n    drivers[driver_id] = {\"lat\": lat, \"lng\": lng, \"cell\": cell}\n```\n\n(These are the H3 v4 Python function names.)\n\n## High-level design\n\n```text\n driver apps --stream--> location gateway --> location service (partitioned by region/cell)\n                                                 |  updates in-memory index\n                                                 |  publishes to Kafka (history, ETA models, surge)\n                                                 v\n                                          live geo index (Redis GEO / in-memory H3 maps)\n rider app --> API gateway --> trip service ----> dispatch / matching service\n                                  |                 | 1. candidates from geo index\n                                  |                 | 2. ETA via routing service (road graph)\n                                  |                 | 3. rank, CAS driver_state, send offer\n                                  v                 v\n                            trips DB (strong)   driver_state store (strong, CAS)\n                                  |\n                       payments, notifications, trip tracking (WS)\n```\n\n## Deep dive: matching\n1. **Candidates**: drivers in nearby cells who are available and match the product (car type).\n2. **Rank by ETA, not straight-line distance**: a driver 300 m away across a river can be 10 minutes out. A routing service computes ETAs on the road graph (with traffic); this is the expensive step, so prune to the top 10-20 by distance first.\n3. **Offer**: atomically move the chosen driver from `available` to `offered(trip, expires=now+15s)` with a compare-and-set on a version number. If the CAS fails, someone else got them; try the next candidate.\n4. **Accept / timeout**: on accept, transition trip to `driver_assigned` and driver to `on_trip`. On decline or timeout, release the driver and offer to the next candidate.\n5. **Batching** (a senior-level extension): instead of greedy first-come matching, collect requests over a short window (a second or two) in a region and solve an assignment problem that minimises total pickup time. This beats greedy when demand is dense.\n\nOwnership per region avoids most contention: route all matching for an area to one dispatcher partition, so double assignment can only happen at region borders, which the CAS covers.\n\n## The trip state machine\n\n```text\nrequested -> matching -> driver_assigned -> driver_arrived -> in_progress -> completed -> paid\n     \\            \\               \\\n      cancelled    no_drivers      cancelled (fee rules)\n```\n\nStore state transitions with a version and only allow valid transitions (conditional update `WHERE status = 'matching' AND version = 7`). Every transition emits an event for notifications, pricing and analytics.\n\n## Reliability and scale\n- **Partition by geography**: cities are natural shards. A busy city may need sub-partitions by cell.\n- **Location service failure**: the index is rebuildable within seconds from the next round of updates (every driver sends again in ~4 s). That is why it can live in memory without heavy durability.\n- **Trip data cannot be lost**: replicated database, idempotent trip creation (a rider tapping twice must not create two trips).\n- **Spikes**: queue requests per region, show realistic ETAs, and use surge pricing to balance supply and demand.\n\n## Common mistakes\n- Querying a relational table with distance math per request.\n- Ignoring cell boundaries.\n- Using straight-line distance as the final ranking.\n- Persisting every location update synchronously to a durable database.\n- No atomic driver assignment, so two riders get the same car.\n\n## In the interview\n**What they probe:** whether you size the location write rate, pick and explain a spatial index, handle boundaries and density, separate eventually consistent location data from strongly consistent assignment, and design matching beyond \"nearest\".\n\n**60-second outline:** scope; estimate ~1.25M location updates/s and a ~1 GB live index; in-memory geo index (Redis GEO or H3 maps) partitioned by city; nearby search = cell + neighbours, expand ring, rank by road ETA; offer via CAS on driver state with expiry; trip state machine in a strongly consistent store; history and analytics through Kafka.\n\n**Follow-ups to expect:** \"Why hexagons?\", \"How do you handle a driver crossing a partition boundary?\", \"How would you add pooling?\", \"How do you compute ETA cheaply?\", \"What happens if the dispatcher crashes after sending an offer?\" (the offer has an expiry; state recovers from the driver_state store).",
+      "keyPoints": [
+        "Driver locations are a write-heavy, ephemeral stream (an update every few seconds per driver); keep the live index in memory, persist history asynchronously.",
+        "Geohash turns lat/lng into a prefix-searchable string; neighbours across cell edges must be searched too, and cells distort near the poles.",
+        "H3 hexagons give uniform neighbour distance and a hierarchy of resolutions; Uber built it for surge pricing and supply/demand analysis.",
+        "Matching is more than nearest driver: ETA on the road graph, driver acceptance, batching requests over a short window and avoiding double assignment.",
+        "Trips are a state machine with strong consistency on assignment; location and ETA can be eventually consistent."
+      ],
+      "interview": [
+        "Design the driver matching system for a ride-hailing app like Uber.",
+        "How would you index millions of moving driver locations for nearby search?",
+        "What is a geohash and what are its edge cases?"
+      ],
+      "check": [
+        {
+          "q": "Why is searching only the rider's own geohash cell not enough to find nearby drivers?",
+          "options": [
+            "Geohash cells are too big",
+            "A driver just across a cell boundary can be metres away but have a different prefix, so the 8 neighbouring cells must be searched too",
+            "Geohash only works in Europe",
+            "Drivers have no geohash"
+          ],
+          "answer": 1,
+          "why": "Prefix sharing implies proximity, but proximity does not imply prefix sharing. Standard practice is to query the cell plus its 8 neighbours at a suitable precision, then filter by real distance."
+        },
+        {
+          "q": "What is a key advantage of H3 hexagons over square grid cells for ride-hailing analytics?",
+          "options": [
+            "Hexagons can be stored as integers but squares cannot",
+            "Hexagons perfectly tile the sphere at every resolution with no exceptions",
+            "Hexagons are always exactly 1 km across",
+            "All six neighbours of a hexagon are the same distance from its centre, which makes ring searches and smoothing more uniform"
+          ],
+          "answer": 3,
+          "why": "Squares have edge and corner neighbours at different distances. Hexagons have one kind of neighbour, which simplifies k-ring searches and gradients. (H3 needs 12 pentagons per resolution to tile the sphere.)"
+        },
+        {
+          "q": "Two dispatchers try to assign the same driver to different riders at the same time. What prevents a double assignment?",
+          "options": [
+            "Eventual consistency in the location index",
+            "A conditional write on the driver's state (available -> offered) such as a compare-and-set or a lock with a lease",
+            "Sending both offers to the driver",
+            "Client-side checks in the rider app"
+          ],
+          "answer": 1,
+          "why": "The location index can be stale, but the assignment must be atomic. A CAS on the driver record or a per-driver owner process ensures only one offer wins."
+        }
+      ],
+      "resources": [
+        {
+          "title": "H3: Uber's Hexagonal Hierarchical Spatial Index",
+          "url": "https://www.uber.com/blog/h3/"
+        },
+        {
+          "title": "H3 documentation",
+          "url": "https://h3geo.org/docs/"
+        },
+        {
+          "title": "Redis GEOSEARCH command",
+          "url": "https://redis.io/docs/latest/commands/geosearch/"
+        },
+        {
+          "title": "S2 Geometry library",
+          "url": "https://s2geometry.io/"
+        },
+        {
+          "title": "Geohash (Wikipedia)",
+          "url": "https://en.wikipedia.org/wiki/Geohash"
+        }
+      ]
+    },
+    {
+      "id": "sdc-video-streaming",
+      "track": "sd-cases",
+      "title": "Design a video streaming platform (YouTube / Netflix)",
+      "minutes": 28,
+      "summary": "Resumable uploads, a DAG-based transcoding pipeline, HLS/DASH adaptive bitrate streaming, CDN and edge caching, and metadata and view counts at scale.",
+      "body": "## The core idea\nA video platform has two very different halves. The **upload and processing** half takes a large raw file, makes it durable, and turns it into many encoded versions (resolutions, bitrates, codecs) cut into small segments. The **playback** half serves those segments to millions of players worldwide, letting each player adapt quality to its network in real time. Almost all the cost is in two places: compute for transcoding and bandwidth for delivery.\n\nClarify which product you are designing. **YouTube** ingests a huge volume of user uploads (YouTube has publicly cited more than 500 hours of video uploaded every minute), most of which are watched rarely: a long-tail problem. **Netflix** has a curated catalogue in the tens of thousands of titles, encoded very carefully once and pre-positioned in caches inside ISPs before people press play.\n\n## Requirements\n**Functional**: upload a video with title and description; process it into streamable formats; watch with adaptive quality on web, mobile and TV; search and browse; view counts, likes, comments; resume playback position.\n**Out of scope**: live streaming (mention how it differs), monetisation, recommendations internals (treat as a service).\n\n**Non-functional**: playback start under ~2 seconds; minimal rebuffering; uploads resumable over flaky networks; a published video should be watchable within minutes of upload; durable storage of originals; global reach.\n\n## Estimation\nYouTube-like assumptions: 500 hours uploaded per minute; 1 billion hours watched per day (a figure YouTube published years ago; treat as order of magnitude).\n\n```text\nUpload volume:  500 h/min x 60 x 24       = 720,000 hours/day\nRaw size:       ~1 GB per hour at a typical upload bitrate (varies a lot)\n                -> ~720 TB/day of originals\nEncoded output: ladder of ~6 renditions x 2 codecs, total often ~1-2x original\n                -> ~1 PB/day of new storage, before replication\nTranscode compute: encoding is far slower than real time per CPU core for modern codecs;\n                -> hundreds of thousands of cores (or hardware encoders) running continuously\n\nPlayback:       10^9 hours/day x 3,600 s / 10^5 s ~ 4 x 10^7 concurrent streams on average\n                at ~3 Mbps average -> ~1.2 x 10^14 bit/s ~ 120 Tbps of egress\n```\n\nYou do not need exact numbers, but the conclusion is unavoidable: egress at this scale cannot come from a few data centres. It must come from a CDN or from caches inside ISPs, and the encoding pipeline must be massively parallel.\n\n## API\n\n```text\nPOST /v1/videos                       { title, description, visibility }\n   -> { videoId, uploadUrl (resumable session) }\nPUT  <uploadUrl>  Content-Range: bytes 0-8388607/2147483648   (chunked, resumable)\nPOST /v1/videos/{id}/complete\nGET  /v1/videos/{id}                  -> metadata, status (processing|ready), manifestUrl\nGET  <cdn>/v/{id}/master.m3u8         -> HLS master playlist (or DASH .mpd)\nGET  <cdn>/v/{id}/720p/seg_00042.m4s  -> media segment\nPOST /v1/videos/{id}/views            { positionSec, watchedMs } (batched)\n```\n\n## Data model\n\n```text\nvideos       video_id, owner_id, title, description, status, duration, created_at, visibility\nrenditions   (video_id, rendition_id) -> codec, resolution, bitrate, manifest path, status\noriginals    object storage: originals/{video_id}/source.mp4  (cold tier after processing)\nsegments     object storage: v/{video_id}/{rendition}/seg_N.m4s + playlists\nview_counts  video_id -> approximate counter (sharded counters + periodic rollup)\nwatch_state  (user_id, video_id) -> position, updated_at\n```\n\nMetadata is small and relational-friendly (sharded MySQL is what YouTube famously scaled with, via Vitess). Video bytes live only in object storage and caches.\n\n## High-level design\n\n```text\n creator --resumable upload--> object storage (originals)\n    |                                  |\n    +-- API: create/complete --> upload service --> \"upload_complete\" event\n                                                          |\n                                                 workflow orchestrator (DAG)\n                         +----------------+---------------+--------------+\n                         v                v               v              v\n                     inspect/validate   split into     thumbnails     audio\n                     (codec, length,    chunks (GOP-   + previews     transcode\n                      safety scan)      aligned)\n                                          |\n                          parallel encode: chunk x rendition x codec  (worker fleet)\n                                          |\n                          stitch / package -> HLS + DASH (CMAF segments, manifests)\n                                          |\n                          publish: segments to origin storage, status=ready, notify\n\n viewer --> CDN edge --> (miss) --> regional shield --> origin storage\n   |\n   +--> API: metadata, manifest URL, signed tokens, watch state, view events --> Kafka --> counters\n```\n\n## Deep dive 1: the upload path\n- **Resumable chunked uploads**: the client uploads 8-16 MB chunks to a session URL (the pattern used by Google's resumable upload protocol, tus, and S3 multipart). If the connection drops, it asks which bytes the server has and continues. Without this, a 4 GB upload on mobile rarely completes.\n- **Direct to storage**: the API issues a presigned URL; bytes never pass through application servers.\n- **Completion event**: when the last part is committed, emit `upload_complete` to start processing. Make the handler idempotent; storage notifications can be delivered more than once.\n\n## Deep dive 2: the transcoding pipeline\nEncoding a two-hour film sequentially into ten renditions on one machine would take many hours. The trick is parallelism along three axes:\n1. **Split in time**: cut the source into chunks at keyframe (GOP) boundaries, for example 10-60 seconds each.\n2. **Encode in parallel**: each chunk is encoded for each rendition and codec independently. A 2-hour video with 120 one-minute chunks and 12 rendition/codec pairs is 1,440 independent tasks.\n3. **Reassemble and package**: concatenate encoded chunks, cut into delivery segments (2-6 seconds), and write HLS/DASH manifests. CMAF lets one set of fMP4 segments serve both HLS and DASH.\n\nThe orchestration is a **DAG** with retries per task, implemented with a workflow engine (Temporal, AWS Step Functions, or in-house systems like Netflix's Cosmos). Tasks must be idempotent and write outputs to deterministic paths so a retried task overwrites rather than duplicates.\n\n**The bitrate ladder**: a typical H.264 ladder might run from about 240p at a few hundred kbps up to 1080p at roughly 4-6 Mbps, with 4K far higher; newer codecs (HEVC, VP9, AV1) reach similar quality at lower bitrates but cost much more compute to encode. Netflix's per-title encoding post (2015) showed that a fixed ladder wastes bits on simple content and starves complex content, so they compute a ladder per title from quality measurements; later work moved to per-shot optimisation. YouTube-scale platforms take a cheaper path for the long tail: encode fast, low-cost renditions first so the video is watchable within minutes, and add expensive codecs (AV1) only for videos that become popular.\n\n**Prioritisation**: a creator with millions of subscribers gets priority; a backlog of rarely viewed uploads can wait for spare capacity.\n\n## Deep dive 3: adaptive bitrate (ABR) streaming\nHLS (RFC 8216) and MPEG-DASH both work the same way:\n\n```text\nmaster.m3u8 (lists renditions)\n  #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n  360p/index.m3u8\n  #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720\n  720p/index.m3u8\n  #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\n  1080p/index.m3u8\n\n720p/index.m3u8 (media playlist)\n  #EXT-X-TARGETDURATION:6\n  #EXTINF:6.0,\n  seg_00001.m4s\n  #EXTINF:6.0,\n  seg_00002.m4s\n  ...\n```\n\nThe player downloads the master playlist, picks a starting rendition (often conservative for a fast start), and fetches segments over plain HTTP. After each segment it measures throughput and checks buffer level, then chooses the rendition for the next segment. Throughput-based algorithms estimate bandwidth; buffer-based algorithms (such as BOLA, used in dash.js) pick quality from how full the buffer is, which avoids oscillation. In browsers this is implemented with Media Source Extensions: JavaScript (hls.js, dash.js, Shaka Player) appends segment bytes to a `SourceBuffer`; Safari can also play HLS natively.\n\nBecause segments are ordinary immutable HTTP objects with stable URLs, CDNs cache them perfectly. That is the real reason HTTP-based ABR won over older streaming protocols.\n\n**Live streaming** differs: segments are produced in real time, playlists update continuously, and latency is driven by segment duration and buffer depth. Low-latency HLS and DASH use partial segments to get end-to-end latency down to a few seconds.\n\n## Deep dive 4: delivery and CDN\n- **Edge caching**: popular segments are cached at CDN points of presence close to viewers. Hit ratios for popular content are very high; the long tail misses.\n- **Origin shield**: a regional mid-tier cache in front of origin so a miss storm from hundreds of edges becomes one origin fetch.\n- **Pre-positioning**: Netflix's Open Connect places appliances inside ISP networks and fills them during off-peak hours with what is predicted to be watched, so the vast majority of Netflix traffic is served from inside the viewer's ISP.\n- **Signed URLs or tokens** with short expiry for access control; DRM (Widevine, FairPlay, PlayReady) for premium content.\n- **Cost**: egress is usually the largest bill; better codecs directly reduce it, which is why the expensive AV1 encode pays off for popular titles.\n\n## Deep dive 5: views and metadata\nView counts are a high-write counter: batch view events from players, stream through Kafka, aggregate in windows, and update sharded counters. Validate views (minimum watch time, bot filtering) before counting; YouTube's displayed counts lag for exactly this reason. Watch position is a per-user upsert, written every few seconds of playback and debounced.\n\n## Failure modes\n- A transcoding worker dies: the orchestrator retries that task only; idempotent outputs make it safe.\n- A bad encoder release corrupts output: keep originals, so you can re-encode; canary new encoder versions on a fraction of uploads.\n- CDN region outage: multi-CDN with DNS or client-side failover; players retry a segment from an alternate host listed in the manifest.\n\n## Common mistakes\n- Streaming bytes through API servers or storing video in a database.\n- Encoding sequentially on one machine.\n- Forgetting that ABR needs aligned segments across renditions.\n- Treating the CDN as an afterthought when it is the dominant cost and latency factor.\n- Using one design for YouTube and Netflix without noting the long-tail difference.\n\n## In the interview\n**What they probe:** the upload path, pipeline parallelism, how ABR actually works, CDN strategy and cost awareness.\n\n**60-second outline:** clarify YouTube vs Netflix; estimate upload volume and egress (tens to hundreds of Tbps), concluding CDN is mandatory; resumable presigned uploads; DAG pipeline splitting by time, encoding chunk x rendition in parallel, packaging CMAF for HLS/DASH; player chooses bitrate per segment; CDN edge plus shield plus origin; metadata in a sharded relational store; view counts via a stream.\n\n**Follow-ups to expect:** \"How do you make a new upload watchable in under 5 minutes?\", \"How would you add live streaming?\", \"How do you choose the ladder?\", \"What happens on a CDN miss storm for a viral video?\", \"How do you keep costs down for videos nobody watches?\" (cheap codecs only, cold storage tiers, lazy encoding).",
+      "keyPoints": [
+        "Uploads go straight to object storage via resumable, chunked uploads; API servers never proxy video bytes.",
+        "Transcoding is a DAG of parallel jobs: split into chunks, encode each rung of the bitrate ladder per codec, package into HLS/DASH, then publish.",
+        "Adaptive bitrate works because video is cut into few-second segments at several qualities; the player picks the next segment's quality from measured throughput and buffer.",
+        "Egress dominates cost and latency, so the CDN (or ISP-embedded caches like Netflix Open Connect) serves almost all bytes; origin protects itself with a shield tier.",
+        "YouTube is long-tail user content with heavy upload volume; Netflix is a smaller catalogue that can be pre-positioned. Ask which one."
+      ],
+      "interview": [
+        "Design a video streaming platform like YouTube or Netflix.",
+        "How does adaptive bitrate streaming work end to end?",
+        "How would you design the transcoding pipeline for 500 hours of uploads per minute?"
+      ],
+      "check": [
+        {
+          "q": "Why is video split into short segments (often 2-6 seconds) for HLS and DASH?",
+          "options": [
+            "To make files smaller in total",
+            "Because browsers cannot play files longer than 10 seconds",
+            "So the player can switch quality at segment boundaries and CDNs can cache ordinary HTTP objects",
+            "To prevent piracy"
+          ],
+          "answer": 2,
+          "why": "Each segment is a cacheable HTTP object, and every rendition is cut at aligned boundaries, so the player can choose a different bitrate for the next segment without a gap."
+        },
+        {
+          "q": "What does Netflix's per-title encoding change compared with a fixed bitrate ladder?",
+          "options": [
+            "It chooses the bitrate/resolution ladder per title based on its complexity, so simple content uses fewer bits for the same quality",
+            "It encodes every title at one bitrate",
+            "It removes the need for a CDN",
+            "It encodes only audio"
+          ],
+          "answer": 0,
+          "why": "An animated show needs far fewer bits than a grainy action film for the same perceived quality. Per-title (and later per-shot) optimisation picks ladders from measured quality curves."
+        },
+        {
+          "q": "Where should a new upload's bytes go first?",
+          "options": [
+            "Through the API servers into the database",
+            "Into Kafka as one large message",
+            "Directly from the client to object storage using a presigned, resumable multipart upload",
+            "Into the CDN edge cache"
+          ],
+          "answer": 2,
+          "why": "Presigned resumable uploads keep multi-gigabyte files off the API tier, survive flaky connections by resuming at the last chunk, and land the bytes where the transcoders read them."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Per-Title Encode Optimization (Netflix Tech Blog)",
+          "url": "https://netflixtechblog.com/per-title-encode-optimization-7e99442b62a2"
+        },
+        {
+          "title": "Netflix Open Connect overview",
+          "url": "https://openconnect.netflix.com/en/"
+        },
+        {
+          "title": "RFC 8216: HTTP Live Streaming",
+          "url": "https://datatracker.ietf.org/doc/html/rfc8216"
+        },
+        {
+          "title": "MDN: Media Source Extensions API",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/Media_Source_Extensions_API"
+        },
+        {
+          "title": "Apple: HLS authoring specification for Apple devices",
+          "url": "https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices"
+        }
+      ]
+    },
+    {
+      "id": "sdc-payments",
+      "track": "sd-cases",
+      "title": "Design a payment system (Stripe-like)",
+      "minutes": 30,
+      "summary": "Idempotency keys, payment state machines, double-entry ledgers, talking to card networks and PSPs, reconciliation, and why exactly-once is an illusion built from retries plus dedup.",
+      "body": "## The core idea\nA payment system accepts a request to move money (\"charge this card 49.00 EUR for order 812\"), talks to external networks that are slow and sometimes ambiguous, and records exactly what happened so that money is never created, lost or moved twice. Throughput is modest compared with a social feed; **correctness under failure** is everything. The interviewer is testing whether you understand idempotency, state machines, ledgers, unreliable third parties and reconciliation.\n\nA useful framing to say out loud: \"In payments, every network call can fail in three ways: it succeeded, it failed, or we don't know. The design is mostly about the third case.\"\n\n## Requirements\n**Functional**: create a payment (authorise and capture a card, or other methods), refunds (full and partial), payouts to merchants, payment status queries, webhooks to merchants on status changes, balances per merchant.\n**Out of scope**: fraud models (mention as a service on the path), card vaulting details (PCI scope, tokenisation), currency conversion.\n\n**Non-functional**: no double charges, no lost payments; strong consistency for the ledger; auditable history (append-only); availability high but correctness wins over availability on the money path; latency of a few hundred ms to a few seconds is acceptable (card networks dominate).\n\n## Estimation\nAssume 10 million payments a day, peaking at 10x average during sales events.\n\n```text\nPayments:   10^7 / 10^5 s       = ~100/s average, ~1,000/s peak\nLedger:     each payment -> several transactions (auth, capture, fee, payout)\n            x 2-4 entries each   -> ~5,000 entry writes/s peak\nStorage:    10^7 payments x ~2 KB (payment + entries + events) = ~20 GB/day, ~7 TB/year\n            retained for years (regulatory)\n```\n\nConclusion: this volume fits comfortably in a well-run relational database cluster with serializable or carefully designed transactions, sharded by merchant if needed. You do not need exotic stores. Say so; reaching for eventual consistency here is a red flag.\n\n## API\n\n```text\nPOST /v1/payments\n  Idempotency-Key: 7f1c...   (client-generated, unique per logical operation)\n  { amount: 4900, currency: \"eur\", paymentMethod: \"pm_...\", merchantOrderId, capture: \"automatic\" }\n  -> 201 { id: \"pay_...\", status: \"requires_action\" | \"processing\" | \"succeeded\" | \"failed\" }\n\nPOST /v1/payments/{id}/capture     Idempotency-Key\nPOST /v1/refunds                   Idempotency-Key  { paymentId, amount }\nGET  /v1/payments/{id}\nWebhooks -> merchant: { type: \"payment.succeeded\", data: {...} }  (signed, retried, at-least-once)\n```\n\nAmounts are integers in the smallest currency unit (cents). Never floats.\n\n## Data model\n\n```text\nidempotency_keys  (merchant_id, key) PK, request_hash, status (in_progress|done),\n                  response_code, response_body, locked_until, created_at  (expire after ~24h+)\npayments          payment_id, merchant_id, amount, currency, status, psp_reference,\n                  version, created_at, updated_at\npayment_events    payment_id, seq, from_status, to_status, reason, ts   (append-only history)\nledger_accounts   account_id, owner (merchant | platform | customer_funds | psp_receivable), currency\nledger_txns       txn_id, payment_id, kind, created_at\nledger_entries    entry_id, txn_id, account_id, direction (debit|credit), amount\n                  invariant: per txn, sum(debits) = sum(credits)\noutbox            event_id, payload, published_at  (for webhooks and downstream consumers)\n```\n\n## High-level design\n\n```text\n merchant server --> API gateway (auth, rate limit) --> payment service\n                                                         |  1. idempotency check (key table)\n                                                         |  2. create payment (state: created)\n                                                         |  3. fraud/risk check\n                                                         v\n                                                  PSP / acquirer adapter  ---> card networks\n                                                         |   (timeouts, retries with same ref)\n                                                         v\n                                   state transition + ledger entries + outbox  (one DB transaction)\n                                                         |\n                                     outbox relay --> Kafka --> webhook service --> merchant\n                                                         \\--> analytics, notifications\n\n nightly: settlement files from PSPs/banks --> reconciliation service --> diff report, alerts\n PSP webhooks --> webhook ingest (verify signature, dedup) --> payment service\n```\n\n## Deep dive 1: idempotency keys\nClients retry: networks time out, mobile apps resubmit, merchants' job runners rerun. Without protection, a retry is a second charge. Stripe's approach, described in its 2017 engineering post and API docs: the client sends an `Idempotency-Key` header; the server saves the result of the first request for that key, and any later request with the same key returns the saved result, including errors. Keys can be removed once they are at least 24 hours old, and reusing a key with different parameters is an error.\n\nImplementation sketch in a relational database:\n\n```sql\n-- 1. claim the key atomically\nINSERT INTO idempotency_keys (merchant_id, key, request_hash, status, locked_until)\nVALUES ($1, $2, $3, 'in_progress', now() + interval '30 seconds')\nON CONFLICT (merchant_id, key) DO NOTHING\nRETURNING *;\n```\n\n```ts\nasync function handleCreatePayment(req: Req): Promise<Res> {\n  const claimed = await claimKey(req.merchantId, req.key, hash(req.body));\n  if (!claimed) {\n    const existing = await getKey(req.merchantId, req.key);\n    if (existing.requestHash !== hash(req.body)) return conflict(\"key reused with different params\");\n    if (existing.status === \"done\") return replay(existing);      // same status + body as first time\n    return conflict(\"request in progress, retry later\");          // 409; client backs off\n  }\n  const result = await createPaymentAndCharge(req);              // uses the key as PSP reference too\n  await finishKey(req.merchantId, req.key, result);               // store response atomically\n  return result;\n}\n```\n\nDetails that separate good answers:\n- Store the key, the state change and the response in the **same transaction** where possible. Brandur Leach's write-up goes further, splitting a request into atomic phases with recovery points so a crash mid-request can resume rather than restart.\n- Pass an idempotency reference **downstream** to the PSP too, so your own retries to them are safe.\n- Scope keys per merchant (or per API key).\n- Distinguish retryable errors (do not cache a 500 caused by your own crash before any side effect) from final ones.\n\n## Deep dive 2: the payment state machine\n\n```text\ncreated -> requires_action (3DS) -> processing -> authorised -> captured -> settled\n    \\              \\                    \\            \\             \\\n     failed        failed              unknown       voided        refunded / partially_refunded\n                                          |\n                                (resolve via status query or PSP webhook)\n```\n\nTransitions are conditional updates: `UPDATE payments SET status='captured', version=version+1 WHERE id=$1 AND status='authorised' AND version=$2`. If zero rows changed, someone else moved it; re-read and decide. Each transition writes a `payment_events` row and the matching ledger entries in the same transaction. This makes the history auditable and the current status a reliable cache of it.\n\n## Deep dive 3: double-entry ledger\nWhy not just a `balance` column? Because a balance column can be wrong with no way to tell why. In double-entry bookkeeping every transaction consists of entries that debit some accounts and credit others by equal amounts, so the system always balances. Balances are derived by summing entries (cached as running balances, but recomputable).\n\n```text\nCustomer pays 100.00 EUR, platform fee 3.00:\ntxn 1 (capture)     debit  psp_receivable          100.00\n                    credit merchant_payable          97.00\n                    credit platform_fee_revenue       3.00\ntxn 2 (settlement)  debit  bank_cash                100.00\n                    credit psp_receivable           100.00\ntxn 3 (payout)      debit  merchant_payable          97.00\n                    credit bank_cash                 97.00\n```\n\nProperties you get: entries are **immutable** (corrections are new reversing entries, never edits); `sum(debits) = sum(credits)` is checkable per transaction and globally; every cent has a source and destination; audits and regulators can replay history. Square's \"Books\" post describes building exactly this as an immutable service; Modern Treasury's accounting series is a friendly primer on debits and credits for engineers.\n\n## Deep dive 4: unreliable processors and \"exactly once\"\nYou cannot get exactly-once delivery across a network: a message can be lost or a reply can be lost, and the sender cannot tell which. What you can build is **exactly-once effect**: at-least-once delivery plus idempotent processing.\n\n- **Outgoing calls to the PSP**: on timeout, mark the payment `unknown`, then query the PSP using your reference, or wait for its webhook. Only retry the charge if the PSP supports idempotent requests with the same reference.\n- **Incoming PSP webhooks**: verify the signature, dedup by event id, and apply as conditional state transitions. Webhooks can arrive out of order (a \"succeeded\" before a \"processing\"); the state machine must ignore stale transitions.\n- **Publishing events**: use the **transactional outbox**: write the event row in the same transaction as the state change; a relay publishes it to Kafka afterwards. Consumers dedup by event id. This avoids the dual-write bug where the DB commits but the publish fails (or vice versa).\n- **Outgoing webhooks to merchants**: at-least-once with exponential backoff for days; merchants are told to dedup by event id.\n\n## Deep dive 5: reconciliation\nEven with all of the above, bugs, partial outages and processor errors happen. Daily (or more often), ingest settlement reports from each PSP and bank, and match them line by line against the ledger:\n- Matched: amounts and references agree.\n- Missing internally: the PSP charged something we have no record of (dangerous: refund or investigate).\n- Missing externally: we think it succeeded, the PSP disagrees.\n- Amount mismatch: fees or currency differences.\n\nEvery mismatch becomes a case for automated resolution rules or a human. Reconciliation is not optional; mention it unprompted.\n\n## Scaling and reliability\n- A relational database with strong transactions is the right core. Shard by merchant id when one cluster is not enough; a payment and its ledger entries for a merchant live on one shard so the transaction stays local. Platform-wide accounts (fees) can be aggregated asynchronously.\n- Multi-region: keep each merchant's writes homed in one region (or use a consensus-replicated database such as Spanner or CockroachDB) rather than multi-master with conflicts. Money does not tolerate last-writer-wins.\n- Card data: tokenise at the edge so most services never see card numbers, shrinking PCI scope.\n\n## Common mistakes\n- Floats for money.\n- Retrying a timed-out charge without an idempotent reference.\n- A mutable balance column as the source of truth.\n- Publishing events outside the database transaction.\n- Claiming exactly-once delivery from Kafka solves it end to end. Kafka's exactly-once semantics cover Kafka-to-Kafka processing, not your call to a card network.\n- No reconciliation.\n\n## In the interview\n**What they probe:** idempotency implementation, the unknown-outcome case, state machine discipline, ledger design, outbox, reconciliation.\n\n**60-second outline:** scope (charge, refund, payout, webhooks); modest QPS, so a strongly consistent relational core; idempotency keys stored with request hash and response; payment state machine with conditional transitions; double-entry immutable ledger written in the same transaction; PSP adapter treats timeouts as unknown and resolves them; outbox to Kafka for webhooks; daily reconciliation against settlement files.\n\n**Follow-ups to expect:** \"What if the process crashes after charging but before saving?\", \"How long do you keep idempotency keys?\", \"How do you handle partial refunds?\", \"How would you go multi-region?\", \"How do you compute a merchant's balance quickly?\" (running balance per account updated in the same transaction, verified against entry sums).",
+      "keyPoints": [
+        "Every mutating call takes an idempotency key; the server stores the key with the request hash and the final response, and replays it on retry.",
+        "Model a payment as an explicit state machine with conditional transitions; never infer state from scattered rows.",
+        "Money movement is recorded in an append-only double-entry ledger: every transaction has entries that sum to zero, balances are derived.",
+        "External processors are unreliable: timeouts mean unknown outcome, so query status or wait for webhooks rather than blindly retrying a charge.",
+        "Reconciliation compares your ledger with processor and bank settlement files daily; it is how you catch the bugs your guarantees missed."
+      ],
+      "interview": [
+        "Design a payment system like Stripe.",
+        "How do idempotency keys work, and how would you implement them?",
+        "Why do payment systems use double-entry ledgers?",
+        "Can you get exactly-once processing in a distributed payment flow?"
+      ],
+      "check": [
+        {
+          "q": "A client sends a charge with idempotency key K, times out, and retries with key K but a different amount. What should the server do?",
+          "options": [
+            "Charge the new amount",
+            "Charge both amounts",
+            "Ignore the key and process normally",
+            "Reject the retry because the parameters do not match the original request for that key"
+          ],
+          "answer": 3,
+          "why": "A key binds to one request. Stripe returns an error when a key is reused with different parameters; silently charging the new amount would defeat the safety the key exists for."
+        },
+        {
+          "q": "Your call to the card processor times out. What is the safest next step?",
+          "options": [
+            "Mark the payment failed and tell the user to try again",
+            "Mark it as unknown/pending and resolve by querying the processor with the same idempotency reference or waiting for its webhook",
+            "Retry the charge immediately with a new request id",
+            "Refund the customer"
+          ],
+          "answer": 1,
+          "why": "A timeout does not mean the charge failed; it may have succeeded. Retrying with a new id risks a double charge, and failing it risks charging without delivering. Resolve the unknown state."
+        },
+        {
+          "q": "In a double-entry ledger, a customer pays 100 USD for an order. Which set of entries is correct?",
+          "options": [
+            "Credit revenue 100",
+            "Debit cash 100 and debit revenue 100",
+            "Update the merchant balance column to +100",
+            "Debit customer funds/receivable 100 and credit the merchant payable 100, so the transaction sums to zero"
+          ],
+          "answer": 3,
+          "why": "Each transaction has at least two entries whose debits and credits balance. Balances are sums of entries, so money cannot appear or vanish without a matching entry."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Designing robust and predictable APIs with idempotency (Stripe)",
+          "url": "https://stripe.com/blog/idempotency"
+        },
+        {
+          "title": "Stripe API reference: Idempotent requests",
+          "url": "https://docs.stripe.com/api/idempotent_requests"
+        },
+        {
+          "title": "Implementing Stripe-like idempotency keys in Postgres (Brandur Leach)",
+          "url": "https://brandur.org/idempotency-keys"
+        },
+        {
+          "title": "Books: an immutable double-entry accounting database service (Square)",
+          "url": "https://developer.squareup.com/blog/books-an-immutable-double-entry-accounting-database-service/"
+        },
+        {
+          "title": "Accounting for developers, part I (Modern Treasury)",
+          "url": "https://www.moderntreasury.com/journal/accounting-for-developers-part-i"
+        }
+      ]
+    },
+    {
+      "id": "sdc-search-typeahead",
+      "track": "sd-cases",
+      "title": "Design search typeahead (autocomplete)",
+      "minutes": 25,
+      "summary": "Serving top-k suggestions per prefix in tens of milliseconds: tries with precomputed top-k, inverted indexes with edge n-grams, ranking signals, offline aggregation and multi-layer caching.",
+      "body": "## The core idea\nTypeahead suggests completions as the user types: \"how to\" becomes \"how to tie a tie\", \"how to screenshot on mac\". Each keystroke is a request, the answer must arrive before the next keystroke, and the suggestions should be the ones people most likely want. It is a read-heavy, latency-critical system whose real complexity lives in two places: the **data structure** serving prefixes quickly, and the **offline pipeline** that decides what to suggest.\n\nDo not confuse it with full search. Typeahead returns a handful of short strings (queries, products, people) for a prefix; it does not rank documents for a full query.\n\n## Requirements\n**Functional**: given a prefix, return the top 5-10 suggestions; suggestions reflect popularity and update at least daily (faster for trending); optional personalisation (recent searches) and filters (locale, category); remove offensive or legally blocked terms.\n**Out of scope**: the search results page itself, spelling correction beyond basic fuzziness.\n\n**Non-functional**: p99 under ~50-100 ms end to end including network (under ~10 ms in the service); highly available (degrade to no suggestions, never break search); eventual freshness is fine.\n\n## Estimation\nAssume 500 million searches per day, average 20 characters typed per search, but with debouncing the client sends roughly 6 requests per search.\n\n```text\nRequests:  5 x 10^8 x 6 / 10^5 s   = 30,000 QPS avg, ~90,000 peak\nCorpus:    top 100 million distinct queries worth suggesting (long tail cut off)\n           avg 25 bytes -> 2.5 GB of raw strings\nTrie size: prefix nodes plus top-10 lists of ids at each node; many GB, but it\n           fits in memory per server or sharded across a few\nLogs:      5 x 10^8 queries/day x ~100 B = 50 GB/day of query logs to aggregate\n```\n\nConclusion: the serving index fits in memory on a modest number of machines; the hot set (short prefixes) is tiny and can be cached at the edge; the pipeline processes tens of GB a day, a routine batch job.\n\n## API\n\n```text\nGET /v1/suggest?q=how%20to%20t&locale=en-GB&limit=8\n  -> { \"q\": \"how to t\", \"suggestions\": [ { \"text\": \"how to tie a tie\", \"type\": \"query\" }, ... ] }\n  Cache-Control: public, max-age=300   (for non-personalised responses)\n```\n\nPersonalised entries (your recent searches) are merged client-side or by a separate small call, so the main response stays cacheable.\n\n## Data model\n\n```text\noffline:\n  query_log      (ts, query_normalised, locale, user_hash, clicked)\n  query_stats    (query, locale) -> decayed_count, last_seen, ctr\nserving:\n  trie / FST per locale: prefix -> top-k [(suggestion_id, score)]\n  suggestion table: id -> display text, type, metadata\n  blocklist: normalised terms never shown\n```\n\n## High-level design\n\n```text\n user types --debounce 100-150 ms--> browser cache --> CDN (short prefixes, non-personal)\n                                                         |\n                                                   suggest service (stateless, sharded index in memory)\n                                                         |\n                                     +-------------------+------------------+\n                                     |                                      |\n                             prefix index shards                     personalisation\n                             (trie/FST, top-k per node)              (recent searches, per user)\n\n offline pipeline:\n   search logs --> Kafka --> stream job (trending, last hour, decayed counts)\n                     \\--> batch job (daily: normalise, filter, aggregate, score)\n                                  |\n                            index builder -> immutable index snapshot -> object storage\n                                  |\n                            suggest servers download + hot-swap the snapshot\n```\n\n## Deep dive 1: the trie\nA trie stores strings character by character; a node represents a prefix. Walking `h -> o -> w` reaches the node for \"how\". To answer quickly, each node stores the precomputed **top-k completions** of its subtree with scores. A lookup is O(length of prefix) plus returning k items, regardless of how many completions exist.\n\n```ts\ntype Node = { children: Map<string, Node>; top: { id: number; score: number }[] };\n\nfunction suggest(root: Node, prefix: string, k = 8): number[] {\n  let node: Node | undefined = root;\n  for (const ch of prefix) {\n    node = node.children.get(ch);\n    if (!node) return [];\n  }\n  return node.top.slice(0, k).map((s) => s.id);\n}\n\n// build time: after inserting all queries, fill top-k bottom-up\nfunction fillTop(node: Node, k: number, terminal?: { id: number; score: number }): void {\n  const candidates = terminal ? [terminal] : [];\n  for (const child of node.children.values()) {\n    fillTop(child, k);\n    candidates.push(...child.top);\n  }\n  node.top = candidates.sort((a, b) => b.score - a.score).slice(0, k);\n}\n```\n\nEngineering details:\n- **Memory**: a naive pointer-per-character trie is huge. Compress chains (radix/Patricia tree), store suggestion ids not strings, or use a **finite state transducer** (FST). Andrew Gallant's post on FSTs shows how sharing prefixes and suffixes compresses large key sets dramatically; Lucene's completion suggester (used by Elasticsearch) is built on in-memory FSTs.\n- **Updates**: never mutate the serving trie per query. Rebuild from aggregated stats in batch (hourly or daily), publish an immutable snapshot, and have servers swap it atomically. A small \"trending\" overlay built from streaming counts can be merged at query time for freshness.\n- **Sharding**: by prefix range (a-f, g-m...) is uneven because some letters are far more common; shard by hash of the first two or three characters, or simply replicate the whole index if it fits, which is simpler and avoids fan-out.\n\n## Deep dive 2: inverted index alternative\nAn inverted index maps tokens to the documents (here, suggestion strings) containing them. For typeahead, index each suggestion with **edge n-grams**: \"iphone\" becomes \"i\", \"ip\", \"iph\", \"ipho\", \"iphon\", \"iphone\". Typing \"iph\" is then an exact token lookup. Because every token of the phrase is indexed, \"pro\" matches \"iphone pro max\" (infix by word), which a plain trie cannot do.\n\n| | Trie / FST with top-k | Inverted index (edge n-grams) |\n|---|---|---|\n| Latency | Lowest, predictable | Low, but scoring at query time |\n| Matching | Prefix of whole string | Prefix of any word, filters, fuzzy |\n| Memory | Compact with FST | Larger (n-gram expansion) |\n| Ranking | Precomputed static scores | Dynamic scoring, boosts, filters |\n| Updates | Rebuild snapshots | Near-real-time indexing |\n| Example | Lucene completion suggester | Elasticsearch search_as_you_type |\n\nRule of thumb: query suggestions on a web search engine fit a trie/FST well (prefix of whole query, static popularity). Product or people search with filters, typo tolerance and token matching fit an inverted index. Many real systems use both: a fast prefix index for the top results and an n-gram index for the long tail.\n\n## Deep dive 3: ranking\nScores are computed offline from query logs:\n- **Popularity with time decay**: `score = sum over occurrences of exp(-age / tau)`, so last week counts more than last year.\n- **Click-through**: a suggestion that people pick and then click results is better than one they ignore.\n- **Freshness / trending**: a streaming job detects queries whose rate spikes relative to their baseline (\"earthquake now\") and boosts them for hours.\n- **Context**: locale, language, device; personalisation from the user's own recent searches merged on top.\n- **Policy filters**: remove offensive, dangerous or legally blocked completions before indexing and again at serving time with a blocklist that can be hot-updated. Suggestions are product speech; this is a real requirement at every major search company.\n\nNormalise before counting: lowercase, Unicode normalisation (NFKC), collapse whitespace, strip punctuation as appropriate per language.\n\n## Deep dive 4: caching and the client\n- **Client**: debounce (around 100-150 ms), cancel in-flight requests when a new keystroke arrives (`AbortController`), cache responses per prefix in memory so backspace is instant, and ignore out-of-order responses.\n- **CDN**: one- and two-character prefixes are a tiny set with enormous traffic. Cache non-personalised responses at the edge for minutes.\n- **Service**: an LRU of recent prefixes in each server; hit rates are high because prefix popularity is skewed.\n\n## Failure modes and operations\n- Bad index snapshot (corrupted or a blocklist miss): keep the previous snapshot and roll back instantly; validate snapshots (size, sample queries, blocklist check) before publishing.\n- Pipeline delay: suggestions get stale but still work; alert on snapshot age.\n- Service overload: shed load by returning empty suggestions; search must still work.\n\n## Common mistakes\n- Updating the trie on every query in the serving path.\n- Walking subtrees at query time instead of precomputing top-k.\n- Forgetting debouncing and client caching.\n- No content filtering.\n- Sharding by first letter and creating hot shards.\n\n## In the interview\n**What they probe:** the data structure choice and its memory, how suggestions get updated, ranking signals, latency budget and caching layers.\n\n**60-second outline:** scope (top-k per prefix, daily freshness plus trending, locale); ~30k QPS with debouncing; in-memory trie/FST with top-k per node, built offline from decayed query counts and published as immutable snapshots; trending overlay from a stream job; caching at client, CDN and service; inverted index with edge n-grams when infix, filters or fuzzy matching are needed; blocklist at build and serve time.\n\n**Follow-ups to expect:** \"How do you handle typos?\" (fuzzy matching with edit distance on an FST or n-gram index), \"How fast can a trending term appear?\", \"How would you personalise without breaking caching?\", \"How big is the trie, really?\", \"How do you support many languages?\"",
+      "keyPoints": [
+        "The latency budget is tight (suggestions must render while the user types), so serve from memory and precompute as much as possible.",
+        "A trie with the top-k completions stored at each node answers a prefix in O(prefix length); updates are batched offline, not per query.",
+        "An inverted index with edge n-grams or a completion suggester handles mid-word matches, typos and filters better, at higher memory and query cost.",
+        "Ranking blends popularity (time-decayed), freshness, personalisation and context; the data pipeline aggregates query logs in batch and streaming layers.",
+        "Caching works at every layer: browser, CDN for short prefixes, and in-service caches, because short prefixes are few and extremely hot."
+      ],
+      "interview": [
+        "Design a search typeahead (autocomplete) service.",
+        "Trie or inverted index for autocomplete: what are the trade-offs?"
+      ],
+      "check": [
+        {
+          "q": "Why store the top-k completions at every trie node instead of walking the subtree at query time?",
+          "options": [
+            "Walking the subtree of a short prefix like 'a' can touch millions of nodes; precomputed top-k makes every lookup O(prefix length)",
+            "It uses less memory",
+            "Tries cannot be walked",
+            "It enables typo tolerance"
+          ],
+          "answer": 0,
+          "why": "The cost moves from query time to build time. Memory grows (k entries per node), but query latency becomes predictable and tiny."
+        },
+        {
+          "q": "Which requirement most strongly pushes you from a pure prefix trie to an inverted index?",
+          "options": [
+            "Returning 10 results",
+            "Supporting English",
+            "Matching words in the middle of a phrase (typing 'pro' should match 'iphone pro max') and filtering by category",
+            "Low traffic"
+          ],
+          "answer": 2,
+          "why": "A trie matches only from the start of the indexed string. Infix and token matches, filters and fuzzy matching are natural in an inverted index with n-gram analysis."
+        },
+        {
+          "q": "A typeahead service sees 50,000 requests per second. What is the cheapest large win on the client side?",
+          "options": [
+            "Debounce keystrokes (for example 100-150 ms) and cache prior responses per prefix in the client",
+            "Use WebSockets",
+            "Send the full query log to the server",
+            "Disable caching"
+          ],
+          "answer": 0,
+          "why": "Most keystrokes happen in quick bursts. Debouncing cuts requests substantially, and a backspace or repeated prefix can be served from a local cache with no request at all."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Elasticsearch: search-as-you-type field type",
+          "url": "https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/search-as-you-type"
+        },
+        {
+          "title": "Elasticsearch: suggesters (completion suggester)",
+          "url": "https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-suggesters"
+        },
+        {
+          "title": "Trie (Wikipedia)",
+          "url": "https://en.wikipedia.org/wiki/Trie"
+        },
+        {
+          "title": "Index 1,600,000,000 keys with automata and Rust (Andrew Gallant, FSTs)",
+          "url": "https://burntsushi.net/transducers/"
+        },
+        {
+          "title": "The System Design Primer",
+          "url": "https://github.com/donnemartin/system-design-primer"
+        }
+      ]
+    },
+    {
+      "id": "sdc-rate-limiter",
+      "track": "sd-cases",
+      "title": "Design a distributed rate limiter",
+      "minutes": 26,
+      "summary": "Token bucket, leaky bucket, fixed and sliding windows; atomic counters in Redis with Lua; where the limiter sits; failure behaviour; and limiting across regions without a global lock.",
+      "body": "## The core idea\nA rate limiter caps how many requests a client (user, API key, IP, tenant) can make in a period, so one caller cannot exhaust shared capacity, abuse an endpoint, or run up costs. On one server it is a counter in memory. In a fleet of hundreds of servers behind a load balancer, the counter has to be shared, fast, and correct enough under concurrency, and the limiter must not become the outage itself.\n\nInterviewers use this problem to test algorithms, atomicity in distributed state, latency budgets, failure behaviour and multi-region trade-offs, all in a small surface.\n\n## Requirements\nClarify these, they change the design:\n- **What is limited**: per user, per API key, per IP, per endpoint, per tenant, globally? Usually several layers.\n- **Limits**: \"100 requests per second with bursts to 200\", \"1,000 per day\".\n- **Accuracy**: is a 1-5% overshoot acceptable? For abuse protection, yes. For billing quotas, maybe not.\n- **Where**: API gateway, service mesh sidecar, inside the service, or a client library.\n- **Latency budget**: the limiter check should add about a millisecond, not tens.\n- **Behaviour when over**: reject with 429, queue, or degrade?\n\nStripe's write-up is a good model of layering: a request rate limiter (per user, token bucket), a concurrent requests limiter, and load shedders that drop low-priority traffic when the fleet is overloaded.\n\n## Estimation\nAssume an API with 1 million requests per second at peak across 10 million API keys, one limiter check per request.\n\n```text\nLimiter ops:  10^6 checks/s -> one Redis round trip each\n              a single Redis node handles on the order of 10^5 simple ops/s;\n              -> a Redis Cluster with tens of shards, keyed by client id\nMemory:       10^7 keys x ~100 B (key name + counters + TTL overhead) = ~1 GB\nLatency:      same-AZ Redis round trip ~0.2-1 ms\n```\n\nConclusion: memory is trivial, throughput needs sharding, and latency forces the counter store to live in the same region (ideally the same zone) as the API servers.\n\n## The algorithms\n\n### Fixed window counter\nKey `rl:{client}:{minute}`, `INCR`, set `EXPIRE` on first increment, reject when count exceeds the limit. Simplest and cheapest. Flaw: bursts at boundaries. A client can send the full limit at the end of one window and again at the start of the next, briefly doubling the rate.\n\n### Sliding window log\nStore a timestamp per request in a sorted set; on each request remove entries older than the window, count, and add. Exact, but memory is O(requests in window) per client, which is expensive for high limits.\n\n### Sliding window counter\nKeep counts for the current and previous fixed windows and weight the previous one by how much of it still overlaps the sliding window:\n\n```text\nestimate = prev_count x (window - elapsed_in_current) / window + current_count\n```\n\nCloudflare described using exactly this approximation for its rate limiting, noting that in their analysis of real traffic it was very close to exact. Two counters per client, smooth limits, cheap.\n\n### Token bucket\nA bucket holds up to `capacity` tokens and refills at `rate` per second. Each request takes a token; no token means rejected. Allows bursts up to capacity while enforcing the long-run rate. You do not need a timer: store `tokens` and `last_refill` and compute the refill lazily on each request. This is the most common default (Stripe, AWS API Gateway, many gateways).\n\n### Leaky bucket\nRequests enter a queue that drains at a fixed rate; overflow is dropped. Produces a perfectly smooth output rate, which suits protecting a downstream with fixed capacity, but adds queueing latency. As a meter (no queue), it is equivalent to a token bucket viewed from the other side. **GCRA** (generic cell rate algorithm) implements leaky-bucket semantics with a single stored timestamp per key (\"theoretical arrival time\"); Brandur's post explains it and it is what libraries like redis-cell use.\n\n| Algorithm | Bursts | Memory per key | Accuracy | Notes |\n|---|---|---|---|---|\n| Fixed window | 2x at edges | 1 counter | Coarse | Simplest |\n| Sliding log | None | O(requests) | Exact | Expensive |\n| Sliding counter | Smooth | 2 counters | Approximate | Great default for windows |\n| Token bucket | Up to capacity | 2 values | Exact for its model | Most common |\n| Leaky bucket / GCRA | Smooth output | 1-2 values | Exact for its model | Shaping |\n\n## API and headers\nThe limiter itself is usually an internal library or sidecar call: `allow(key, cost=1) -> { allowed, remaining, resetAt }`. Externally, return `429 Too Many Requests` (RFC 6585) with `Retry-After`, plus informational headers. Many APIs use `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`; the IETF httpapi working group has a draft standardising `RateLimit` and `RateLimit-Policy` headers.\n\n## High-level design\n\n```text\n clients --> load balancer --> API gateway / sidecar (limiter check) --> services\n                                     |    \\\n                                     |     local in-process limiter (fallback, coarse per-instance cap)\n                                     v\n                           Redis Cluster (counters, keyed by client; hash tags keep a client's keys on one shard)\n                                     ^\n                           rules service: limits per plan/tenant/endpoint, cached in gateways, hot reload\n```\n\nRules live in configuration (per plan, per endpoint, per tenant overrides) pushed to gateways; the counter state lives in Redis.\n\n## Deep dive 1: atomic token bucket in Redis\nTwo app servers doing `GET tokens` then `SET tokens-1` can both pass when one token remains. Use a Lua script so the read-modify-write is atomic and costs one round trip:\n\n```text\n-- KEYS[1] = bucket key; ARGV = capacity, refill_per_sec, now_ms, cost\nlocal cap    = tonumber(ARGV[1])\nlocal rate   = tonumber(ARGV[2])\nlocal now    = tonumber(ARGV[3])\nlocal cost   = tonumber(ARGV[4])\nlocal b      = redis.call(\"HMGET\", KEYS[1], \"tokens\", \"ts\")\nlocal tokens = tonumber(b[1]) or cap\nlocal ts     = tonumber(b[2]) or now\ntokens = math.min(cap, tokens + (now - ts) / 1000 * rate)\nlocal allowed = 0\nif tokens >= cost then\n  tokens = tokens - cost\n  allowed = 1\nend\nredis.call(\"HSET\", KEYS[1], \"tokens\", tokens, \"ts\", now)\nredis.call(\"PEXPIRE\", KEYS[1], math.ceil(cap / rate * 1000) + 1000)\nreturn { allowed, tokens }\n```\n\nNotes: pass `now` from the app server or use Redis `TIME` inside the script (newer Redis versions replicate script effects, which makes `TIME` safe); clock skew between app servers slightly distorts refill, which is usually acceptable. The `PEXPIRE` makes idle buckets disappear, keeping memory bounded.\n\n## Deep dive 2: performance and hot keys\n- One Redis round trip per request is fine at ~1 ms. To cut it further, **batch locally**: each gateway instance takes a lease of N tokens from Redis and spends them locally, returning to Redis only when exhausted. This trades accuracy (up to N x instances overshoot) for throughput.\n- A single abusive key can make one Redis shard hot. A local in-process limiter in front of Redis rejects obvious floods without touching Redis at all.\n- Pipeline or use Redis Cluster hash tags so all keys for one client live on one shard and multi-key scripts work.\n\n## Deep dive 3: failure behaviour\n- **Redis down or slow**: set a tight timeout (a few ms). On failure, **fail open** for general API limits, applying a local per-instance limit as a safety net, and alert. Fail **closed** for limits that exist for security (login attempts, OTP verification), where letting traffic through is the bigger risk.\n- **Retries amplify load**: clients that retry on 429 without backoff make overload worse. Return `Retry-After` and document exponential backoff with jitter. The Google SRE book's chapters on handling overload and cascading failures describe this dynamic.\n\n## Deep dive 4: multi-region\nA user's requests may hit several regions. A single global counter would add a cross-region round trip (tens to 100+ ms) to every request, which defeats the purpose. Options:\n1. **Home region**: route each tenant's traffic or limiter checks to its home region. Accurate, but adds latency for traffic landing elsewhere.\n2. **Split the quota**: give each region a share (static, or weighted by recent traffic). No cross-region calls; under-utilises when traffic is uneven.\n3. **Local counting with async sync**: each region enforces locally against a global view that is gossiped or replicated every few hundred ms. Overshoot is bounded by `sync interval x rate x regions`. This is the common pragmatic answer.\n4. **CRDT counters** (G-counters per region) give a mergeable global count with eventual convergence.\n\nSay the trade-off plainly: exact global limits and low latency are incompatible; choose which one the product needs. Abuse protection tolerates brief overshoot; a hard monthly quota tied to billing can be reconciled afterwards.\n\n## Where to put the limiter\n- **Edge / CDN / WAF**: IP-based limits against floods, before traffic reaches you.\n- **API gateway or sidecar** (Envoy global rate limiting calls an external rate limit service): per key, per route, consistent across services.\n- **In the service**: business-aware limits (per tenant per expensive operation, \"5 exports per hour\").\n- **Client-side**: SDKs that self-throttle to avoid 429s.\nMost real systems layer two or three of these.\n\n## Common mistakes\n- Non-atomic read-modify-write against Redis.\n- Fixed windows without acknowledging the boundary burst.\n- Synchronous cross-region calls on every request.\n- No decision on fail-open vs fail-closed.\n- Forgetting `Retry-After` and headers, so clients cannot behave.\n- Keys without TTLs, so memory grows forever.\n\n## In the interview\n**What they probe:** algorithm choice with trade-offs, atomic shared state, latency, failure behaviour and multi-region.\n\n**60-second outline:** clarify keys, limits and accuracy; token bucket (or sliding window counter) per client; counters in a sharded Redis via an atomic Lua script, ~1 ms per check; rules from a config service; gateway or sidecar placement with a local fallback limiter; fail open except for security limits; 429 with Retry-After; multi-region via per-region quotas or local enforcement with async sync, accepting bounded overshoot.\n\n**Follow-ups to expect:** \"How do you limit concurrent requests, not rate?\" (a counter incremented on start and decremented on finish, with a TTL to recover from crashes), \"How do you rate limit by cost, such as LLM tokens?\" (variable `cost` per request), \"How would you test it?\", \"What overshoot do you get with local token leases?\"",
+      "keyPoints": [
+        "Token bucket allows controlled bursts and is the common default; sliding window counters approximate exact limits cheaply; fixed windows allow double bursts at boundaries.",
+        "In a fleet, counters must be shared: Redis with an atomic Lua script (or INCR plus EXPIRE) keyed by client and window is the standard design.",
+        "Decide fail-open vs fail-closed explicitly: most API limiters fail open when Redis is down, with a local in-process fallback limit.",
+        "Multi-region limits trade accuracy for latency: split the quota per region, or sync counts asynchronously and accept brief overshoot.",
+        "Return 429 with Retry-After and rate-limit headers so well-behaved clients back off instead of hammering."
+      ],
+      "interview": [
+        "Design a distributed rate limiter.",
+        "Compare token bucket, leaky bucket, fixed window and sliding window rate limiting.",
+        "How do you rate limit across multiple regions without a global lock?"
+      ],
+      "check": [
+        {
+          "q": "With a fixed window of 100 requests per minute, how many requests can a client send in a short burst around a window boundary?",
+          "options": [
+            "100",
+            "Up to about 200 (100 at 0:59 and 100 at 1:00)",
+            "50",
+            "Unlimited"
+          ],
+          "answer": 1,
+          "why": "Each window resets independently, so the end of one and the start of the next can both be fully used within a couple of seconds. Sliding windows and token buckets avoid this."
+        },
+        {
+          "q": "Why do Redis-based limiters often use a Lua script instead of separate GET and SET calls?",
+          "options": [
+            "Lua is faster than C",
+            "Redis cannot store integers without Lua",
+            "Lua scripts are replicated to all regions automatically",
+            "The script runs atomically on the Redis server, so concurrent requests cannot both read the old value and exceed the limit"
+          ],
+          "answer": 3,
+          "why": "Read-modify-write from many app servers races. Redis executes a script without interleaving other commands, giving an atomic check-and-update in one round trip."
+        },
+        {
+          "q": "Redis for the limiter becomes unreachable. For a public API's per-user limit, what is the usual choice?",
+          "options": [
+            "Fail closed: reject all requests",
+            "Fail open with a conservative local per-instance limit, and alert",
+            "Crash the API servers",
+            "Switch to a 301 redirect"
+          ],
+          "answer": 1,
+          "why": "The limiter protects the service; taking the whole API down because the limiter is unhealthy is usually worse. A local fallback still caps abuse per instance. Security-sensitive limits (login attempts) may justify failing closed."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Scaling your API with rate limiters (Stripe)",
+          "url": "https://stripe.com/blog/rate-limiters"
+        },
+        {
+          "title": "How we built rate limiting capable of scaling to millions of domains (Cloudflare)",
+          "url": "https://blog.cloudflare.com/counting-things-a-lot-of-different-things/"
+        },
+        {
+          "title": "Rate limiting, Cells and GCRA (Brandur Leach)",
+          "url": "https://brandur.org/rate-limiting"
+        },
+        {
+          "title": "Envoy: global rate limiting",
+          "url": "https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting"
+        },
+        {
+          "title": "RFC 6585: HTTP 429 Too Many Requests",
+          "url": "https://datatracker.ietf.org/doc/html/rfc6585"
+        }
+      ]
+    },
+    {
+      "id": "sdc-notifications",
+      "track": "sd-cases",
+      "title": "Design a notification system",
+      "minutes": 26,
+      "summary": "Multi-channel delivery (push, email, SMS, in-app) with priorities, user preferences, deduplication, rate limits and quiet hours, retries through unreliable providers, and tracking.",
+      "body": "## The core idea\nA notification system takes events from many product services (\"order shipped\", \"new message\", \"password changed\", \"weekly digest\") and turns them into messages on the right channels: mobile push, email, SMS, in-app inbox, sometimes web push or chat apps. It sounds like plumbing, but it has real design problems: **priorities** (an OTP must arrive in seconds even during a campaign), **user preferences and policies**, **deduplication** across retries, **unreliable third-party providers**, **fan-out** to millions, and **tracking** delivery and engagement.\n\nThe cleanest way to present it is as a pipeline of independent stages connected by queues.\n\n## Requirements\n**Functional**: services send a notification request (user or segment, template, data, priority); deliver via push (APNs, FCM), email, SMS and in-app; per-user preferences per category and channel; quiet hours and frequency caps; templates with localisation; delivery status and open/click tracking; scheduled and bulk campaigns.\n**Out of scope**: the campaign authoring UI, ML send-time optimisation (mention as extension).\n\n**Non-functional**: transactional notifications delivered within seconds (p99 under ~5-10 s to the provider); bulk campaigns of tens of millions completed within hours without hurting transactional latency; no duplicates in normal operation; no lost transactional messages; respect legal requirements (unsubscribe for marketing email, consent for SMS).\n\n## Estimation\nAssume 100 million users; per day 300 million push, 50 million email, 5 million SMS; campaigns spike to 20 million sends in an hour.\n\n```text\nSteady push:   3 x 10^8 / 10^5 s       = ~3,000/s\nEmail:         5 x 10^7 / 10^5 s       = ~500/s\nSMS:           5 x 10^6 / 10^5 s       = ~50/s  (most expensive per message by far)\nCampaign peak: 2 x 10^7 / 3,600 s      = ~5,500/s extra on one channel\nRecords:       ~3.5 x 10^8 notifications/day x ~500 B log = ~175 GB/day of delivery logs\nDevice tokens: 10^8 users x ~2 devices = 2 x 10^8 tokens\n```\n\nThroughput is moderate; the challenge is isolation (campaign spikes vs transactional), provider limits, and cost control on SMS.\n\n## API\n\n```text\nPOST /v1/notifications\n  Idempotency-Key: order-812-shipped\n  {\n    \"userId\": \"u_123\",                 // or \"segmentId\" for bulk\n    \"category\": \"order_updates\",       // maps to preferences\n    \"priority\": \"high\" | \"normal\" | \"low\",\n    \"template\": \"order_shipped\",\n    \"data\": { \"orderId\": \"812\", \"eta\": \"2026-10-06\" },\n    \"channels\": [\"push\", \"email\"],     // optional; else policy decides\n    \"sendAt\": null,                    // or a scheduled time\n    \"expiresAt\": \"...\"                 // do not send after this (e.g. OTP)\n  }\n  -> 202 { \"notificationId\": \"n_...\" }\n\nGET  /v1/notifications/{id}            -> per-channel status\nGET  /v1/users/{id}/inbox?cursor=      -> in-app notifications\nPUT  /v1/users/{id}/preferences        { category -> channels on/off, quietHours, timezone }\nPOST /v1/devices                       { userId, platform, token }\n```\n\nThe 202 is deliberate: intake only validates and enqueues.\n\n## Data model\n\n```text\nnotifications   notification_id, idempotency_key UNIQUE, user_id, category, priority,\n                template, data, created_at, expires_at\ndeliveries      (notification_id, channel) -> status (queued|sent|delivered|failed|suppressed),\n                provider, provider_msg_id, attempts, last_error, timestamps\npreferences     user_id -> { category: { push: bool, email: bool, sms: bool } }, quiet_hours, tz, locale\ndevices         device_id, user_id, platform, token, active, last_seen\ntemplates       (template, channel, locale, version) -> subject/body with placeholders\ninbox           (user_id, created_at DESC) -> notification summary, read flag\ndedup           key -> 1 with TTL (Redis)\n```\n\n## High-level design\n\n```text\n product services --> notification API (auth, validate, idempotency) --> intake queue (Kafka)\n                                                                        |\n                                           +----------------------------+\n                                           v\n                              policy & routing workers\n                              - load preferences, consent, quiet hours (user tz)\n                              - frequency caps / per-user rate limits\n                              - choose channels, drop expired, dedup\n                              - expand segments into per-user jobs (bulk)\n                                           |\n                                    render workers (templates, locale)\n                                           |\n              +-------------------+--------+---------+------------------+\n              v                   v                  v                  v\n        push queues          email queues       SMS queues          in-app writer\n       (high|normal|low)    (high|normal|low)  (high|normal)        (inbox DB + live push\n              |                   |                  |                via websocket/SSE)\n        push workers         email workers      SMS workers\n        APNs / FCM           SES / SendGrid     Twilio / others\n              \\                   |                  /\n               +---- provider callbacks / webhooks --+--> status tracker --> deliveries DB, analytics\n                                                       \\--> device registry cleanup (invalid tokens)\n scheduler: delayed and scheduled sends (time-bucketed store polled each minute)\n```\n\n## Deep dive 1: priorities and isolation\n- Separate topics or queues per channel and priority, each with its own worker pool and autoscaling. Transactional high-priority traffic gets reserved capacity.\n- Bulk campaigns are throttled at the expansion step (for example, release 5,000 users per second into the queues) so they never flood downstream stages.\n- Respect provider throughput limits per account; a token bucket per provider protects you from being throttled or flagged.\n- `expiresAt` lets workers drop stale messages: an OTP that is five minutes late is useless, and a \"your driver is here\" push after the ride is harmful.\n\n## Deep dive 2: deduplication\nDuplicates come from three places: producers retrying the API call, queues redelivering after a worker crash, and providers or retries sending twice.\n1. **API idempotency**: the `Idempotency-Key` (for example `order-812-shipped`) is unique in the notifications table; a retry returns the existing id.\n2. **Worker-level dedup**: before sending, `SET dedup:{notificationId}:{channel} 1 NX EX 86400` in Redis. If the key exists, skip. Record the attempt in the deliveries table.\n3. **Content-level collapse**: some events are noisy (\"X liked your photo\" 40 times). Aggregate within a window (\"X and 39 others liked your photo\") or use provider collapse keys (APNs `apns-collapse-id`, FCM collapse keys) so only the latest version is shown.\n\nBe honest about the window: if a worker crashes after the provider accepted the message but before recording it, a retry can duplicate. That is why the effective guarantee is at-least-once with best-effort dedup; for most notifications this is acceptable, and for OTPs a duplicate is harmless while a loss is not.\n\n## Deep dive 3: preferences and policy\nPolicy evaluation is a pure function worth writing as one: `(notification, preferences, user state, now) -> channels to send | suppressed(reason)`.\n- **Category preferences**: users opt out per category and channel. Some categories are mandatory (security alerts, legal notices).\n- **Quiet hours** in the user's own timezone: defer low-priority messages until the window ends; never defer critical ones.\n- **Frequency caps**: at most N marketing pushes per day per user, implemented with the same counters as a rate limiter.\n- **Channel fallback**: if push is disabled or no active device, fall back to email for important categories.\n- **Legal**: marketing email must honour unsubscribe; SMS requires consent in many jurisdictions.\n- Cache preferences close to the workers (they are read on every message, written rarely) and invalidate on update.\n\n## Deep dive 4: providers, retries and failure\n- **Retries** with exponential backoff and jitter (the AWS Architecture Blog post explains why jitter matters) for transient errors (timeouts, 5xx, 429); no retry for permanent errors (invalid token, unsubscribed address, malformed number).\n- **Dead-letter queues** for messages that exhaust retries, with alerting and replay tooling.\n- **Provider failover**: for email and SMS, keep two providers and switch on elevated error rates (a circuit breaker per provider).\n- **Feedback loops**: APNs and FCM report invalid tokens; email providers report bounces and complaints. Deactivate tokens and suppress addresses immediately; sending to bad addresses damages sender reputation and deliverability.\n- **Push is best effort**: APNs and FCM do not guarantee delivery to the device (offline devices, OS throttling). For anything users must not miss, also write to the in-app inbox.\n\n## Deep dive 5: in-app and real-time\nThe in-app inbox is a per-user list stored in a database (partitioned by user, sorted by time) plus a live channel (WebSocket or SSE) that pushes a \"new notification\" event to connected clients. Uber's write-up on its real-time push platform and Netflix's Rapid Event Notification System are good examples of large-scale fan-out to connected devices, including prioritisation and handling clients that reconnect.\n\n## Tracking\nEach delivery moves through states (queued, sent, delivered, opened, clicked, failed, suppressed) recorded from worker results and provider webhooks into an append-only log, then aggregated for dashboards (delivery rate per channel, latency p99 per priority, opt-out rate per category). Opt-out rate is the most important product metric: a noisy system trains users to disable notifications entirely.\n\n## Common mistakes\n- One queue for everything, so campaigns delay OTPs.\n- Sending synchronously from the API request.\n- No dedup, or claiming exactly-once.\n- Ignoring timezones for quiet hours.\n- Not processing provider feedback (dead tokens, bounces).\n- Treating push as guaranteed delivery.\n\n## In the interview\n**What they probe:** pipeline decomposition, priority isolation, dedup, preference evaluation, provider failure handling and scale for campaigns.\n\n**60-second outline:** scope channels, categories and priorities; ~3k pushes/s steady with campaign spikes; API validates, applies idempotency and enqueues (202); policy workers evaluate preferences, quiet hours, caps and expiry, and expand segments with throttling; render; per-channel, per-priority queues and workers calling providers with backoff, failover and DLQs; dedup keys in Redis; feedback updates tokens and suppression lists; in-app inbox plus live channel; tracking pipeline.\n\n**Follow-ups to expect:** \"How do you send 50 million emails without hurting OTP latency?\", \"How do you implement 'X and 10 others liked your post'?\", \"How do you schedule a notification for 9 a.m. in each user's timezone?\", \"What happens if FCM is down for 20 minutes?\", \"How do you measure whether notifications are helping or annoying users?\"",
+      "keyPoints": [
+        "Separate the pipeline into intake, preference and policy evaluation, rendering, per-channel queues and provider workers so each stage scales and fails independently.",
+        "Priorities need separate queues (or topics): an OTP or security alert must never wait behind a marketing campaign of 50 million emails.",
+        "Dedup with an idempotency key per logical notification (event id + user + channel) stored with a TTL; providers and queues are at-least-once.",
+        "Preferences, quiet hours, frequency caps and unsubscribe are evaluated before sending, and some (legal unsubscribe for marketing email) are hard requirements.",
+        "Provider calls fail and throttle: retry with exponential backoff and jitter, fail over between providers, and clean up invalid device tokens."
+      ],
+      "interview": [
+        "Design a notification system that sends push, email and SMS.",
+        "How do you prevent duplicate notifications and respect user preferences?"
+      ],
+      "check": [
+        {
+          "q": "Why put transactional notifications (OTP codes, password resets) on a separate queue from marketing campaigns?",
+          "options": [
+            "They use different databases",
+            "Marketing messages are encrypted",
+            "So a large campaign backlog cannot delay time-critical messages; each priority gets its own capacity and SLO",
+            "Queues cannot hold more than one type"
+          ],
+          "answer": 2,
+          "why": "A single FIFO queue makes latency depend on whatever is ahead. Separate queues (and worker pools) isolate priorities so an OTP is sent in seconds even during a 50-million-email campaign."
+        },
+        {
+          "q": "A worker sends a push, then crashes before acknowledging the queue message. What prevents a duplicate push on redelivery?",
+          "options": [
+            "Checking a dedup record keyed by notification id and channel, written before or atomically with the send attempt",
+            "Nothing, it is impossible",
+            "Using a bigger queue",
+            "Turning off retries"
+          ],
+          "answer": 0,
+          "why": "Queues redeliver unacknowledged messages. A dedup store (for example Redis SET NX with a TTL) makes the second attempt a no-op. A small window remains if the crash happens between send and record, which is why notifications are effectively at-least-once with best-effort dedup."
+        },
+        {
+          "q": "APNs or FCM reports that a device token is no longer valid. What should the system do?",
+          "options": [
+            "Retry forever",
+            "Switch to SMS for every future message",
+            "Remove or deactivate the token so future sends skip it",
+            "Ignore the response"
+          ],
+          "answer": 2,
+          "why": "Stale tokens waste capacity and can hurt delivery reputation. Provider feedback should update the device registry immediately."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Firebase Cloud Messaging documentation",
+          "url": "https://firebase.google.com/docs/cloud-messaging"
+        },
+        {
+          "title": "Apple: Sending notification requests to APNs",
+          "url": "https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns"
+        },
+        {
+          "title": "Firebase: collapsible and non-collapsible messages",
+          "url": "https://firebase.google.com/docs/cloud-messaging/customize-messages/collapsible-message-types"
+        },
+        {
+          "title": "Uber's real-time push platform",
+          "url": "https://www.uber.com/blog/real-time-push-platform/"
+        },
+        {
+          "title": "AWS Architecture Blog: Exponential backoff and jitter",
+          "url": "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "url-shortener-at-scale",
+      "title": "URL shortener at scale: 10k redirects per second with analytics",
+      "level": "advanced",
+      "hours": 40,
+      "stack": [
+        "Go or Node.js (TypeScript)",
+        "PostgreSQL",
+        "Redis",
+        "Kafka or Redpanda",
+        "ClickHouse",
+        "Docker Compose",
+        "k6",
+        "OpenTelemetry"
+      ],
+      "summary": "A production-shaped URL shortener built as a small distributed system: leased-range ID generation, a cached redirect path load-tested to thousands of requests per second, asynchronous click analytics through a log, abuse controls and full observability.",
+      "why": "Every candidate can describe a URL shortener on a whiteboard; very few have built one and measured it. This project turns the most common system design prompt into evidence: real p99 numbers under load, a cache hit-rate graph, a demonstrated failover of the cache, and an analytics pipeline that never slows the redirect. It gives you concrete numbers and war stories for every follow-up an interviewer can ask.",
+      "architecture": "```text\n clients\n   |\n load balancer (nginx / envoy)\n   |\n +-------------------+--------------------+\n |                   |                    |\n redirect svc x3     api svc (create, stats, takedown)\n | in-proc LRU 5s    |   | token bucket (Redis Lua)\n v                   |   v\n Redis (code -> url, negative cache, rate limits)\n |  miss              |\n v                    v\n Postgres primary + read replica  <-- id range allocator (sequence, blocks of 10k)\n |\n redirect svc --(async, buffered)--> Kafka/Redpanda --> aggregator --> ClickHouse\n                                                                        ^\n                                              api svc stats queries ----+\n OpenTelemetry collector -> Prometheus / Grafana / Tempo\n```\n\nKey decisions: redirects and writes are separate services so the hot path stays tiny and independently scalable. Codes come from leased ranges, so creates need no uniqueness lookup and never collide; a permutation hides ordering. The redirect path never waits on analytics: click events are buffered and dropped (counted) if the broker is unavailable, a deliberate availability-over-completeness choice for analytics.",
+      "lessons": [
+        "sdc-url-shortener",
+        "sdc-framework",
+        "sdc-rate-limiter",
+        "arch-caching-queues",
+        "arch-reliability-obs"
+      ],
+      "milestones": [
+        {
+          "id": "m1",
+          "title": "Core service and data model",
+          "details": [
+            "POST /v1/links with zod/validator input checks, scheme allow-list and Idempotency-Key support",
+            "GET /{code} returns 302 with Location; 404 for unknown codes, 410 for expired ones",
+            "Postgres table links(code PK, long_url, owner_id, created_at, expires_at)",
+            "Checkable: integration tests cover create, redirect, expired, duplicate idempotency key"
+          ]
+        },
+        {
+          "id": "m2",
+          "title": "Leased-range code generation",
+          "details": [
+            "An allocator hands out blocks of 10,000 ids from a Postgres sequence (or Redis INCRBY)",
+            "Encode ids in base62 after a reversible permutation so consecutive codes look unrelated",
+            "Custom aliases share the namespace with reserved words blocked",
+            "Checkable: a concurrency test with 8 instances creating 1M links produces zero collisions"
+          ]
+        },
+        {
+          "id": "m3",
+          "title": "Cached redirect path",
+          "details": [
+            "Redis cache-aside for code -> url with TTL and negative caching of misses for 60 s",
+            "In-process LRU with a 5 s TTL in each instance to absorb viral hot keys",
+            "Request coalescing so a cold key triggers one database read",
+            "Checkable: k6 at 5,000 RPS over a Zipf key distribution shows >95% cache hit rate and p99 under [N] ms"
+          ]
+        },
+        {
+          "id": "m4",
+          "title": "Asynchronous click analytics",
+          "details": [
+            "Redirect handler appends click events to a buffered producer (Kafka/Redpanda) without blocking the response",
+            "A consumer aggregates per code per minute into ClickHouse; raw events kept for ad-hoc queries",
+            "GET /v1/links/{code}/stats returns counts by day, referrer and country",
+            "Checkable: killing the analytics consumer does not change redirect latency; restarting it catches up with no lost events"
+          ]
+        },
+        {
+          "id": "m5",
+          "title": "Abuse controls and rate limiting",
+          "details": [
+            "Token bucket per API key and per IP in Redis via a Lua script; 429 with Retry-After",
+            "Safe-browsing style blocklist check on create; takedown endpoint that returns 410 and purges caches",
+            "Checkable: a scripted flood from one key is throttled while other keys keep their latency"
+          ]
+        },
+        {
+          "id": "m6",
+          "title": "Observability and failure drills",
+          "details": [
+            "OpenTelemetry traces across redirect, cache and database; RED metrics and a cache hit-rate panel",
+            "SLO: 99.9% of redirects under [N] ms, with a burn-rate alert",
+            "Chaos drills: stop Redis, stop one Postgres replica, saturate Kafka",
+            "Checkable: a written runbook with graphs showing behaviour during each drill"
+          ]
+        },
+        {
+          "id": "m7",
+          "title": "Scale-out and write-up",
+          "details": [
+            "Run 3+ stateless redirect instances behind a load balancer; read replicas for Postgres",
+            "Load test to the highest sustained RPS on your hardware and find the bottleneck with profiles",
+            "Checkable: README with architecture diagram, numbers table and the design trade-offs you made"
+          ]
+        }
+      ],
+      "stretch": [
+        "Serve redirects from an edge runtime with a regional KV cache and compare global p95 latency",
+        "Hash-shard the links table across two Postgres instances and add online resharding",
+        "Bloom filter in front of the cache to reject random-code scanning cheaply",
+        "Per-link QR code generation and expiry sweeper with cache purge",
+        "Multi-region active-active redirects with a single write region for creates"
+      ],
+      "resume": [
+        "Built a URL shortener sustaining [X] redirects/s at p99 [Y] ms on [N] instances, using leased-range ID generation, Redis cache-aside and an in-process hot-key cache ([Z]% hit rate)",
+        "Decoupled click analytics through Kafka and ClickHouse so analytics outages had zero impact on redirect latency, processing [X] events/s with idempotent per-minute aggregation that survives consumer replays",
+        "Defined SLOs with burn-rate alerts and ran chaos drills (cache loss, replica failure), cutting cold-cache p99 by [Z]% with request coalescing"
+      ],
+      "talking": [
+        "Why leased counter ranges plus a permutation beat hashing and random codes for this workload",
+        "How you measured and tuned cache hit rate under a Zipf distribution, and what the hot-key cache fixed",
+        "Why redirects are 302 with a short private max-age instead of 301",
+        "What happened in each chaos drill and what you changed afterwards",
+        "Where the bottleneck moved as you scaled from one instance to many"
+      ],
+      "features": [
+        "Create short links with custom aliases, expiry and idempotent retries",
+        "302 redirects served from cache with p99 in the low milliseconds",
+        "Per-link analytics dashboard: clicks over time, referrers, countries",
+        "Rate limiting per API key and IP with standard 429 responses",
+        "Link takedown that returns 410 and purges every cache layer",
+        "Grafana dashboard with RED metrics, cache hit rate and SLO burn rate",
+        "Reproducible k6 load test scripts and results"
+      ],
+      "deepDives": [
+        {
+          "title": "Code generation: leased ranges and a permutation",
+          "body": "Each API instance leases a block of 10,000 ids from a Postgres sequence with `SELECT nextval('link_blocks')`, multiplying by the block size to get its range. Inside the block it mints ids locally with no network call, so creates cost one insert. A crash wastes at most one block, which is irrelevant against a 62^7 (about 3.5 trillion) code space.\n\nSequential ids would make codes enumerable, so each id passes through a reversible permutation before base62 encoding: a 4-round Feistel network over the id bits with a secret key, or a multiply-by-odd-constant modulo 62^7 with its modular inverse for decoding. Because a permutation is a bijection, uniqueness is preserved and no collision check is needed. Custom aliases live in the same table; generated codes are always exactly 7 characters and aliases must be at least 8 or contain a hyphen, so the two sets can never collide. Compare this in the write-up with random codes (simple, needs unique-constraint retries) and truncated hashes (collisions certain at scale)."
+        },
+        {
+          "title": "The redirect hot path and hot keys",
+          "body": "The redirect handler does at most three lookups: an in-process LRU (5 s TTL), Redis, then a Postgres replica. Misses populate both caches, and unknown codes are negatively cached for 60 seconds so scanners cannot hammer the database. A singleflight-style request coalescer ensures a burst of requests for a cold key produces one database read.\n\nLoad testing with a Zipf distribution over a million codes shows why each layer exists: Redis alone gives a high hit rate, but a single viral code can push one Redis shard to its limit; the 5 s local cache flattens that to one Redis read per instance per 5 seconds. The trade-off is staleness: a takedown can take up to 5 seconds to apply everywhere, which you mitigate by publishing purge messages on a Redis channel that every instance subscribes to. Record p50, p99 and hit rate before and after each layer; those numbers are the core of your interview story."
+        },
+        {
+          "title": "Analytics without touching redirect latency",
+          "body": "Writing a counter row per click would put a database write on every redirect and create hot rows for viral links. Instead the handler hands a small event (code, timestamp, referrer host, country from GeoIP, user-agent class) to a buffered, non-blocking producer and returns the 302 immediately. If the buffer is full or the broker is down, events are dropped and a counter is incremented, an explicit choice that analytics may lose data during an outage while redirects stay fast.\n\nThe consumer aggregates events into one-minute buckets keyed by (code, minute) and writes them to ClickHouse with deterministic bucket keys, using a ReplacingMergeTree or idempotent upserts so replays after a crash do not double count. Offsets are committed only after the bucket write succeeds. The stats API reads pre-aggregated tables for dashboards and raw events for drill-downs. Demonstrate the decoupling in the README: stop the consumer during a load test and show the redirect latency graph does not move."
+        }
+      ]
+    }
+  ]
+}

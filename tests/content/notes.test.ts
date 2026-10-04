@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { noteFiles, subtopicById, subtopicNotes } from "@/lib/content";
-import { notesFileSchema, notesProblems, notesCoverage, readingMinutes } from "@/lib/domain/notes";
+import { noteFiles, subtopicById, subtopicNotes } from "@/core/content";
+import { notesFileSchema, notesProblems, notesCoverage, readingMinutes } from "@/modules/learn/domain/notes";
 
 describe("data/notes/*.json", () => {
   it.each(noteFiles.map((f, i) => [i, f] as const))("file %i matches the schema and the syllabus", (_i, file) => {
@@ -32,7 +32,7 @@ describe("notes helpers", () => {
 
 describe("data/engineering-blogs.json", () => {
   it("has unique https urls and tags", async () => {
-    const { engineeringBlogs } = await import("@/lib/content");
+    const { engineeringBlogs } = await import("@/core/content");
     const urls = engineeringBlogs.map((b) => b.url);
     expect(new Set(urls).size).toBe(urls.length);
     for (const b of engineeringBlogs) {

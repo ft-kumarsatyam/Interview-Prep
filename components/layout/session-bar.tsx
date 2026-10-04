@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ArrowRight, Check, Lock, PartyPopper } from "lucide-react";
-import { buildSession } from "@/lib/domain/session";
-import type { NavBadges, NavToday } from "@/lib/services/nav";
-import { cn } from "@/lib/utils";
+import { buildSession } from "@/core/domain/session";
+import type { NavBadges, NavToday } from "@/core/services/nav";
+import { cn } from "@/core/utils";
 
 const SHOW_ON = ["/quiz", "/review"];
 

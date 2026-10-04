@@ -3,17 +3,17 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { plannerInputSchema } from "@/lib/domain/planner-profile";
-import { addWeeklyHours, extendEndDate } from "@/lib/domain/replan";
-import { DEFAULT_HOURS } from "@/lib/domain/time-budget";
-import { getSettings } from "@/lib/services/settings";
-import { STUDY_KINDS } from "@/lib/domain/study";
-import { resetOptionsSchema } from "@/lib/domain/planner-snapshot";
-import { applyPause } from "@/lib/services/pause";
-import { savePlanner } from "@/lib/services/planner";
-import { resetPlanner, restoreSnapshot, takeSnapshot } from "@/lib/services/planner-snapshot";
-import { deleteStudySession, logStudySession } from "@/lib/services/study";
+import { requireSession } from "@/core/auth/dal";
+import { plannerInputSchema } from "@/modules/planner/domain/planner-profile";
+import { addWeeklyHours, extendEndDate } from "@/modules/planner/domain/replan";
+import { DEFAULT_HOURS } from "@/modules/planner/domain/time-budget";
+import { getSettings } from "@/modules/settings/services/settings";
+import { STUDY_KINDS } from "@/modules/planner/domain/study";
+import { resetOptionsSchema } from "@/modules/planner/domain/planner-snapshot";
+import { applyPause } from "@/modules/planner/services/pause";
+import { savePlanner } from "@/modules/planner/services/planner";
+import { resetPlanner, restoreSnapshot, takeSnapshot } from "@/modules/planner/services/planner-snapshot";
+import { deleteStudySession, logStudySession } from "@/modules/planner/services/study";
 
 export async function savePlannerAction(input: unknown): Promise<ActionResult<{ changes: number }> | { ok: false; error: string; fields: Record<string, string> }> {
   await requireSession();

@@ -21,8 +21,8 @@ describe("nav hubs", () => {
     expect(pageFor("/playground/db")?.label).toBe("DB Lab");
     expect(pageFor("/playground")?.label).toBe("Playground");
     expect(pageFor("/playground/db/anything")?.label).toBe("DB Lab");
-    expect(pageFor("/web/interview/react")?.label).toBe("Web interview");
-    expect(pageFor("/web/react-rendering")?.label).toBe("Web dev");
+    expect(pageFor("/web/interview/react")?.label).toBe("Interview bank");
+    expect(pageFor("/web/react-rendering")?.label).toBe("Web & AI");
   });
 
   it("finds the hub for detail pages and ignores unknown routes", () => {

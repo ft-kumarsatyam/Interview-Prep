@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Check, MessageCircleQuestion } from "lucide-react";
-import { ProjectTracker } from "@/components/web/project-tracker";
-import { ArticleMarkdown } from "@/components/news/article-markdown";
+import { Check, ChevronRight, MessageCircleQuestion } from "lucide-react";
+import { ProjectTracker } from "@/modules/learn/components/web/project-tracker";
+import { ArticleMarkdown } from "@/modules/news/components/article-markdown";
 import { BackLink } from "@/components/shared/back-link";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { webLessonById, webProjectBySlug } from "@/lib/content";
-import { lessonsForProject, projectProgress } from "@/lib/domain/webdev";
-import { getBaseResume } from "@/lib/services/resume";
-import { getDoneLessons, getProjectState } from "@/lib/services/webdev";
+import { webLessonById, webProjectBySlug } from "@/core/content";
+import { lessonsForProject, projectProgress } from "@/modules/learn/domain/webdev";
+import { getBaseResume } from "@/modules/resume/services/resume";
+import { getDoneLessons, getProjectState } from "@/modules/learn/services/webdev";
 
 export async function generateMetadata({ params }: PageProps<"/projects/[slug]">): Promise<Metadata> {
   const { slug } = await params;
@@ -52,9 +52,46 @@ export default async function ProjectPage({ params }: PageProps<"/projects/[slug
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <p className="text-muted-foreground">{project.why}</p>
+              {project.features && (
+                <div>
+                  <p className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">What you will build</p>
+                  <ul className="grid gap-1.5 sm:grid-cols-2">
+                    {project.features.map((f) => (
+                      <li key={f} className="flex gap-2">
+                        <Check className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
+                        <span>{f}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Architecture</p>
               <ArticleMarkdown markdown={project.architecture} />
             </CardContent>
           </Card>
+
+          {project.deepDives && project.deepDives.length > 0 && (
+            <section aria-labelledby="deep-dives" className="space-y-2">
+              <h2 id="deep-dives" className="text-base font-semibold">
+                Deep dives: the decisions interviewers ask about
+              </h2>
+              <ul className="space-y-2">
+                {project.deepDives.map((d, i) => (
+                  <li key={d.title}>
+                    <details className="group rounded-xl border bg-card ring-1 ring-foreground/5" open={i === 0}>
+                      <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 rounded-xl p-3 text-sm font-semibold focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [&::-webkit-details-marker]:hidden">
+                        {d.title}
+                        <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden />
+                      </summary>
+                      <div className="min-w-0 border-t p-3 sm:p-4">
+                        <ArticleMarkdown markdown={d.body} />
+                      </div>
+                    </details>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
           <h2 className="text-base font-semibold">Milestones</h2>
           <ProjectTracker slug={project.slug} milestones={project.milestones} ticked={state?.milestones ?? []} repoUrl={state?.repoUrl ?? ""} notes={state?.notes ?? ""} hasResume={Boolean(base)} />

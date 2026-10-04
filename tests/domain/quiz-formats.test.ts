@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { chosenIndices, correctAnswerKey, correctIndices, indicesOf, isAnswerCorrect, maskOf, scoreQuiz } from "@/lib/domain/quiz";
-import { quizBankSchema, quizQuestionSchema, toPublic, toReview } from "@/lib/quiz/question";
+import { chosenIndices, correctAnswerKey, correctIndices, indicesOf, isAnswerCorrect, maskOf, scoreQuiz } from "@/modules/quiz/domain/quiz";
+import { quizBankSchema, quizQuestionSchema, toPublic, toReview } from "@/modules/quiz/lib/question";
 import bankJson from "@/data/quiz-bank.json";
 
 const single = { answerIndex: 2 };

@@ -1,0 +1,779 @@
+{
+  "tracks": [
+    {
+      "id": "caching-queues",
+      "name": "Caching, queues and events",
+      "color": "orange",
+      "blurb": "Caching patterns and invalidation, Redis in practice, message queues, Kafka, idempotent delivery with outbox and inbox, event-driven sagas and background jobs.",
+      "area": "backend"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "cq-caching-strategies",
+      "track": "caching-queues",
+      "title": "Caching strategies: patterns, TTLs and layers",
+      "minutes": 18,
+      "summary": "Cache-aside, read-through, write-through and write-behind, how to choose TTLs, and what belongs in each cache layer from the browser down to the database.",
+      "body": "## The core idea\nA cache is a copy of data kept somewhere faster or closer than the source of truth, so you can skip the expensive work of producing it again. Every cache trades **freshness** for **speed and load reduction**. The moment you add one, you own two new questions forever: *who fills it* and *how does it learn the source changed*.\n\nThe caching \"strategies\" (cache-aside, read-through, write-through, write-behind) are just answers to those two questions. TTLs are the safety net for when the answer is wrong. Layers are the places you can put a copy, from the user's browser down to the database's own buffer pool.\n\nA useful framing from the AWS Builders' Library article on caching challenges: a cache is not just an optimisation, it changes the failure behaviour of your system. If your database can only survive because the cache absorbs 95% of reads, then the cache is now load-bearing, and a cold or failed cache is an outage.\n\n## The four write/read strategies\n```text\nCACHE-ASIDE (lazy loading)            READ-THROUGH\napp -> cache: GET k                   app -> cache: GET k\n  miss -> app -> DB: SELECT             miss -> cache -> DB (cache's loader)\n       -> app -> cache: SET k v               -> cache stores v, returns it\nwrites: app -> DB, then DEL k         writes: usually cache-aside style\n\nWRITE-THROUGH                         WRITE-BEHIND (write-back)\napp -> cache: SET k v                 app -> cache: SET k v  (ack now)\n   cache -> DB: UPDATE (sync)         cache -> queue -> DB later (batched, async)\n   ack after both succeed             risk: cache dies before flush = lost writes\n```\n\n### Cache-aside\nThe application owns everything. On read: try the cache, on a miss load from the database and populate the cache. On write: update the database, then **delete** the cache key (not update it; the invalidation lesson explains why). This is the default for Redis or Memcached in front of Postgres/MongoDB because it needs no special cache features and degrades gracefully: if the cache is down, reads go to the database (slower, but correct).\n\n```ts\nimport { createClient } from \"redis\";\nconst redis = createClient({ url: process.env.REDIS_URL });\n\nasync function getUser(id: string): Promise<User | null> {\n  const key = `user:v1:${id}`;\n  const hit = await redis.get(key).catch(() => null); // cache failure must not fail the read\n  if (hit) return JSON.parse(hit) as User;\n\n  const user = await db.users.findById(id);\n  // cache negative results too, but briefly, so a hot missing id cannot hammer the DB\n  const ttl = user ? 600 + Math.floor(Math.random() * 60) : 30;\n  await redis.set(key, JSON.stringify(user), { EX: ttl }).catch(() => {});\n  return user;\n}\n\nasync function updateUser(id: string, patch: Partial<User>) {\n  await db.users.update(id, patch);\n  await redis.del(`user:v1:${id}`); // invalidate after the commit, never before\n}\n```\n\nWeaknesses: the first request after expiry pays full latency; there is a race window where a slow reader can write an old value back after a writer deleted the key (covered in the invalidation lesson); and every caller must remember the pattern.\n\n### Read-through\nSame flow as cache-aside, but the cache library or service does the loading. Think Caffeine's `LoadingCache` in Java, a DataLoader-style in-process memo, Amazon DAX in front of DynamoDB, or a CDN pulling from the origin on a miss. The win is that callers cannot forget the pattern and the loader can coalesce concurrent misses for the same key. The cost is coupling: the cache must know how to talk to the source.\n\n### Write-through\nEvery write goes to the cache and the database synchronously, and the call succeeds only after both. Reads after writes always hit a fresh value, which suits read-heavy data that is read right after being written (user profile, session, settings). Downsides: write latency now includes two systems; you cache data that may never be read (pair it with a TTL); and \"both succeed\" is not atomic, so if the DB write fails after the cache write you must undo or delete. In practice most \"write-through\" in application code is \"write to DB, then set cache\", which has the same races as cache-aside with update.\n\n### Write-behind (write-back)\nWrites land in the cache and are acknowledged immediately; a background process flushes them to the database, often batched and coalesced (ten increments of a counter become one `UPDATE`). This gives the lowest write latency and absorbs write bursts. It is also the riskiest: if the cache node dies before flushing, acknowledged writes are gone, and the database is always behind. Use it for data where loss is tolerable or rebuildable: view counters, \"last seen\" timestamps, analytics aggregates, rate limiter state. Do not use it for money, orders or anything with a legal record. CPU caches and the Linux page cache are write-back caches; that is where the name comes from.\n\n### Refresh-ahead\nA variant worth naming: refresh hot keys before they expire (on a timer, or probabilistically on read as in the XFetch approach covered in the invalidation lesson). Readers never see a miss for hot keys, at the cost of refreshing data nobody asks for if you guess wrong.\n\n## TTLs: the safety net\nA TTL bounds how stale a value can be when invalidation fails, and it lets unused keys age out. Choosing one is a business question dressed as a technical one: **how wrong can this be, and for how long, before it hurts someone?**\n\n| Data | Typical TTL | Why |\n|---|---|---|\n| Product catalogue page | minutes | changes rarely, stale for a minute is fine |\n| Price or stock shown at checkout | seconds, or no cache | wrong price is a support ticket or a legal issue |\n| User profile | 5-15 min plus explicit invalidation | owner expects to see their edit immediately |\n| Feature flags / config | 10-60 s | bounded propagation delay is acceptable |\n| Static assets with hashed names | 1 year, `immutable` | the URL changes when content changes |\n| Negative result (\"no such user\") | 10-60 s | stop repeated misses without hiding new rows long |\n\nRules of thumb:\n- **Add jitter.** If you warm 1 million keys with `EX 3600` at deploy time, they all expire in the same second an hour later. Add a random 0-10% to spread expiry.\n- **TTL is not invalidation.** If users must see their own write, invalidate explicitly and keep the TTL as a backstop.\n- **Soft vs hard TTL.** Store a \"fresh until\" timestamp inside the value with a longer real TTL. Past fresh-until, serve the stale value and refresh in the background. This is `stale-while-revalidate` (RFC 5861) applied to your own cache.\n- **Memory pressure is a second expiry.** Redis evicts according to `maxmemory-policy`. The default is `noeviction` (writes fail when full); caches usually want `allkeys-lru` or `allkeys-lfu`. Know which you run.\n\n## The layers, from browser to database\n```text\nbrowser memory/disk cache   Cache-Control, ETag; per user, free, you cannot purge it\nservice worker cache        app-controlled offline cache (Cache API)\nCDN / edge                  shared across users; s-maxage, surrogate keys, purge API\nreverse proxy / gateway     Varnish, Nginx proxy_cache, API gateway response cache\napplication in-process      LRU map in each instance; nanoseconds, but N copies\ndistributed cache           Redis / Memcached / Valkey; ~sub-ms on the same network\ndatabase                    query plan cache, buffer pool (Postgres shared_buffers), OS page cache\n```\n\nEach layer closer to the user is faster and cheaper per hit but **harder to invalidate** and more widely shared or more widely duplicated.\n\n**Browser.** Controlled by HTTP headers (RFC 9111; MDN and web.dev's HTTP cache guide are the best references). `Cache-Control: max-age=31536000, immutable` for fingerprinted assets; `no-cache` (which means \"store but revalidate every time\", not \"do not store\") plus an `ETag` for HTML; `no-store` for sensitive responses. You can never purge a user's browser cache, so only cache long what has a versioned URL.\n\n**CDN.** `s-maxage` overrides `max-age` for shared caches. `stale-while-revalidate` and `stale-if-error` let the edge serve something while refreshing or when the origin is down. Purge by URL or by tag (surrogate keys) when content changes. Never cache responses that depend on cookies or `Authorization` unless the cache key includes them; a CDN serving one user's account page to another is a classic incident.\n\n**In-process.** A small LRU in each app instance (`lru-cache` in Node) gives nanosecond hits and no network, which matters for very hot keys (config, feature flags, the top 100 products). The price: with 40 instances you have 40 copies that each expire independently, and you cannot invalidate them all without a broadcast (Redis pub/sub is a common way). Keep TTLs short.\n\n**Distributed cache.** Redis, Memcached or Valkey (the Linux Foundation fork created after Redis changed its licence in 2024). One shared copy, sub-millisecond on a local network, invalidatable from anywhere. This is where cache-aside usually lives. Facebook's \"Scaling Memcache at Facebook\" paper (NSDI 2013) is the classic read on running this layer at huge scale.\n\n**Database.** Postgres keeps hot pages in `shared_buffers` and leans on the OS page cache; MongoDB's WiredTiger has its own cache. Often the cheapest \"cache\" is an index or more RAM for the database, with zero consistency risk. Materialized views and read replicas are caches too, with their own staleness.\n\n## When not to cache\n- The data is cheap to compute and the source is not under load. A cache adds a network hop, a failure mode and a staleness bug for no gain.\n- Hit rate will be low: long-tail keys, per-request unique queries, highly personalised data. Measure the hit ratio; below roughly 50-60% think hard about whether it pays.\n- Correctness requires the latest value: balances, inventory reservation, permission checks right after a revoke. Read from the primary.\n- You are hiding a missing index. Fix the query first.\n\n## Common mistakes and debugging\n- **Caching without measuring.** Track hit ratio, miss latency, evictions and memory per key prefix. Redis `INFO stats` gives `keyspace_hits` / `keyspace_misses` and `evicted_keys`.\n- **Cache as a hard dependency.** A Redis timeout should degrade to a DB read with a short client timeout (tens of ms), not a 500. But also protect the DB from the sudden full load (see stampedes, and load-shedding).\n- **Unbounded keys.** Keys built from user input (`search:${q}`) without TTL fill memory and evict hot keys.\n- **Big values.** A 2 MB JSON blob per key costs serialization CPU and network on every hit. Cache the smaller projection you need.\n- **Forgetting the key includes everything the value depends on**: locale, tenant, user role, API version. Missing one means serving the wrong user the wrong data.\n- **Cold start after deploy or failover.** A new empty cache can send 20x normal traffic to the database. Warm critical keys or ramp traffic.\n\n## In the interview\n**What they probe:** whether you know caching is a consistency trade-off, not a free speed-up; whether you can pick a pattern for a given workload; and whether you think about failure (cold cache, cache down, stale data).\n\n**60-second answer outline:**\n1. Default to cache-aside with Redis: read cache, miss loads DB and sets with a TTL; writes commit to DB then delete the key.\n2. Write-through when reads right after writes must be fresh; write-behind only for loss-tolerant, write-heavy data like counters.\n3. TTL chosen from the business tolerance for staleness, with jitter, plus explicit invalidation for user-visible edits.\n4. Layer it: immutable assets at the browser/CDN, shared responses at the CDN with `s-maxage`, hot objects in Redis, tiny hot config in-process.\n5. Measure hit ratio and protect the database from misses (coalescing, stale-while-revalidate).\n\n**Follow-ups to expect:** what happens when Redis goes down; how you avoid serving stale data after an update; how you would cache a personalised feed; why delete instead of update on writes; how you size the cache (working set, not total data).",
+      "keyPoints": [
+        "Every cache trades freshness for speed; decide who fills it and how it learns the source changed",
+        "Cache-aside with delete-on-write is the safe default; write-behind only for loss-tolerant data such as counters",
+        "Choose TTLs from the business tolerance for staleness, add jitter, and keep explicit invalidation for user-visible edits",
+        "Layers closer to the user are faster but harder to invalidate: version URLs for anything cached in browsers",
+        "A cache that the database depends on to survive is load-bearing: plan for cold starts and cache outages"
+      ],
+      "interview": [
+        "Compare cache-aside, read-through, write-through and write-behind caching. When would you use each?",
+        "What layers of caching exist between a browser and a database, and what belongs in each?",
+        "How do you choose a TTL for a cached value?"
+      ],
+      "check": [
+        {
+          "q": "A view counter is incremented thousands of times per second and losing a few seconds of increments on a crash is acceptable. Which strategy fits best?",
+          "options": [
+            "Cache-aside with delete on write",
+            "Write-through",
+            "Write-behind with batched flushes",
+            "No cache, update the row directly"
+          ],
+          "answer": 2,
+          "why": "Write-behind absorbs the burst and coalesces many increments into one database write; the small loss window is acceptable for a counter."
+        },
+        {
+          "q": "What does `Cache-Control: no-cache` mean on an HTTP response?",
+          "options": [
+            "The response must never be stored",
+            "The response may be stored but must be revalidated with the origin before each use",
+            "Only CDNs may store it",
+            "It expires after one hour"
+          ],
+          "answer": 1,
+          "why": "no-cache means store but revalidate every time (typically with an ETag). no-store is the directive that forbids storing."
+        },
+        {
+          "q": "You warm a million Redis keys at deploy time, all with EX 3600. What problem should you expect an hour later, and what is the simplest fix?",
+          "options": [
+            "Memory fragmentation; restart Redis",
+            "Keys never expire; use PEXPIRE",
+            "Replication lag; add replicas",
+            "Mass simultaneous expiry spiking the database; add random jitter to each TTL"
+          ],
+          "answer": 3,
+          "why": "Identical TTLs expire together and every miss hits the database at once. Jitter spreads the expiry over time."
+        }
+      ],
+      "resources": [
+        {
+          "title": "AWS Builders' Library: Caching challenges and strategies",
+          "url": "https://aws.amazon.com/builders-library/caching-challenges-and-strategies/"
+        },
+        {
+          "title": "MDN: HTTP caching",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching"
+        },
+        {
+          "title": "web.dev: Prevent unnecessary network requests with the HTTP Cache",
+          "url": "https://web.dev/articles/http-cache"
+        },
+        {
+          "title": "RFC 9111: HTTP Caching",
+          "url": "https://datatracker.ietf.org/doc/html/rfc9111"
+        },
+        {
+          "title": "Scaling Memcache at Facebook (NSDI 2013)",
+          "url": "https://www.usenix.org/conference/nsdi13/technical-sessions/presentation/nishtala"
+        }
+      ]
+    },
+    {
+      "id": "cq-redis-patterns",
+      "track": "caching-queues",
+      "title": "Redis patterns: locks, leaderboards, rate limits, streams",
+      "minutes": 20,
+      "summary": "Redis data structures and the patterns built on them: distributed locks and why they are unsafe for correctness, leaderboards, rate limiters, Pub/Sub vs Streams, and persistence.",
+      "body": "## The core idea\nRedis is an in-memory data structure server. People call it \"a cache\", but the reason it shows up in so many designs is that it gives you **atomic operations on rich data structures** over the network: increment a counter, add to a sorted set, push to a list, append to a stream, all in one round trip with no races. Commands run one at a time on a single main thread (I/O threads help with network handling since Redis 6, but command execution is serial), so every individual command is atomic, and a Lua script or `MULTI/EXEC` block runs without interleaving.\n\nThat single property, plus sub-millisecond latency, is what makes Redis good at locks, rate limits, leaderboards, queues and session stores. The weakness is the flip side: data lives in RAM, persistence is optional and asynchronous by default, and replication is asynchronous, so Redis is not a system of record unless you configure and accept its durability limits.\n\nA note on the ecosystem in 2026: Redis changed licence in 2024, which led to **Valkey**, a Linux Foundation fork that is wire-compatible and is what several cloud providers now offer. Redis 8 added an AGPLv3 option. For interview purposes the commands and patterns below apply to both.\n\n## The data structures and what each is for\n| Type | Key commands | Typical use |\n|---|---|---|\n| String | `GET`, `SET ... NX PX`, `INCR`, `INCRBY` | cached blobs, counters, locks, idempotency keys |\n| Hash | `HSET`, `HGET`, `HINCRBY`, `HEXPIRE` (7.4+) | objects with fields, per-user counters, sessions |\n| List | `LPUSH`, `RPOP`, `BLMOVE`, `LTRIM` | simple queues, capped recent-items lists |\n| Set | `SADD`, `SISMEMBER`, `SINTER` | tags, unique visitors (small scale), \"who liked\" |\n| Sorted set | `ZADD`, `ZINCRBY`, `ZRANGE ... REV`, `ZRANK` | leaderboards, priority queues, sliding windows, delayed jobs |\n| Stream | `XADD`, `XREADGROUP`, `XACK`, `XAUTOCLAIM` | durable-ish event log with consumer groups |\n| HyperLogLog | `PFADD`, `PFCOUNT` | approximate unique counts in ~12 KB per key |\n| Bitmap / bitfield | `SETBIT`, `BITCOUNT` | daily active flags per user id |\n| Geo | `GEOADD`, `GEOSEARCH` | nearby drivers or stores |\n\nPick the structure that makes your operation a single command. A leaderboard in a JSON string means read-modify-write races; in a sorted set it is one `ZINCRBY`.\n\n## Pattern 1: distributed locks and their pitfalls\nThe basic single-instance lock:\n\n```text\nacquire:  SET lock:invoice:42 <random-token> NX PX 30000\n          -> OK  = you hold it for at most 30 s\n          -> nil = someone else holds it\nrelease:  delete only if the value is still your token (Lua, atomic)\n```\n\n```ts\nconst token = crypto.randomUUID();\nconst ok = await redis.set(\"lock:invoice:42\", token, { NX: true, PX: 30_000 });\nif (!ok) throw new Error(\"busy\");\ntry {\n  await generateInvoice(42);\n} finally {\n  // compare-and-delete must be atomic, otherwise you may delete a lock someone else now holds\n  await redis.eval(\n    `if redis.call(\"get\", KEYS[1]) == ARGV[1] then return redis.call(\"del\", KEYS[1]) else return 0 end`,\n    { keys: [\"lock:invoice:42\"], arguments: [token] },\n  );\n}\n```\n\nWhy the random token: if your work takes longer than 30 s, the lock expires, another worker acquires it, and your `finally` would delete *their* lock with a plain `DEL`.\n\n**The pitfalls, which is what the interviewer is actually asking about:**\n1. **Expiry vs long pauses.** A GC pause, a slow network call or a VM stall longer than the TTL means two holders at once. The process does not know it lost the lock.\n2. **Failover loses locks.** Replication is asynchronous. The primary acknowledges your `SET`, crashes before replicating, a replica is promoted without the key, and a second client acquires the \"same\" lock.\n3. **Redlock** (acquire on a majority of N independent Redis nodes within a time bound) addresses failover, but Martin Kleppmann's essay \"How to do distributed locking\" argues it still depends on timing assumptions (bounded pauses, clock drift) and cannot protect correctness. Salvatore Sanfilippo (antirez) published a rebuttal. The practical takeaway most engineers accept: **use Redis locks for efficiency (avoid doing the same work twice), not for correctness (never two writers).**\n4. **Fencing tokens** are the fix when correctness matters: the lock service hands out a monotonically increasing number, and the protected resource (the database, the storage service) rejects writes carrying an older token than one it has already seen. Redis `INCR` can generate the number, but the *resource* must check it. In SQL that can be a `WHERE fence < $token` condition on the update.\n\nIf you need a correct mutual-exclusion primitive, use something built on consensus (etcd, ZooKeeper, a database row lock with `SELECT ... FOR UPDATE`, or a Postgres advisory lock), and still prefer designs where the operation is idempotent so a double run is harmless.\n\n## Pattern 2: leaderboards\nA sorted set keeps members ordered by score with O(log N) updates and rank queries.\n\n```text\nZINCRBY lb:2026-10 50 player:981          # add 50 points\nZRANGE lb:2026-10 0 9 REV WITHSCORES      # top 10\nZREVRANK lb:2026-10 player:981            # my rank (0-based)\nZRANGE lb:2026-10 <rank-5> <rank+5> REV   # players around me\n```\n\nDesign notes:\n- **Ties**: sorted sets break ties lexicographically by member. To rank \"first to reach the score\" higher, encode time into the score, for example `score = points * 1e10 + (MAX_TS - achievedAtSeconds)`; keep it below 2^53 so the double stays exact.\n- **Time windows**: one key per period (`lb:daily:2026-10-04`) with a TTL, or `ZUNIONSTORE` to roll daily boards into weekly ones.\n- **Scale**: a single sorted set with tens of millions of members is fine memory-wise (roughly 100+ bytes per member, so plan GBs), but it lives on one shard and one CPU. For hundreds of millions of players or very high write rates, shard by region or bucket and merge the top-K of each shard for the global top list; exact global rank for everyone then becomes approximate or computed offline.\n- Redis is the serving layer; the authoritative scores live in the database or event log so you can rebuild the set.\n\n## Pattern 3: rate limiting\nThree common algorithms, all implementable atomically:\n\n**Fixed window**: `INCR rl:{user}:{minute}` then `EXPIRE` on first hit. Cheap, but allows 2x the limit across a window boundary.\n\n**Sliding window log**: a sorted set of request timestamps per user; remove entries older than the window, count, add. Exact, but memory grows with the limit.\n\n**Token bucket / GCRA**: store tokens and last refill time, refill based on elapsed time, take one if available. Smooth, allows controlled bursts, O(1) memory. Do it in Lua so read-compute-write is atomic:\n\n```ts\nconst tokenBucket = `\nlocal key = KEYS[1]\nlocal capacity = tonumber(ARGV[1])\nlocal refill_per_ms = tonumber(ARGV[2])\nlocal now = tonumber(ARGV[3])\nlocal b = redis.call(\"HMGET\", key, \"tokens\", \"ts\")\nlocal tokens = tonumber(b[1]) or capacity\nlocal ts = tonumber(b[2]) or now\ntokens = math.min(capacity, tokens + (now - ts) * refill_per_ms)\nlocal allowed = 0\nif tokens >= 1 then tokens = tokens - 1; allowed = 1 end\nredis.call(\"HSET\", key, \"tokens\", tokens, \"ts\", now)\nredis.call(\"PEXPIRE\", key, math.ceil(capacity / refill_per_ms))\nreturn allowed`;\n\nconst allowed = await redis.eval(tokenBucket, {\n  keys: [`rl:${userId}`],\n  arguments: [\"100\", String(100 / 60_000), String(Date.now())], // 100 per minute\n});\n```\n\nCaveat: passing `Date.now()` from many app servers means clock skew between them; you can call `redis.call(\"TIME\")` inside the script instead. Decide in advance what happens if Redis is unreachable: **fail open** (allow, protect availability) for most product limits, **fail closed** for abuse-sensitive endpoints like login or SMS sending.\n\n## Pattern 4: Pub/Sub vs Streams\n```text\nPUB/SUB                                 STREAMS\nPUBLISH chan msg                        XADD orders * id 42 status paid\n -> delivered to subscribers             -> appended to a log with an id like 1728021234567-0\n    connected right now                  XREADGROUP GROUP billing c1 COUNT 10 STREAMS orders >\n -> not stored; offline = missed         -> each message to one consumer in the group\n -> no ack, no replay                    XACK orders billing <id>; unacked stay in the PEL\n                                         XAUTOCLAIM to take over stuck messages; replay by id\n```\n\nUse **Pub/Sub** for ephemeral fan-out where missing a message is fine: cache-invalidation broadcasts to in-process caches, \"typing...\" indicators, pushing live updates to WebSocket servers that will resync on reconnect. Use **Streams** when consumers must not miss messages, work must be shared across workers with acknowledgements, or you need replay: lightweight job queues, activity feeds, change notifications. Streams are capped with `MAXLEN ~ N` or `MINID` trimming, so they are bounded memory, not infinite retention. For high-volume, long-retention, multi-team event logs, Kafka is the better tool.\n\n## Pattern 5: persistence and what \"durable\" means\n- **RDB**: point-in-time snapshots via fork + copy-on-write, e.g. every 5 minutes. Compact, fast restarts, but you lose everything since the last snapshot. The fork can briefly need extra memory on write-heavy instances.\n- **AOF**: append every write command to a log. `appendfsync everysec` (the common setting) loses up to about a second of writes on a crash; `always` fsyncs each write and is much slower; `no` leaves it to the OS. Redis 7 uses a multi-part AOF with background rewrites to keep it compact.\n- **Both**: common in production; on restart Redis loads the AOF because it is more complete.\n- **Replication** is asynchronous. `WAIT numreplicas timeout` blocks until replicas acknowledge, which narrows but does not eliminate the loss window on failover.\n\nSo Redis can be a primary store for data where losing a second of writes on a rare crash is acceptable (sessions, leaderboards, rate limit state, feature flags) and where the dataset fits in RAM. For orders or payments, keep the system of record in a database and treat Redis as derived.\n\n## Trade-offs and when not to use Redis\n- Data bigger than RAM, or needing secondary indexes and ad-hoc queries: use a database.\n- Strong consistency or correct locking: use consensus-backed systems or database transactions.\n- Large values and `KEYS *` style scans block the single command thread; one 50 ms command delays every client. Use `SCAN`, keep values small, and watch `SLOWLOG`.\n- In Redis Cluster, multi-key commands and Lua scripts must touch keys in one hash slot. Use hash tags: `rl:{user42}:a` and `rl:{user42}:b` share a slot.\n\n## Common mistakes and debugging\n- Plain `DEL` to release a lock (deletes someone else's lock after expiry).\n- `SETNX` followed by a separate `EXPIRE`: a crash in between leaves a lock that never expires. Use `SET ... NX PX` in one command.\n- Hot keys: one celebrity's counter on one shard. Split into N sub-keys and sum, or cache it in-process.\n- No `maxmemory` or the wrong eviction policy: either OOM or silently evicting the lock and rate-limit keys you needed. Separate cache Redis from \"state\" Redis if their eviction needs differ.\n- Tools: `INFO`, `SLOWLOG GET`, `LATENCY DOCTOR`, `MEMORY USAGE key`, `redis-cli --bigkeys` and `--hotkeys` (needs an LFU policy).\n\n## In the interview\n**What they probe:** do you know Redis's atomicity model and its durability limits; can you implement a lock and then explain why it is not safe for correctness; can you pick the right data structure.\n\n**60-second answer outline (lock question):** `SET key token NX PX ttl`, release with a Lua compare-and-delete. Then the pitfalls: pauses longer than the TTL, async replication losing the lock on failover, Redlock's timing assumptions per Kleppmann's critique. Conclude: fine for efficiency, and for correctness add fencing tokens checked by the resource, or use a database lock, and make the work idempotent.\n\n**Follow-ups to expect:** how to extend a lock for long work (a watchdog renewing the TTL while the token matches); leaderboard ties and windows; fail-open vs fail-closed rate limits; when Streams beat Pub/Sub and when Kafka beats Streams; what you lose with `appendfsync everysec`.",
+      "keyPoints": [
+        "Redis executes commands one at a time, so single commands, Lua scripts and MULTI/EXEC blocks are atomic",
+        "Lock with SET key token NX PX ttl and release with a compare-and-delete script; use it for efficiency, not correctness",
+        "When correctness matters, use fencing tokens checked by the resource, or a database or consensus-backed lock",
+        "Sorted sets give O(log N) leaderboards and sliding windows; token buckets in Lua give smooth rate limits",
+        "Pub/Sub is fire-and-forget; Streams store messages with consumer groups, acks and replay",
+        "Persistence (RDB, AOF everysec) and replication are asynchronous: expect to lose about a second on a crash"
+      ],
+      "interview": [
+        "How would you implement a distributed lock with Redis, and what are its pitfalls?",
+        "Design a real-time leaderboard for millions of players using Redis.",
+        "Implement a rate limiter with Redis. Which algorithm would you pick and why?",
+        "Redis Pub/Sub vs Redis Streams: when would you use each?"
+      ],
+      "check": [
+        {
+          "q": "Why must a Redis lock be released with a compare-and-delete script instead of a plain DEL?",
+          "options": [
+            "DEL is slower than a Lua script",
+            "If your lock expired and another client acquired it, DEL would remove their lock",
+            "DEL does not work on keys with a TTL",
+            "Lua scripts are replicated synchronously"
+          ],
+          "answer": 1,
+          "why": "The random token identifies the holder. Checking it atomically before deleting ensures you only remove a lock you still own."
+        },
+        {
+          "q": "A Redis primary acknowledges SET lock NX, then crashes before replicating, and a replica is promoted. What can happen?",
+          "options": [
+            "Nothing; Redis replication is synchronous",
+            "The lock is restored from the AOF on the replica",
+            "Another client can acquire the same lock, so two clients believe they hold it",
+            "The promoted replica rejects all lock requests"
+          ],
+          "answer": 2,
+          "why": "Redis replication is asynchronous, so the replica may never have seen the key. This is one reason Redis locks are not safe for correctness."
+        },
+        {
+          "q": "Workers must share a stream of tasks, acknowledge each one, and pick up messages left by a crashed worker. Which Redis feature fits?",
+          "options": [
+            "Pub/Sub channels",
+            "A sorted set polled every second",
+            "Keyspace notifications",
+            "Streams with consumer groups, XACK and XAUTOCLAIM"
+          ],
+          "answer": 3,
+          "why": "Consumer groups distribute messages, track unacknowledged ones in the pending entries list, and XAUTOCLAIM lets another consumer take over stuck messages."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Redis docs: data types",
+          "url": "https://redis.io/docs/latest/develop/data-types/"
+        },
+        {
+          "title": "Martin Kleppmann: How to do distributed locking",
+          "url": "https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"
+        },
+        {
+          "title": "Redis docs: Streams",
+          "url": "https://redis.io/docs/latest/develop/data-types/streams/"
+        },
+        {
+          "title": "Redis docs: persistence (RDB and AOF)",
+          "url": "https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/"
+        },
+        {
+          "title": "Stripe: Scaling your API with rate limiters",
+          "url": "https://stripe.com/blog/rate-limiters"
+        }
+      ]
+    },
+    {
+      "id": "cq-cache-invalidation",
+      "track": "caching-queues",
+      "title": "Cache invalidation and stampede protection",
+      "minutes": 18,
+      "summary": "The races that leave caches stale, stampedes and dogpiling, request coalescing, stale-while-revalidate, probabilistic early refresh, versioned keys and CDC-driven invalidation.",
+      "body": "## The core idea\nInvalidation is how a cache learns that its copy is wrong. It is hard for two separate reasons, and interviewers like to see that you can name both:\n\n1. **Correctness under concurrency.** Reads and writes to the database and the cache are separate operations with no shared transaction. Interleave them badly and the cache holds an old value indefinitely, even though every step \"worked\".\n2. **Load under expiry.** When a popular key disappears, every request that misses at the same moment goes to the database together. That is a **stampede** (also called thundering herd or dogpile), and it can take down the database the cache was protecting.\n\nThe tools in this lesson: delete-on-write, versioned keys, leases and request coalescing, early probabilistic refresh, stale-while-revalidate, and change-data-capture (CDC) driven invalidation.\n\n## Why delete, and why after the commit\nThe two naive write orders both have races.\n\n```text\nRace A: \"update cache, then DB\"          Race B: \"update DB, then SET cache\" (two writers)\nW1: SET k = v1                           W1: DB = v1\nW1: DB write fails -> cache lies         W2: DB = v2\n                                         W2: SET k = v2\n                                         W1: SET k = v1   <- cache now v1, DB v2, until TTL\n```\n\nDeleting instead of setting fixes the writer-writer race, because a delete is idempotent and order-insensitive. The remaining race is reader vs writer:\n\n```text\nRace C: cache-aside with delete\nR:  GET k -> miss\nR:  SELECT -> v1            (slow reader)\nW:  UPDATE DB = v2\nW:  DEL k\nR:  SET k = v1              <- stale value written back after the delete\n```\n\nRace C needs a miss, a slow read and a write all inside a small window, so it is rare, but on hot keys at scale \"rare\" happens daily. Mitigations, from simplest:\n- **Short TTL as a backstop**, so the damage is bounded.\n- **Delayed double delete**: delete, then delete again a few hundred ms later. Crude but shrinks the window.\n- **Set only if absent and versioned**: store the row's version or `updated_at` with the value and refuse to overwrite a newer one (a Lua compare on version).\n- **Leases**, from Facebook's memcache paper: on a miss the cache hands the client a lease token; a later delete invalidates the token; the client's `SET` is rejected if its lease was invalidated. This kills Race C and also rate-limits who may fill the key.\n\nAlways delete **after** the database transaction commits. Deleting before the commit lets a reader repopulate from the old row while your transaction is still open.\n\n## Stampedes, dogpiling and how to stop them\n```text\nt=0     hot key expires\nt=0+    2,000 requests miss at once\n        -> 2,000 identical SELECTs (each 80 ms under load, then slower)\n        -> DB CPU 100%, connection pool exhausted, timeouts, retries make it worse\n```\n\n### 1. Request coalescing (single-flight)\nMake concurrent misses for the same key share one load. In one process this is a map of in-flight promises:\n\n```ts\nconst inflight = new Map<string, Promise<unknown>>();\n\nasync function singleFlight<T>(key: string, load: () => Promise<T>): Promise<T> {\n  const existing = inflight.get(key);\n  if (existing) return existing as Promise<T>;\n  const p = load().finally(() => inflight.delete(key));\n  inflight.set(key, p);\n  return p;\n}\n\n// 2,000 concurrent misses in this instance -> 1 DB query\nconst product = await singleFlight(`product:${id}`, () => loadAndCache(id));\n```\n\nWith 50 app instances that still means up to 50 loads, which is usually fine. Go's `golang.org/x/sync/singleflight` is the well-known implementation; CDNs do the same thing (\"request collapsing\") for origin fetches.\n\n### 2. A distributed rebuild lock\nAcross instances, the first misser takes `SET rebuild:k token NX PX 5000`, loads and fills; others either wait briefly and re-read the cache, or serve a stale copy. Since this lock only prevents duplicate work, the Redis lock caveats are acceptable here.\n\n### 3. Serve stale while revalidating\nKeep the value past its logical expiry. Store `{ value, freshUntil }` with a longer physical TTL. When a reader sees it is past `freshUntil`, it returns the stale value immediately and triggers one background refresh (guarded by the rebuild lock). Users never wait and the database sees one query. This is the same idea as HTTP `stale-while-revalidate` from RFC 5861 and Next.js's revalidation model.\n\n### 4. Probabilistic early expiration (XFetch)\nVattani, Chierichetti and Lowenstein (\"Optimal Probabilistic Cache Stampede Prevention\", VLDB 2015) proposed letting each reader independently decide to refresh *slightly before* expiry, with probability rising as expiry approaches:\n\n```ts\n// delta = how long the last recompute took (ms); beta > 1 refreshes earlier (default 1)\nfunction shouldRefreshEarly(expiresAt: number, deltaMs: number, beta = 1): boolean {\n  return Date.now() - deltaMs * beta * Math.log(Math.random()) >= expiresAt;\n}\n```\n\n`Math.log(Math.random())` is negative, so the left side is \"now plus a random amount scaled by recompute cost\". Expensive keys start refreshing earlier. No coordination needed.\n\n### 5. Jitter and warm-up\nRandom TTL jitter avoids synchronised mass expiry. After deploys or cache failover, warm the top-N keys before sending full traffic.\n\n## Versioned keys\nInstead of deleting keys, change the key name so old entries are simply never read again and age out by TTL or eviction.\n\n- **Per-entity version**: `user:42:v17`. The current version number lives in the database row or in a small Redis counter. Readers fetch the version then the value (two lookups, or embed the version in the parent object).\n- **Namespace / generation counters**: to invalidate \"everything about tenant 9\" (hundreds of keys, unknown names), keep `gen:tenant:9 = 31` and build keys as `t9:g31:report:...`. `INCR gen:tenant:9` invalidates all of them at once in O(1). This is the classic trick for cache sets you cannot enumerate.\n- **Schema versions**: `product:v2:{id}` when you change the serialized shape, so old and new code running side by side during a deploy do not read each other's format.\n- **Content hashes in URLs**: `app.3f9a2c.js` is a versioned key at the browser and CDN layer, which is why you can cache it for a year with `immutable`.\n\nCosts: orphaned entries consume memory until evicted (fine with an LRU/LFU policy and TTLs), and the version lookup is an extra read unless it travels with something you already loaded.\n\n## CDC-based invalidation\nApplication-level `DEL` after every write has a reliability hole: if the process crashes between commit and delete, or a developer forgets the delete in one code path, or someone runs a migration or manual SQL, the cache is stale until TTL.\n\nChange data capture moves invalidation to the database's own commit log:\n\n```text\napp -> Postgres (commit)\n          |\n          +-- WAL (logical replication) --> Debezium / custom reader --> Kafka topic \"db.public.users\"\n                                                                           |\n                                                     invalidator consumer: DEL user:v1:{id}\n                                                                           |\n                                                     optional: pub/sub to purge in-process caches\n```\n\nEvery committed change, from any writer, produces an event in commit order, so invalidation cannot be forgotten and survives app crashes (the consumer resumes from its offset). Facebook described this in the memcache paper: a daemon (mcsqueal) tails the MySQL commit log and broadcasts deletes, including to other regions. MongoDB change streams and DynamoDB Streams give the same hook.\n\nTrade-offs: more infrastructure (a connector, a log, a consumer to operate); invalidation is asynchronous, so there is a lag of tens to hundreds of ms where reads may be stale (so you may still delete inline for read-your-writes and use CDC as the guaranteed backstop); and you must map table rows to the cache keys that depend on them, which gets hard for cached aggregates and joined views.\n\n## Choosing an approach\n| Situation | Approach |\n|---|---|\n| Simple entity cache, moderate traffic | cache-aside, delete after commit, TTL backstop |\n| Hot keys with expensive recompute | stale-while-revalidate + rebuild lock, or XFetch |\n| Many keys invalidated by one change | generation counter in the key |\n| Many writers, migrations, must never miss an invalidation | CDC consumer deleting keys |\n| User must see own edit instantly | inline delete (or bypass cache for that user briefly) plus CDC backstop |\n\n## Common mistakes and debugging\n- Deleting before the transaction commits, or inside it (rollback leaves an unnecessary miss; commit race leaves stale data).\n- Setting the cache from the write path with the value you *think* you wrote, while triggers or defaults changed the stored row.\n- Invalidating the entity key but not the list or aggregate keys that include it (`user:42` deleted, `team:7:members` still shows the old name). Track dependencies or use generation counters.\n- Retry storms: clients retrying timed-out reads during a stampede multiply load. Use backoff with jitter and coalescing.\n- Debugging stale reads: log cache sets with the source version; compare cache value version to DB version; check consumer lag on the CDC pipeline; check whether the stale value came from an in-process layer that never got the broadcast.\n\n## In the interview\n**What they probe:** whether you know the concrete races (not just \"cache invalidation is hard\"), whether you can stop a stampede, and whether you can make invalidation reliable across many writers.\n\n**60-second answer outline (consistency question):** cache-aside with delete after commit, because delete is idempotent and avoids writer races; a TTL bounds residual staleness; the reader-writer race is closed with versioned sets or leases; for reliability across all writers, drive deletes from CDC on the WAL; for hot keys, coalesce misses and serve stale while one worker refreshes. Then state the guarantee you end up with: eventually consistent within the CDC lag, read-your-writes for the writer.\n\n**Follow-ups to expect:** what if the delete fails (retry, or rely on CDC); how to invalidate a list that contains the entity; how XFetch works; how a CDN purge fits in; why not just use write-through.",
+      "keyPoints": [
+        "Delete the cache key after the transaction commits; deletes are idempotent, sets race with each other",
+        "A slow reader can write an old value back after a delete; versioned sets or leases close that window",
+        "Stop stampedes with request coalescing, a rebuild lock, stale-while-revalidate, jitter or XFetch early refresh",
+        "Generation counters in key names invalidate whole groups of keys in O(1)",
+        "CDC on the database log makes invalidation impossible to forget, at the cost of async lag and more infrastructure"
+      ],
+      "interview": [
+        "What is a cache stampede and how do you prevent it?",
+        "How do you keep a cache consistent with the database when data changes?",
+        "What are versioned cache keys and when would you use them?"
+      ],
+      "check": [
+        {
+          "q": "Two writers update the database then SET the cache with their new value. What can go wrong?",
+          "options": [
+            "Nothing, the last writer to the DB also writes the cache last",
+            "The cache writes can land in the opposite order, leaving the older value cached until the TTL",
+            "Redis rejects the second SET",
+            "The database deadlocks"
+          ],
+          "answer": 1,
+          "why": "DB order and cache order are independent. Deleting instead of setting avoids this because deletes are order-insensitive."
+        },
+        {
+          "q": "You need to invalidate every cached report for tenant 9, but you cannot list the keys. What is the cheapest approach?",
+          "options": [
+            "Run KEYS t9:* and delete the results",
+            "Flush the whole Redis instance",
+            "Lower the TTL on all keys to one second",
+            "Include a per-tenant generation number in each key and increment it"
+          ],
+          "answer": 3,
+          "why": "Incrementing the generation counter makes all old keys unreachable in O(1); they age out by TTL or eviction. KEYS blocks Redis and does not scale."
+        },
+        {
+          "q": "What is the main advantage of driving cache invalidation from change data capture on the database log?",
+          "options": [
+            "Every committed change from any writer triggers invalidation, even if the app crashes after commit",
+            "Invalidation becomes synchronous with the write",
+            "It removes the need for TTLs on read-heavy keys",
+            "It makes cache reads faster"
+          ],
+          "answer": 0,
+          "why": "The commit log captures all writes, including migrations and other services, and the consumer resumes from its offset. It is asynchronous, so a lag remains."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Scaling Memcache at Facebook (NSDI 2013): leases and mcsqueal",
+          "url": "https://www.usenix.org/conference/nsdi13/technical-sessions/presentation/nishtala"
+        },
+        {
+          "title": "Optimal Probabilistic Cache Stampede Prevention (VLDB 2015)",
+          "url": "https://www.vldb.org/pvldb/vol8/p886-vattani.pdf"
+        },
+        {
+          "title": "RFC 5861: HTTP Cache-Control extensions for stale content",
+          "url": "https://datatracker.ietf.org/doc/html/rfc5861"
+        },
+        {
+          "title": "Debezium documentation",
+          "url": "https://debezium.io/documentation/reference/stable/index.html"
+        },
+        {
+          "title": "AWS Builders' Library: Caching challenges and strategies",
+          "url": "https://aws.amazon.com/builders-library/caching-challenges-and-strategies/"
+        }
+      ]
+    },
+    {
+      "id": "cq-queues-basics",
+      "track": "caching-queues",
+      "title": "Message queues: delivery, acks, DLQs and backpressure",
+      "minutes": 18,
+      "summary": "Point-to-point vs pub/sub, how SQS and RabbitMQ differ, visibility timeouts and acknowledgements, retries and dead-letter queues, and handling producers faster than consumers.",
+      "body": "## The core idea\nA message queue lets one part of a system hand work or news to another **without waiting for it** and **without both being up at the same time**. The producer writes a message to a broker and moves on; consumers read it when they can. That buys you three things: lower request latency (do the slow part later), resilience (a consumer outage becomes a backlog, not an error) and load levelling (a spike of 10,000 requests becomes a queue drained at a steady rate).\n\nIt also costs you three things you must design for: messages can be delivered **more than once**, can arrive **out of order**, and the work is **eventually** done rather than done now. Most of this lesson is about handling those costs: acknowledgements, visibility timeouts, retries, dead-letter queues and backpressure.\n\n## Point-to-point vs publish/subscribe\n```text\nPOINT-TO-POINT (work queue)                 PUBLISH/SUBSCRIBE (fan-out)\nproducer -> [ queue ] -> worker A           producer -> [ topic/exchange ]\n                      -> worker B                          |-> queue: email service\n                      -> worker C                          |-> queue: analytics\neach message handled by ONE worker                         |-> queue: search indexer\n(competing consumers, scales by adding workers)  each SUBSCRIBER gets its own copy\n```\n\n- **Point-to-point**: a queue with competing consumers. Use it for *commands* and *work*: \"resize this image\", \"send this email\". Adding workers increases throughput.\n- **Pub/sub**: the producer publishes once and every interested subscriber gets a copy. Use it for *events*: \"order 42 was paid\", and let billing, email and analytics each react. The producer does not know the subscribers.\n\nIn practice you combine them: SNS topic fanning out to one SQS queue per service, a RabbitMQ fanout or topic exchange bound to several queues, or a Kafka topic read by several consumer groups (each group is a subscriber; consumers inside a group compete).\n\n## SQS and RabbitMQ: the two models you should know\n**Amazon SQS** is a fully managed queue. Consumers **poll** (`ReceiveMessage`, long polling up to 20 s wait). There is no broker to run and it scales horizontally without capacity planning. Two types:\n- **Standard**: at-least-once delivery, best-effort ordering, very high throughput.\n- **FIFO**: ordering within a *message group id*, and deduplication of sends with the same deduplication id within a 5-minute window. Lower throughput limits than standard (check the current quotas), and one slow message blocks its group.\n\n**RabbitMQ** is an AMQP broker you run (or buy managed). Producers publish to **exchanges** (direct, topic, fanout, headers) that route to **queues** by binding keys; the broker **pushes** messages to consumers, limited by the consumer's **prefetch** (`basic.qos`). Consumers `ack` or `nack` each delivery. Use **quorum queues** (Raft-replicated) for durability; classic mirrored queues were removed in RabbitMQ 4.0. Publisher confirms tell the producer the broker has safely stored the message.\n\n| | SQS | RabbitMQ |\n|---|---|---|\n| Ops | none, managed | you run a cluster (or managed) |\n| Delivery | pull, long polling | push with prefetch |\n| Routing | basic; fan-out via SNS/EventBridge | rich exchanges and bindings |\n| Ordering | FIFO per group | per queue, with one consumer |\n| Redelivery trigger | visibility timeout expires | channel/connection closes, or nack |\n| Retention | up to 14 days | until consumed (or TTL) |\n\n## Acks and visibility timeouts\nThe broker cannot know whether a consumer finished, so delivery is a lease, not a hand-off.\n\n```text\nSQS\nt=0    ReceiveMessage -> msg M (receipt handle), M becomes INVISIBLE for 30 s (default)\nt=12   worker finishes -> DeleteMessage(receipt handle)       -> done\n       ...or...\nt=12   worker crashes\nt=30   timeout expires -> M visible again -> another worker receives it (ApproximateReceiveCount = 2)\n```\n\nConsequences:\n- **Delete only after the work is done**, never on receive. Deleting first turns crashes into lost messages (at-most-once).\n- Set the visibility timeout above your worst-case processing time (AWS suggests a margin; the maximum is 12 hours). For variable-length work, extend it while working with `ChangeMessageVisibility` as a heartbeat.\n- If the timeout is too short, a slow but healthy worker's message is redelivered to a second worker and **both process it**. Duplicates are therefore normal, which is why consumers must be idempotent (see the idempotency lesson).\n\nRabbitMQ has no timer by default; an unacked message is redelivered when the consumer's channel or connection closes (with the `redelivered` flag set). A consumer that hangs while holding its connection blocks those messages. RabbitMQ does enforce a delivery acknowledgement timeout (30 minutes by default) after which it closes the channel.\n\n## Retries and dead-letter queues\nSome messages will never succeed: malformed payloads, a reference to a deleted record, a bug. Without a limit they are redelivered forever, burn capacity and in FIFO queues block everything behind them. These are **poison messages**.\n\nA **dead-letter queue (DLQ)** catches messages that failed too many times:\n- SQS: a **redrive policy** on the source queue with `maxReceiveCount` (e.g. 5) and the DLQ's ARN. After the 5th receive without delete, SQS moves the message. SQS also offers redrive back to the source queue once you have fixed the bug.\n- RabbitMQ: a **dead-letter exchange** (`x-dead-letter-exchange`) receives messages that are rejected without requeue, expire by TTL, or exceed a quorum queue's `delivery-limit`.\n\n```ts\n// SQS consumer loop sketch (AWS SDK v3)\nfor (;;) {\n  const { Messages = [] } = await sqs.send(new ReceiveMessageCommand({\n    QueueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 20, VisibilityTimeout: 60,\n  }));\n  await Promise.all(Messages.map(async (m) => {\n    try {\n      await handle(JSON.parse(m.Body!));          // must be idempotent\n      await sqs.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: m.ReceiptHandle! }));\n    } catch (err) {\n      log.warn({ id: m.MessageId, err }, \"will retry after visibility timeout\");\n      // do not delete: SQS redelivers; after maxReceiveCount it goes to the DLQ\n    }\n  }));\n}\n```\n\nOperating a DLQ:\n- **Alarm on DLQ depth > 0.** A DLQ nobody watches is a slow data-loss bug.\n- Store enough context (original message, error, attempt count, timestamps) to diagnose.\n- Have a replay tool, and make sure replay is safe (idempotent consumers again).\n- Distinguish **transient** errors (timeouts, 503s: retry with exponential backoff and jitter) from **permanent** ones (validation failure: dead-letter immediately, retrying cannot help).\n- Delayed retries: SQS can delay by changing the visibility timeout on failure; RabbitMQ uses TTL'd retry queues that dead-letter back to the main queue, or the delayed-message plugin.\n\n## Backpressure\nBackpressure is any mechanism by which a slow consumer slows down or rejects the producer, instead of letting work pile up without bound. A queue *absorbs* bursts, but if the arrival rate stays above the processing rate, the backlog grows forever, latency grows with it (Little's law: wait time = queue length / throughput), and eventually memory, disk or message retention runs out.\n\nThe AWS Builders' Library article \"Avoiding insurmountable queue backlogs\" is the best practical read here: once a backlog is large, the oldest messages may already be useless (a \"your ride is here\" push from 40 minutes ago), and draining in FIFO order means every customer gets a bad experience.\n\nTools, from consumer side to producer side:\n- **Bounded concurrency at the consumer**: prefetch in RabbitMQ, `MaxNumberOfMessages` and worker pool size in SQS, `max.poll.records` in Kafka. The consumer pulls only what it can process.\n- **Autoscale consumers on lag** (queue depth, age of oldest message), with a ceiling set by what the downstream database can take. Scaling workers past the DB's capacity just moves the bottleneck.\n- **Bounded queues and rejection**: RabbitMQ `x-max-length` with `reject-publish` overflow; the producer gets a nack and returns 429/503 to its caller. Shedding at the edge is better than accepting work you cannot finish.\n- **Drop or degrade**: TTLs on messages that are worthless when old; sample analytics events; prioritise paid customers or interactive work over batch.\n- **Separate queues per workload or tenant** so one noisy producer cannot starve everyone (shuffle sharding is the AWS term).\n- **Producer-side rate limits** and circuit breakers when downstream signals overload.\n\nIn-process, the same idea appears as Node.js stream `highWaterMark` and `write()` returning false, or a bounded channel in Go.\n\n## When not to use a queue\n- The caller needs the result now (a price quote, a login). A synchronous call with a timeout is simpler.\n- Strict global ordering across all messages at high throughput: queues give you per-queue or per-group order only.\n- As a database: messages are for moving work, not for querying state.\n- Very small systems: a `jobs` table polled with `SELECT ... FOR UPDATE SKIP LOCKED` in the database you already have is often enough (see background jobs).\n\n## Common mistakes and debugging\n- Acknowledging before processing (silent loss) or never acknowledging on a code path (infinite redelivery).\n- Visibility timeout shorter than processing time: duplicate processing that looks like \"random double emails\".\n- No DLQ, or a DLQ with no alarm.\n- Retrying immediately in a tight loop against a failing dependency, amplifying the outage.\n- Monitoring queue depth only. **Age of the oldest message** (SQS `ApproximateAgeOfOldestMessage`) tells you whether you are meeting your latency promise.\n- Huge messages: put the payload in object storage and send a pointer (the claim-check pattern).\n\n## In the interview\n**What they probe:** you understand at-least-once delivery and its consequences, you can explain the lease/ack mechanism, you know how to handle failure (retries, DLQs) and overload (backpressure).\n\n**60-second answer outline (consumer crash question):** SQS hides a received message for the visibility timeout; the consumer deletes it only after success; if it crashes the message reappears and another worker processes it, so handlers must be idempotent; after `maxReceiveCount` the redrive policy moves it to a DLQ that we alarm on; long jobs extend visibility as a heartbeat.\n\n**Follow-ups to expect:** what happens if processing is slower than the timeout; FIFO vs standard; how you would replay a DLQ safely; how to autoscale workers; what to do when the backlog is hours deep.",
+      "keyPoints": [
+        "Work queues give each message to one competing consumer; pub/sub gives each subscriber its own copy",
+        "Delivery is a lease: acknowledge or delete only after the work succeeds, so crashes cause redelivery, not loss",
+        "Redelivery means duplicates are normal; consumers must be idempotent",
+        "Cap retries and route poison messages to a dead-letter queue that you alarm on and can replay",
+        "Backpressure means bounding work in flight and shedding or slowing producers before the backlog becomes insurmountable"
+      ],
+      "interview": [
+        "What is the difference between a message queue and pub/sub?",
+        "Explain SQS visibility timeouts and what happens when a consumer crashes mid-message.",
+        "What is a dead-letter queue and how should you operate one?",
+        "How do you handle backpressure when producers are faster than consumers?"
+      ],
+      "check": [
+        {
+          "q": "An SQS consumer takes 90 seconds per message but the visibility timeout is 30 seconds. What is the likely symptom?",
+          "options": [
+            "Messages are lost",
+            "The same message is processed by more than one worker",
+            "SQS rejects the ReceiveMessage call",
+            "Messages move to the DLQ on first receive"
+          ],
+          "answer": 1,
+          "why": "The message becomes visible again while the first worker is still processing it, so another worker receives it too."
+        },
+        {
+          "q": "Which metric best tells you whether a queue is meeting its latency promise to users?",
+          "options": [
+            "Number of consumers",
+            "Messages sent per second",
+            "Age of the oldest message in the queue",
+            "Broker CPU usage"
+          ],
+          "answer": 2,
+          "why": "Depth alone hides how long work waits. The age of the oldest message directly measures the delay users experience."
+        },
+        {
+          "q": "A message fails validation on every attempt. What should the consumer do?",
+          "options": [
+            "Send it to the dead-letter queue (or reject without requeue) since retrying cannot help",
+            "Retry it immediately in a loop until it succeeds",
+            "Acknowledge it and drop it silently",
+            "Increase the visibility timeout to 12 hours"
+          ],
+          "answer": 0,
+          "why": "Permanent errors should be dead-lettered with context for diagnosis; retries only waste capacity and block FIFO groups."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Amazon SQS visibility timeout",
+          "url": "https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html"
+        },
+        {
+          "title": "Amazon SQS dead-letter queues",
+          "url": "https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html"
+        },
+        {
+          "title": "RabbitMQ: consumer acknowledgements and publisher confirms",
+          "url": "https://www.rabbitmq.com/docs/confirms"
+        },
+        {
+          "title": "AWS Builders' Library: Avoiding insurmountable queue backlogs",
+          "url": "https://aws.amazon.com/builders-library/avoiding-insurmountable-queue-backlogs/"
+        },
+        {
+          "title": "Enterprise Integration Patterns: messaging",
+          "url": "https://www.enterpriseintegrationpatterns.com/patterns/messaging/"
+        }
+      ]
+    },
+    {
+      "id": "cq-kafka",
+      "track": "caching-queues",
+      "title": "Kafka: logs, partitions, consumer groups and exactly-once",
+      "minutes": 20,
+      "summary": "Kafka as a replicated log: partitions and keys, consumer groups and offsets, ordering, durability settings, retention and compaction, and what exactly-once semantics really covers.",
+      "body": "## The core idea\nKafka is a **distributed, replicated, append-only log**. Producers append records to the end; consumers read from a position (an **offset**) they choose and remember. Reading does not delete anything; records stay until a retention policy removes them. That is the key difference from a classic queue: in RabbitMQ or SQS a message is gone once acknowledged; in Kafka many independent readers can read the same records at their own pace, and any of them can rewind and replay.\n\nJay Kreps's essay \"The Log: What every software engineer should know about real-time data's unifying abstraction\" (LinkedIn engineering, 2013) is the best explanation of why this abstraction is so useful: a log is a totally ordered, replayable history that any number of systems can derive state from.\n\n## The pieces\n```text\ntopic \"orders\" (3 partitions, replication factor 3)\n\npartition 0: [0][1][2][3][4][5][6]      leader on broker 1, followers on 2 and 3\npartition 1: [0][1][2][3]               leader on broker 2\npartition 2: [0][1][2][3][4]            leader on broker 3\n                              ^ append\n\nconsumer group \"billing\":   c1 <- p0, p1      c2 <- p2\nconsumer group \"analytics\": a1 <- p0, p1, p2   (independent offsets, same data)\n```\n\n- **Topic**: a named stream of records, split into **partitions**.\n- **Partition**: one ordered log, the unit of parallelism, ordering and replication. Each record has an offset, increasing within the partition. There is **no ordering across partitions**.\n- **Broker**: a server storing partitions. Each partition has one **leader** (handles reads and writes) and followers that replicate it. Followers that are caught up form the **in-sync replica set (ISR)**.\n- **Controller / metadata**: Kafka now manages its own metadata with **KRaft** (a Raft-based quorum). ZooKeeper mode was deprecated and removed entirely in Kafka 4.0 (2025).\n- **Record**: key, value, headers, timestamp. The **key decides the partition**: the default partitioner hashes the key (murmur2) modulo the partition count, so all records with the same key land in the same partition, in order. Records with no key are spread across partitions in batches.\n- **Consumer group**: a set of consumers sharing a group id. Each partition is assigned to **exactly one consumer in the group**, so a group gives you competing consumers, and multiple groups give you pub/sub. More consumers than partitions means idle consumers: **partition count caps a group's parallelism**.\n- **Offsets**: each group commits, per partition, the offset of the next record it will read, into the internal `__consumer_offsets` topic. On restart or rebalance, a consumer resumes from the committed offset.\n\n## Writing: durability settings\n```text\nproducer --batch--> leader of partition p --replicate--> followers in ISR\n  acks=0    don't wait (fast, may lose)\n  acks=1    leader wrote it (lost if leader dies before followers copy)\n  acks=all  all in-sync replicas have it; with min.insync.replicas=2 and RF=3,\n            survives one broker loss without losing acknowledged writes\n```\n\nSince Kafka 3.0 the producer defaults are `acks=all` and `enable.idempotence=true`. The idempotent producer gets a producer id and sequence numbers per partition, so the broker discards duplicates caused by the producer's own retries and keeps per-partition order. Typical durable config: replication factor 3, `min.insync.replicas=2`, `acks=all`, and `unclean.leader.election.enable=false` (the default) so an out-of-date replica is never promoted.\n\nBatching (`linger.ms`, `batch.size`) and compression (zstd, lz4) are why Kafka reaches high throughput: it writes large sequential chunks and relies on the OS page cache, and consumers read with zero-copy transfers.\n\n## Reading: offsets and delivery semantics\nThe order of \"process\" and \"commit\" decides your semantics:\n\n```ts\n// kafkajs-style consumer, manual commits for at-least-once\nawait consumer.subscribe({ topic: \"orders\" });\nawait consumer.run({\n  autoCommit: false,\n  eachMessage: async ({ topic, partition, message }) => {\n    await handleOrderEvent(JSON.parse(message.value!.toString())); // idempotent!\n    await consumer.commitOffsets([\n      { topic, partition, offset: (BigInt(message.offset) + 1n).toString() },\n    ]);\n  },\n});\n```\n\n- Commit **after** processing: crash between the two means the record is processed again on restart. **At-least-once**, the usual choice.\n- Commit **before** processing: crash means the record is skipped. **At-most-once**.\n- Auto-commit (`enable.auto.commit=true`, every 5 s by default) commits offsets in the background for records returned by poll, which can produce either duplicates or, if you hand records off to other threads, skips. Know what your client does.\n\nCommitting per message is slow; real consumers commit per batch or periodically, accepting a larger replay window.\n\n**Rebalancing**: when a consumer joins, leaves or misses heartbeats (or takes longer than `max.poll.interval.ms` between polls, default 5 minutes), partitions are reassigned. Uncommitted work is redone by the new owner. Cooperative incremental rebalancing reduced the \"stop the world\" pauses, and the new consumer group protocol (KIP-848, generally available in Kafka 4.0) moves assignment to the broker and makes rebalances incremental by design. Slow processing that exceeds `max.poll.interval.ms` is the classic cause of rebalance storms.\n\n## Ordering\n- Guaranteed **within a partition** only. To keep all events for order 42 in order, use the order id as the key so they share a partition.\n- Ordering survives producer retries with the idempotent producer (up to 5 in-flight requests per connection).\n- **Hot keys**: one huge customer's key sends all its traffic to one partition and one consumer. Options: a composite key (customer + sub-entity) if cross-entity order does not matter, or accept the limit.\n- **Changing partition count** changes `hash(key) % N`, so new records for a key may go to a different partition than old ones, breaking per-key order during the transition. Pick a partition count with headroom up front (you can add, never remove).\n- Consumers that process records from one partition concurrently (a thread pool) lose ordering unless they parallelise by key, as Confluent's parallel consumer does.\n\n## Retention and compaction\n- **Time or size retention**: `retention.ms` (default 7 days) or `retention.bytes`. Old **segments** are deleted whole. Consumers that fall behind past retention lose data, so alert on consumer lag measured in time.\n- **Log compaction** (`cleanup.policy=compact`): keep at least the latest record per key; a record with a null value (a **tombstone**) deletes the key after a while. Compacted topics act as a changelog table: \"current state of every customer\". `__consumer_offsets` itself is compacted.\n- **Tiered storage** (KIP-405, production-ready since 3.9) offloads old segments to object storage, making long retention cheaper.\n\n## Exactly-once: what it really means\nKafka offers **exactly-once semantics (EOS)** in a precise and limited sense: a **read-process-write** pipeline that consumes from Kafka and produces to Kafka can make its output records and its consumed offsets commit **atomically**.\n\n```text\ntransactional producer (transactional.id = \"billing-1\")\n  beginTransaction\n    consume from \"orders\"\n    produce to \"invoices\"\n    sendOffsetsToTransaction(offsets for \"orders\")\n  commitTransaction          -> output records and offsets become visible together\ndownstream consumers use isolation.level=read_committed to skip aborted records\n```\n\nKafka Streams turns this on with `processing.guarantee=exactly_once_v2`. Confluent's 2017 post by Neha Narkhede, \"Exactly-once semantics are possible: here's how Kafka does it\", explains the design.\n\nThe reality check interviewers want to hear:\n- EOS covers **Kafka-to-Kafka**. The moment your consumer charges a card, sends an email or writes to Postgres, Kafka's transaction does not include that side effect. A crash after the side effect and before commit causes a redelivery and a second side effect.\n- For external side effects you get **effectively-once** by combining at-least-once delivery with **idempotent processing**: dedupe by a message id in the same database transaction as the effect, or store the consumed offset in your database transaction and seek to it on startup.\n- \"Exactly-once delivery\" across a network is impossible in general (the Two Generals problem); what systems provide is exactly-once *processing effect* within a boundary they control.\n\n## Kafka vs a queue: when to choose it\nChoose Kafka when you need high throughput (hundreds of thousands to millions of records per second per cluster), multiple independent consumers of the same events, replay (rebuild a read model, backfill a new service), per-key ordering, or a long-lived event backbone across teams (often with CDC feeding it). It is operationally heavier; managed options (Confluent Cloud, Amazon MSK, Redpanda as a compatible alternative) reduce that.\n\nChoose a queue (SQS, RabbitMQ) for task distribution with per-message acks, delays, priorities and DLQs, where messages should disappear once handled. Kafka's model makes per-message retry awkward: one failing record blocks its partition unless you move it to a retry topic. KIP-932 \"Queues for Kafka\" (share groups with per-record acknowledgement) is arriving in Kafka 4.x as a preview, but in 2026 most teams still pair Kafka with a real queue for job-style work.\n\n## Common mistakes and debugging\n- Too few partitions (cannot scale consumers) or far too many (more open files, longer failovers, more memory per client).\n- Using random keys and then expecting per-entity order.\n- Slow handlers inside the poll loop triggering rebalances; fix with smaller `max.poll.records`, longer `max.poll.interval.ms`, or async processing with careful offset tracking.\n- Not monitoring consumer lag (`kafka-consumer-groups.sh --describe`, Burrow, or your platform's lag metrics).\n- Assuming EOS covers database writes.\n- Poison records: wrap deserialisation and handling, send failures to a retry or dead-letter topic with headers describing the error, and keep the partition moving.\n\n## In the interview\n**What they probe:** that you understand the log model (not a queue), partitions as the unit of order and parallelism, how offsets map to delivery semantics, and that exactly-once has a boundary.\n\n**60-second answer outline:** a topic is split into replicated partitions; producers key records so related events share a partition; each consumer group tracks its own offsets and each partition goes to one consumer in a group; order is per partition; retention keeps data for replay; durability comes from RF 3, `acks=all`, `min.insync.replicas=2`; delivery is at-least-once by committing after processing; exactly-once exists for Kafka-to-Kafka transactions, and for external effects I make consumers idempotent.\n\n**Follow-ups to expect:** what happens on rebalance; how to choose partition count; what a compacted topic is for; how to handle a poison message; how lag is monitored; Kafka vs RabbitMQ for a given use case.",
+      "keyPoints": [
+        "Kafka is an append-only log: reading does not delete, so many consumer groups can read and replay the same data",
+        "Partitions are the unit of ordering, parallelism and replication; the record key picks the partition",
+        "Each partition goes to one consumer per group; commit offsets after processing for at-least-once",
+        "RF 3 with acks=all and min.insync.replicas=2 survives one broker loss without losing acknowledged writes",
+        "Exactly-once covers Kafka-to-Kafka transactions; external side effects still need idempotent consumers"
+      ],
+      "interview": [
+        "Explain Kafka's architecture: topics, partitions, consumer groups and offsets.",
+        "How does Kafka guarantee ordering, and how would you keep all events for one order in order?",
+        "Does Kafka really give you exactly-once delivery?",
+        "Kafka vs RabbitMQ vs SQS: how do you choose?"
+      ],
+      "check": [
+        {
+          "q": "A topic has 6 partitions and a consumer group has 10 consumers. What happens?",
+          "options": [
+            "Each partition is split between consumers",
+            "Kafka creates 4 more partitions automatically",
+            "Six consumers get one partition each and four sit idle",
+            "All 10 consumers read every partition"
+          ],
+          "answer": 2,
+          "why": "Within a group each partition is assigned to exactly one consumer, so partition count caps the group's parallelism."
+        },
+        {
+          "q": "A consumer charges a card and then commits its offset. It crashes between the two. What happens on restart?",
+          "options": [
+            "The record is redelivered and the card may be charged again unless the handler is idempotent",
+            "Kafka's exactly-once transactions roll back the charge",
+            "The record is skipped",
+            "The broker detects the duplicate and drops it"
+          ],
+          "answer": 0,
+          "why": "Committing after processing is at-least-once. Kafka transactions cannot include the external payment, so deduplication must happen in the consumer."
+        },
+        {
+          "q": "What does log compaction guarantee for a topic?",
+          "options": [
+            "Records are deleted after 7 days",
+            "Records are compressed with zstd",
+            "Partitions are merged when traffic is low",
+            "At least the latest record for each key is retained"
+          ],
+          "answer": 3,
+          "why": "Compaction keeps the most recent value per key (and removes keys after a tombstone), turning the topic into a changelog of current state."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Apache Kafka documentation",
+          "url": "https://kafka.apache.org/documentation/"
+        },
+        {
+          "title": "Kafka docs: design (persistence, replication, the log)",
+          "url": "https://kafka.apache.org/documentation/#design"
+        },
+        {
+          "title": "Confluent: Exactly-once semantics are possible, here's how Kafka does it",
+          "url": "https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/"
+        },
+        {
+          "title": "Kafka docs: message delivery semantics",
+          "url": "https://kafka.apache.org/documentation/#semantics"
+        },
+        {
+          "title": "KIP-848: the next generation consumer rebalance protocol",
+          "url": "https://cwiki.apache.org/confluence/display/KAFKA/KIP-848%3A+The+Next+Generation+of+the+Consumer+Rebalance+Protocol"
+        }
+      ]
+    },
+    {
+      "id": "cq-idempotency-delivery",
+      "track": "caching-queues",
+      "title": "Delivery guarantees, idempotency, outbox and inbox",
+      "minutes": 18,
+      "summary": "At-most-once, at-least-once and the limits of exactly-once, where duplicates come from, idempotent consumers, and the transactional outbox and inbox patterns.",
+      "body": "## The core idea\nNetworks lose messages and processes crash at the worst moment, so every messaging system has to choose what happens when it is not sure a message was handled: **send it again** (risking duplicates) or **don't** (risking loss). For almost all business work, loss is worse, so real systems run **at-least-once delivery** and make the receiver **idempotent**: processing the same message twice has the same effect as processing it once.\n\nThe second half of the problem is on the producer side: a service that updates its database *and* publishes an event can crash between the two, leaving the database and the event stream disagreeing. The **transactional outbox** fixes that, and the **inbox** (a processed-messages table) is its mirror image on the consumer side.\n\n## The three delivery guarantees\n```text\nat-most-once     ack/commit BEFORE processing   crash -> message lost     (metrics sampling, telemetry)\nat-least-once    ack/commit AFTER processing    crash -> message repeated (the default for business work)\nexactly-once     no loss, no repeat              not achievable end to end over an unreliable network;\n                                                 achievable as an EFFECT inside one transactional boundary\n```\n\nWhy exactly-once delivery is impossible in general: the sender cannot distinguish \"the message was lost\" from \"the acknowledgement was lost\" (the Two Generals problem). It must either resend (possible duplicate) or not (possible loss). What systems *can* offer is exactly-once **processing** within a boundary: Kafka transactions for Kafka-to-Kafka pipelines, a database transaction that records both the effect and the fact that the message was handled. Everyone else's \"exactly-once\" is at-least-once plus deduplication. Tyler Treat's essay \"You cannot have exactly-once delivery\" is a good, short read on this.\n\n## Where duplicates come from\n- Producer retries after a timeout when the first send actually succeeded.\n- Consumer crashes after doing the work but before ack/commit.\n- Visibility timeout expires while a slow consumer is still working (SQS).\n- Kafka rebalance hands a partition to another consumer before offsets were committed.\n- A human replays a DLQ or rewinds a consumer group.\n- Client-side: a user double-clicks \"Pay\", or a mobile app retries on a flaky connection.\n\nSo \"the broker deduplicates\" (SQS FIFO's 5-minute window, Kafka's idempotent producer) helps with *some* of these, never all. The consumer must still be idempotent.\n\n## Making consumers idempotent\nThree techniques, often combined.\n\n### 1. Naturally idempotent operations\nPrefer operations where repetition is harmless: `SET status = 'shipped'` rather than \"toggle\"; `UPSERT ... ON CONFLICT DO NOTHING`; \"set balance to X as of version 7\" rather than \"add 10\". Absolute writes are idempotent, relative ones (increment, append, send) are not.\n\n### 2. Deduplication by message id (the inbox)\nGive every message a stable unique id assigned by the producer (not by the broker on each delivery). Record processed ids **in the same transaction** as the side effect:\n\n```sql\nCREATE TABLE inbox (\n  consumer   text        NOT NULL,\n  message_id uuid        NOT NULL,\n  processed_at timestamptz NOT NULL DEFAULT now(),\n  PRIMARY KEY (consumer, message_id)\n);\n```\n\n```ts\nasync function handlePaymentCaptured(msg: { id: string; orderId: string; amount: number }) {\n  await db.transaction(async (tx) => {\n    const inserted = await tx.query(\n      `INSERT INTO inbox (consumer, message_id) VALUES ('fulfilment', $1)\n       ON CONFLICT DO NOTHING RETURNING 1`,\n      [msg.id],\n    );\n    if (inserted.rowCount === 0) return; // already processed: do nothing, then ack\n    await tx.query(`UPDATE orders SET status = 'paid' WHERE id = $1 AND status = 'pending'`, [msg.orderId]);\n    await tx.query(`INSERT INTO shipments (order_id) VALUES ($1)`, [msg.orderId]);\n  });\n  // ack/commit only after the transaction committed\n}\n```\n\nIf the process crashes before commit, nothing happened and the redelivery does the work. If it crashes after commit but before ack, the redelivery hits the unique key and is skipped. Prune old inbox rows after a window longer than any possible redelivery (days, or the topic retention).\n\nA Redis `SET msg:{id} 1 NX EX 86400` check is a lighter variant, but it is not atomic with your database write: if the DB write fails after the Redis set, the retry is wrongly skipped. Use it only when the side effect itself lives in Redis or is harmless to drop.\n\n### 3. Conditional writes and version checks\nGuard state transitions: `UPDATE orders SET status='paid' WHERE id=$1 AND status='pending'`. A second delivery updates zero rows. Optimistic concurrency with a version column (`WHERE version = $expected`) also rejects stale or out-of-order events.\n\n### External side effects\nWhen the effect is an external API (charge a card, send an email), you cannot put it in your transaction. Pass an **idempotency key** derived from the message id to the provider. Stripe's API accepts an `Idempotency-Key` header and returns the original result for repeated requests with the same key (keys are retained for at least 24 hours); Stripe's engineering post \"Designing robust and predictable APIs with idempotency\" explains the design. For providers without that, record \"attempted\" before calling and reconcile on uncertain outcomes.\n\n## The dual-write problem and the transactional outbox\n```text\nBROKEN: two separate writes\n  BEGIN; INSERT order; COMMIT;     <- succeeds\n  publish(\"OrderPlaced\")           <- process crashes here: order exists, nobody hears about it\n  (or publish first, then the DB commit fails: event for an order that does not exist)\n```\n\nYou cannot make a database commit and a Kafka publish atomic without distributed transactions (2PC), which brokers mostly do not support well and which hurt availability. The outbox pattern (Chris Richardson's microservices.io catalogue describes it as \"transactional outbox\") avoids the problem:\n\n```text\nBEGIN\n  INSERT INTO orders ...\n  INSERT INTO outbox (id, aggregate_id, type, payload, created_at) VALUES (...)\nCOMMIT                                   <- both or neither\n\nrelay: read outbox in order -> publish to broker -> mark published (or rely on CDC offsets)\n```\n\nTwo ways to run the relay:\n- **Polling publisher**: a worker selects unpublished rows (`ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED`), publishes, marks them sent. Simple; adds polling load and latency (hundreds of ms to seconds).\n- **Log tailing (CDC)**: Debezium reads the outbox table's inserts from the Postgres WAL (or MySQL binlog) and publishes them to Kafka. Debezium ships an \"outbox event router\" transform that routes by aggregate type and uses the aggregate id as the Kafka key. Low latency, no polling, but more infrastructure.\n\nProperties to state clearly:\n- The relay is **at-least-once**: it can publish then crash before marking. Consumers must dedupe by the event id, which is why outbox and inbox go together.\n- **Ordering**: publish in outbox order and key by aggregate id so per-aggregate order is kept in the topic. A polling relay with multiple parallel workers can reorder; use one relay per partition of aggregates or rely on CDC.\n- Clean up published rows (delete or partition by day) so the table stays small.\n\n## The inbox pattern, end to end\n```text\nOrder service                         Broker                  Fulfilment service\ntx: order row + outbox row  -> relay -> topic (key=orderId) -> tx: inbox row (unique id)\n                                                                  + state change\n                                                               -> ack after commit\n```\nOutbox makes \"state changed\" and \"event will be published\" atomic on the producer. Inbox makes \"event processed\" and \"state changed\" atomic on the consumer. Together with at-least-once transport you get effectively-once processing end to end.\n\n## Trade-offs and when not to bother\n- For truly idempotent handlers (cache invalidation, recomputing a projection from the source) you need no inbox table.\n- The inbox adds a write per message; at very high volume, dedupe with a compact structure keyed by partition and offset, or make the operation naturally idempotent.\n- The outbox couples event publishing to your database's write throughput. That is usually fine and much safer than the alternatives.\n\n## Common mistakes and debugging\n- Using the broker's delivery id or receipt handle as the dedup key (it changes on redelivery). Use a producer-assigned id.\n- Dedup check and side effect in separate transactions.\n- Acking before the transaction commits.\n- Idempotency keys that are too coarse (one key per user per day) or too fine (a random UUID generated on each retry, which dedupes nothing).\n- Debugging duplicates: log message id, delivery attempt count and consumer instance; count inbox conflicts as a metric; a spike usually points to visibility timeouts, rebalances or a replay.\n\n## In the interview\n**What they probe:** you know exactly-once delivery is not real end to end, you can describe concrete dedup mechanics, and you can solve the dual-write problem.\n\n**60-second answer outline:** design for at-least-once; every message carries a producer-assigned id; consumers record that id in an inbox table in the same transaction as the side effect, or use conditional writes; external calls get idempotency keys; on the producer, write the event to an outbox table in the same transaction as the state change and relay it with a poller or Debezium; key by aggregate id to keep per-entity order.\n\n**Follow-ups to expect:** how long to keep inbox rows; how the relay handles ordering; why not 2PC; what happens if the relay publishes twice; how to make \"send an email\" idempotent.",
+      "keyPoints": [
+        "Design for at-least-once delivery; exactly-once exists only as an effect inside one transactional boundary",
+        "Deduplicate with a producer-assigned message id recorded in the same transaction as the side effect",
+        "Prefer absolute writes and guarded state transitions; pass idempotency keys to external APIs",
+        "The outbox writes the event in the same transaction as the state change; a poller or CDC relays it",
+        "Outbox relays are at-least-once, so the outbox and the inbox patterns are used together"
+      ],
+      "interview": [
+        "What are at-most-once, at-least-once and exactly-once delivery, and which do you design for?",
+        "How do you make a message consumer idempotent?",
+        "Explain the transactional outbox pattern. What problem does it solve?"
+      ],
+      "check": [
+        {
+          "q": "Why is the SQS receipt handle a bad deduplication key for an idempotent consumer?",
+          "options": [
+            "It is too long to index",
+            "It is different on each delivery, so a redelivered message looks new",
+            "It expires after one second",
+            "It is only available in FIFO queues"
+          ],
+          "answer": 1,
+          "why": "Dedup keys must be stable across redeliveries, so they should be assigned by the producer, not by the broker per delivery."
+        },
+        {
+          "q": "A service commits an order to Postgres and then publishes OrderPlaced to Kafka. What does the transactional outbox change?",
+          "options": [
+            "It publishes to Kafka inside the Postgres transaction using 2PC",
+            "It removes the need for consumers to deduplicate",
+            "It makes Kafka write to Postgres",
+            "It writes the event to an outbox table in the same transaction, and a separate relay publishes it"
+          ],
+          "answer": 3,
+          "why": "The state change and the intent to publish become atomic. The relay is at-least-once, so consumers still deduplicate."
+        },
+        {
+          "q": "A consumer checks Redis SET NX for the message id, then writes to Postgres, and the Postgres write fails. What happens on redelivery?",
+          "options": [
+            "The message is processed correctly",
+            "Postgres rejects the duplicate",
+            "The retry is skipped because the id is already in Redis, so the work is lost",
+            "Redis rolls back the key automatically"
+          ],
+          "answer": 2,
+          "why": "The dedup record and the side effect are not atomic. Keep the dedup record in the same database transaction as the effect."
+        }
+      ],
+      "resources": [
+        {
+          "title": "microservices.io: Transactional outbox pattern",
+          "url": "https://microservices.io/patterns/data/transactional-outbox.html"
+        },
+        {
+          "title": "Stripe: Designing robust and predictable APIs with idempotency",
+          "url": "https://stripe.com/blog/idempotency"
+        },
+        {
+          "title": "Debezium: Outbox event router",
+          "url": "https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html"
+        },
+        {
+          "title": "AWS Builders' Library: Making retries safe with idempotent APIs",
+          "url": "https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/"
+        },
+        {
+          "title": "Tyler Treat: You cannot have exactly-once delivery",
+          "url": "https://bravenewgeek.com/you-cannot-have-exactly-once-delivery/"
+        }
+      ]
+    },
+    {
+      "id": "cq-event-driven",
+      "track": "caching-queues",
+      "title": "Event-driven architecture: events, sagas and schema evolution",
+      "minutes": 18,
+      "summary": "Events vs commands, kinds of events, choreography vs orchestration, sagas with compensating actions for multi-service workflows, and evolving event schemas safely.",
+      "body": "## The core idea\nIn an event-driven system, services tell each other **what happened** (\"OrderPlaced\", \"PaymentFailed\") instead of calling each other to **ask for something to be done**. Producers do not know or care who reacts. That decoupling lets teams add consumers without touching the producer, absorbs outages (a down consumer catches up later), and keeps request paths short.\n\nIt also moves complexity from code you can read top to bottom into message flows you have to trace across services. Martin Fowler's talk and article \"What do you mean by 'Event-Driven'?\" makes the useful point that the term covers several different patterns, and mixing them up causes most of the confusion. This lesson covers the distinctions interviewers care about: events vs commands, the kinds of events, choreography vs orchestration, sagas for multi-service transactions, and evolving event schemas.\n\n## Events vs commands\n| | Command | Event |\n|---|---|---|\n| Meaning | \"Please do X\" | \"X happened\" |\n| Tense | imperative: `ChargeCard`, `SendEmail` | past: `CardCharged`, `OrderPlaced` |\n| Receivers | exactly one handler that owns X | zero or many subscribers |\n| Can be refused? | yes (validation, business rules) | no, it is a fact |\n| Coupling | sender knows the receiver and expects an outcome | producer does not know consumers |\n| Transport | queue (point-to-point) or RPC | topic (pub/sub) |\n\nA good smell test: if the producer would be broken when nobody handles the message, it is a command, even if you named it like an event. \"OrderPlaced\" that the order service *needs* billing to act on is really a disguised command; that is fine, but then you need the reliability and visibility of a command (ownership, timeouts, failure handling).\n\n## Kinds of events\nFowler distinguishes these, and naming them shows depth:\n- **Event notification**: a thin message (\"order 42 changed\"); consumers call back for details. Minimal coupling to schema, but callbacks add load and the state they fetch may have moved on.\n- **Event-carried state transfer**: the event contains the data consumers need (the order's items, totals, address), so they keep their own local copy and never call back. More autonomy and resilience, more data duplication and a larger schema contract.\n- **Event sourcing**: the events *are* the system of record; current state is a fold over them. Powerful for audit and temporal queries, a big commitment (covered in the architecture track's event sourcing and CQRS lesson).\n- **Domain events vs integration events**: domain events are internal to a service's model; integration events are the published, versioned contract other teams depend on. Keep them separate so internal refactors do not break consumers.\n\n## Choreography vs orchestration\n```text\nCHOREOGRAPHY (react to events)                ORCHESTRATION (a coordinator tells each step)\nOrder --OrderPlaced--> Payment                Order -> OrderSaga (orchestrator)\nPayment --PaymentCaptured--> Inventory                 1. command Payment: Charge\nInventory --StockReserved--> Shipping                  2. command Inventory: Reserve\nShipping --Shipped--> Order (status=shipped)           3. command Shipping: Ship\n                                                       state machine persisted, timeouts, retries\nno one owns the end-to-end flow                 one place shows the whole flow and its state\n```\n\n**Choreography** fits when a flow is short (2-4 steps), steps are owned by different teams, and consumers are genuinely independent reactions (send email, update search, record analytics). The risk: the business process exists only implicitly, spread across subscriptions. Questions like \"why is order 42 stuck?\" need distributed tracing and correlation ids, and cyclic dependencies sneak in.\n\n**Orchestration** fits when the flow has many steps, branching, timeouts, compensation and someone must answer \"what state is this order in\". The orchestrator is a persistent state machine; it can be your own code (a saga table plus a worker) or a workflow engine: **Temporal** (durable execution: workflow code is replayed from an event history so it survives crashes), **AWS Step Functions**, or Camunda. The risk: the orchestrator becomes a god service that knows too much about everyone; keep business decisions in the services and let the orchestrator sequence.\n\nMany real systems mix them: orchestrate the core money path, choreograph the side effects around it.\n\n## Sagas\nA business transaction spanning services (order, payment, inventory, shipping) cannot use one ACID transaction. A **saga** (Garcia-Molina and Salem, 1987) is a sequence of local transactions, each committing in its own service, where every step that can be undone has a **compensating action** that semantically reverses it.\n\n```text\nstep              action                 compensation\n1 Order           create (PENDING)       cancel order\n2 Payment         authorize card         void authorization / refund\n3 Inventory       reserve stock          release stock\n4 Shipping        create shipment        (pivot: after this, only go forward)\n\nfailure at step 3 (out of stock): run compensations 2 then 1 -> order CANCELLED, card voided\n```\n\nKey properties:\n- **Compensation is not rollback.** The card authorization really happened and appears on a statement; you issue a void or refund. Emails cannot be unsent; you send a correction. Design steps so the ones that cannot be compensated (the **pivot**) come last.\n- **Isolation is missing.** Other requests see intermediate states (order PENDING, stock reserved). Countermeasures: semantic locks (a PENDING status that other flows respect), commutative updates, re-reading values before acting.\n- Every step and compensation must be **idempotent and retryable**, because messages are at-least-once and orchestrators retry. Compensations must eventually succeed; if they cannot, raise it to a human.\n- **Timeouts are failures too.** A payment service that never answers must trigger compensation after a deadline; an orchestrator makes this explicit.\n\nA minimal orchestrator sketch:\n\n```ts\ntype SagaState = \"PENDING\" | \"PAID\" | \"RESERVED\" | \"SHIPPED\" | \"COMPENSATING\" | \"CANCELLED\";\n\nasync function onReply(sagaId: string, reply: Reply) {\n  await db.transaction(async (tx) => {\n    const saga = await tx.sagas.lockById(sagaId);           // SELECT ... FOR UPDATE\n    if (saga.processed.includes(reply.messageId)) return;   // idempotent\n    const next = transition(saga.state, reply);             // pure function, unit tested\n    await tx.sagas.update(sagaId, { state: next.state, processed: [...saga.processed, reply.messageId] });\n    for (const cmd of next.commands) await tx.outbox.insert(cmd); // commands leave via the outbox\n  });\n}\n```\n\nThe transition logic is a pure function you can test exhaustively, the saga row and the outgoing commands commit atomically through the outbox, and replies are deduplicated by message id.\n\n## Schema evolution\nEvents outlive the code that produced them: they sit in Kafka for days, in event stores forever, and are read by consumers deployed on their own schedule. So the event schema is a public API with the strictest compatibility rules you own.\n\nCompatibility terms (as used by Confluent Schema Registry):\n- **Backward compatible**: new consumers can read old events. Adding an optional field with a default is backward compatible. This is the registry's default mode, and it lets you upgrade consumers first.\n- **Forward compatible**: old consumers can read new events. Requires old readers to ignore unknown fields. Lets you upgrade producers first.\n- **Full**: both. The safest for independent deploys.\n\nSafe changes: add optional fields with defaults; add new event types. Breaking changes: remove or rename a field, change a type or meaning, make an optional field required. For breaking changes, publish a **new version** (`OrderPlaced.v2`, or a new topic), dual-publish for a migration period, move consumers, then retire v1. Consumers should be **tolerant readers**: ignore unknown fields, do not fail on new enum values.\n\nFormats: JSON with JSON Schema is easy to debug but loose; **Avro** and **Protobuf** with a schema registry give compact encoding and enforced compatibility checks in CI. With Protobuf, never reuse field numbers; mark removed ones `reserved`.\n\nAlso include in every event: a unique `eventId` (for dedup), `type` and `version`, `occurredAt`, the aggregate id (as the partition key), and a `correlationId`/`causationId` for tracing flows. CloudEvents is a CNCF spec for this envelope if you want a standard.\n\n## Trade-offs and when not to go event-driven\n- Debugging and reasoning get harder; you need tracing (OpenTelemetry context propagated through message headers), correlation ids and good dashboards before you go far.\n- Eventual consistency is visible to users: the order page says \"processing\" for a moment. Make that a deliberate UX decision.\n- For a single team and one database, in-process function calls and a transaction are simpler and correct. Do not introduce a broker to call yourself.\n- Request-response needs (show the price now) stay synchronous.\n\n## Common mistakes and debugging\n- Events that are really commands, with no owner for failures.\n- Fat events that leak internal models, so every internal refactor breaks consumers.\n- Assuming ordering across topics or partitions; key by aggregate id and design consumers to handle out-of-order events (version numbers, ignore older versions).\n- Missing compensations for timeouts.\n- No way to answer \"where is this order?\". Fix with a correlation id on every event and a trace view, or an orchestrator with queryable state.\n\n## In the interview\n**What they probe:** precise vocabulary (event vs command), judgement on choreography vs orchestration, the ability to walk through a saga failure, and awareness of schema compatibility.\n\n**60-second answer outline (saga question):** each service commits locally; the saga records progress; if inventory fails after payment authorized, the orchestrator issues compensations in reverse order (void payment, cancel order), each idempotent and retried until it succeeds; non-compensatable steps go last; intermediate states are visible, so use a PENDING status as a semantic lock; I would orchestrate this money path for visibility and timeouts, and choreograph side effects like emails.\n\n**Follow-ups to expect:** what if a compensation fails; how Temporal differs from a hand-rolled saga; how to version an event without downtime; how to trace one order across five services.",
+      "keyPoints": [
+        "Commands ask one owner to do something and can be refused; events state facts that any number of consumers may react to",
+        "Choreography suits short flows of independent reactions; orchestration suits long flows with timeouts and compensation",
+        "A saga is a chain of local transactions with compensating actions; put non-compensatable steps last",
+        "Sagas lack isolation, so use semantic locks such as PENDING states, and keep every step idempotent",
+        "Treat event schemas as public APIs: add optional fields, never rename or remove, version breaking changes"
+      ],
+      "interview": [
+        "What is the difference between an event and a command?",
+        "Choreography vs orchestration: how do you choose for a multi-service workflow?",
+        "How does a saga handle a failure halfway through an order workflow?",
+        "How do you evolve event schemas without breaking consumers?"
+      ],
+      "check": [
+        {
+          "q": "Inventory reservation fails after the card was authorized. What should a saga do?",
+          "options": [
+            "Roll back the distributed transaction",
+            "Run compensations in reverse: void the authorization, then cancel the order",
+            "Retry inventory forever",
+            "Leave the order pending for manual review only"
+          ],
+          "answer": 1,
+          "why": "Each local transaction already committed, so the saga semantically reverses earlier steps with compensating actions."
+        },
+        {
+          "q": "Which change to an Avro event schema is backward compatible?",
+          "options": [
+            "Adding an optional field with a default value",
+            "Renaming a field",
+            "Changing a field from string to int",
+            "Removing a field without a default"
+          ],
+          "answer": 0,
+          "why": "A new reader can fill the default when reading old events that lack the field. Renames, type changes and removals break readers."
+        },
+        {
+          "q": "A five-step payment workflow needs timeouts, compensation and a clear answer to 'what state is this order in?'. Which approach fits best?",
+          "options": [
+            "Choreography with no central state",
+            "Synchronous REST calls inside one HTTP request",
+            "A shared database table every service updates",
+            "Orchestration with a persisted state machine or workflow engine"
+          ],
+          "answer": 3,
+          "why": "An orchestrator makes the flow explicit, owns timeouts and compensations, and has queryable state."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Martin Fowler: What do you mean by 'Event-Driven'?",
+          "url": "https://martinfowler.com/articles/201701-event-driven.html"
+        },
+        {
+          "title": "microservices.io: Saga pattern",
+          "url": "https://microservices.io/patterns/data/saga.html"
+        },
+        {
+          "title": "Garcia-Molina and Salem: Sagas (1987)",
+          "url": "https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf"
+        },
+        {
+          "title": "Confluent: Schema evolution and compatibility",
+          "url": "https://docs.confluent.io/platform/current/schema-registry/fundamentals/schema-evolution.html"
+        },
+        {
+          "title": "Temporal documentation: workflows",
+          "url": "https://docs.temporal.io/workflows"
+        }
+      ]
+    },
+    {
+      "id": "cq-background-jobs",
+      "track": "caching-queues",
+      "title": "Background jobs: retries, priorities, scheduling, long work",
+      "minutes": 18,
+      "summary": "Job queues such as BullMQ and Postgres SKIP LOCKED queues, retries with backoff, priorities and fairness, cron that runs once across instances, and making long-running jobs reliable.",
+      "body": "## The core idea\nA background job system takes work out of the request path: the web handler records \"this needs doing\" and returns in milliseconds, and a separate worker process does it, retries it if it fails, and reports the result. Sending emails, generating PDFs, resizing images, calling slow third-party APIs, syncing data, nightly reports and billing runs all belong here.\n\nThe hard parts are not the happy path. They are: what happens when a worker dies mid-job, how retries avoid hammering a broken dependency, how urgent work jumps ahead of bulk work, how scheduled jobs run once across many instances, and how a two-hour job survives deploys. This lesson uses **BullMQ** (Node.js, on Redis) for concrete code, and the same concepts map to Sidekiq (Ruby), Celery (Python), and database-backed queues like pg-boss, Graphile Worker, River (Go) and Rails 8's Solid Queue.\n\n## Anatomy of a job system\n```text\nweb/API ----add(job)----> [ queue store: Redis or Postgres ]\n                              wait -> active -> completed\n                               ^        |  \\-> failed --(attempts left?)--> delayed --(backoff)--> wait\n                               |        |                     \\--(no)--> failed set / DLQ\n                         scheduler    worker pool (N processes x concurrency C)\n                       (cron/delays)    heartbeats/locks, progress, logs\n                                        dashboard + metrics: depth, age, failures, duration\n```\n\nStates worth knowing in BullMQ: `waiting`, `prioritized`, `delayed`, `active`, `completed`, `failed`, plus parent jobs `waiting-children` for flows.\n\n## BullMQ in practice\n```ts\nimport { Queue, Worker, UnrecoverableError } from \"bullmq\";\n\nconst connection = { host: process.env.REDIS_HOST!, port: 6379 };\nexport const emailQueue = new Queue(\"email\", { connection });\n\n// producer (inside an API handler)\nawait emailQueue.add(\n  \"receipt\",\n  { orderId: \"ord_42\" },\n  {\n    jobId: \"receipt:ord_42\",                       // same id twice = second add is ignored\n    attempts: 6,\n    backoff: { type: \"exponential\", delay: 2_000 }, // 2s, 4s, 8s, ...\n    priority: 1,                                     // lower number = higher priority\n    removeOnComplete: { count: 1000 },\n    removeOnFail: { age: 7 * 24 * 3600 },\n  },\n);\n\n// worker (separate process)\nconst worker = new Worker(\n  \"email\",\n  async (job) => {\n    const order = await orders.get(job.data.orderId);\n    if (!order) throw new UnrecoverableError(\"order not found\"); // fail now, no retries\n    await job.updateProgress(50);\n    await mailer.send({ to: order.email, template: \"receipt\", idempotencyKey: job.id });\n    return { sent: true };\n  },\n  { connection, concurrency: 20, limiter: { max: 50, duration: 1_000 } }, // provider allows 50/s\n);\n\nworker.on(\"failed\", (job, err) => log.warn({ id: job?.id, attempts: job?.attemptsMade, err }));\nprocess.on(\"SIGTERM\", async () => { await worker.close(); process.exit(0); }); // finish active jobs\n```\n\nPoints to notice:\n- The Redis behind BullMQ must use `maxmemory-policy noeviction`. If Redis evicts queue keys under memory pressure, jobs silently vanish. Do not share it with an LRU cache.\n- `jobId` makes enqueueing idempotent. Deduplicating *adds* does not make *processing* idempotent; the handler still must tolerate a rerun (here via the mailer's idempotency key).\n- `concurrency` is per worker process; total parallelism is processes times concurrency. Size it to what downstream systems can take, not to CPU count, for I/O-bound jobs.\n\n## Retries done right\n- **Exponential backoff with jitter.** Fixed fast retries against a struggling dependency synchronise clients and deepen the outage. Marc Brooker's writing on jitter and the AWS Builders' Library article on timeouts, retries and backoff with jitter both show how randomising retry delays spreads load and avoids synchronised retry waves. BullMQ supports custom backoff strategies if you want jitter on top of exponential.\n- **Classify errors.** Transient (timeouts, 429, 503, deadlocks): retry. Permanent (validation, 404 for a deleted entity, 400 from an API): fail immediately (`UnrecoverableError`). For a 429 with `Retry-After`, delay the job by that amount.\n- **Cap attempts and keep failures.** After the last attempt, the job sits in the failed set (your DLQ). Alert on its growth, show the error and stack in a dashboard (Bull Board, Taskforce.sh), and provide a \"retry\" button.\n- **Total time budget.** Six exponential attempts from 2 s sum to about two minutes; twenty attempts can span days. Decide what \"too late to bother\" is for each job type.\n\n## Priorities and fairness\nBullMQ priorities are integers where lower means sooner. Priorities help, but a constant flood of high-priority jobs starves low-priority ones. Often better:\n- **Separate queues per class** (`email-transactional`, `email-bulk`, `reports`), each with its own workers and concurrency. A bulk import can never delay password-reset emails, and you can scale each independently.\n- **Per-tenant fairness**: one customer enqueuing a million jobs should not block everyone else. Options: per-tenant queues or rate limits, BullMQ Pro's groups (a paid feature), or round-robin pulling.\n- **Rate limits** at the worker for third-party quotas (`limiter`), plus manual rate limiting when an API returns 429.\n\n## Scheduling: delays and cron, exactly once\nDelayed jobs: `add(name, data, { delay: 15 * 60_000 })` for \"send a reminder in 15 minutes\". The job waits in a sorted set keyed by run time.\n\nRecurring jobs: BullMQ's **job schedulers** (`upsertJobScheduler`, which replaced the older repeatable jobs API) create the next job from a cron pattern or fixed interval:\n\n```ts\nawait reportsQueue.upsertJobScheduler(\n  \"nightly-revenue\",                       // scheduler id: upsert is idempotent across deploys\n  { pattern: \"0 2 * * *\", tz: \"Asia/Kolkata\" },\n  { name: \"revenue-report\", data: { scope: \"all\" } },\n);\n```\n\nThe classic bug this avoids: running `node-cron` inside each of your 8 web instances, so the nightly billing job runs 8 times. Ways to get \"once\" across instances:\n1. A queue-backed scheduler like the above: the schedule lives in the shared store and each occurrence is a single job with a deterministic id.\n2. A single dedicated scheduler process (or a managed scheduler: Kubernetes CronJob with `concurrencyPolicy: Forbid`, EventBridge Scheduler, Vercel Cron, GitHub Actions) that only enqueues.\n3. Leader election or a lock per run (`SET cron:billing:2026-10-04 NX`), keyed by the scheduled time so a retry of the same run is deduplicated.\n\nAnd make the job itself idempotent per period (\"billing for 2026-10\" checks whether it already ran), because every scheduler has edge cases: missed runs during downtime, clock changes, a run that overlaps the next one.\n\n## Long-running work\nA two-hour transcode or a 10-million-row export breaks the assumptions of a simple worker:\n- **Liveness, not just a timeout.** BullMQ workers hold a lock per active job and renew it automatically; if the process dies, the lock expires and the job is detected as **stalled** and moved back to waiting (up to `maxStalledCount`, default 1, then failed). But if your handler blocks the Node.js event loop with CPU work, the lock cannot renew and a healthy job is declared stalled and run twice. Run CPU-heavy work in **sandboxed processors** (a separate process per job) or worker threads.\n- **Checkpoint and resume.** Break the work into steps and record progress (`job.updateData`, or a progress row in your DB): \"chunks 1-340 of 900 done\". On retry, resume from the checkpoint instead of starting over.\n- **Split into child jobs.** Fan out 900 chunk jobs and a parent that runs when all children complete (BullMQ `FlowProducer`), so failures retry one chunk, not the whole job, and work parallelises.\n- **Deploys and shutdown.** On `SIGTERM`, stop taking new jobs and let active ones finish within the grace period (`worker.close()`); Kubernetes `terminationGracePeriodSeconds` must be long enough, or jobs must checkpoint and be safe to interrupt.\n- **Durable execution engines** (Temporal, AWS Step Functions, Inngest, Restate) model a long process as code whose progress is persisted at each step; consider them when jobs are multi-step workflows lasting hours or days with human waits.\n- **Visibility to users**: store job id on the entity, expose progress, push completion via SSE or WebSocket, and let users cancel.\n\n## The database as the queue\nIf you already run Postgres and need hundreds of jobs per second rather than tens of thousands, a table can be the queue, which gives you transactional enqueue for free (the job is inserted in the same transaction as the order):\n\n```sql\n-- claim up to 10 jobs; concurrent workers skip rows others have locked\nUPDATE jobs SET status = 'running', locked_at = now(), attempts = attempts + 1\nWHERE id IN (\n  SELECT id FROM jobs\n  WHERE status = 'queued' AND run_at <= now()\n  ORDER BY priority, run_at\n  LIMIT 10\n  FOR UPDATE SKIP LOCKED\n)\nRETURNING *;\n```\n\n`FOR UPDATE SKIP LOCKED` (Postgres 9.5+) is what makes this scale across workers without contention. Add a reaper for rows stuck in `running` past a timeout. Libraries like pg-boss, Graphile Worker and River wrap this pattern; Solid Queue does the same for Rails. Watch table bloat from churn (autovacuum) at high rates.\n\n## Trade-offs\n| | Redis (BullMQ, Sidekiq) | Postgres table | Managed queue (SQS + Lambda/workers) | Workflow engine |\n|---|---|---|---|---|\n| Throughput | high | moderate | very high | moderate |\n| Transactional enqueue with app data | no (use outbox) | yes | no (use outbox) | no |\n| Durability | Redis persistence settings | database | managed | engine's store |\n| Features | rich: priorities, flows, rate limits | DIY or library | basic; DLQ, delay up to 15 min | timers, signals, long waits |\n\n## Common mistakes and debugging\n- Enqueueing inside a DB transaction that later rolls back (the job runs for an order that does not exist), or after commit with a crash in between (the job is lost). Use the outbox, or a database-backed queue in the same transaction.\n- Passing large payloads in job data; pass ids and load fresh state in the worker.\n- Non-idempotent handlers with retries enabled.\n- Blocking the event loop in Node workers, causing stalled jobs and duplicates.\n- Monitoring only failures. Track queue depth, **age of oldest waiting job**, processing duration percentiles, retry rate and stalled count.\n\n## In the interview\n**What they probe:** whether you can design for failure (crashes, retries, duplicates), fairness and scheduling across multiple instances, and long work.\n\n**60-second answer outline:** API enqueues via an outbox or transactional insert with a deterministic job id; workers pull with bounded concurrency; handlers are idempotent; retries use exponential backoff with jitter and a cap, permanent errors fail fast into a failed set that alerts; separate queues per priority class plus per-tenant limits; schedules live in the shared store so cron runs once; long jobs checkpoint, run CPU work off the main thread and shut down gracefully; dashboards on depth, age and failures.\n\n**Follow-ups to expect:** how you detect a dead worker; why a job ran twice; how to cancel a running job; Redis vs Postgres for the queue; when to reach for Temporal.",
+      "keyPoints": [
+        "Move slow work out of the request path, enqueue with a deterministic job id, and keep handlers idempotent",
+        "Retry transient errors with exponential backoff and jitter; fail permanent errors fast into an alerting failed set",
+        "Separate queues per workload class and per-tenant limits beat a single queue with priorities",
+        "Keep schedules in the shared store or a single scheduler so cron runs once, and make each run idempotent per period",
+        "Long jobs need heartbeats, checkpoints, child jobs and graceful shutdown; never block the worker's event loop"
+      ],
+      "interview": [
+        "How would you design a background job system with retries, priorities and scheduling?",
+        "How do you run a long-running job (say, a 2-hour video transcode) reliably in a queue?",
+        "How do you make scheduled (cron) jobs run exactly once across multiple app instances?"
+      ],
+      "check": [
+        {
+          "q": "A Node.js BullMQ worker runs a CPU-heavy job that blocks the event loop for minutes. What is the likely failure?",
+          "options": [
+            "Redis evicts the job",
+            "The job lock cannot be renewed, the job is marked stalled and may run twice",
+            "BullMQ raises its priority",
+            "The job completes but its result is dropped"
+          ],
+          "answer": 1,
+          "why": "Lock renewal runs on the same event loop. Run CPU work in sandboxed processors or worker threads."
+        },
+        {
+          "q": "Eight web instances each run node-cron for a nightly billing job. What is the best fix?",
+          "options": [
+            "Run node-cron on only half the instances",
+            "Lower the cron frequency",
+            "Store the schedule in the shared queue (or one scheduler process) and make each run idempotent per billing period",
+            "Add a sleep with random jitter before the job"
+          ],
+          "answer": 2,
+          "why": "A single source of schedules prevents duplicate runs, and per-period idempotency protects against scheduler edge cases."
+        },
+        {
+          "q": "Why should the Redis instance behind BullMQ use maxmemory-policy noeviction?",
+          "options": [
+            "It makes Redis faster",
+            "BullMQ needs Lua scripts disabled",
+            "It enables AOF persistence",
+            "Under memory pressure an eviction policy could delete queue keys and silently lose jobs"
+          ],
+          "answer": 3,
+          "why": "Queue state must not be treated as disposable cache data; with noeviction, writes fail loudly instead of jobs disappearing."
+        }
+      ],
+      "resources": [
+        {
+          "title": "BullMQ documentation",
+          "url": "https://docs.bullmq.io/"
+        },
+        {
+          "title": "BullMQ: retrying failing jobs",
+          "url": "https://docs.bullmq.io/guide/retrying-failing-jobs"
+        },
+        {
+          "title": "AWS Builders' Library: Timeouts, retries and backoff with jitter",
+          "url": "https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/"
+        },
+        {
+          "title": "PostgreSQL docs: SELECT ... FOR UPDATE SKIP LOCKED",
+          "url": "https://www.postgresql.org/docs/current/sql-select.html"
+        },
+        {
+          "title": "Marc Brooker: Jitter, making things better with randomness",
+          "url": "https://brooker.co.za/blog/2015/03/21/backoff.html"
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "job-queue-system",
+      "title": "Distributed job queue with retries, scheduling and an outbox",
+      "level": "advanced",
+      "hours": 50,
+      "stack": [
+        "TypeScript",
+        "Node.js",
+        "PostgreSQL",
+        "Redis",
+        "Next.js (dashboard)",
+        "Prometheus + Grafana",
+        "Docker Compose",
+        "Vitest + k6"
+      ],
+      "summary": "Build a job queue from scratch on Postgres (SKIP LOCKED) with a Redis fast path: idempotent enqueue, leases and heartbeats, retries with jittered backoff, priorities and per-tenant fairness, cron schedules that run once, a transactional outbox, a DLQ with replay, and a live dashboard.",
+      "why": "Almost every backend interview touches queues, retries and idempotency, and most candidates only know them as library calls. Building the queue yourself, then proving it survives killed workers, duplicate deliveries and a noisy tenant with a chaos test and load numbers, lets you answer those questions from first-hand evidence. It also shows you can design an API, a storage schema, concurrency control and observability as one coherent system.",
+      "architecture": "```text\nAPI service --(same tx)--> jobs table + outbox     scheduler (leader via advisory lock)\n     |                         |                         | upsert next run per cron (deterministic id)\n     v                         v                         v\n  POST /jobs            Postgres: jobs, attempts, schedules, inbox, outbox\n  (Idempotency-Key)            ^   claim: UPDATE ... FOR UPDATE SKIP LOCKED (lease_until)\n                               |\n worker pool (N procs x C) ----+-- heartbeat extends lease; reaper requeues expired leases\n   handlers idempotent (inbox)     retries: exp backoff + full jitter -> dead after max attempts\n   optional Redis LIST/stream wake-up to cut polling latency\n                               |\n outbox relay --> Redis Streams (job.completed / job.failed) --> SSE --> Next.js dashboard\n metrics --> Prometheus: depth, age of oldest, duration p50/p95, retries, dead, lease expiries\n```\nKey decisions: Postgres as the durable source of truth so enqueue can join the caller's transaction; leases with heartbeats instead of a fixed timeout; Redis only as a wake-up signal and event fan-out, never the only copy of a job; per-tenant fairness in the claim query; every handler deduplicated through an inbox table.",
+      "lessons": [
+        "cq-queues-basics",
+        "cq-background-jobs",
+        "cq-idempotency-delivery",
+        "cq-redis-patterns",
+        "cq-event-driven",
+        "cq-kafka"
+      ],
+      "milestones": [
+        {
+          "id": "m1",
+          "title": "Schema, enqueue API and idempotency",
+          "details": [
+            "Tables for jobs (queue, tenant, priority, payload, status, run_at, attempts, max_attempts, lease_until), attempts and dead jobs",
+            "POST /jobs with zod validation and an Idempotency-Key header mapped to a unique job key",
+            "A library function enqueue(tx, job) that callers use inside their own transaction",
+            "Checkable: a Vitest test proves sending the same request twice creates one job, and a rolled-back transaction creates none"
+          ]
+        },
+        {
+          "id": "m2",
+          "title": "Workers with leases, heartbeats and a reaper",
+          "details": [
+            "Claim with UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED LIMIT n) RETURNING, setting lease_until",
+            "Heartbeat extends the lease while the handler runs; graceful shutdown on SIGTERM finishes or releases active jobs",
+            "Reaper requeues jobs whose lease expired and records a lease-expiry metric",
+            "Checkable: kill -9 a worker mid-job in a test; the job is retried by another worker within the lease window and completes once"
+          ]
+        },
+        {
+          "id": "m3",
+          "title": "Retries, error classes and the dead-letter set",
+          "details": [
+            "Exponential backoff with full jitter computed by a pure, unit-tested function",
+            "Permanent errors fail immediately; 429 responses honour Retry-After",
+            "Dead jobs keep payload, last error, stack and attempt history; a replay endpoint requeues them",
+            "Checkable: a property test shows backoff stays within bounds, and a failing handler ends in the dead set after max_attempts"
+          ]
+        },
+        {
+          "id": "m4",
+          "title": "Priorities, per-tenant fairness and rate limits",
+          "details": [
+            "Claim query orders by priority but caps active jobs per tenant",
+            "Per-queue rate limits (token bucket in Redis, falling back to Postgres) for third-party quotas",
+            "Checkable: a load test where tenant A enqueues 100k jobs shows tenant B's p95 wait stays under [N] seconds"
+          ]
+        },
+        {
+          "id": "m5",
+          "title": "Cron schedules that run exactly once",
+          "details": [
+            "Schedules table with cron expression and timezone; a single scheduler elected with pg_try_advisory_lock",
+            "Each occurrence enqueued with a deterministic key (schedule id + scheduled time), so duplicates are impossible",
+            "Checkable: run three scheduler processes for an hour; every occurrence appears exactly once in the jobs table"
+          ]
+        },
+        {
+          "id": "m6",
+          "title": "Outbox, inbox and live events",
+          "details": [
+            "Job state changes write outbox rows in the same transaction; a relay publishes them to Redis Streams",
+            "Handlers record processed message ids in an inbox table inside their transaction",
+            "Dashboard subscribes over SSE and shows live counts per state",
+            "Checkable: kill the relay between publish and mark; the restarted relay republishes and consumers apply each event once"
+          ]
+        },
+        {
+          "id": "m7",
+          "title": "Observability, chaos test and benchmark",
+          "details": [
+            "Prometheus metrics: depth, age of oldest job, claim latency, duration percentiles, retries, dead count, lease expiries",
+            "A chaos script randomly kills workers and restarts Postgres connections during a k6 run",
+            "Compare throughput and p95 latency against BullMQ on the same machine and write up the results in the README",
+            "Checkable: the README shows a Grafana screenshot and a table of jobs/s and p95 for both systems"
+          ]
+        }
+      ],
+      "stretch": [
+        "Child jobs and a parent that runs when all children finish (fan-out/fan-in)",
+        "Cancellation of running jobs via a cancel flag checked at checkpoints",
+        "A Kafka consumer adapter that turns a topic into jobs with per-key ordering",
+        "Partition the jobs table by day and measure the effect on vacuum and claim latency",
+        "A Temporal comparison for a multi-step workflow"
+      ],
+      "resume": [
+        "Built a Postgres-backed distributed job queue (SKIP LOCKED leases, heartbeats, jittered retries) sustaining [X] jobs/s at [Y ms] p95 claim latency across [N] workers",
+        "Guaranteed effectively-once processing with transactional enqueue, an outbox relay and inbox deduplication, verified by a chaos test that killed workers [Z] times with zero lost or duplicated effects",
+        "Added per-tenant fairness and rate limiting that kept a quiet tenant's p95 wait under [N s] while a noisy tenant enqueued [M] jobs",
+        "Instrumented the system with Prometheus and Grafana (queue age, retries, dead jobs, lease expiries) and benchmarked it against BullMQ, documenting a [P%] throughput difference"
+      ],
+      "talking": [
+        "Why leases with heartbeats instead of a fixed visibility timeout, and what happens when the event loop blocks",
+        "Why Postgres is the source of truth and Redis only a wake-up signal",
+        "How deterministic keys make enqueue and cron idempotent, and why handlers still need an inbox",
+        "How the claim query enforces per-tenant fairness and what it costs",
+        "What the chaos test found and how you fixed it"
+      ],
+      "features": [
+        "Enqueue API with Idempotency-Key and transactional enqueue from application code",
+        "Workers that survive kill -9 with leases, heartbeats and a reaper",
+        "Exponential backoff with jitter, permanent-error fast fail, dead set with replay",
+        "Priorities, per-tenant concurrency caps and token-bucket rate limits",
+        "Cron schedules with timezones that run exactly once across scheduler replicas",
+        "Live Next.js dashboard over SSE plus Grafana metrics and a benchmark write-up"
+      ],
+      "deepDives": [
+        {
+          "title": "Claiming jobs safely with SKIP LOCKED and leases",
+          "body": "Workers claim with a single statement so claim and status change are atomic:\n\n```sql\nUPDATE jobs SET status = 'running', lease_until = now() + interval '30 seconds',\n       attempts = attempts + 1, worker_id = $1\nWHERE id IN (\n  SELECT id FROM jobs\n  WHERE status = 'queued' AND run_at <= now()\n  ORDER BY priority, run_at\n  LIMIT $2\n  FOR UPDATE SKIP LOCKED\n)\nRETURNING id, payload, attempts;\n```\n\n`SKIP LOCKED` lets concurrent workers pass over rows another transaction is claiming instead of queueing behind its lock, which is what makes many workers scale without contention. A lease (`lease_until`) rather than a held transaction means a worker never keeps a database connection open for a long job. A heartbeat updates `lease_until` while the handler runs, guarded by `worker_id` so a worker that lost its lease cannot extend someone else's. A reaper requeues `running` jobs whose lease expired. The trade-off: a worker that pauses longer than the lease (GC, blocked event loop) can finish after another worker started the same job, so completion is also conditional (`WHERE id = $1 AND worker_id = $2`) and handlers are idempotent. Index `(status, priority, run_at)` partially on `status = 'queued'` to keep the claim query fast as completed rows accumulate."
+        },
+        {
+          "title": "Effectively-once: transactional enqueue, outbox and inbox",
+          "body": "Exactly-once delivery is not achievable across processes, so the design aims for effectively-once effects.\n\n1. **Enqueue** happens in the caller's transaction (`enqueue(tx, job)`), so an order and its receipt job commit together or not at all. External callers use an Idempotency-Key mapped to a unique column.\n2. **State changes publish through an outbox**: the same transaction that marks a job completed inserts an outbox row. A relay publishes rows to Redis Streams and marks them sent. A crash between publish and mark republishes, which is fine because\n3. **Consumers deduplicate in an inbox**: `INSERT INTO inbox (consumer, message_id) ON CONFLICT DO NOTHING` in the same transaction as their side effect; zero rows inserted means skip.\n\nExternal side effects (emails, payments) receive the job id as the provider's idempotency key. The chaos test checks the invariant directly: count side effects per job id after random kills and assert every count is exactly one."
+        },
+        {
+          "title": "Fairness, priorities and backpressure",
+          "body": "A plain `ORDER BY priority, run_at` lets one tenant who enqueues 100k jobs occupy every worker. The claim query instead excludes tenants already at their concurrency cap:\n\n```sql\nAND tenant_id NOT IN (\n  SELECT tenant_id FROM jobs WHERE status = 'running'\n  GROUP BY tenant_id HAVING count(*) >= $cap\n)\n```\n\nThis is approximate under concurrency (two workers can both see a tenant at cap - 1), which is acceptable for fairness. At higher scale, a per-tenant running counter in Redis or round-robin claiming by tenant works better. Priorities are separate queues with dedicated worker pools for interactive work, so bulk jobs never delay password resets. Backpressure: the enqueue API rejects with 429 when a tenant's queued count passes a quota, and workers' concurrency is set from downstream capacity, not CPU count. The load test reports each tenant's p95 wait to show the effect."
+        },
+        {
+          "title": "Scheduling that runs once",
+          "body": "Running cron in every instance runs each job N times. Here a single scheduler is elected with `pg_try_advisory_lock(hash)`; if its connection dies, Postgres releases the lock and another replica takes over. Even so, failover can overlap, so each occurrence is enqueued with a deterministic unique key `schedule_id:scheduled_at`; a second insert conflicts and does nothing. Missed occurrences during downtime follow a per-schedule policy (run once to catch up, or skip). Times are computed in the schedule's IANA timezone, so DST transitions are tested explicitly: a 02:30 daily job on a spring-forward day and a fall-back day."
+        }
+      ]
+    }
+  ]
+}

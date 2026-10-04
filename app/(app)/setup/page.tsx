@@ -2,12 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, CheckCircle2, Wrench } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
-import { SetupChecklistView } from "@/components/setup/setup-checklist";
+import { SetupChecklistView } from "@/modules/planner/components/setup/setup-checklist";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { currentSession } from "@/lib/auth/dal";
-import { getSetupChecklist } from "@/lib/services/setup";
-import { cn } from "@/lib/utils";
+import { currentSession } from "@/core/auth/dal";
+import { getSetupChecklist } from "@/modules/planner/services/setup";
+import { cn } from "@/core/utils";
 
 export const metadata: Metadata = { title: "Setup" };
 

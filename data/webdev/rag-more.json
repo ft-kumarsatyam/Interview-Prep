@@ -1,0 +1,244 @@
+{
+  "tracks": [],
+  "lessons": [
+    {
+      "id": "rag-graphrag",
+      "track": "rag",
+      "title": "GraphRAG and knowledge graphs",
+      "minutes": 20,
+      "summary": "Knowledge graphs for retrieval, LLM entity and relation extraction, entity resolution, Microsoft GraphRAG's community summaries, and when graphs beat vectors.",
+      "body": "## The core idea\nVector search finds chunks that *sound like* the question. That is the wrong tool when the answer lives in the **connections** between things: \"which of our suppliers for product X are owned by a company in a sanctioned country?\", \"who owns the services that depend on the auth library?\", or \"what are the main themes across 3,000 customer interviews?\". No single chunk contains those answers. A **knowledge graph** stores entities (nodes) and typed relationships (edges) explicitly, so you can follow them, count them and summarise clusters of them.\n\n\"GraphRAG\" is used for two related things, and a good answer separates them:\n1. **Knowledge-graph retrieval**: build a graph of entities and relations, then at query time find the relevant entities and traverse edges (or run a generated graph query) to collect facts for the LLM.\n2. **Microsoft GraphRAG** (Edge et al., 2024, \"From Local to Global\"): an indexing pipeline that extracts a graph with an LLM, clusters it into hierarchical communities, writes a summary for each community, and answers \"global\" questions by map-reducing over those summaries.\n\nBoth cost much more to build than a vector index. The skill is knowing which questions justify that.\n\n## Knowledge graph basics\n```text\n(:Service {name:\"payments\"}) -[:DEPENDS_ON]-> (:Library {name:\"authlib\", version:\"2.3\"})\n(:Service {name:\"payments\"}) -[:OWNED_BY]->   (:Team {name:\"checkout\"})\n(:Team {name:\"checkout\"})    -[:MANAGED_BY]-> (:Person {name:\"Asha\"})\n```\n- **Property graph** (Neo4j, Memgraph, Amazon Neptune, Apache AGE on Postgres): nodes and edges both carry labels and key-value properties; queried with Cypher or Gremlin.\n- **RDF triple stores**: subject-predicate-object triples with URIs, queried with SPARQL; strong for formal ontologies and linked data, heavier to work with.\n- A **schema (ontology)**: the allowed node labels and relationship types. Without one, LLM extraction produces a mess of near-duplicate relation names (\"works for\", \"employed by\", \"is an employee of\").\n\nEvery node and edge should keep **provenance**: which source chunk it came from. That is how you cite, how you delete data when a document is removed, and how you enforce permissions.\n\n## Building the graph: entity and relation extraction\n```text\ndocuments -> chunks -> LLM extraction (entities, relations, claims) per chunk\n          -> entity resolution (merge \"IBM\" and \"International Business Machines\")\n          -> graph store (nodes, edges, provenance = chunk ids)\n          -> optional: embeddings on entity descriptions, community detection, summaries\n```\n\nExtraction is usually an LLM call per chunk with a fixed schema. Constrain it with structured output so the result validates:\n\n```python\nfrom pydantic import BaseModel, Field\nfrom typing import Literal\n\nclass Entity(BaseModel):\n    name: str\n    type: Literal[\"Company\", \"Person\", \"Product\", \"Country\", \"Regulation\"]\n    description: str = Field(description=\"One sentence, from the text only\")\n\nclass Relation(BaseModel):\n    source: str\n    target: str\n    type: Literal[\"SUPPLIES\", \"OWNS\", \"LOCATED_IN\", \"EMPLOYS\", \"REGULATED_BY\"]\n    evidence: str = Field(description=\"Short quote from the chunk that supports this relation\")\n\nclass Extraction(BaseModel):\n    entities: list[Entity]\n    relations: list[Relation]\n\ndef extract(chunk_id: str, text: str, llm) -> Extraction:\n    out = llm.parse(\n        system=\"Extract only entities and relations stated in the text. Do not infer.\",\n        user=text,\n        schema=Extraction,           # schema-constrained output, validated on return\n    )\n    # drop relations whose endpoints were not extracted (a common LLM error)\n    names = {e.name for e in out.entities}\n    out.relations = [r for r in out.relations if r.source in names and r.target in names]\n    return out\n```\n\nHard parts in practice:\n- **Entity resolution** is the biggest quality lever. Normalise names, use aliases, block candidates by type and embedding similarity, then confirm merges with rules or an LLM. Bad merges create false paths; missed merges break multi-hop chains.\n- **Recall**: LLMs miss entities in dense chunks. Microsoft GraphRAG uses \"gleanings\": asking the model again whether it missed anything. Smaller chunks raise recall but cost more calls.\n- **Hallucinated edges**: require an evidence quote and drop edges whose quote is not in the chunk.\n- **Cost**: at least one LLM call per chunk, often several. For millions of chunks that is far more than embedding the same corpus.\n\n## Microsoft GraphRAG step by step\n```text\nINDEX\n  text units (chunks)\n    -> LLM: entities + relationships + (optional) claims, with descriptions\n    -> merge duplicates, summarise each entity's many descriptions into one\n    -> Leiden community detection, hierarchical: level 0 (broad) ... level n (fine)\n    -> LLM: a \"community report\" per community (title, summary, key findings)\n    -> embeddings for entity descriptions (and text units)\n\nQUERY\n  global search: \"What are the main themes?\"\n     map:    each batch of community reports -> partial answer + importance score\n     reduce: keep the highest-scoring points -> final answer\n  local search: \"What did Acme promise Beta Corp?\"\n     embed query -> nearest entities -> neighbours, relations, linked text units,\n     relevant community reports -> one context window -> answer\n```\n\nThe paper evaluated on two corpora of roughly a million tokens each (podcast transcripts and news articles) using LLM judges, and found global search beat naive vector RAG on **comprehensiveness and diversity** of answers to sensemaking questions. Note what that does and does not show: it is a win on corpus-wide questions, judged by an LLM, not a general claim that GraphRAG beats vectors on fact lookup.\n\nThe open-source `graphrag` package runs this pipeline from the command line:\n\n```bash\npip install graphrag\ngraphrag init       # creates settings.yaml, .env and an input/ folder; asks for chat and embedding models\n# put .txt files in ./input, set your API key in .env\ngraphrag index      # writes parquet tables (entities, relationships, communities, reports) to ./output\ngraphrag query \"What are the top themes in these interviews?\"            # global search by default\ngraphrag query \"Who is Scrooge and what are his main relationships?\" --method local\n```\n\nBefore indexing a real corpus, tune the extraction prompts to your domain (the package ships a prompt-tuning command), and estimate cost on a sample: index 1% of the corpus, count LLM tokens, and multiply.\n\n**Variants worth knowing:**\n- **LazyGraphRAG** (Microsoft Research, late 2024) defers LLM summarisation to query time and uses cheaper NLP for the index; Microsoft reported indexing costs equal to vector RAG and a tiny fraction of full GraphRAG's.\n- **DRIFT search** in the GraphRAG project combines local search with community context.\n- **HippoRAG** (2024) builds a graph from extracted triples and runs Personalized PageRank from the query's entities to find related passages, aimed at multi-hop retrieval.\n- **LightRAG** (2024) is a lighter graph-plus-vector design with incremental updates.\n\n## Querying a graph at runtime\nFor relationship questions over a curated graph, the common pattern is **text-to-Cypher** with guardrails, or fixed parameterised queries for the most common question shapes:\n\n```sql\n// Cypher: suppliers of product X whose owner is located in a sanctioned country\nMATCH (p:Product {sku: $sku})<-[:SUPPLIES]-(s:Company)-[:OWNED_BY*1..3]->(o:Company)-[:LOCATED_IN]->(c:Country)\nWHERE c.sanctioned = true\nRETURN s.name AS supplier, o.name AS owner, c.name AS country\nLIMIT 50\n```\n\n(The fence is labelled `sql` only for highlighting; this is Cypher.) Guardrails mirror text-to-SQL: read-only database user, query timeout, row limit, validate the generated query against the schema, and give the model the schema plus a few example queries. Return the paths to the LLM with their provenance so the answer can cite source documents.\n\nA **hybrid** pattern works well: vector search over entity descriptions to find the starting nodes from fuzzy wording, then a bounded traversal (1 to 3 hops) to collect facts, then pass the subgraph and linked chunks to the LLM.\n\n## When graphs beat vectors, and when they do not\n| Question shape | Better tool | Why |\n|---|---|---|\n| \"What does our refund policy say about digital goods?\" | Vectors + BM25 + rerank | One passage holds the answer |\n| \"Who manages the team that owns payments?\" | Graph traversal | Two explicit hops |\n| \"Which customers are affected if supplier S fails?\" | Graph | Multi-hop, needs completeness, not top-k |\n| \"Main themes across all interviews?\" | GraphRAG global search or map-reduce summarisation | No chunk has the answer |\n| \"How many contracts mention clause 7?\" | SQL or graph aggregation | Counting needs exhaustive results |\n| Fast-changing chat logs, small budget | Vectors | Graph upkeep would dominate cost |\n\nGraphs win when you need **completeness over a relationship** (top-k retrieval returns some paths, not all), **explainability** (show the path), or **global summaries**. Vectors win on fuzzy semantic matching, single-fact lookup, cheap ingestion and easy freshness. Many production systems use both.\n\n## Trade-offs and operational costs\n- **Freshness**: changing a document means re-extracting its chunks, re-resolving entities, and possibly re-running community detection and regenerating summaries. Plan incremental updates from day one.\n- **Permissions**: a community summary or a merged entity can blend facts from documents the user may not see. Either build per-tenant graphs, filter traversal by ACL on every edge's provenance, or avoid pre-computed cross-document summaries for restricted data.\n- **Evaluation**: use separate golden sets for local (fact), multi-hop and global questions; compare against a strong baseline (hybrid + rerank + query decomposition) before committing.\n- **Schema drift**: as the domain changes you will add node and edge types; version the schema and extraction prompts.\n\n## Common mistakes and debugging\n- Adopting GraphRAG because it is fashionable, for a corpus of FAQs.\n- Letting the LLM invent relation types freely, then being unable to query the graph.\n- Skipping entity resolution, so \"Acme Inc.\" and \"ACME\" are separate nodes and multi-hop questions fail.\n- No provenance on edges: you cannot cite, delete or permission-filter.\n- Unbounded traversals (`*` with no hop limit) that explode on hub nodes.\n- Debugging tip: when a graph answer is wrong, check in order whether the entities were linked from the question correctly, whether the path exists in the graph, whether extraction missed an edge (look at the source chunk), and only then the generation step.\n\n## In the interview\n**What they probe:** whether you know what kind of question needs a graph, what it costs to build and maintain, and how it fails. Senior candidates are expected to mention entity resolution, provenance and permissions.\n\n**A 60-second answer outline:**\n1. Vector RAG finds similar passages; graphs make relationships explicit, so you can traverse, aggregate and summarise.\n2. Two flavours: knowledge-graph retrieval (entity linking plus bounded traversal or text-to-Cypher) and Microsoft GraphRAG (LLM extraction, Leiden communities, community reports, global map-reduce search).\n3. Build: schema-constrained extraction with evidence, entity resolution, provenance on every edge.\n4. Use it for multi-hop, completeness and corpus-wide questions; keep vectors for lookup.\n5. Costs: LLM calls per chunk, harder freshness, permission leaks through summaries; prove the gain on your own eval set.\n\n**Follow-ups to expect:** how you would update the graph incrementally; how to stop community summaries leaking restricted data; how to evaluate global answers; why top-k cannot answer \"list all\"; how LazyGraphRAG cuts indexing cost.",
+      "keyPoints": [
+        "Graphs make relationships explicit, so you can traverse, count and summarise instead of hoping top-k finds every piece",
+        "Microsoft GraphRAG extracts an entity graph, clusters it with Leiden, writes community reports and map-reduces over them for global questions",
+        "Entity resolution and schema-constrained extraction with evidence quotes decide graph quality",
+        "Keep provenance on every node and edge for citations, deletions and permission filtering",
+        "Graphs cost LLM calls per chunk and are harder to keep fresh; use them for multi-hop, completeness and corpus-wide questions"
+      ],
+      "interview": [
+        "How does Microsoft GraphRAG build its index, and how do global and local search differ?",
+        "When does a knowledge graph beat vector search for retrieval, and when is it not worth it?",
+        "How do you extract entities and relationships from documents with an LLM, and how do you keep the graph accurate?",
+        "How do you keep a knowledge-graph RAG system fresh and permission-safe as documents change?"
+      ],
+      "check": [
+        {
+          "q": "Why can plain top-k vector retrieval not answer 'list every customer affected if supplier S fails'?",
+          "options": [
+            "Embeddings cannot represent company names",
+            "Vector databases cannot store metadata",
+            "The LLM context window is always too small",
+            "Top-k returns a few similar chunks, not an exhaustive set of multi-hop paths"
+          ],
+          "answer": 3,
+          "why": "The question needs completeness over relationships; similarity search samples, a traversal enumerates."
+        },
+        {
+          "q": "In Microsoft GraphRAG, what does global search map-reduce over?",
+          "options": [
+            "Raw text chunks only",
+            "Community reports generated for clusters of the entity graph",
+            "BM25 postings lists",
+            "The user's chat history"
+          ],
+          "answer": 1,
+          "why": "Global search answers corpus-wide questions from pre-generated summaries of graph communities."
+        },
+        {
+          "q": "Which step most directly prevents 'Acme Inc.' and 'ACME' from breaking a multi-hop query?",
+          "options": [
+            "Increasing chunk overlap",
+            "Using a larger embedding model",
+            "Entity resolution that merges aliases into one node",
+            "Raising the LLM temperature during extraction"
+          ],
+          "answer": 2,
+          "why": "If aliases stay separate nodes, edges attach to different nodes and the path never connects."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Edge et al.: From Local to Global, a Graph RAG Approach to Query-Focused Summarization",
+          "url": "https://arxiv.org/abs/2404.16130"
+        },
+        {
+          "title": "Microsoft GraphRAG documentation",
+          "url": "https://microsoft.github.io/graphrag/"
+        },
+        {
+          "title": "Microsoft Research: GraphRAG, unlocking LLM discovery on narrative private data",
+          "url": "https://www.microsoft.com/en-us/research/blog/graphrag-unlocking-llm-discovery-on-narrative-private-data/"
+        },
+        {
+          "title": "Microsoft Research: LazyGraphRAG",
+          "url": "https://www.microsoft.com/en-us/research/blog/lazygraphrag-setting-a-new-standard-for-quality-and-cost/"
+        },
+        {
+          "title": "Gutierrez et al.: HippoRAG, neurobiologically inspired long-term memory for LLMs",
+          "url": "https://arxiv.org/abs/2405.14831"
+        },
+        {
+          "title": "Neo4j GraphRAG for Python documentation",
+          "url": "https://neo4j.com/docs/neo4j-graphrag-python/current/"
+        }
+      ]
+    },
+    {
+      "id": "rag-multimodal",
+      "track": "rag",
+      "title": "Multimodal RAG: PDFs, tables, images and page retrieval",
+      "minutes": 20,
+      "summary": "Why PDFs break naive pipelines, per-page routing between text extraction, OCR and vision models, table and figure handling, ColPali page retrieval and image embeddings.",
+      "body": "## The core idea\nReal enterprise knowledge is not clean text. It is PDFs with two-column layouts, financial tables spanning pages, scanned contracts, slide decks where the meaning is in a chart, and manuals where the answer is a labelled diagram. A text-only RAG pipeline that runs a basic PDF-to-text extractor and splits every 500 tokens will silently destroy much of this: tables become a jumble of numbers, charts disappear, and reading order breaks across columns.\n\n**Multimodal RAG** is the set of techniques that keep that information retrievable and usable:\n1. **Parse better**: layout-aware extraction, OCR for scans, vision-language models (VLMs) for hard pages, so tables and figures survive as structured text.\n2. **Represent non-text content** with text proxies (table summaries, image captions) that point back to the original.\n3. **Retrieve on images directly**: embed page screenshots (ColPali-style) or images (CLIP-style) so you skip lossy parsing altogether.\n4. **Generate with the original**: pass the page image or table to a multimodal LLM at answer time, not just its caption.\n\n## How PDFs actually break\nA PDF is a set of drawing instructions: \"put glyph 'R' at (72, 540)\". There is no notion of a paragraph, a column or a table cell. Extractors reconstruct structure heuristically.\n\n```text\nWhat the page shows             What naive extraction gives you\n---------------------------     --------------------------------\n| Region | Q1  | Q2  |          Region Q1 Q2 EMEA 4.1 4.6 APAC\n| EMEA   | 4.1 | 4.6 |          2.9 3.3 Note: figures in $M\n| APAC   | 2.9 | 3.3 |          (and then a chunk boundary cuts it)\nNote: figures in $M\n```\n\nCommon failures: columns read across instead of down, headers and footers repeated on every chunk, tables flattened so cells lose their row and column, multi-page tables split with no header on the second page, scanned pages with no text layer at all (extraction returns nothing and nobody notices), and charts whose data exists only as pixels.\n\n## Parsing strategies, cheapest first\n```text\n              +-- has text layer, simple layout --> fast text extraction (PyMuPDF, pypdf)\nPDF page ---> +-- complex layout / tables --------> layout model (Docling, Unstructured, Marker)\n  (classify)  +-- scanned / no text layer --------> OCR (Tesseract, PaddleOCR, cloud OCR)\n              +-- charts, diagrams, messy forms --> VLM transcription to markdown\n```\n\nRoute per page, not per document: most pages in a report are plain text, and sending all of them to a VLM wastes money. A cheap classifier works: does the page have a text layer, how many images and drawn lines (table borders) does it contain, what fraction of the area is images?\n\n```python\nimport fitz  # PyMuPDF\n\ndef classify_page(page: fitz.Page) -> str:\n    text = page.get_text(\"text\").strip()\n    images = page.get_images(full=True)\n    drawings = page.get_drawings()          # vector lines and rectangles: table borders, charts\n    if len(text) < 50 and images:\n        return \"ocr\"                         # likely a scan\n    if len(drawings) > 40 or len(images) > 2:\n        return \"layout_or_vlm\"               # tables, charts or figures\n    return \"text\"\n\ndoc = fitz.open(\"annual-report.pdf\")\nfor page in doc:\n    route = classify_page(page)\n    if route != \"text\":\n        pix = page.get_pixmap(dpi=150)       # render the page for OCR or a VLM\n        pix.save(f\"page-{page.number + 1}.png\")\n```\n\n## OCR vs vision-language models\n| | Classic OCR | VLM transcription |\n|---|---|---|\n| Output | Characters with bounding boxes | Markdown with structure, descriptions of charts |\n| Layout and tables | Weak without a separate layout model | Usually good |\n| Charts and diagrams | Cannot interpret | Can describe and sometimes extract values |\n| Cost and speed | Cheap, fast, runs locally | Much more per page, slower |\n| Failure mode | Garbled characters you can detect | **Fluent, plausible errors**: a \"corrected\" number, a skipped row |\n| Determinism and audit | High, boxes support highlighting | Lower |\n\nThe VLM failure mode is the dangerous one: OCR garbage looks like garbage, but a VLM that reads 4.6 as 4.8 produces a clean table that nobody questions. For numbers that matter (financials, dosages, contract amounts), cross-check: compare VLM output against the PDF's text layer or OCR tokens, and flag disagreements. Many teams use OCR or a layout model as the default and a VLM only for pages a classifier marks as visually complex.\n\n## Tables\nTables need their own handling because they answer precise questions (\"APAC revenue in Q2?\").\n- **Serialise with structure**: markdown tables or row-wise \"Region: APAC; Q2: 3.3 ($M)\" so each fact keeps its headers. Repeat header rows on every chunk of a long table.\n- **Keep a table as one unit** when it fits; split large tables by rows with headers repeated.\n- **Index a summary, return the table** (multi-vector pattern): embed an LLM-written description (\"Quarterly revenue by region for FY2025, in $M\") for retrieval, and store the full table as the payload passed to the LLM.\n- **Load real data tables into SQL** when users ask for aggregates; retrieval cannot sum columns reliably.\n- Carry the caption, units and footnotes with the table; \"figures in $M\" is often outside the table grid.\n\n## Images, charts and diagrams\n- **Caption-and-link**: a VLM writes a detailed description of each figure (what it shows, axis labels, key values, the surrounding section title). Index the description as text; store the image path as metadata. At answer time, include the image itself if the generator is multimodal.\n- **Context matters**: caption the image with its surrounding paragraph and heading, otherwise \"Figure 3\" is meaningless.\n- **Image embeddings** (CLIP, SigLIP) put images and text in one vector space via contrastive training on image-caption pairs. They are good for **photos and visual similarity** (product catalogues, \"find slides with a world map\") and weak on **text-heavy images** like scanned documents, where reading the words matters.\n\n```python\nfrom sentence_transformers import SentenceTransformer\nfrom PIL import Image\n\nclip = SentenceTransformer(\"clip-ViT-B-32\")         # text and images in one embedding space\nimg_vecs = clip.encode([Image.open(p) for p in [\"slide-12.png\", \"slide-31.png\"]])\nquery_vec = clip.encode(\"bar chart of revenue by region\")\n# cosine similarity between query_vec and img_vecs ranks the images\n```\n\n## ColPali: retrieve the page image directly\nColPali (Faysse et al., 2024, \"Efficient Document Retrieval with Vision Language Models\") skips parsing for retrieval. It feeds a **screenshot of each page** to a vision-language model (PaliGemma in the original) and keeps a vector for **each image patch**, roughly a thousand 128-dimensional vectors per page. Queries are embedded token by token. Scoring uses **late interaction** (the MaxSim operator from ColBERT): for each query token, take its best-matching patch, then sum.\n\n```python\nimport numpy as np\n\ndef maxsim(query_tokens: np.ndarray, page_patches: np.ndarray) -> float:\n    \"\"\"query_tokens: (q, d), page_patches: (p, d), both L2-normalised.\"\"\"\n    sims = query_tokens @ page_patches.T      # (q, p) similarity of every token to every patch\n    return float(sims.max(axis=1).sum())      # best patch per query token, summed\n```\n\nWhy it works: layout, tables, fonts and figures are all visible in the screenshot, so nothing is lost in a parser. On the ViDoRe benchmark of visually rich documents introduced with the paper, it beat pipelines built on OCR plus text embeddings, and it made indexing much simpler (render pages, embed, done).\n\nCosts and caveats:\n- **Storage**: about 1,000 vectors x 128 dims x 2 bytes is around 256 KB per page, versus about 4 KB for one 1,024-dim float32 vector. A million pages is roughly 256 GB of vectors before compression. Mitigations include binary quantisation, pooling patches, or using a single-vector model for first-stage retrieval and ColPali to rerank.\n- **Compute**: MaxSim over many vectors is heavier than one dot product; you need a vector store with multi-vector support or a two-stage design.\n- **Generation still needs reading**: retrieval returns a page image; you either pass that image to a multimodal LLM or OCR it at that point.\n- Follow-up models (ColQwen and others) change quickly; evaluate on your documents.\n\n## Putting it together\n```text\nINGEST\n PDF -> per-page routing -> text chunks (with headings)    -> text embeddings + BM25\n                         -> tables (markdown + summary)    -> summary embedding, table payload\n                         -> figures (VLM caption + image)  -> caption embedding, image path\n                         -> page screenshots               -> (optional) ColPali multi-vectors\nQUERY\n hybrid search over text + summaries + captions (+ ColPali) -> rerank\n -> context: chunks, full tables, and page or figure images for a multimodal LLM\n -> answer with citations to page numbers (and highlight boxes if you kept them)\n```\n\nKeep **page numbers and bounding boxes** as metadata throughout; showing \"page 14, table 3\" with the page image is the most convincing citation you can give a user.\n\n## Trade-offs and when not to bother\n- If your corpus is born-digital prose (docs sites, wikis, tickets), multimodal parsing adds cost for little gain.\n- VLM transcription of every page is easy to build and expensive to run; route.\n- Pure ColPali-style retrieval is attractive for slide decks and visually dense reports, but storage and serving cost are real at scale.\n- Long-context multimodal models can read a whole PDF directly; for a handful of documents and low volume that may be simpler than any pipeline.\n\n## Common mistakes and debugging\n- Never checking extraction output: open 20 random parsed pages next to the originals before tuning anything else.\n- Scanned pages silently producing empty text, so whole documents are invisible to search.\n- Losing table headers when chunking.\n- Indexing captions but passing only captions to the generator, so the model answers from a lossy description.\n- Trusting VLM-extracted numbers without a cross-check.\n- Debugging order for a wrong answer: was the page parsed correctly, was the right page or table retrieved, did the context include the table or image itself, and only then the generation step.\n\n## In the interview\n**What they probe:** do you know why PDFs are hard, can you design per-page routing, and do you know the ColPali idea and its costs? Senior answers mention VLM hallucination on numbers and storage maths.\n\n**A 60-second answer outline:**\n1. PDFs have no structure; naive extraction breaks columns, tables and loses figures.\n2. Route per page: text extraction, a layout model for tables, OCR for scans, a VLM for charts.\n3. Tables: keep headers, index a summary and return the full table; aggregates go to SQL.\n4. Figures: VLM captions with surrounding context for retrieval, pass the image itself at generation.\n5. Or retrieve page images directly with ColPali-style multi-vector late interaction, at a large storage cost.\n6. Cite page numbers and verify extracted numbers.\n\n**Follow-ups to expect:** how you would evaluate parsing quality; how ColPali scoring works; when CLIP embeddings fail; how to handle a 40-page table; how to keep costs down for a million pages.",
+      "keyPoints": [
+        "PDFs are drawing instructions, not documents; naive extraction scrambles columns, flattens tables and drops figures",
+        "Route per page: text layer, layout model, OCR or VLM, so you only pay for vision where it is needed",
+        "Index a summary or caption for retrieval but pass the full table or the image itself to the generator",
+        "ColPali embeds page screenshots as patch vectors scored with late interaction, trading storage for no parsing",
+        "VLMs fail fluently: cross-check extracted numbers and cite page numbers with the page image"
+      ],
+      "interview": [
+        "How would you build RAG over PDFs full of tables, charts and scanned pages?",
+        "OCR or a vision-language model for document parsing: how do you choose?",
+        "What is ColPali-style retrieval, and what are its costs compared with text chunking?",
+        "When do image embeddings like CLIP work well for retrieval, and when do they fail?"
+      ],
+      "check": [
+        {
+          "q": "A VLM transcribes a financial table and produces clean markdown. What is the main risk compared with classic OCR?",
+          "options": [
+            "It cannot read numbers at all",
+            "It produces plausible but wrong values that look correct, so errors go unnoticed",
+            "It always returns raw coordinates instead of text",
+            "It only works on handwritten pages"
+          ],
+          "answer": 1,
+          "why": "OCR errors look like garbage; VLM errors look fluent, so numbers need a cross-check against the text layer or OCR."
+        },
+        {
+          "q": "How does ColPali score a page against a query?",
+          "options": [
+            "One dot product between a page vector and a query vector",
+            "BM25 over OCR text",
+            "For each query token, the best-matching page patch similarity, summed over tokens (MaxSim)",
+            "A cross-encoder over the extracted text"
+          ],
+          "answer": 2,
+          "why": "It is late interaction, as in ColBERT, over image patch embeddings of the page screenshot."
+        },
+        {
+          "q": "Users ask 'what was APAC revenue in Q2?' against tables in reports. Which indexing choice helps most?",
+          "options": [
+            "Serialise tables with headers kept on every chunk, index a summary and return the full table",
+            "Split tables every 200 tokens like prose",
+            "Drop tables and rely on surrounding paragraphs",
+            "Embed only the table caption and discard the table"
+          ],
+          "answer": 0,
+          "why": "Each value needs its row and column headers, and the generator needs the actual table, not a description."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Faysse et al.: ColPali, efficient document retrieval with vision language models",
+          "url": "https://arxiv.org/abs/2407.01449"
+        },
+        {
+          "title": "Khattab and Zaharia: ColBERT, late interaction retrieval",
+          "url": "https://arxiv.org/abs/2004.12832"
+        },
+        {
+          "title": "Radford et al.: CLIP, learning transferable visual models from natural language",
+          "url": "https://arxiv.org/abs/2103.00020"
+        },
+        {
+          "title": "Docling: document parsing for gen AI (IBM)",
+          "url": "https://github.com/docling-project/docling"
+        },
+        {
+          "title": "PyMuPDF documentation",
+          "url": "https://pymupdf.readthedocs.io/en/latest/"
+        }
+      ]
+    },
+    {
+      "id": "rag-query-understanding",
+      "track": "rag",
+      "title": "Query understanding: rewriting, routing and decomposition",
+      "minutes": 18,
+      "summary": "Turning user messages into good searches: conversational rewriting, HyDE and multi-query expansion, routing and filter extraction, decomposition, and agentic retrieval.",
+      "body": "## The core idea\nMost RAG tuning effort goes into the index: chunking, embeddings, rerankers. But the query is half of every retrieval, and user queries are bad search queries. They are short (\"pricing?\"), conversational (\"what about for the EU one?\"), full of internal shorthand, multi-part (\"compare our SLA with AWS's and tell me which costs more\"), or aimed at data that is not in the vector index at all (\"how many tickets last week?\").\n\n**Query understanding** is the layer between the user and the retriever that turns what was typed into what should be searched, and decides where to search. The main moves:\n\n```text\nuser message + chat history\n        |\n        v\n [1] rewrite to a standalone query        \"what about the EU one?\" -> \"EU data residency policy for Pro plan\"\n [2] route: which source / tool?          docs index | SQL | ticket API | no retrieval\n [3] extract filters                      {product: \"Pro\", region: \"EU\", after: \"2025-01-01\"}\n [4] expand: multi-query, HyDE, step-back  several query variants\n [5] decompose multi-part questions        sub-questions answered in order or in parallel\n        |\n        v\n retrieve each -> fuse (RRF) -> rerank -> generate\n (agentic retrieval: the LLM loops through these steps itself, with a budget)\n```\n\nEach step costs latency and tokens and can make things worse, so the job is to apply them selectively and measure.\n\n## Why queries fail retrieval\n- **Vocabulary mismatch**: the user says \"cancel my plan\", the docs say \"terminate subscription\". Dense embeddings help but do not fully solve this; BM25 does not help at all.\n- **Missing context**: follow-up questions refer to earlier turns (\"and the price?\").\n- **Asymmetry**: a question looks different from the passage that answers it. A short question and a long, declarative paragraph sit in different regions of embedding space.\n- **Compound questions**: one embedding of \"A and B\" lands between A and B and retrieves neither well.\n- **Wrong backend**: counts, aggregates and live data are not in documents.\n- **Implicit filters**: \"last quarter's board deck\" contains a date and a document type that should be metadata filters, not semantic hints.\n\n## Conversational rewriting (condensing)\nThe most valuable and cheapest rewrite. Given the chat history and the latest message, produce a **standalone** query that makes sense without the history. Without it, follow-up questions retrieve garbage.\n\n```text\nHistory:  user: What is the refund window for the Pro plan?\n          assistant: 30 days from purchase...\nLatest:   and for annual billing?\nRewrite:  Refund window for the Pro plan with annual billing\n```\n\nUse a small, fast model, a tight prompt, and keep the original message too: retrieve with both and fuse, so a bad rewrite cannot lose the user's exact words (error codes, product names, ticket ids).\n\n## HyDE and query expansion\n**HyDE** (Hypothetical Document Embeddings, Gao et al., 2022): ask an LLM to write a plausible *answer passage* to the query, then embed that passage and search with it. The fake answer is wrong in its details but looks like the real documents, closing the question-passage asymmetry. It helps most on zero-shot domains with weak embedders and on short or vague queries; it hurts when the LLM knows nothing about your domain and invents misleading terminology, and it adds an LLM call before retrieval can start.\n\n**Query2doc** (Wang et al., 2023) is the sparse-retrieval cousin: append a generated pseudo-document to the query to expand BM25 terms.\n\n**Multi-query** (often called RAG-Fusion): generate 3 to 5 paraphrases or perspectives, retrieve for each in parallel, and merge with reciprocal rank fusion. It raises recall at the cost of more retrieval calls and more candidates to rerank.\n\n**Step-back prompting** (Zheng et al., 2023): generate a more general question (\"what are the principles of X?\") and retrieve for both the specific and the general one, which helps when the answer requires background the specific query does not mention.\n\n```ts\nimport { z } from \"zod\";\n\nconst QueryPlan = z.object({\n  standalone: z.string().describe(\"The latest message rewritten to stand alone\"),\n  route: z.enum([\"docs\", \"sql\", \"tickets\", \"none\"]),\n  filters: z.object({\n    product: z.enum([\"free\", \"pro\", \"enterprise\"]).optional(),\n    after: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/).optional(),\n  }),\n  variants: z.array(z.string()).max(3).describe(\"Alternative phrasings using likely document vocabulary\"),\n  subQuestions: z.array(z.string()).max(4).describe(\"Only if the question has independent parts\"),\n});\ntype QueryPlan = z.infer<typeof QueryPlan>;\n\nasync function retrieve(history: Message[], latest: string, userId: string) {\n  const plan: QueryPlan = await planQuery(history, latest, QueryPlan); // one small-model call, validated with zod\n  if (plan.route === \"none\") return [];\n  if (plan.route === \"sql\") return runReadOnlySql(plan.standalone, userId);\n\n  const queries = plan.subQuestions.length > 0\n    ? plan.subQuestions\n    : [latest, plan.standalone, ...plan.variants];       // keep the user's original wording\n  const lists = await Promise.all(\n    queries.map((q) => hybridSearch({ query: q, filters: plan.filters, userId, k: 20 })),\n  );\n  return rerank(plan.standalone, reciprocalRankFusion(lists)).slice(0, 8);\n}\n```\n\nDoing rewrite, routing, filter extraction and expansion in **one structured call** keeps the added latency to a single small-model round trip instead of four.\n\n## Routing\nA router picks the backend, the index, or \"no retrieval\":\n\n| Router | Latency | Accuracy | Notes |\n|---|---|---|---|\n| Rules and keywords | ~0 ms | Brittle | Great for obvious cases: ticket ids, \"how many\" |\n| Embedding similarity to example utterances | a few ms | Good for well-separated intents | Cheap \"semantic router\"; needs examples per route |\n| Small trained classifier | a few ms | High with labelled data | Best at volume; needs training data |\n| LLM with structured output | hundreds of ms | Flexible | Easiest to start; combine with the rewrite call |\n\nRouting errors are silent: the wrong index returns *something*, and the answer is confidently wrong. Log every routing decision, add routing cases to your eval set, and give ambiguous queries a fallback (search two indexes and fuse) rather than a hard choice.\n\n**Self-querying / filter extraction** is routing's sibling: turn \"security incidents in the EU since March\" into a semantic query (\"security incidents\") plus structured filters (`region = EU`, `date >= 2026-03-01`). Validate extracted filter values against the allowed enum values and never let the model set permission filters such as tenant or user ids; those come from the session.\n\n## Decomposition\nFor compound and multi-hop questions:\n- **Parallel decomposition**: independent parts (\"compare A's and B's pricing\") become sub-queries retrieved at the same time, then one synthesis step.\n- **Sequential decomposition**: later questions depend on earlier answers (\"who manages the team that owns payments?\" first needs the team). Self-ask (Press et al., 2022) and least-to-most prompting (Zhou et al., 2022) are the classic prompting patterns; in practice this becomes a short loop.\n\nDecompose only when the question really has parts. Over-decomposing simple questions multiplies cost and can fragment context so no single sub-answer has the full picture.\n\n## Agentic retrieval\nInstead of a fixed pipeline, give the model search tools and let it plan, search, read, and search again (the ReAct pattern, Yao et al., 2022). It handles messy multi-step questions and recovers from a poor first search, but it costs 2 to 5 times the latency and tokens, behaves less predictably, and is harder to evaluate. A practical design:\n\n```text\nquery -> cheap classifier: simple | complex\n  simple  -> fixed pipeline: rewrite + hybrid + rerank   (most traffic, ~1 s)\n  complex -> agent with tools [search_docs, search_tickets, run_sql], max 4 steps,\n             token budget, must cite chunk ids, stops when evidence suffices\n```\n\nKeep the same retrieval functions underneath both paths so improvements to the index help everything.\n\n## Latency and cost budget\nEvery pre-retrieval LLM call sits on the critical path before the first token. Rough shape for an interactive app:\n\n```text\nrewrite/route/expand (small model, one call)   150-500 ms\nparallel hybrid retrieval                       30-150 ms\nrerank 50 candidates                            50-200 ms\ngeneration time-to-first-token                 300-800 ms\n```\n\nLevers: use the smallest model that passes your routing eval; merge steps into one structured call; skip rewriting for first-turn queries that are already specific; cache plans for repeated queries; run expansions in parallel; stream a \"searching...\" state to the user.\n\n## Measuring whether it helps\nRewriting can easily make retrieval worse. Measure **recall@k and MRR on a labelled query set, per query type** (first-turn, follow-up, compound, keyword-heavy), with each technique switched on and off. Typical findings: conversational rewriting is a large win on follow-ups and neutral elsewhere; HyDE helps vague queries and hurts exact-identifier queries; multi-query raises recall but costs reranking time. Also track routing accuracy as its own metric.\n\n## Common mistakes and debugging\n- Replacing the user's query with a rewrite and losing exact terms like `ERR_TLS_1042`.\n- Running four separate LLM calls (rewrite, route, filter, expand) where one structured call would do.\n- Letting the model produce filters that are not validated, or that touch tenant scoping.\n- Decomposing everything, including simple lookups.\n- Agent loops with no step or token cap.\n- Not logging the rewritten query: when an answer is wrong, the first thing to look at is what was actually searched.\n\n## In the interview\n**What they probe:** whether you treat the query as something to engineer, know HyDE, multi-query, routing and decomposition by name and mechanism, and, above all, whether you talk about latency cost and measurement rather than stacking techniques.\n\n**A 60-second answer outline:**\n1. Raw user queries are short, conversational and compound, and some belong to other backends.\n2. Always condense follow-ups into standalone queries; keep the original too and fuse.\n3. Route (rules, embeddings, classifier or LLM) and extract validated metadata filters.\n4. Expand selectively: multi-query with RRF for recall, HyDE for vague queries, decomposition for real multi-part questions.\n5. Use agentic retrieval only for complex questions, with a step budget.\n6. Do it in one structured small-model call, and prove each step with recall@k per query type.\n\n**Follow-ups to expect:** when HyDE hurts; how you would build and evaluate a router; how to keep added latency under 300 ms; how to stop rewrites dropping identifiers; when agentic retrieval is worth it.",
+      "keyPoints": [
+        "Condense follow-up messages into standalone queries, and keep the original wording in the fused search",
+        "HyDE and multi-query expansion raise recall on vague queries but can hurt exact-identifier searches",
+        "Routing picks the backend; its errors are silent, so log decisions and evaluate routing accuracy",
+        "Decompose only real multi-part questions; use agentic retrieval for complex queries with a step budget",
+        "Combine rewrite, route, filters and expansion into one structured small-model call and measure recall per query type"
+      ],
+      "interview": [
+        "How do you handle follow-up questions in a conversational RAG system?",
+        "How would you route queries between a vector index, SQL and other tools in a RAG system?",
+        "What is query decomposition, and how does it differ from multi-query expansion?",
+        "How do you know whether query rewriting is actually helping retrieval?"
+      ],
+      "check": [
+        {
+          "q": "A user asks 'why am I getting ERR_TLS_1042?' and your rewriter turns it into 'TLS connection errors'. What is the safest fix?",
+          "options": [
+            "Turn off BM25",
+            "Use HyDE instead",
+            "Raise the rewriter's temperature",
+            "Retrieve with both the original message and the rewrite, then fuse the results"
+          ],
+          "answer": 3,
+          "why": "Keeping the original preserves exact identifiers while the rewrite adds recall."
+        },
+        {
+          "q": "When is HyDE most likely to hurt retrieval?",
+          "options": [
+            "When the domain is internal jargon the LLM does not know, so the hypothetical answer uses misleading terms",
+            "When queries are vague",
+            "When the embedding model is weak",
+            "When documents are long and declarative"
+          ],
+          "answer": 0,
+          "why": "HyDE embeds an invented answer; if the LLM invents the wrong vocabulary, the search drifts away from the real documents."
+        },
+        {
+          "q": "Which question most needs sequential decomposition rather than parallel sub-queries?",
+          "options": [
+            "Compare the refund policies of Plan A and Plan B",
+            "Who manages the team that owns the payments service?",
+            "Summarise our travel policy",
+            "List the features of the Pro plan"
+          ],
+          "answer": 1,
+          "why": "The second lookup (the manager) depends on the answer to the first (the owning team)."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Gao et al.: Precise Zero-Shot Dense Retrieval without Relevance Labels (HyDE)",
+          "url": "https://arxiv.org/abs/2212.10496"
+        },
+        {
+          "title": "Zheng et al.: Take a Step Back, evoking reasoning via abstraction",
+          "url": "https://arxiv.org/abs/2310.06117"
+        },
+        {
+          "title": "Press et al.: Measuring and Narrowing the Compositionality Gap (self-ask)",
+          "url": "https://arxiv.org/abs/2210.03350"
+        },
+        {
+          "title": "Wang et al.: Query2doc, query expansion with LLMs",
+          "url": "https://arxiv.org/abs/2303.07678"
+        },
+        {
+          "title": "Yao et al.: ReAct, synergizing reasoning and acting",
+          "url": "https://arxiv.org/abs/2210.03629"
+        }
+      ]
+    }
+  ],
+  "projects": []
+}

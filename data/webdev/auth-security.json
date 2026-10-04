@@ -1,0 +1,808 @@
+{
+  "tracks": [
+    {
+      "id": "auth-security",
+      "name": "Auth and backend security",
+      "color": "red",
+      "blurb": "Sessions and cookies, JWTs, OAuth and OIDC, passwords and passkeys, authorization models, OWASP Top 10, applied crypto and API security for backend interviews.",
+      "area": "backend"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "as-sessions-cookies",
+      "track": "auth-security",
+      "title": "Sessions and cookies: flags, CSRF and session fixation",
+      "minutes": 22,
+      "summary": "Server-side sessions done properly: random ids, HttpOnly/Secure/SameSite and __Host- cookies, timeouts, layered CSRF defences and regenerating ids to stop fixation.",
+      "body": "## The core idea\n\nHTTP is stateless, so after a user proves who they are, the server needs a way to recognise their next request. A **server-side session** does that with an opaque, random **session id**: the server stores the real state (user id, roles, CSRF secret, created-at, last-seen) in a database or cache, and the browser only holds the id in a cookie. Every request carries the cookie, the server looks the id up, and either finds a live session or treats the caller as anonymous.\n\nThe security of the whole scheme rests on three things: the id is unguessable, the cookie cannot be stolen or misused by other sites, and the id changes whenever the trust level changes. Cookie flags (`HttpOnly`, `Secure`, `SameSite`, prefixes), CSRF defences and session-fixation protection are just those three ideas made concrete.\n\nSessions are not old-fashioned. For a first-party web app (your frontend and API on the same site), a server session in an `HttpOnly` cookie is still the default recommendation in the OWASP Session Management Cheat Sheet and in most \"backend for frontend\" designs, because it gives you instant revocation and keeps tokens out of JavaScript.\n\n## How it works, step by step\n\n```text\n1. POST /login  {email, password}\n2. server verifies password, creates session row:\n      id = base64url(32 random bytes)   user=42  created=t0  lastSeen=t0  csrf=...\n3. response: Set-Cookie: __Host-sid=<id>; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=1209600\n4. browser stores cookie, sends it on matching requests:\n      GET /api/me   Cookie: __Host-sid=<id>\n5. server: lookup(id) -> check idle + absolute timeout -> load user -> handle request\n6. POST /logout -> delete session row -> Set-Cookie: __Host-sid=; Max-Age=0\n```\n\n**Session id generation.** Use a CSPRNG (`crypto.randomBytes` in Node, `secrets.token_urlsafe` in Python). OWASP asks for at least 64 bits of entropy; 128-256 bits costs nothing. Never derive ids from user ids, timestamps or counters. A good extra step is to store only a hash (SHA-256) of the id in the database: if the sessions table leaks, the attacker cannot replay the ids.\n\n**Timeouts.** Keep two clocks per session: an **idle timeout** (for example 30 minutes for a bank, days for a consumer app) and an **absolute timeout** (for example 12 hours to 30 days) after which the user must log in again regardless of activity. Update `lastSeen` lazily (say at most once a minute) to avoid a write on every request.\n\n**Storage.** A Postgres or MongoDB table works fine for most apps, with an index on the id and a TTL or cleanup job. Redis is common when you want fast lookups and automatic expiry. Keep a `userId` index so \"log out everywhere\" and \"list my devices\" are one query.\n\n## Cookie flags that matter\n\n| Attribute | What it does | Why you want it |\n| --- | --- | --- |\n| `HttpOnly` | JavaScript cannot read the cookie via `document.cookie` | An XSS bug cannot exfiltrate the session id (it can still make requests as the user while the page is open) |\n| `Secure` | Sent only over HTTPS | Stops leaks over plain HTTP, including on hostile Wi-Fi |\n| `SameSite=Lax` | Not sent on cross-site subrequests (images, fetch, iframes, cross-site POST); sent on top-level GET navigations | Strong default CSRF protection while links from email still log you in |\n| `SameSite=Strict` | Never sent on any cross-site request, even a top-level link | Best for high-value actions; users arriving from another site appear logged out on the first page |\n| `SameSite=None` | Sent everywhere; requires `Secure` | Only for genuinely cross-site embeds or third-party widgets |\n| `Path`, `Domain` | Scope of the cookie | Omit `Domain` so the cookie is host-only and not shared with every subdomain |\n| `Max-Age` / `Expires` | Persistence | Without them it is a session cookie that dies with the browser (browsers that restore sessions may keep it) |\n\n**Cookie prefixes** are enforced by the browser. A cookie named `__Host-sid` is only accepted if it has `Secure`, `Path=/` and no `Domain`, which means a compromised or malicious subdomain cannot set or overwrite it. `__Secure-` only requires `Secure`. Use `__Host-` for session cookies whenever you can.\n\nTwo details people get wrong. First, **site is not origin**. SameSite compares the *registrable domain* (eTLD+1, for example `example.com`) plus scheme, so `evil.example.com` is same-site with `app.example.com`. SameSite does nothing against a hostile sibling subdomain; host-only `__Host-` cookies and CSRF tokens do. Second, Chrome has treated cookies without a `SameSite` attribute as `Lax` since 2020, but other contexts differ, so always set it explicitly. web.dev's \"SameSite cookies explained\" walks through the matrix.\n\n## CSRF: what it is and how to stop it\n\nCross-site request forgery works because the browser attaches cookies automatically. If `bank.com` accepts `POST /transfer` with only a cookie for authentication, a page on `evil.com` can auto-submit a hidden form to it and the browser will include the victim's session cookie.\n\n```text\nvictim logged in to bank.com\nvictim visits evil.com  ->  <form action=\"https://bank.com/transfer\" method=POST> auto-submits\nbrowser sends Cookie: sid=...   ->  bank.com sees a valid session and moves money\n```\n\nThe OWASP CSRF Prevention Cheat Sheet recommends layering defences:\n\n1. **SameSite=Lax or Strict** on the session cookie. This blocks the classic cross-site POST. It is defence in depth, not the whole answer: same-site subdomains, old browsers and state-changing GET endpoints still get through.\n2. **Never change state on GET.** Lax still sends cookies on top-level GET navigations, so `GET /delete?id=5` is forgeable with a plain link.\n3. **Synchronizer token.** Store a random token in the session, render it into forms or expose it via an endpoint, and require it in a header or body field on every unsafe method. Compare in constant time.\n4. **Signed double-submit cookie** when you have no server state: put an HMAC of (session id + random value) in a non-HttpOnly cookie and require the same value in a header. The naive unsigned version is weak because an attacker who can write cookies (via a subdomain) can set both.\n5. **Fetch metadata and Origin checks.** Modern browsers send `Sec-Fetch-Site: same-origin | same-site | cross-site | none`. Rejecting unsafe methods when it is `cross-site` is cheap and very effective. Fall back to checking `Origin` against an allowlist.\n6. **Custom header requirement** for JSON APIs: a cross-site form cannot set `X-Requested-With` or `Content-Type: application/json` without triggering a CORS preflight, which your server will refuse.\n\nA small Express-style middleware that combines fetch metadata and a token:\n\n```ts\nimport { timingSafeEqual } from \"node:crypto\";\nimport type { Request, Response, NextFunction } from \"express\";\n\nconst UNSAFE = new Set([\"POST\", \"PUT\", \"PATCH\", \"DELETE\"]);\nconst ALLOWED_ORIGINS = new Set([\"https://app.example.com\"]);\n\nexport function csrfGuard(req: Request, res: Response, next: NextFunction) {\n  if (!UNSAFE.has(req.method)) return next();\n\n  const site = req.get(\"sec-fetch-site\");\n  if (site === \"cross-site\") return res.status(403).send(\"cross-site request blocked\");\n\n  const origin = req.get(\"origin\");\n  if (origin && !ALLOWED_ORIGINS.has(origin)) return res.status(403).send(\"bad origin\");\n\n  const sent = Buffer.from(req.get(\"x-csrf-token\") ?? \"\");\n  const expected = Buffer.from(req.session.csrfToken);\n  if (sent.length !== expected.length || !timingSafeEqual(sent, expected)) {\n    return res.status(403).send(\"bad csrf token\");\n  }\n  next();\n}\n```\n\nNote what CSRF defences do not cover: if the attacker has XSS on your origin, they can read the token and send same-origin requests. CSRF protection assumes your own origin is clean.\n\n## Session fixation\n\nIn a fixation attack the attacker gets the victim to use a session id the attacker already knows (planted via a URL parameter on old stacks, a cookie set from a sibling subdomain, or a shared kiosk). When the victim logs in, the server upgrades that same session to authenticated, and the attacker now holds a logged-in id.\n\nThe fix is simple and non-negotiable: **issue a brand-new session id whenever the privilege level changes**: login, logout, MFA step-up, role change, password change. Copy over anything you need (cart contents), delete the old row, set the new cookie.\n\n```ts\n// express-session\nreq.session.regenerate((err) => {\n  if (err) return next(err);\n  req.session.userId = user.id;\n  req.session.authAt = Date.now();\n  req.session.save(() => res.redirect(\"/dashboard\"));\n});\n```\n\nAlso never accept session ids from URLs, and reject ids your server did not issue (some frameworks will happily create a session with whatever id the client sends).\n\n## Trade-offs and when not to use server sessions\n\n- **Pros:** instant revocation (delete the row), small cookie, no secrets in JavaScript, easy \"active devices\" UI, server can change roles without waiting for tokens to expire.\n- **Cons:** a lookup per request (cheap with an index or Redis; cache the user for a few seconds if needed), a shared store across instances, and cookies are awkward for non-browser clients and truly cross-site APIs.\n- **Use tokens instead (or as well)** for third-party API consumers, mobile apps calling many services, and service-to-service calls. Many systems combine both: the browser talks to a backend-for-frontend with a session cookie, and the BFF holds OAuth access tokens server-side.\n\n## Common mistakes and debugging\n\n- Session cookie without `HttpOnly` \"because the SPA needs to know if it's logged in\". Expose a `/api/me` endpoint instead.\n- Setting `Domain=.example.com` so every subdomain, including a marketing site run by a vendor, receives the session.\n- `SameSite=None` added to \"fix\" a login loop without understanding the cross-site flow. Usually the real issue is that the frontend and API are on different sites.\n- Not regenerating the id on login (fixation) or not deleting the server row on logout (the cookie is gone, but a stolen copy still works).\n- Comparing CSRF tokens with `===` (timing leak, minor) or not at all on JSON endpoints \"because it's an API\".\n- Debugging: in DevTools, Application tab, inspect cookies and look for the yellow warning icon that explains why a cookie was blocked. The Network tab shows `Set-Cookie` rejections per request. Check `Sec-Fetch-Site` on the failing request.\n\n## In the interview\n\n**What they probe:** whether you can explain why cookies plus sessions are secure (and where they are not), the exact effect of each flag, the CSRF threat model, and fixation. Senior interviews push on cross-site deployments, subdomains and revocation.\n\n**A 60-second answer outline:**\n1. After login, generate a 128-bit-plus random id, store session state server-side, send the id in a `__Host-` cookie with `Secure`, `HttpOnly`, `SameSite=Lax`.\n2. Idle and absolute timeouts; regenerate the id on every privilege change to stop fixation; delete the row on logout.\n3. CSRF: SameSite as a baseline, no state change on GET, plus a synchronizer token or fetch-metadata check on unsafe methods.\n4. Trade-off versus JWTs: one lookup per request in exchange for instant revocation and no tokens in JavaScript.\n\n**Follow-ups to expect:** \"Does SameSite make CSRF tokens unnecessary?\" (no: same-site subdomains, GET handlers, older clients); \"What does HttpOnly not protect against?\" (XSS can still act as the user); \"Your frontend is on `app.com` and API on `api.io`, what changes?\" (cookies are now cross-site; prefer putting the API behind the same site or a BFF); \"How do you implement log out of all devices?\"",
+      "keyPoints": [
+        "A session id must be CSPRNG-generated (128+ bits), stored hashed if possible, and carry no meaning on its own.",
+        "Use a __Host- cookie with Secure, HttpOnly and SameSite=Lax; omit Domain so subdomains never receive it.",
+        "SameSite compares sites (eTLD+1), not origins, so it does not protect against a hostile sibling subdomain.",
+        "Layer CSRF defences: SameSite, no state change on GET, plus a synchronizer token or Sec-Fetch-Site/Origin check.",
+        "Regenerate the session id on login, logout, MFA step-up and role change to stop session fixation."
+      ],
+      "interview": [
+        "How do server-side sessions work, and what cookie flags would you set on a session cookie?",
+        "What is CSRF, and does SameSite=Lax make CSRF tokens unnecessary?",
+        "What is session fixation and how do you prevent it?"
+      ],
+      "check": [
+        {
+          "q": "Your app runs on app.example.com and a vendor runs blog.example.com. Which setting stops the blog from reading or overwriting your session cookie?",
+          "options": [
+            "SameSite=Strict",
+            "A __Host- prefixed cookie with no Domain attribute",
+            "Setting Domain=.example.com",
+            "Max-Age=0"
+          ],
+          "answer": 1,
+          "why": "A __Host- cookie must be host-only (no Domain), Secure and Path=/, so a sibling subdomain can neither receive nor overwrite it. SameSite does not help because both hosts are the same site."
+        },
+        {
+          "q": "With the session cookie set to SameSite=Lax, which request from evil.com still carries the cookie?",
+          "options": [
+            "A hidden form POST to /transfer",
+            "A fetch() call with credentials: 'include'",
+            "An image tag pointing at /api/delete?id=5",
+            "A top-level link navigation to GET /account/delete?id=5"
+          ],
+          "answer": 3,
+          "why": "Lax sends cookies on top-level GET navigations, which is why state must never change on GET. Subresource requests and cross-site POSTs do not get the cookie."
+        },
+        {
+          "q": "What is the essential fix for session fixation?",
+          "options": [
+            "Encrypt the session cookie",
+            "Shorten the idle timeout",
+            "Use SameSite=Strict",
+            "Issue a new session id whenever the user's privilege level changes, such as at login"
+          ],
+          "answer": 3,
+          "why": "Fixation relies on the pre-login id surviving authentication. Regenerating the id at login (and other privilege changes) makes the planted id worthless."
+        }
+      ],
+      "resources": [
+        {
+          "title": "OWASP Session Management Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html"
+        },
+        {
+          "title": "OWASP Cross-Site Request Forgery Prevention Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html"
+        },
+        {
+          "title": "MDN: Set-Cookie header reference",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie"
+        },
+        {
+          "title": "web.dev: SameSite cookies explained",
+          "url": "https://web.dev/articles/samesite-cookies-explained"
+        },
+        {
+          "title": "web.dev: Protect your resources from web attacks with Fetch Metadata",
+          "url": "https://web.dev/articles/fetch-metadata"
+        },
+        {
+          "title": "RFC 6265: HTTP State Management Mechanism",
+          "url": "https://datatracker.ietf.org/doc/html/rfc6265"
+        }
+      ]
+    },
+    {
+      "id": "as-jwt",
+      "track": "auth-security",
+      "title": "JWTs: structure, validation pitfalls, refresh rotation and revocation",
+      "minutes": 24,
+      "summary": "How JWTs are built and signed, the exact validation checklist (and the attacks when you skip it), short-lived access plus rotating refresh tokens, and honest revocation options.",
+      "body": "## The core idea\n\nA **JSON Web Token** is a compact, URL-safe string that carries signed claims, for example \"subject 42, issued by auth.example.com, for audience api.example.com, valid until 10:15\". Anyone who holds the issuer's verification key can check the signature and trust the claims **without calling the issuer**. That is the whole selling point: stateless verification across many services.\n\nThe cost is the mirror image. Because nobody calls the issuer, a valid token stays valid until it expires, even if the user logged out, was fired or had the token stolen. Every JWT design is a negotiation between that statelessness and the need to revoke. The second cost is that JWT libraries and specs have a long history of footguns (`alg: none`, algorithm confusion, unchecked audience) that turn \"signed\" into \"trusted input from the attacker\".\n\nKeep one distinction straight: a JWT is a *format*. \"Access token\", \"ID token\" and \"refresh token\" are *roles* in a protocol such as OAuth 2.0 or OpenID Connect. Access tokens are often JWTs, ID tokens always are, and refresh tokens are usually opaque random strings.\n\n## Structure\n\nA signed JWT (a JWS in compact form, RFC 7515) is three base64url segments joined by dots:\n\n```text\neyJhbGciOiJSUzI1NiIsImtpZCI6IjIwMjYtMDkifQ . eyJpc3MiOiJodHRwczovL2F1dGguZXhhbXBsZS5jb20iLC4uLn0 . <signature>\n        header (JSON)                                 payload / claims (JSON)                          sig over \"header.payload\"\n\nheader:  { \"alg\": \"RS256\", \"kid\": \"2026-09\", \"typ\": \"at+jwt\" }\npayload: { \"iss\": \"https://auth.example.com\", \"sub\": \"user_42\", \"aud\": \"https://api.example.com\",\n           \"exp\": 1790000900, \"iat\": 1790000000, \"nbf\": 1790000000, \"jti\": \"b1f3...\", \"scope\": \"orders:read\" }\n```\n\nThe payload is **encoded, not encrypted**. Anyone can base64-decode it, so never put secrets or personal data you would not show the user in it. If you need confidentiality, JWE (RFC 7516) exists, but most systems simply keep sensitive data out of the token.\n\nRegistered claims from RFC 7519: `iss` (issuer), `sub` (subject), `aud` (audience), `exp` (expiry), `nbf` (not before), `iat` (issued at), `jti` (unique id). RFC 9068 defines a profile for JWT access tokens with `typ: at+jwt`, which helps prevent an ID token being accepted as an access token.\n\n## Signing algorithms\n\n| alg | Type | Key | Use when |\n| --- | --- | --- | --- |\n| `HS256` | HMAC-SHA256 | One shared secret | The issuer and verifier are the same service or tightly trusted; every verifier can also mint tokens |\n| `RS256` | RSA PKCS#1 v1.5 + SHA-256 | Private key signs, public key verifies | Many verifiers; widely supported default |\n| `PS256` | RSA-PSS | Same as above | Preferred RSA padding where supported |\n| `ES256` | ECDSA P-256 | Small keys and signatures | Smaller tokens; needs a good RNG per signature (library handles it) |\n| `EdDSA` | Ed25519 | Small, fast, deterministic | Good modern choice if all your libraries support it |\n\nThe key point with asymmetric algorithms: only the issuer holds the private key, and verifiers fetch public keys from a **JWKS endpoint** (`/.well-known/jwks.json`). The `kid` header tells the verifier which key to use, which is what makes key rotation possible: publish the new key, start signing with it, keep the old key in the JWKS until all tokens it signed have expired, then remove it.\n\n## Validation, and the pitfalls\n\nRFC 8725 (JWT Best Current Practices) is short and worth reading in full. The validation checklist it implies:\n\n1. **Pin the algorithm.** Accept only the algorithms you expect, configured on the verifier, never taken from the token header.\n2. **Pick the key by `kid` from a trusted source** (your configured JWKS URL), never from a URL inside the token (`jku`, `x5u`) unless it matches an allowlist.\n3. Verify the signature.\n4. Check `exp` and `nbf` with a small clock-skew allowance (30-60 seconds).\n5. Check `iss` exactly matches the expected issuer.\n6. Check `aud` contains *this* service. Without this, a token minted for a low-security service can be replayed against a high-security one.\n7. Check `typ` where you can, and the scopes or roles the endpoint needs.\n\nThe famous attacks all come from skipping step 1 or 2:\n\n- **`alg: none`**: the attacker removes the signature and sets `alg` to `none`. Old libraries accepted it.\n- **Algorithm confusion (RS256 to HS256)**: the verifier is configured with the RSA public key. The attacker sets `alg: HS256` and signs the token with HMAC using the *public key as the secret*. A library that lets the header choose the algorithm will verify it successfully. Pinning `algorithms: [\"RS256\"]` kills it.\n- **`kid` injection**: the `kid` is used in a file path or SQL query to look up the key. Treat it as untrusted input.\n- **Unverified decode**: calling `jwt.decode()` (which does not verify) instead of `jwt.verify()` and trusting the result. This one shows up in real code reviews constantly.\n\nHere is verification done properly with the `jose` library in Node:\n\n```ts\nimport { createRemoteJWKSet, jwtVerify, errors } from \"jose\";\n\nconst JWKS = createRemoteJWKSet(new URL(\"https://auth.example.com/.well-known/jwks.json\"));\n\nexport async function verifyAccessToken(token: string) {\n  try {\n    const { payload } = await jwtVerify(token, JWKS, {\n      issuer: \"https://auth.example.com\",\n      audience: \"https://api.example.com\",\n      algorithms: [\"RS256\"],\n      typ: \"at+jwt\",\n      clockTolerance: \"30s\",\n    });\n    return { userId: payload.sub!, scope: String(payload.scope ?? \"\").split(\" \") };\n  } catch (e) {\n    if (e instanceof errors.JWTExpired) throw new Unauthorized(\"token_expired\");\n    throw new Unauthorized(\"invalid_token\");\n  }\n}\n\nclass Unauthorized extends Error {}\n```\n\n`createRemoteJWKSet` caches keys and refetches when it sees an unknown `kid`, which is exactly the behaviour you need during rotation.\n\n## Short-lived access, long-lived refresh\n\nBecause access tokens cannot easily be revoked, keep them short: **5 to 15 minutes** is typical. To avoid logging the user in every 15 minutes, the client also holds a **refresh token**: long-lived (days to weeks), opaque, stored server-side by the authorization server, and only ever sent to the token endpoint.\n\n**Refresh token rotation** (recommended for public clients by the OAuth 2.0 Security BCP, RFC 9700) means every refresh returns a new refresh token and invalidates the old one. The clever part is **reuse detection**:\n\n```text\nfamily F: RT1 -> (refresh) -> RT2 -> (refresh) -> RT3\nattacker stole RT2 earlier and uses it after the user already rotated to RT3:\n   token endpoint sees RT2 is already used  ->  revoke the whole family F\n   both the attacker and the user are logged out; the user logs in again\n```\n\nImplementation notes: store refresh tokens hashed, with `familyId`, `parentId`, `usedAt`, `expiresAt`, and an absolute family lifetime. Allow a tiny grace window (a few seconds) for the legitimate race where two browser tabs refresh at once, or serialise refreshes on the client. Auth0's documentation on refresh token rotation describes the same model.\n\n## Revocation strategies\n\nYou have several options, from cheapest to strongest:\n\n1. **Short expiry only.** Logout deletes the refresh token; access tokens die within minutes. Fine for many apps.\n2. **Denylist by `jti`.** On logout or compromise, put the `jti` in a store (Redis with TTL equal to remaining lifetime). Verifiers check it. You have reintroduced a lookup, but only against a small set.\n3. **Token version per user.** Store `tokenVersion` on the user, embed it as a claim, bump it on password change or \"log out everywhere\". Verifiers compare (cacheable for seconds).\n4. **Introspection (RFC 7662).** Use opaque access tokens and ask the authorization server on each request (with caching). You lose statelessness but gain instant revocation.\n\nBe honest in interviews: if you need instant revocation of every token, you need state somewhere. JWTs move the lookup, they do not delete it.\n\n## Where to store tokens in a browser\n\n- **`localStorage`**: readable by any script on the page, so any XSS steals the token for use elsewhere. Avoid for long-lived tokens.\n- **In memory**: lost on reload; combine with a refresh token in an `HttpOnly` cookie scoped to the refresh endpoint.\n- **Backend for frontend (BFF)**: the browser has only a session cookie; the BFF holds tokens server-side. This is the direction the IETF \"OAuth 2.0 for Browser-Based Applications\" guidance points towards for sensitive apps.\n\n## Trade-offs and when not to use JWTs\n\nUse JWTs for: service-to-service auth, APIs consumed by many services that should not all call an auth server, federated identity (OIDC ID tokens), and short-lived signed capabilities (signed download links). Do not use them as a drop-in replacement for a first-party web session: you get a larger cookie, harder revocation and more ways to get it wrong, for a lookup you could have done in under a millisecond. A token of 1-2 KB on every request also adds up on mobile.\n\n## Common mistakes and debugging\n\n- Verifying with `decode` instead of `verify`, or not passing `algorithms`.\n- Not checking `aud`, so tokens for one API work on another.\n- Hour-long or day-long access tokens with no revocation path.\n- Personal data or internal flags in the payload, assuming it is hidden.\n- One HS256 secret shared by ten services: any of them can mint admin tokens.\n- No `kid`, so rotation means a flag day where all tokens break.\n- Debugging: decode the token locally (never paste production tokens into a website), compare `iss`/`aud` byte for byte (trailing slashes matter), check server clocks with NTP, and log the verification error type, not the token.\n\n## In the interview\n\n**What they probe:** do you know the token is readable, what exactly must be validated, why algorithm pinning matters, how refresh rotation and reuse detection work, and whether you can reason about revocation honestly.\n\n**A 60-second answer outline:**\n1. Header, payload, signature; base64url, signed not encrypted.\n2. Verify with a pinned algorithm and a key from a trusted JWKS by `kid`; check `exp`, `nbf`, `iss`, `aud`, `typ`, scopes.\n3. Short-lived access tokens (5-15 min), rotating refresh tokens with reuse detection.\n4. Revocation needs state: denylist by `jti`, a per-user token version, or introspection.\n5. For a first-party browser app I would still prefer a session cookie or a BFF.\n\n**Follow-ups to expect:** \"Explain the RS256/HS256 confusion attack\"; \"How do you rotate signing keys with zero downtime?\"; \"Where would you store tokens in a SPA?\"; \"How do you log a user out everywhere?\"",
+      "keyPoints": [
+        "A JWT payload is base64url-encoded, not encrypted; anyone holding the token can read it.",
+        "Pin accepted algorithms on the verifier and pick keys by kid from a trusted JWKS; never let the token choose.",
+        "Always check exp, nbf, iss, aud and typ; a missing aud check lets tokens for one API work on another.",
+        "Keep access tokens short (5-15 min) and rotate refresh tokens with reuse detection that revokes the whole family.",
+        "Instant revocation needs state: a jti denylist, a per-user token version, or introspection."
+      ],
+      "interview": [
+        "What is inside a JWT, and what exactly must a server check when it validates one?",
+        "Explain the JWT algorithm confusion attack and how to prevent it.",
+        "How do refresh token rotation and reuse detection work, and how would you revoke JWTs?"
+      ],
+      "check": [
+        {
+          "q": "A verifier is configured with an RSA public key but reads the algorithm from the token header. What can an attacker do?",
+          "options": [
+            "Nothing, because RSA public keys cannot sign",
+            "Sign a forged token with HS256 using the public key as the HMAC secret",
+            "Decrypt the payload",
+            "Extend exp without re-signing"
+          ],
+          "answer": 1,
+          "why": "This is algorithm confusion: with alg switched to HS256, the library uses the public key bytes as an HMAC secret, which the attacker knows. Pinning algorithms to RS256 prevents it."
+        },
+        {
+          "q": "Why do refresh token rotation schemes revoke the whole token family when an old refresh token is reused?",
+          "options": [
+            "Reuse means two parties hold tokens from the same chain, so one of them is probably an attacker",
+            "To reduce database storage",
+            "Because access tokens cannot be verified after rotation",
+            "The OAuth spec forbids more than one refresh per hour"
+          ],
+          "answer": 0,
+          "why": "A legitimate client only uses each refresh token once. Seeing a used one again signals theft, and since you cannot tell which party is legitimate, you revoke the family and force re-login."
+        },
+        {
+          "q": "Which claim check stops a token minted for the low-risk notifications API from being accepted by the payments API?",
+          "options": [
+            "exp",
+            "iat",
+            "aud",
+            "jti"
+          ],
+          "answer": 2,
+          "why": "aud names the intended recipient. Each API must verify that its own identifier is in aud, otherwise any valid token from the same issuer is accepted."
+        }
+      ],
+      "resources": [
+        {
+          "title": "RFC 8725: JSON Web Token Best Current Practices",
+          "url": "https://datatracker.ietf.org/doc/html/rfc8725"
+        },
+        {
+          "title": "RFC 7519: JSON Web Token (JWT)",
+          "url": "https://datatracker.ietf.org/doc/html/rfc7519"
+        },
+        {
+          "title": "jwt.io: Introduction to JSON Web Tokens",
+          "url": "https://jwt.io/introduction"
+        },
+        {
+          "title": "OWASP JSON Web Token Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/JSON_Web_Token_Cheat_Sheet.html"
+        },
+        {
+          "title": "Auth0 docs: Refresh token rotation",
+          "url": "https://auth0.com/docs/secure/tokens/refresh-tokens/refresh-token-rotation"
+        },
+        {
+          "title": "RFC 9068: JWT Profile for OAuth 2.0 Access Tokens",
+          "url": "https://datatracker.ietf.org/doc/html/rfc9068"
+        }
+      ]
+    },
+    {
+      "id": "as-oauth-oidc",
+      "track": "auth-security",
+      "title": "OAuth 2.0 and OpenID Connect: code flow, PKCE, client credentials and ID tokens",
+      "minutes": 25,
+      "summary": "Delegation versus identity, the authorization code flow with PKCE step by step, client credentials, validating OIDC ID tokens, scopes, and the misconfigurations attackers exploit.",
+      "body": "## The core idea\n\n**OAuth 2.0 is a delegation protocol**: it lets a user grant an application limited access to their resources on another service (\"let this calendar app read my Google Calendar\") without handing over their password. The app receives an **access token** scoped to what the user approved. OAuth by itself does not tell the app *who* the user is.\n\n**OpenID Connect (OIDC) is an identity layer on top of OAuth 2.0.** It adds the `openid` scope, an **ID token** (a signed JWT describing the authentication event and the user), a `userinfo` endpoint and discovery metadata. \"Sign in with Google\" is OIDC; \"let this app access your Drive\" is OAuth.\n\nThe four roles, in OAuth vocabulary:\n\n- **Resource owner**: the user.\n- **Client**: the application asking for access (your web app, mobile app or backend job).\n- **Authorization server (AS)**: issues tokens after authenticating the user and getting consent (Auth0, Okta, Entra ID, Keycloak, Google).\n- **Resource server (RS)**: the API that accepts access tokens.\n\nClients are **confidential** (can keep a secret, such as a server-side web app) or **public** (cannot: SPAs, mobile and desktop apps).\n\n## Authorization code flow with PKCE\n\nThis is the flow to use for essentially every user-facing client in 2026. The OAuth 2.0 Security Best Current Practice (RFC 9700, published January 2025) requires PKCE for public clients and recommends it for confidential ones, and the OAuth 2.1 draft makes it mandatory. The implicit flow and the resource owner password grant are deprecated.\n\n```text\nClient                         Browser                       Authorization server        API\n  | create code_verifier (random 43-128 chars)                    |                       |\n  | code_challenge = BASE64URL(SHA256(verifier)); state; nonce    |                       |\n  |--- 302 /authorize?response_type=code&client_id&redirect_uri   |                       |\n  |        &scope=openid profile orders:read&state&nonce          |                       |\n  |        &code_challenge&code_challenge_method=S256 ----------->|                       |\n  |                               user logs in, consents          |                       |\n  |<-- 302 redirect_uri?code=abc&state=... -----------------------|                       |\n  | check state matches                                           |                       |\n  |--- POST /token  grant_type=authorization_code&code=abc        |                       |\n  |       &redirect_uri&code_verifier (+ client auth if confidential) ------------------->|\n  |<-- { access_token, id_token, refresh_token, expires_in } -----|                       |\n  | validate id_token (sig, iss, aud, exp, nonce)                 |                       |\n  |--- GET /orders  Authorization: Bearer <access_token> ---------------------------------->|\n```\n\nWhy each piece exists:\n\n- **The code is a short-lived, one-time intermediate.** Tokens never travel in the URL, where they would end up in browser history, logs and `Referer` headers.\n- **PKCE** binds the code to the client instance that started the flow. An attacker who intercepts the code (a malicious app registered for the same custom URL scheme on mobile, or a leaked log line) cannot redeem it without the `code_verifier`, which never left the client. Always use `S256`, not `plain`.\n- **`state`** is a CSRF defence for the redirect: it ties the callback to a login the user actually started. With PKCE in place it is still useful to carry app state and detect mismatched responses.\n- **`nonce`** (OIDC) is echoed inside the ID token so the client can detect replayed ID tokens.\n- **Exact `redirect_uri` matching** at the AS stops attackers from redirecting codes to their own domain.\n\nA minimal PKCE pair in Node:\n\n```ts\nimport { randomBytes, createHash } from \"node:crypto\";\n\nconst b64url = (b: Buffer) => b.toString(\"base64url\");\n\nexport function createPkce() {\n  const verifier = b64url(randomBytes(32));                        // 43 chars\n  const challenge = b64url(createHash(\"sha256\").update(verifier).digest());\n  return { verifier, challenge, method: \"S256\" as const };\n}\n```\n\nIn practice use a certified library (`openid-client` for Node, Auth.js-style frameworks, or your provider's SDK) rather than hand-rolling the flow; but you should be able to explain every parameter it sends.\n\n## Client credentials flow\n\nFor machine-to-machine calls there is no user. The client authenticates directly to the token endpoint and receives an access token representing itself:\n\n```bash\ncurl -s https://auth.example.com/oauth/token \\\n  -u \"$CLIENT_ID:$CLIENT_SECRET\" \\\n  -d grant_type=client_credentials \\\n  -d scope=\"invoices:write\" \\\n  -d audience=https://billing.example.com\n```\n\nNotes: cache the token until shortly before `expires_in` (do not fetch a new one per request), scope it narrowly, and prefer stronger client authentication than a shared secret where available: `private_key_jwt` (the client signs a JWT assertion) or mutual TLS (RFC 8705), which also lets the AS issue certificate-bound tokens that are useless if stolen.\n\nOther grants you should recognise: **device authorization** (RFC 8628, the \"enter this code on your phone\" flow for TVs and CLIs), **refresh token**, and **token exchange** (RFC 8693, a service swapping a user's token for a downscoped token to call another service).\n\n## OIDC ID tokens\n\nAn ID token is a JWT *for the client*, describing who logged in and how:\n\n```json\n{\n  \"iss\": \"https://accounts.example.com\",\n  \"sub\": \"248289761001\",\n  \"aud\": \"my-client-id\",\n  \"exp\": 1790003600,\n  \"iat\": 1790000000,\n  \"nonce\": \"n-0S6_WzA2Mj\",\n  \"auth_time\": 1789999990,\n  \"amr\": [\"pwd\", \"otp\"],\n  \"email\": \"ana@example.com\",\n  \"email_verified\": true\n}\n```\n\nThe client must validate the signature (keys from the provider's JWKS, found via `/.well-known/openid-configuration`), `iss`, `aud` equals its own client id, `exp`, and `nonce`. Then it identifies the user by the pair **(`iss`, `sub`)**, which is stable and unique. **Email is not an identifier**: users change emails, some providers let users set unverified emails, and linking accounts by email has caused real account-takeover bugs. Only trust email for linking when `email_verified` is true and the provider is authoritative for that domain.\n\nID tokens are not access tokens. Do not send them to your API as bearer credentials: their audience is the client, not the API.\n\n## Scopes and claims\n\nScopes are coarse permission strings the client requests and the user consents to: `openid`, `profile`, `email`, `offline_access` (ask for a refresh token), and API-specific ones like `orders:read`. Two rules of thumb:\n\n- Scopes describe what the *client* may do on the user's behalf. They are not a replacement for your own authorization: a token with `orders:read` still only lets user 42 read user 42's orders.\n- Request the minimum and use incremental consent for more sensitive scopes later.\n\n## Common misconfigurations (the ones that end up in bug bounty reports)\n\n1. **Loose redirect URI matching** (prefix or wildcard), combined with an open redirect on the client domain, leaks codes or tokens to the attacker.\n2. **Missing `state` or `nonce` checks**, enabling login CSRF (the victim is logged into the attacker's account) or ID token replay.\n3. **Using the implicit flow** or putting tokens in URL fragments.\n4. **Not validating `aud`** on access tokens at the API, so a token issued for any client of the same AS works.\n5. **Account linking by unverified email** across providers.\n6. **Tokens in `localStorage`** for a high-value app; a single XSS exfiltrates them.\n7. **Long-lived bearer tokens** with no rotation and broad scopes.\n8. **Mix-up attacks** when a client talks to several authorization servers and cannot tell which one sent a response; the `iss` parameter in the authorization response (RFC 9207) addresses this.\n9. **Trusting the `alg` from discovery or token headers** rather than pinning.\n\n## Architecture choices for web apps\n\nFor a SPA, the safest common pattern is a **backend for frontend**: the BFF is a confidential client that runs the code flow, keeps tokens server-side, and gives the browser an `HttpOnly` session cookie. The browser never sees an access token. The alternative, a pure SPA public client with PKCE, works but must keep tokens in memory and use refresh token rotation.\n\nFor mobile apps, use the system browser (ASWebAuthenticationSession on iOS, Custom Tabs on Android), never an embedded WebView, as RFC 8252 describes; and use claimed HTTPS redirect URIs (universal or app links) where possible.\n\n## Trade-offs and when not to use it\n\nRunning your own authorization server is a serious commitment (key management, consent, discovery, compliance). For most products, use a managed provider or Keycloak and focus on integrating correctly. You also do not need OAuth for a first-party app with its own username and password: a session is simpler. OAuth earns its keep when you have third-party clients, many services or federated login.\n\n## Debugging\n\nRead the provider's discovery document first. Decode tokens locally and compare `iss`, `aud` and `azp` with what your verifier expects. Most \"invalid_grant\" errors are a reused or expired code, a `redirect_uri` mismatch between the authorize and token calls, or a missing or wrong `code_verifier`.\n\n## In the interview\n\n**What they probe:** the difference between OAuth and OIDC, the code flow with PKCE parameter by parameter, why implicit is dead, ID token versus access token, and real-world misconfigurations.\n\n**A 60-second answer outline:**\n1. OAuth is delegated authorization; OIDC adds authentication with an ID token.\n2. Code flow plus PKCE: verifier and S256 challenge, `state`, `nonce`, exact redirect URIs, code exchanged at the token endpoint.\n3. Validate the ID token (sig, iss, aud, exp, nonce) and identify users by `iss` + `sub`.\n4. Client credentials for service-to-service, with cached, narrowly scoped tokens.\n5. For SPAs prefer a BFF so tokens stay server-side.\n\n**Follow-ups to expect:** \"What attack does PKCE stop?\"; \"Why not use the ID token to call your API?\"; \"How would you secure the CLI login for your product?\" (device flow or loopback redirect with PKCE); \"What breaks if redirect URIs allow wildcards?\"",
+      "keyPoints": [
+        "OAuth 2.0 delegates access with scoped access tokens; OpenID Connect adds identity via a signed ID token.",
+        "Use authorization code + PKCE (S256) for every user-facing client; implicit and password grants are deprecated.",
+        "Identify users by (iss, sub), never by email alone, and never send ID tokens to your API.",
+        "Client credentials is for machine-to-machine: cache tokens, scope narrowly, prefer private_key_jwt or mTLS.",
+        "Most real breaches are misconfigurations: loose redirect URIs, missing state/nonce, no aud check, email-based linking."
+      ],
+      "interview": [
+        "What is the difference between OAuth 2.0 and OpenID Connect?",
+        "Walk me through the authorization code flow with PKCE. What does PKCE protect against?",
+        "What are the most common OAuth misconfigurations you would look for in a security review?"
+      ],
+      "check": [
+        {
+          "q": "A malicious mobile app intercepts the authorization code sent to your app's redirect URI. With PKCE (S256) in place, why can it not get tokens?",
+          "options": [
+            "The code is encrypted with the app's public key",
+            "The token endpoint requires the original code_verifier, which never left the legitimate app",
+            "Codes are bound to the device IP address",
+            "The state parameter cannot be forged"
+          ],
+          "answer": 1,
+          "why": "Only the SHA-256 challenge travelled through the browser. Redeeming the code needs the verifier that hashes to it, which the attacker never saw."
+        },
+        {
+          "q": "Which value should your app use as the stable key for a user who signs in with an OIDC provider?",
+          "options": [
+            "The email claim",
+            "The access token",
+            "The combination of iss and sub",
+            "The nonce"
+          ],
+          "answer": 2,
+          "why": "sub is unique and stable only within an issuer, so the pair (iss, sub) identifies the user. Emails change and may be unverified."
+        },
+        {
+          "q": "A nightly billing job needs to call the invoices API with no user involved. Which grant fits?",
+          "options": [
+            "Client credentials",
+            "Authorization code with PKCE",
+            "Implicit",
+            "Device authorization"
+          ],
+          "answer": 0,
+          "why": "Client credentials lets a confidential client authenticate as itself and receive a token for machine-to-machine access."
+        }
+      ],
+      "resources": [
+        {
+          "title": "RFC 9700: OAuth 2.0 Security Best Current Practice",
+          "url": "https://datatracker.ietf.org/doc/html/rfc9700"
+        },
+        {
+          "title": "oauth.net: PKCE explained",
+          "url": "https://oauth.net/2/pkce/"
+        },
+        {
+          "title": "OpenID Connect Core 1.0 specification",
+          "url": "https://openid.net/specs/openid-connect-core-1_0.html"
+        },
+        {
+          "title": "oauth.net: OAuth 2.1 overview",
+          "url": "https://oauth.net/2.1/"
+        },
+        {
+          "title": "RFC 8252: OAuth 2.0 for Native Apps",
+          "url": "https://datatracker.ietf.org/doc/html/rfc8252"
+        },
+        {
+          "title": "RFC 7636: Proof Key for Code Exchange",
+          "url": "https://datatracker.ietf.org/doc/html/rfc7636"
+        }
+      ]
+    },
+    {
+      "id": "as-passwords-mfa",
+      "track": "auth-security",
+      "title": "Passwords and MFA: Argon2id, credential stuffing, TOTP and passkeys",
+      "minutes": 22,
+      "summary": "Storing passwords with Argon2id or bcrypt, NIST-style policy, defending against credential stuffing, how TOTP works and why WebAuthn passkeys are phishing-resistant.",
+      "body": "## The core idea\n\nPasswords fail in two ways: **your database leaks** and attackers crack the stored hashes offline, or **users reuse passwords** that leaked elsewhere and attackers replay them against your login (credential stuffing). Good password handling addresses the first with slow, salted, memory-hard hashing, and the second with breached-password checks, rate limiting and, above all, a second factor that the attacker does not have. The strongest current answer, passkeys built on WebAuthn, removes the shared secret altogether and is phishing-resistant by design.\n\n## Storing passwords: slow hashes, not fast ones\n\nSHA-256 is designed to be fast; a modern GPU computes billions of SHA-256 hashes per second, so an 8-character password hashed with SHA-256 (even salted) falls quickly. Password hashing functions are deliberately slow and, ideally, **memory-hard**, so parallel hardware gains much less.\n\nThe OWASP Password Storage Cheat Sheet gives current minimums:\n\n| Algorithm | Recommended minimum (OWASP) | Notes |\n| --- | --- | --- |\n| **Argon2id** | m = 19 MiB, t = 2 iterations, p = 1 | First choice. Memory-hard, winner of the Password Hashing Competition, specified in RFC 9106 |\n| scrypt | N = 2^17, r = 8, p = 1 | Memory-hard; fine if Argon2id is unavailable |\n| bcrypt | work factor 10 or more | Truncates input at 72 bytes; widely available |\n| PBKDF2-HMAC-SHA256 | 600,000 iterations | Use when FIPS compliance is required |\n\nWhat a stored hash looks like (a PHC string carries algorithm, parameters and salt, so you can upgrade parameters later):\n\n```text\n$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$J6...base64 hash...\n```\n\n```ts\nimport argon2 from \"argon2\";\n\nconst PARAMS = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 };\n\nexport async function hashPassword(pw: string) {\n  return argon2.hash(pw, PARAMS);                  // random salt generated for you\n}\n\nexport async function verifyPassword(stored: string, pw: string) {\n  const ok = await argon2.verify(stored, pw);\n  const needsRehash = ok && argon2.needsRehash(stored, PARAMS);\n  return { ok, needsRehash };                      // rehash on successful login when params change\n}\n```\n\nKey details:\n\n- **Salt** (unique random per password, stored alongside) defeats precomputed rainbow tables and makes identical passwords hash differently. Libraries handle this.\n- **Pepper** (an extra secret held outside the database, for example in a KMS or as an HMAC key applied before hashing) means a database-only leak is not crackable. It adds key-management burden; useful for high-value systems.\n- **Tune for your hardware.** Aim for a hash time that is acceptable for login latency and CPU (tens to a few hundred milliseconds), and remember that a login endpoint doing expensive hashing is a denial-of-service target, so rate limit it.\n- **Upgrade transparently.** On successful login, if `needsRehash`, store a new hash. For legacy MD5 or SHA-1 hashes, you can wrap them (`argon2id(sha1(pw))`) immediately rather than waiting for every user to log in.\n- Do not encrypt passwords. You never need to decrypt them.\n\n## Password policy: what NIST actually says\n\nNIST SP 800-63B (revision 4, finalised in 2025) moved away from the old rules most people remember:\n\n- Length matters more than composition: at least 15 characters when the password is the only factor, at least 8 when it is part of MFA. Allow at least 64 characters and all printable characters, including spaces.\n- **No composition rules** (one uppercase, one symbol) and **no periodic forced rotation**; force a change only on evidence of compromise.\n- **Check new passwords against known-breached lists** and common or context-specific words.\n- Allow paste and password managers.\n\nChecking against breaches without sending the password anywhere: Have I Been Pwned's Pwned Passwords API uses **k-anonymity**. You SHA-1 the password, send only the first 5 hex characters, receive all suffixes in that range, and compare locally.\n\n```ts\nimport { createHash } from \"node:crypto\";\n\nexport async function isBreached(pw: string) {\n  const sha1 = createHash(\"sha1\").update(pw).digest(\"hex\").toUpperCase();\n  const prefix = sha1.slice(0, 5), suffix = sha1.slice(5);\n  const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, { headers: { \"Add-Padding\": \"true\" } });\n  const body = await res.text();\n  return body.split(/\\r?\\n/).some((line) => line.startsWith(suffix) && !line.endsWith(\":0\"));\n}\n```\n\n## Credential stuffing and online attacks\n\nCredential stuffing uses millions of leaked email/password pairs, distributed across residential proxies, at a low rate per IP. Per-IP limits alone do not stop it. A layered defence:\n\n1. **MFA**, which defeats replayed passwords outright.\n2. **Breached-password checks** at signup, password change, and optionally at login.\n3. **Rate limits on several keys**: per account (slow down after N failures, with exponential backoff rather than hard lockout, which itself becomes a denial-of-service tool), per IP and per IP range or ASN, and global failure-rate alarms.\n4. **Bot signals**: device or browser fingerprints, CAPTCHA or proof-of-work challenges only when risk is high.\n5. **Uniform responses**: the same error message and similar timing for \"no such user\" and \"wrong password\" to avoid account enumeration (hash a dummy password when the user does not exist).\n6. **Notify users** of new-device logins and offer \"this wasn't me\".\n\n## Second factors\n\n### TOTP\n\nTime-based one-time passwords (RFC 6238) build on HOTP (RFC 4226): the server and the authenticator app share a secret; the code is HMAC(secret, floor(unixTime / 30)), truncated to 6 digits.\n\n```text\nenrol:   server generates 160-bit secret -> otpauth://totp/App:ana?secret=BASE32&issuer=App -> QR code\n         user scans, types current code -> server verifies -> store secret encrypted\nlogin:   code == TOTP(secret, T) for T in {now-1, now, now+1} steps   (small skew window)\n         remember the last used step to block replay within the window\n```\n\nStore TOTP secrets encrypted (they are shared secrets, unlike password hashes), rate-limit attempts (a 6-digit code has only a million possibilities), and issue one-time **recovery codes** at enrolment, stored hashed.\n\nTOTP's weakness: it is **phishable**. A real-time phishing proxy (tools like Evilginx do this) relays the password and the code to the real site within the 30-second window and steals the resulting session. SMS codes are weaker still (SIM swaps, SS7 interception) and NIST classes SMS as a restricted authenticator.\n\n### WebAuthn and passkeys\n\nWebAuthn (a W3C standard, with FIDO2's CTAP for external authenticators) replaces shared secrets with public-key cryptography:\n\n```text\nregister: server sends challenge + rpId (\"example.com\") + user id\n          authenticator creates a key pair scoped to rpId, keeps the private key\n          returns public key + credential id (+ attestation) -> server stores them\nlogin:    server sends random challenge\n          browser checks the page origin matches rpId, authenticator signs\n          (challenge + origin + rpId hash + counter) after user verification (biometric/PIN)\n          server verifies signature with stored public key, checks challenge, origin, rpId\n```\n\nWhy it is phishing-resistant: the **browser** puts the real origin into the signed data and only offers credentials for the matching relying party. A look-alike domain cannot obtain a valid assertion for `example.com`, no matter how convincing the page. The server stores only public keys, so a database leak gives attackers nothing to replay.\n\n**Passkeys** are discoverable WebAuthn credentials, usually synced across a user's devices by the platform (iCloud Keychain, Google Password Manager, password managers), so losing a phone does not lose the account. They can act as a single step that is both possession and user verification. Use a maintained library (SimpleWebAuthn for Node, `py_webauthn` for Python) rather than parsing CBOR yourself. passkeys.dev and the webauthn.guide site are good starting points.\n\n## Trade-offs\n\n- Argon2id parameters trade login latency and server CPU/memory against attacker cost; very high memory settings can exhaust a small container under a login burst.\n- Mandatory MFA increases support load (lost devices); recovery flows become the weakest link, so protect them as strongly as login (recovery codes, re-verification, cooling-off periods for changes).\n- Passkeys give the best security and UX but need fallback paths during migration, and account recovery still has to be designed.\n\n## Common mistakes\n\n- Fast hashes (MD5, SHA-1, plain SHA-256) or a single global salt.\n- bcrypt with inputs over 72 bytes silently truncated (pre-hash with care, or use Argon2id).\n- Hard lockout after 5 attempts, letting anyone lock out any user.\n- Different error messages or response times that reveal which emails exist.\n- TOTP secrets stored in plaintext, no replay protection, unlimited guesses.\n- Password reset tokens that are long-lived, reusable or stored unhashed, or a reset that does not invalidate existing sessions.\n\n## In the interview\n\n**What they probe:** whether you know why fast hashes fail, the current algorithm and parameters, how credential stuffing differs from brute force, and why WebAuthn beats TOTP.\n\n**A 60-second answer outline:**\n1. Hash with Argon2id (OWASP minimum m=19 MiB, t=2, p=1), unique salt, PHC format, rehash on login when parameters change.\n2. NIST-style policy: length, no composition rules or forced rotation, breached-password checks.\n3. Credential stuffing: MFA, breach checks, multi-key rate limiting with backoff, bot signals, uniform errors.\n4. MFA: TOTP is good but phishable; WebAuthn/passkeys are origin-bound and phishing-resistant.\n\n**Follow-ups to expect:** \"Why is bcrypt's 72-byte limit a problem?\"; \"How do you migrate a million MD5 hashes?\"; \"How does a phishing proxy defeat TOTP but not passkeys?\"; \"Design account recovery for a passkey-only account.\"",
+      "keyPoints": [
+        "Use Argon2id (OWASP minimum m=19 MiB, t=2, p=1) with a unique salt; never fast hashes like SHA-256 or MD5.",
+        "Follow NIST SP 800-63B: favour length, drop composition rules and forced rotation, block breached passwords.",
+        "Credential stuffing is distributed and low-rate; MFA, breach checks and multi-key rate limits beat per-IP limits.",
+        "TOTP is HMAC over a 30-second time step: a real improvement, but phishable through real-time proxies.",
+        "WebAuthn passkeys sign an origin-bound challenge, so look-alike phishing sites cannot get a usable assertion."
+      ],
+      "interview": [
+        "How should passwords be stored, and why not just use SHA-256 with a salt?",
+        "How would you defend a login endpoint against credential stuffing?",
+        "Compare SMS codes, TOTP and passkeys as second factors. Why are passkeys phishing-resistant?"
+      ],
+      "check": [
+        {
+          "q": "Why is a salted SHA-256 hash a poor way to store passwords?",
+          "options": [
+            "SHA-256 has known collisions",
+            "SHA-256 output is too short",
+            "It is fast, so attackers can test billions of guesses per second on GPUs",
+            "Salts cannot be stored next to hashes"
+          ],
+          "answer": 2,
+          "why": "Salts stop rainbow tables, but SHA-256's speed lets offline attackers brute-force weak passwords cheaply. Slow, memory-hard functions like Argon2id raise the cost per guess."
+        },
+        {
+          "q": "How does the Pwned Passwords range API let you check a password without revealing it?",
+          "options": [
+            "You send the full bcrypt hash",
+            "You send the first 5 hex characters of the SHA-1 hash and compare returned suffixes locally",
+            "The password is sent over TLS and deleted immediately",
+            "You send the password encrypted with the API's public key"
+          ],
+          "answer": 1,
+          "why": "This is k-anonymity: the prefix matches hundreds of hashes, and the comparison against the full hash happens on your server."
+        },
+        {
+          "q": "A real-time phishing proxy relays a user's password and 6-digit TOTP code to the real site. Which factor would have stopped it?",
+          "options": [
+            "A longer TOTP code",
+            "SMS one-time codes",
+            "Security questions",
+            "A WebAuthn passkey"
+          ],
+          "answer": 3,
+          "why": "WebAuthn assertions include the origin checked by the browser, so a credential for example.com cannot be used from the phishing domain."
+        }
+      ],
+      "resources": [
+        {
+          "title": "OWASP Password Storage Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html"
+        },
+        {
+          "title": "NIST SP 800-63B: Authentication and Authenticator Management",
+          "url": "https://pages.nist.gov/800-63-4/sp800-63b.html"
+        },
+        {
+          "title": "OWASP Credential Stuffing Prevention Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Credential_Stuffing_Prevention_Cheat_Sheet.html"
+        },
+        {
+          "title": "passkeys.dev: developer resources for passkeys",
+          "url": "https://passkeys.dev/"
+        },
+        {
+          "title": "webauthn.guide: a friendly introduction to WebAuthn",
+          "url": "https://webauthn.guide/"
+        },
+        {
+          "title": "RFC 6238: TOTP: Time-Based One-Time Password Algorithm",
+          "url": "https://datatracker.ietf.org/doc/html/rfc6238"
+        }
+      ]
+    },
+    {
+      "id": "as-authorization",
+      "track": "auth-security",
+      "title": "Authorization: RBAC, ABAC, ReBAC (Zanzibar), tenant isolation and IDOR",
+      "minutes": 24,
+      "summary": "Choosing an authorization model, how Zanzibar-style relationship checks work, enforcing multi-tenant isolation with scoped queries and row-level security, and killing IDOR bugs.",
+      "body": "## The core idea\n\n**Authentication answers \"who are you?\"; authorization answers \"may you do this, to this thing, right now?\"** Authentication happens once per session. Authorization happens on every request, for every object, and it is where most real-world breaches live: Broken Access Control is number one in the OWASP Top 10, and Broken Object Level Authorization is number one in the OWASP API Security Top 10.\n\nEvery authorization decision has the same shape:\n\n```text\ndecision = allow?( subject, action, resource, context )\n           subject:  user 42, roles [editor], tenant acme, mfa=true\n           action:   \"invoice.approve\"\n           resource: invoice 981, tenant acme, owner 17, amount 12000\n           context:  time, IP, device, request risk\n```\n\nModels differ in what information they use to decide. Architectures differ in *where* the decision is made and *where* it is enforced. Get both right and, crucially, make the check impossible to forget.\n\n## RBAC: role-based access control\n\nUsers get roles; roles carry permissions.\n\n```text\nuser ana  -> role \"billing-admin\" -> permissions { invoice.read, invoice.approve, refund.create }\nuser ben  -> role \"viewer\"        -> permissions { invoice.read }\n```\n\n```ts\nconst ROLE_PERMS: Record<Role, ReadonlySet<Permission>> = {\n  viewer: new Set([\"invoice.read\"]),\n  \"billing-admin\": new Set([\"invoice.read\", \"invoice.approve\", \"refund.create\"]),\n};\n\nexport function can(user: { roles: Role[] }, perm: Permission) {\n  return user.roles.some((r) => ROLE_PERMS[r].has(perm));\n}\n```\n\n**Strengths:** easy to understand and audit (\"who can approve invoices?\"), maps to org charts, cheap to evaluate. **Weaknesses:** it answers \"can editors edit documents?\" but not \"can Ana edit *this* document?\". Teams patch that with ever more specific roles (`editor-project-17`), which is **role explosion**. Check for permissions in code, never role names (`can(user, \"invoice.approve\")`, not `user.role === \"admin\"`), so roles can change without code changes.\n\n## ABAC: attribute-based access control\n\nDecisions are policies over attributes of the subject, resource, action and environment:\n\n```text\nallow invoice.approve if\n    subject.department == \"finance\"\n    and resource.tenant == subject.tenant\n    and resource.amount <= subject.approvalLimit\n    and context.mfaAge < 15 minutes\n```\n\n**Strengths:** expressive, handles fine-grained and contextual rules (limits, time, location, data classification) without new roles. **Weaknesses:** harder to answer \"who can access X?\" (you would have to evaluate policies over all users), harder to audit, and policies can become unreadable code. Policy engines help: **Open Policy Agent** with the Rego language, and **AWS Cedar**, a policy language designed to be analysable (Amazon Verified Permissions uses it).\n\n## ReBAC and Google Zanzibar\n\nRelationship-based access control decides based on a graph of relationships: \"Ana can view doc 7 because she is a member of team Design, which is an editor of folder Q3, which is the parent of doc 7.\" This is how Google Drive, GitHub and Notion-style sharing work.\n\nGoogle's **Zanzibar** paper (USENIX ATC 2019) describes the system behind Drive, YouTube, Calendar and others. Its core ideas:\n\n- Permissions are stored as **relation tuples**: `object#relation@subject`, for example `doc:7#viewer@user:ana` or `doc:7#parent@folder:q3` or `folder:q3#editor@team:design#member`.\n- A **namespace configuration** defines how relations compose, such as \"viewers include editors\" and \"viewers of a doc include viewers of its parent folder\".\n- The API answers `check(object, relation, user)`, plus `expand` and reverse lookups (\"which docs can Ana see?\").\n- **Zookies** are consistency tokens: when content changes, the client stores a zookie with it, and later checks are evaluated at a snapshot at least as fresh, avoiding the \"new enemy\" problem (removing someone's access, then adding content they should not see, and a stale check still letting them in).\n\nOpen-source implementations inspired by Zanzibar include **OpenFGA** (CNCF project, originally from Auth0) and **SpiceDB** (AuthZed). An OpenFGA-style model:\n\n```text\nmodel\n  schema 1.1\ntype user\ntype team\n  relations\n    define member: [user]\ntype folder\n  relations\n    define editor: [user, team#member]\n    define viewer: [user, team#member] or editor\ntype doc\n  relations\n    define parent: [folder]\n    define editor: [user] or editor from parent\n    define viewer: [user] or editor or viewer from parent\n```\n\n**Strengths:** natural for sharing, hierarchies and groups; one central service for many products; reverse queries for listing. **Weaknesses:** a new distributed system to run, data duplication between your DB and the tuple store (you must keep them in sync, often via an outbox), and listing/filtering large result sets is hard.\n\nMost real systems are hybrids: RBAC for coarse admin features, ReBAC for sharing, ABAC conditions for limits and context.\n\n## Multi-tenant isolation\n\nIn a SaaS product the most damaging authorization bug is a **cross-tenant leak**: customer A sees customer B's data. Defence in depth:\n\n1. **Tenant from the session, never from the request.** The tenant id comes from the authenticated principal; a `tenantId` in the body or URL is at most a hint that must match.\n2. **Every query is tenant-scoped** by construction: a repository layer that requires `tenantId`, or an ORM middleware that injects it.\n3. **Database-enforced isolation as a backstop.** Postgres **row-level security** can enforce it even if application code forgets:\n\n```sql\nALTER TABLE invoices ENABLE ROW LEVEL SECURITY;\nALTER TABLE invoices FORCE ROW LEVEL SECURITY;\n\nCREATE POLICY tenant_isolation ON invoices\n  USING (tenant_id = current_setting('app.tenant_id')::uuid)\n  WITH CHECK (tenant_id = current_setting('app.tenant_id')::uuid);\n\n-- per request, inside the transaction:\nSET LOCAL app.tenant_id = 'a1b2...';\n```\n\nNote that table owners and superusers bypass RLS unless `FORCE ROW LEVEL SECURITY` is set and the app connects as a non-owner role. With connection pooling, use `SET LOCAL` inside a transaction so the setting cannot leak to the next request on the same connection.\n\n4. **Stronger isolation tiers** for high-value customers: schema per tenant or database per tenant, at the cost of operational complexity and migrations across many databases.\n5. **Tenant-aware caches and search indexes.** Cache keys and vector or search queries must include the tenant; this is a frequent leak.\n\n## IDOR and BOLA\n\nAn **insecure direct object reference** happens when an endpoint takes an object id from the client and returns or modifies the object without checking that the caller may access it:\n\n```ts\n// vulnerable: any logged-in user can read any invoice by changing the id\napp.get(\"/api/invoices/:id\", requireAuth, async (req, res) => {\n  res.json(await db.invoice.findUnique({ where: { id: req.params.id } }));\n});\n\n// fixed: scope the lookup to the caller, and return 404 rather than 403 to avoid confirming existence\napp.get(\"/api/invoices/:id\", requireAuth, async (req, res) => {\n  const inv = await db.invoice.findFirst({\n    where: { id: req.params.id, tenantId: req.user.tenantId },\n  });\n  if (!inv || !(await authz.check(req.user, \"invoice.read\", inv))) return res.sendStatus(404);\n  res.json(inv);\n});\n```\n\nRandom UUIDs make ids harder to guess but are **not** an authorization control: ids leak through URLs, logs, emails and shared links. The fix is always an object-level check. Watch the variants: nested resources (`/projects/1/tasks/99` where task 99 belongs to project 2), bulk endpoints that accept arrays of ids, GraphQL resolvers that skip checks on nested fields, file download URLs, and write paths (mass assignment of `ownerId` or `tenantId`).\n\n## Where to enforce\n\n- **Policy decision point (PDP)**: the code or service that evaluates \"allow?\". **Policy enforcement point (PEP)**: the place that calls it and blocks the request.\n- Enforce in the **service layer next to the data**, not only in the UI or the API gateway. The gateway can check coarse things (authenticated, has scope), but only the service knows who owns invoice 981.\n- **Deny by default**: a new endpoint with no policy should fail closed.\n- For lists, push filters into the query (\"invoices where tenant = X and (owner = me or shared with my team)\") instead of fetching everything and filtering in memory, which is slow and leaks via counts and pagination.\n- **Test authorization**: a matrix of roles times endpoints, plus automated tests that call every endpoint as a user from another tenant and expect 404.\n\n## Common mistakes\n\n- Checking authorization in the frontend only, or only hiding buttons.\n- Trusting `tenantId`, `userId` or `role` from the request body.\n- Role-name checks scattered through the code.\n- Forgetting the background-job and admin-tool paths, which often run with superuser access.\n- Caching an authorization decision too long after a permission is revoked.\n\n## In the interview\n\n**What they probe:** whether you can pick a model for a product (RBAC versus ABAC versus ReBAC), whether you instinctively scope every object access, how you guarantee tenant isolation, and (senior) how a Zanzibar-style service works and its consistency trade-offs.\n\n**A 60-second answer outline:**\n1. Authorization is per request, per object, deny by default, enforced in the service next to the data.\n2. RBAC for coarse capabilities, ReBAC for sharing and hierarchies, ABAC conditions for limits and context.\n3. Multi-tenant: tenant from the session, scoped repositories, RLS as a backstop, tenant-aware caches.\n4. IDOR: every lookup by id is also scoped by owner or tenant; UUIDs are not a control.\n5. Test with cross-tenant and cross-role suites.\n\n**Follow-ups to expect:** \"Design permissions for Google Docs-style sharing\"; \"How do you list only the documents a user can see, at scale?\"; \"What is the new-enemy problem?\"; \"How would you migrate from hard-coded roles to a policy engine?\"",
+      "keyPoints": [
+        "Authorization is decided per request and per object, deny by default, enforced in the service next to the data.",
+        "RBAC is simple and auditable but explodes for per-object rules; ABAC adds attributes and context; ReBAC models sharing graphs.",
+        "Zanzibar stores relation tuples (object#relation@subject) and uses zookies to avoid the new-enemy problem.",
+        "Take the tenant from the session, scope every query, and use Postgres row-level security as a backstop.",
+        "IDOR is fixed by object-level checks on every lookup; random UUIDs are not an authorization control."
+      ],
+      "interview": [
+        "Compare RBAC, ABAC and ReBAC. How would you choose for a new SaaS product?",
+        "What is an IDOR vulnerability and how do you prevent it systematically?",
+        "How do you guarantee tenant isolation in a multi-tenant SaaS backend?"
+      ],
+      "check": [
+        {
+          "q": "An endpoint GET /api/orders/:id loads the order by id after checking the user is logged in. The ids are random UUIDs. What is the status?",
+          "options": [
+            "Safe, because UUIDs cannot be guessed",
+            "Vulnerable to IDOR, because there is no check that the order belongs to the caller",
+            "Safe if the endpoint uses HTTPS",
+            "Vulnerable only to CSRF"
+          ],
+          "answer": 1,
+          "why": "Ids leak through URLs, logs and sharing. Without an object-level ownership or tenant check, any authenticated user who obtains an id can read the order."
+        },
+        {
+          "q": "Which model best fits Google Drive-style sharing with folders, groups and inherited permissions?",
+          "options": [
+            "Pure RBAC with one role per folder",
+            "Access control lists stored in the frontend",
+            "ReBAC, for example a Zanzibar-style relation tuple store",
+            "IP allowlists"
+          ],
+          "answer": 2,
+          "why": "Sharing is a graph of relationships (member of team, editor of folder, parent of doc). ReBAC evaluates those relations directly, which is what Zanzibar was built for."
+        },
+        {
+          "q": "With Postgres row-level security and a connection pool, why set the tenant with SET LOCAL inside a transaction?",
+          "options": [
+            "SET LOCAL is faster than SET",
+            "RLS ignores session-level settings",
+            "It encrypts the tenant id",
+            "The setting ends with the transaction, so it cannot leak to the next request reusing the pooled connection"
+          ],
+          "answer": 3,
+          "why": "A plain SET persists on the connection. With pooling, the next request on that connection could inherit another tenant's id; SET LOCAL scopes it to the transaction."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Zanzibar: Google's Consistent, Global Authorization System (USENIX ATC 2019)",
+          "url": "https://research.google/pubs/zanzibar-googles-consistent-global-authorization-system/"
+        },
+        {
+          "title": "OWASP Authorization Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html"
+        },
+        {
+          "title": "OWASP Insecure Direct Object Reference Prevention Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html"
+        },
+        {
+          "title": "PostgreSQL docs: Row Security Policies",
+          "url": "https://www.postgresql.org/docs/current/ddl-rowsecurity.html"
+        },
+        {
+          "title": "OpenFGA docs: concepts",
+          "url": "https://openfga.dev/docs/concepts"
+        },
+        {
+          "title": "Cedar policy language documentation",
+          "url": "https://docs.cedarpolicy.com/"
+        }
+      ]
+    },
+    {
+      "id": "as-owasp-top10",
+      "track": "auth-security",
+      "title": "OWASP Top 10 (2025) with concrete exploits and fixes",
+      "minutes": 26,
+      "summary": "Every category of the OWASP Top 10:2025, from broken access control and SSRF to supply chain and exceptional conditions, each with a realistic exploit and the fix that removes the bug class.",
+      "body": "## The core idea\n\nThe **OWASP Top 10** is a ranked list of the most important categories of web application security risk, built from data contributed by testing organisations plus a community survey. It is not a checklist that makes you \"secure\", but it is the shared vocabulary interviewers, auditors and pen-testers use. The current edition is **OWASP Top 10:2025**, published in late 2025 and replacing the 2021 list.\n\n| # | 2025 category | What changed since 2021 |\n| --- | --- | --- |\n| A01 | Broken Access Control | Still number one; now also includes SSRF (previously its own A10) and CSRF |\n| A02 | Security Misconfiguration | Up from A05 |\n| A03 | Software Supply Chain Failures | New, broadens 2021's \"Vulnerable and Outdated Components\" |\n| A04 | Cryptographic Failures | Down from A02 |\n| A05 | Injection | Down from A03; still covers SQL, NoSQL, OS command injection and XSS |\n| A06 | Insecure Design | Down from A04 |\n| A07 | Authentication Failures | Renamed from \"Identification and Authentication Failures\" |\n| A08 | Software or Data Integrity Failures | Same position |\n| A09 | Security Logging and Alerting Failures | Renamed to stress alerting, not just logging |\n| A10 | Mishandling of Exceptional Conditions | New: error handling, failing open, logic errors under abnormal conditions |\n\nIf an interviewer quotes the 2021 list, that is fine: the categories largely map. What they want is concrete examples and fixes, which is what the rest of this lesson gives you.\n\n## A01 Broken Access Control (including SSRF)\n\nThe application lets a user act outside their intended permissions.\n\n- **IDOR**: `GET /api/invoices/981` returns another customer's invoice because the handler never checks ownership.\n- **Missing function-level checks**: `POST /api/admin/users/42/role` works for any logged-in user because only the admin UI hides the button.\n- **Privilege escalation through mass assignment**: `PATCH /api/me {\"role\":\"admin\"}` is bound straight into the model.\n- **CSRF**: a cross-site form triggers a state change using the victim's cookies.\n\nFix: deny by default, object-level checks in the service layer, explicit allowlists of writable fields, cross-tenant tests. (The authorization lesson goes deep on this.)\n\n**SSRF** (server-side request forgery) sits here in 2025. Any feature where your server fetches a user-supplied URL (webhooks, link previews, \"import from URL\", PDF renderers, image proxies) can be pointed at internal targets:\n\n```text\nPOST /api/preview { \"url\": \"http://169.254.169.254/latest/meta-data/iam/security-credentials/\" }\nserver fetches cloud metadata -> returns temporary cloud credentials to the attacker\n```\n\nThe 2019 Capital One breach involved SSRF against the EC2 metadata service. Defences:\n\n1. Allowlist schemes (`https` only) and, where possible, destination hosts.\n2. Resolve the hostname yourself and **reject private, loopback, link-local and metadata ranges** (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, ::1, fc00::/7, and so on); then connect to the IP you validated, otherwise DNS rebinding swaps the address between check and use.\n3. Re-validate on every redirect, or disable redirects.\n4. Enforce timeouts and response size caps.\n5. Network-level egress controls: run fetchers in a segment that cannot reach internal services; on AWS require IMDSv2, which needs a session token obtained via a PUT request.\n\n## A02 Security Misconfiguration\n\nInsecure defaults and forgotten settings: debug mode on in production (stack traces with secrets), default admin credentials, directory listing, an S3 bucket or Elasticsearch cluster open to the internet, permissive CORS (`Access-Control-Allow-Origin` reflecting any origin with credentials), missing security headers, verbose error pages, unused features enabled. XML parsers with external entities enabled (XXE) also land here.\n\nFix: hardened, repeatable configuration as code; separate prod and dev configs; automated scanning of cloud config (for example AWS Config rules, Prowler, Trivy for IaC); security headers by default; review of every exposed port and bucket.\n\n## A03 Software Supply Chain Failures\n\nYour code is mostly other people's code. Risks: known-vulnerable dependencies (Log4Shell, CVE-2021-44228, let attackers trigger remote code execution through a logged string), malicious packages via typosquatting or compromised maintainers (the 2024 `xz-utils` backdoor; repeated npm account takeovers), compromised build systems (SolarWinds), and unpinned CI actions.\n\nFix: lockfiles and pinned versions, automated dependency updates with review (Dependabot, Renovate), vulnerability scanning in CI, an SBOM, pinning GitHub Actions to commit SHAs, minimal CI token permissions, provenance and signing (Sigstore, SLSA levels), and a policy for how quickly critical CVEs are patched.\n\n## A04 Cryptographic Failures\n\nSensitive data exposed through missing or weak cryptography: plaintext HTTP, passwords stored with MD5 or SHA-1, home-made encryption, ECB mode, hard-coded keys, predictable random numbers (`Math.random()` for reset tokens), disabled certificate validation (`rejectUnauthorized: false` in production), or reusing an AES-GCM nonce.\n\nFix: TLS everywhere with HSTS, Argon2id for passwords, vetted libraries and AEAD modes, keys in a KMS, CSPRNG for every token, data classification so you know what must be encrypted.\n\n## A05 Injection\n\nUntrusted data is interpreted as code or commands by an interpreter.\n\n**SQL injection:**\n\n```ts\n// vulnerable\nawait db.query(`SELECT * FROM users WHERE email = '${email}'`);\n// email = \"' OR '1'='1\" returns every user\n\n// fixed: parameterised query; the driver sends data separately from the SQL text\nawait db.query(\"SELECT * FROM users WHERE email = $1\", [email]);\n```\n\nIdentifiers (column names for sorting, table names) cannot be parameterised, so map them through an allowlist.\n\n**NoSQL injection** in MongoDB: a JSON body of `{\"email\": {\"$ne\": null}, \"password\": {\"$ne\": null}}` turns an equality check into \"any user\". Validate types with a schema (zod) so `email` must be a string, and use sanitisation such as Mongoose's `sanitizeFilter`.\n\n**OS command injection**: `exec(\"convert \" + filename)` with `filename = \"a.png; rm -rf /\"`. Use `execFile` with an argument array and no shell, or better, a library.\n\n**XSS** is injection into HTML or JavaScript. Use framework auto-escaping (React escapes text by default), never pass untrusted strings to `dangerouslySetInnerHTML` or `innerHTML`, sanitise with DOMPurify if you must render HTML, and add a strict Content Security Policy as defence in depth.\n\n**Prompt injection** into LLM features is the newest member of the family: model output must be treated as untrusted, and tools the model can call must be authorised as if the user called them directly.\n\n## A06 Insecure Design\n\nFlaws that no amount of correct code fixes because the design itself is unsafe: a password reset that relies on security questions, a checkout that trusts the client-supplied price, a referral scheme with no limit on self-referrals, unlimited OTP attempts. Fix with threat modelling (STRIDE, abuse cases) during design, business-logic limits, and secure design patterns reused across teams.\n\n## A07 Authentication Failures\n\nCredential stuffing with no rate limiting or MFA, weak password storage, session ids in URLs, no session regeneration at login, missing logout invalidation, user enumeration via different error messages, and weak recovery flows. Fix: the sessions, JWT and passwords lessons in this track.\n\n## A08 Software or Data Integrity Failures\n\nTrusting code or data without verifying integrity: auto-update without signatures, CI pipelines that pull unverified artifacts, **insecure deserialisation** (Java `ObjectInputStream`, Python `pickle`, PHP `unserialize` on user input leading to remote code execution), and accepting client-side state (a signed cookie with a weak secret, a JWT without a pinned algorithm). Fix: sign and verify artifacts, never deserialise untrusted data into objects, use plain JSON with schema validation.\n\n## A09 Security Logging and Alerting Failures\n\nBreaches go undetected for months because nobody logged or alerted. Log authentication events, authorization failures, admin actions, input validation failures at high rates and configuration changes; centralise logs; alert on patterns (spikes in 403s, logins from new countries for admins); protect logs from tampering; and never log secrets, tokens or passwords. An alert nobody reads is the same as no alert.\n\n## A10 Mishandling of Exceptional Conditions\n\nNew in 2025: what happens when things go wrong. Examples: an authorization check that throws on a timeout and the code **fails open** (`catch { return true }`), error messages leaking internals, unhandled promise rejections crashing the process (a denial of service), partial failures leaving a transaction half applied (money deducted, order not created), and resource exhaustion paths with no limits.\n\n```ts\n// fails open: an outage in the authz service grants access to everything\nasync function canAccess(user: User, doc: Doc) {\n  try { return await authz.check(user, \"view\", doc); }\n  catch { return true; }           // never do this\n}\n```\n\nFix: fail closed, use transactions or sagas for multi-step changes, return generic errors to clients while logging details internally, and test failure paths (chaos tests, fault injection).\n\n## How to use the list in practice\n\n- Map it onto your threat model and code review checklist; it is a starting point, not a standard. The **OWASP ASVS** (Application Security Verification Standard) is the testable requirements document if you need one.\n- Automate what you can: SAST and dependency scanning in CI, DAST against staging, secret scanning on every push.\n- Developers fix classes of bugs, not instances: a safe query builder, a single authorization helper, auto-escaping templates and an SSRF-safe HTTP client remove whole categories.\n\n## In the interview\n\n**What they probe:** can you name the categories, and more importantly give a concrete exploit and a concrete fix for each? Senior candidates are expected to talk about eliminating bug classes and about SSRF, supply chain and failure handling.\n\n**A 60-second answer outline:**\n1. Name the 2025 top three (access control, misconfiguration, supply chain) and mention injection and crypto.\n2. Give one vivid example with its fix, such as IDOR fixed by scoped queries, or SSRF to cloud metadata fixed by IP validation and IMDSv2.\n3. Explain how you prevent classes of bugs: secure defaults in shared libraries, CI scanning, threat modelling, logging with alerts.\n\n**Follow-ups to expect:** \"How would you build an SSRF-safe webhook sender?\"; \"Why are parameterised queries safe but escaping is fragile?\"; \"How do you respond to a new critical CVE in a transitive dependency?\"; \"Give an example of failing open.\"",
+      "keyPoints": [
+        "OWASP Top 10:2025 puts Broken Access Control first, now including SSRF and CSRF; Software Supply Chain Failures is new at A03.",
+        "Injection is prevented by separating code from data: parameterised queries, schema-typed inputs, execFile without a shell, auto-escaping.",
+        "SSRF defences: scheme and host allowlists, resolve and block private ranges, pin the validated IP, re-check redirects, IMDSv2.",
+        "Mishandling of Exceptional Conditions (A10) is about failing closed and keeping multi-step changes atomic.",
+        "Fix bug classes with shared safe libraries, CI scanning and threat modelling rather than patching instances."
+      ],
+      "interview": [
+        "Name the OWASP Top 10 categories you consider most important and give a concrete example and fix for each.",
+        "What is SSRF and how would you defend a feature that fetches user-supplied URLs?",
+        "How do you prevent SQL and NoSQL injection, and why is escaping not enough?"
+      ],
+      "check": [
+        {
+          "q": "In the OWASP Top 10:2025, where does server-side request forgery (SSRF) belong?",
+          "options": [
+            "It is still its own A10 category",
+            "It is part of A01 Broken Access Control",
+            "It was removed entirely",
+            "It is part of A04 Cryptographic Failures"
+          ],
+          "answer": 1,
+          "why": "The 2025 edition folds CWE-918 SSRF (and CSRF) into A01 Broken Access Control; A10 is now Mishandling of Exceptional Conditions."
+        },
+        {
+          "q": "A link-preview feature validates that a hostname resolves to a public IP, then calls fetch(url). How can an attacker still reach internal services?",
+          "options": [
+            "By using HTTPS instead of HTTP",
+            "By sending a very long URL",
+            "Through DNS rebinding or a redirect, since the connection is not pinned to the validated IP and redirects are not re-checked",
+            "By setting a custom User-Agent"
+          ],
+          "answer": 2,
+          "why": "Validation and connection resolve the name separately, so the second lookup can return 127.0.0.1, and a 302 to an internal address bypasses a one-time check."
+        },
+        {
+          "q": "A login handler passes req.body straight into a MongoDB findOne. Which payload exploits it?",
+          "options": [
+            "{\"email\": \"a@b.com\", \"password\": \"' OR 1=1 --\"}",
+            "{\"email\": \"javascript:alert(1)\"}",
+            "An empty body",
+            "{\"email\": {\"$ne\": null}, \"password\": {\"$ne\": null}}"
+          ],
+          "answer": 3,
+          "why": "Operator objects turn equality checks into 'not null', matching the first user. Validating that fields are strings (for example with zod) blocks it."
+        }
+      ],
+      "resources": [
+        {
+          "title": "OWASP Top 10:2025",
+          "url": "https://owasp.org/Top10/2025/"
+        },
+        {
+          "title": "OWASP Top 10:2025 A01 Broken Access Control",
+          "url": "https://owasp.org/Top10/2025/A01_2025-Broken_Access_Control/"
+        },
+        {
+          "title": "OWASP Server-Side Request Forgery Prevention Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html"
+        },
+        {
+          "title": "OWASP SQL Injection Prevention Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
+        },
+        {
+          "title": "OWASP Application Security Verification Standard (ASVS)",
+          "url": "https://owasp.org/www-project-application-security-verification-standard/"
+        }
+      ]
+    },
+    {
+      "id": "as-secrets-crypto",
+      "track": "auth-security",
+      "title": "Secrets and applied crypto: KMS, envelope encryption, TLS, hash vs encrypt vs sign",
+      "minutes": 24,
+      "summary": "Picking the right primitive (hash, MAC, AEAD, signature), envelope encryption with a KMS, what TLS 1.3 guarantees, and running application secrets with scanning, rotation and workload identity.",
+      "body": "## The core idea\n\nBackend security leans on a small set of cryptographic tools and on keeping a small set of secrets secret. Most failures are not broken algorithms; they are **the wrong tool for the job** (encrypting passwords, hashing for integrity without a key), **secrets in the wrong place** (in git, in env dumps, in logs) and **keys that never rotate**. This lesson covers the toolbox (hashing, MACs, encryption, signatures), how real systems manage keys (KMS and envelope encryption), what TLS actually guarantees, and how to handle application secrets.\n\n## Hashing vs MAC vs encryption vs signing\n\n| Tool | Key? | Reversible? | Guarantees | Typical use |\n| --- | --- | --- | --- | --- |\n| Cryptographic hash (SHA-256, SHA-3, BLAKE3) | No | No | Fixed-size fingerprint; collisions infeasible | Content addressing, dedupe, checksums against accidents, building block |\n| Password hash (Argon2id, bcrypt) | No (salt, optional pepper) | No | Slow, salted, memory-hard | Storing passwords |\n| MAC (HMAC-SHA256) | Shared secret | No | Integrity + authenticity between parties sharing the key | Webhook signatures, signed cookies, API request signing |\n| Symmetric encryption (AES-256-GCM, ChaCha20-Poly1305) | Shared secret | Yes, with key | Confidentiality (+ integrity with AEAD) | Encrypting data at rest, field-level encryption |\n| Asymmetric encryption / key exchange (RSA-OAEP, ECDH) | Public/private pair | Yes, with private key | Confidentiality to a key holder; establish shared keys | TLS key exchange, encrypting to a recipient |\n| Digital signature (Ed25519, ECDSA, RSA-PSS) | Private signs, public verifies | No | Integrity + authenticity + non-repudiation; anyone can verify | JWTs, code signing, software updates |\n\nThe questions to ask: do I need to get the data back (encryption) or just compare it (hashing)? Who needs to verify, only me (MAC) or anyone (signature)? A plain hash of a message proves nothing about who sent it, because the attacker can recompute it; that is why webhooks use HMAC.\n\nVerifying a webhook signature correctly:\n\n```ts\nimport { createHmac, timingSafeEqual } from \"node:crypto\";\n\nexport function verifyWebhook(rawBody: Buffer, header: string, secret: string, now = Date.now()) {\n  // header format example: \"t=1790000000,v1=hexsig\"\n  const parts = Object.fromEntries(header.split(\",\").map((p) => p.split(\"=\") as [string, string]));\n  const ts = Number(parts.t);\n  if (!Number.isFinite(ts) || Math.abs(now / 1000 - ts) > 300) return false;   // replay window\n  const expected = createHmac(\"sha256\", secret).update(`${ts}.${rawBody}`).digest();\n  const given = Buffer.from(parts.v1 ?? \"\", \"hex\");\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nThree details that matter: sign the **raw bytes** (re-serialised JSON will not match), include a **timestamp** to block replays (Stripe's webhook signatures follow this pattern), and compare in **constant time**.\n\n## Symmetric encryption done right\n\nUse an **AEAD** mode: AES-256-GCM or ChaCha20-Poly1305. They provide confidentiality and integrity together; tampered ciphertext fails to decrypt instead of producing garbage you might trust. Avoid ECB (identical blocks leak patterns) and unauthenticated CBC (padding oracle attacks).\n\nThe rule people break: **never reuse a nonce with the same key in GCM**. A repeated 96-bit nonce leaks the XOR of the two plaintexts and lets an attacker forge authentication tags. With random 96-bit nonces, NIST guidance limits you to about 2^32 encryptions per key; rotate keys well before that, or use XChaCha20-Poly1305 with 192-bit nonces for very high volumes.\n\n```ts\nimport { randomBytes, createCipheriv, createDecipheriv } from \"node:crypto\";\n\nexport function encrypt(key: Buffer, plaintext: Buffer, aad: Buffer) {\n  const iv = randomBytes(12);\n  const c = createCipheriv(\"aes-256-gcm\", key, iv);\n  c.setAAD(aad);                                            // e.g. tenant id + record id\n  const ct = Buffer.concat([c.update(plaintext), c.final()]);\n  return Buffer.concat([iv, c.getAuthTag(), ct]);           // store iv | tag | ciphertext\n}\n\nexport function decrypt(key: Buffer, blob: Buffer, aad: Buffer) {\n  const iv = blob.subarray(0, 12), tag = blob.subarray(12, 28), ct = blob.subarray(28);\n  const d = createDecipheriv(\"aes-256-gcm\", key, iv);\n  d.setAAD(aad);\n  d.setAuthTag(tag);\n  return Buffer.concat([d.update(ct), d.final()]);         // throws if tampered\n}\n```\n\n**Associated data (AAD)** is authenticated but not encrypted. Binding the record id and tenant id means an attacker with database write access cannot swap one customer's encrypted field into another customer's row.\n\n## KMS and envelope encryption\n\nYou do not want application servers holding long-lived master keys. A **key management service** (AWS KMS, Google Cloud KMS, Azure Key Vault, HashiCorp Vault's transit engine) keeps master keys inside HSM-backed infrastructure; you can ask it to encrypt, decrypt or generate keys, gated by IAM and recorded in audit logs, but the master key never leaves.\n\nKMS calls are network round trips with request quotas and size limits (AWS KMS `Encrypt` accepts at most 4 KB of plaintext), so you do not send your data to KMS. Instead you use **envelope encryption**:\n\n```text\nencrypt:\n  app -> KMS.GenerateDataKey(keyId=KEK)  ->  { plaintextDEK, encryptedDEK }\n  ciphertext = AES-256-GCM(plaintextDEK, data)\n  store { encryptedDEK, ciphertext, kekId } ; wipe plaintextDEK from memory\n\ndecrypt:\n  app -> KMS.Decrypt(encryptedDEK) -> plaintextDEK   (IAM-checked, audit-logged)\n  data = AES-256-GCM-decrypt(plaintextDEK, ciphertext)\n```\n\n- The **data encryption key (DEK)** encrypts data locally and fast; the **key encryption key (KEK)** in KMS only ever wraps DEKs.\n- **Rotation is cheap**: rotating the KEK means re-wrapping small DEKs, not re-encrypting terabytes. AWS KMS automatic rotation keeps old key versions so existing ciphertexts still decrypt.\n- **Blast radius is small**: a DEK per tenant, per file or per record means one leaked DEK exposes little.\n- **Crypto-shredding**: deleting a tenant's DEK (or its KEK) renders their data unreadable everywhere, including backups, which helps with deletion requests.\n- Cache decrypted DEKs briefly in memory to reduce KMS calls and cost; the AWS Encryption SDK implements this pattern.\n\n## TLS: what it gives you\n\nTLS provides **confidentiality, integrity and server authentication** for data in transit. TLS 1.3 (RFC 8446, 2018) simplified the protocol a lot; Cloudflare's write-up of RFC 8446 is a readable overview.\n\n```text\nClientHello (supported ciphers, key share for X25519)  ->\n                                <-  ServerHello (key share), {EncryptedExtensions,\n                                     Certificate, CertificateVerify, Finished}\n{Finished}, application data    ->\none round trip; everything after ServerHello is encrypted\n```\n\n- **Forward secrecy** is mandatory in 1.3: every connection uses an ephemeral (EC)DHE key exchange, so a later theft of the server's certificate key does not decrypt recorded traffic.\n- Only AEAD cipher suites remain; RSA key transport, CBC suites, RC4 and compression are gone.\n- **0-RTT resumption** saves a round trip but its early data can be **replayed**, so only allow it for idempotent requests.\n- The server proves its identity with a certificate chain to a trusted CA; the client must validate the chain and hostname. Never disable verification in production code.\n- **mTLS** adds a client certificate, giving strong service identity inside a cluster (service meshes such as Istio and Linkerd automate it, often with SPIFFE identities).\n- **HSTS** (`Strict-Transport-Security: max-age=31536000; includeSubDomains`) tells browsers to refuse plain HTTP, closing the first-request downgrade gap.\n- Post-quantum key exchange is rolling out: hybrid X25519 + ML-KEM (Kyber) is already enabled by default in current Chrome, Firefox and at Cloudflare, protecting today's traffic against future decryption.\n\nTLS protects the pipe, not the endpoints. Data is plaintext in your app, logs and database unless you encrypt it there too.\n\n## Application secrets management\n\nSecrets: database passwords, API keys, signing keys, OAuth client secrets, webhook secrets.\n\n1. **Never commit secrets.** Use secret scanning (GitHub push protection, gitleaks, trufflehog) on every push. If a secret was ever committed, **rotate it**; rewriting history is not enough, because forks, clones and caches keep it.\n2. **Store them in a secrets manager** (AWS Secrets Manager, GCP Secret Manager, Vault, Doppler, 1Password) rather than in config files. Inject at runtime with least-privilege IAM per service.\n3. **Prefer no static secrets**: workload identity (IAM roles for service accounts, GCP Workload Identity, GitHub Actions OIDC federation to AWS/GCP) issues short-lived credentials automatically. Vault's dynamic database credentials create a user per lease and revoke it at expiry.\n4. **Rotate** on a schedule and immediately on suspicion; design for two valid secrets during rotation (accept old and new, then remove old).\n5. **Keep secrets out of logs, error messages, crash dumps, URLs and client bundles.** In Next.js, only variables prefixed `NEXT_PUBLIC_` reach the browser; anything with that prefix is public.\n6. Environment variables are acceptable delivery but leak easily (process listings, debug endpoints, error reporters that dump `process.env`). Scrub them in error reporting.\n\n## Common mistakes\n\n- Using encryption where hashing is needed (passwords) or a plain hash where a MAC is needed (webhooks).\n- AES-GCM with a fixed or counter nonce reused across restarts; hard-coded keys in source.\n- `Math.random()` for tokens; use `crypto.randomBytes` or `crypto.randomUUID`.\n- Comparing secrets with `===`.\n- Treating base64 as encryption.\n- `NODE_TLS_REJECT_UNAUTHORIZED=0` copied from a Stack Overflow answer into production.\n- No plan to rotate signing keys, so a leak means a long outage.\n\n## In the interview\n\n**What they probe:** whether you choose the right primitive, understand envelope encryption and why KMS exists, know what TLS 1.3 guarantees (and does not), and run secrets like an operator.\n\n**A 60-second answer outline:**\n1. Hash to fingerprint, password-hash to store passwords, MAC for shared-key integrity, sign for public verifiability, AEAD encrypt for confidentiality.\n2. Envelope encryption: KMS-held KEK wraps per-tenant DEKs; data encrypted locally with AES-256-GCM and unique nonces; cheap rotation and crypto-shredding.\n3. TLS 1.3 everywhere: forward secrecy, AEAD only, HSTS, mTLS internally.\n4. Secrets in a manager or replaced by workload identity, scanned, rotated, never logged.\n\n**Follow-ups to expect:** \"What happens if you reuse a GCM nonce?\"; \"How do you rotate a JWT signing key or a database password with zero downtime?\"; \"A secret was pushed to a public repo ten minutes ago, what do you do?\"; \"Why not call KMS to encrypt every row?\"",
+      "keyPoints": [
+        "Hash to fingerprint, password-hash to store passwords, MAC for shared-key integrity, sign for public verification, AEAD to encrypt.",
+        "Use AES-256-GCM or ChaCha20-Poly1305 and never reuse a nonce with the same key; bind context with associated data.",
+        "Envelope encryption: a KMS-held KEK wraps per-tenant DEKs, making rotation cheap and enabling crypto-shredding.",
+        "TLS 1.3 gives one-round-trip handshakes, mandatory forward secrecy and AEAD-only suites; 0-RTT data can be replayed.",
+        "Keep secrets in a manager or replace them with workload identity; scan pushes and rotate anything ever committed."
+      ],
+      "interview": [
+        "Explain the difference between hashing, encryption, MACs and digital signatures, with a use case for each.",
+        "What is envelope encryption and why do systems use a KMS instead of keeping keys in the app?",
+        "How do you manage application secrets, and what do you do if a secret is leaked to a public repository?"
+      ],
+      "check": [
+        {
+          "q": "Your server must prove to a partner that webhook payloads came from you, and you share a secret with that partner. Which primitive fits best?",
+          "options": [
+            "SHA-256 hash of the body",
+            "HMAC-SHA256 of the timestamp and raw body",
+            "AES-256-GCM encryption of the body",
+            "Base64 encoding with a secret prefix"
+          ],
+          "answer": 1,
+          "why": "A plain hash can be recomputed by anyone. An HMAC requires the shared key, giving integrity and authenticity; the timestamp blocks replays."
+        },
+        {
+          "q": "Why do systems encrypt data with a local data key rather than sending every record to KMS?",
+          "options": [
+            "KMS cannot use AES",
+            "Local keys are stronger than KMS keys",
+            "KMS calls are network round trips with quotas and small payload limits; KMS only needs to wrap the data keys",
+            "KMS stores the plaintext"
+          ],
+          "answer": 2,
+          "why": "Envelope encryption keeps bulk crypto local and fast, while the master key stays in KMS and only wraps small DEKs, which also makes rotation cheap."
+        },
+        {
+          "q": "Which TLS 1.3 feature needs care because its data can be replayed by an attacker?",
+          "options": [
+            "Forward secrecy",
+            "Certificate verification",
+            "AEAD cipher suites",
+            "0-RTT early data"
+          ],
+          "answer": 3,
+          "why": "0-RTT data is sent before the handshake completes and is not protected against replay, so it should only be accepted for idempotent requests."
+        }
+      ],
+      "resources": [
+        {
+          "title": "OWASP Secrets Management Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html"
+        },
+        {
+          "title": "OWASP Cryptographic Storage Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html"
+        },
+        {
+          "title": "AWS KMS developer guide: cryptography concepts and envelope encryption",
+          "url": "https://docs.aws.amazon.com/kms/latest/developerguide/kms-cryptography.html"
+        },
+        {
+          "title": "Cloudflare blog: A detailed look at RFC 8446 (TLS 1.3)",
+          "url": "https://blog.cloudflare.com/rfc-8446-aka-tls-1-3/"
+        },
+        {
+          "title": "RFC 8446: The Transport Layer Security (TLS) Protocol Version 1.3",
+          "url": "https://datatracker.ietf.org/doc/html/rfc8446"
+        },
+        {
+          "title": "Stripe docs: Verify webhook signatures",
+          "url": "https://docs.stripe.com/webhooks#verify-events"
+        }
+      ]
+    },
+    {
+      "id": "as-api-security",
+      "track": "auth-security",
+      "title": "API security: validation, rate limiting, CORS, headers, audit logs and the OWASP API Top 10",
+      "minutes": 25,
+      "summary": "A layered request pipeline for secure APIs: schema validation, token-bucket rate limits, correct CORS, security headers, audit logging, and the OWASP API Security Top 10 (2023).",
+      "body": "## The core idea\n\nAn API is an attack surface that never sleeps: every endpoint, parameter and header is reachable by anyone who can send HTTP, with no UI in the way. API security is the discipline of making each request prove four things before it does work: **who** is calling (authentication), **whether** they may do this to this object (authorization), **that the input is well-formed and bounded** (validation and limits), and **that you will know about it later** (audit logging). On top sit browser-specific controls (CORS, security headers) that only matter because browsers run untrusted code next to your users' cookies.\n\nThe OWASP API Security Top 10 (2023 edition) is the best map of where APIs actually break:\n\n| # | Risk | One-line example |\n| --- | --- | --- |\n| API1 | Broken Object Level Authorization (BOLA) | `GET /orders/981` returns another user's order |\n| API2 | Broken Authentication | No rate limit on `/login`, tokens never expire, weak reset flow |\n| API3 | Broken Object Property Level Authorization | Response leaks `passwordHash`; `PATCH /me` accepts `isAdmin` (mass assignment) |\n| API4 | Unrestricted Resource Consumption | `?limit=1000000`, 50 MB uploads, a GraphQL query nested 30 levels deep |\n| API5 | Broken Function Level Authorization | Any user can call `DELETE /admin/users/42` |\n| API6 | Unrestricted Access to Sensitive Business Flows | Bots buy all concert tickets or farm sign-up bonuses |\n| API7 | Server Side Request Forgery | `POST /webhooks {url: \"http://169.254.169.254/...\"}` |\n| API8 | Security Misconfiguration | Permissive CORS, verbose errors, missing TLS |\n| API9 | Improper Inventory Management | Forgotten `/v1` or staging API without the new auth checks |\n| API10 | Unsafe Consumption of APIs | Trusting data from a third-party API without validation |\n\nNote that three of the ten are authorization (objects, properties, functions). If you remember one thing: **authorization bugs are the most common serious API bugs**.\n\n## A request pipeline that bakes this in\n\n```text\nrequest\n  -> TLS termination, size limit (body <= 1 MB), timeout\n  -> rate limiter (per IP, per API key / user, per route cost)\n  -> authentication (session cookie or bearer token -> principal)\n  -> CSRF / origin check for cookie-authenticated unsafe methods\n  -> input validation (schema: types, lengths, enums, unknown keys rejected)\n  -> authorization (function level: can call this route? object level: can touch this id?)\n  -> handler (parameterised queries, explicit field allowlists)\n  -> response shaping (DTO / serializer: only allowed fields)\n  -> audit log for security-relevant actions; metrics; generic errors to client\n```\n\nOrder matters: cheap checks (size, rate) before expensive ones (DB lookups, password hashing).\n\n## Input validation\n\nValidate at the boundary with a schema, and **reject** what does not match rather than trying to clean it. Schema validation stops type confusion (NoSQL operator injection), mass assignment (unknown keys), oversized values and nonsense enums in one place.\n\n```ts\nimport { z } from \"zod\";\n\nconst UpdateProfile = z\n  .object({\n    displayName: z.string().trim().min(1).max(80),\n    bio: z.string().max(500).optional(),\n    website: z.string().url().startsWith(\"https://\").optional(),\n    timezone: z.enum([\"UTC\", \"Europe/London\", \"Asia/Kolkata\"]),\n  })\n  .strict();                                   // unknown keys such as \"role\" or \"isAdmin\" are rejected\n\napp.patch(\"/api/me\", requireAuth, async (req, res) => {\n  const parsed = UpdateProfile.safeParse(req.body);\n  if (!parsed.success) return res.status(400).json({ error: \"invalid_input\", issues: parsed.error.issues });\n  const user = await users.update(req.user.id, parsed.data);   // only validated fields reach the DB\n  res.json(toPublicUser(user));                                 // explicit output DTO\n});\n```\n\nPoints interviewers like:\n\n- Validation is about **shape**; it is not a substitute for output encoding (XSS), parameterised queries (SQLi) or authorization.\n- Validate on the server even if the client validates; the client is just a convenience.\n- Bound everything: string lengths, array sizes, page sizes, numeric ranges, nesting depth, file types (check magic bytes, not just the extension) and file sizes.\n- Shape **outputs** too: serialise through an explicit DTO so a new column such as `passwordHash` or `internalNotes` never leaks by default (API3).\n\n## Rate limiting and resource limits\n\nRate limits protect availability, slow brute force, and contain cost (including LLM calls). Common algorithms:\n\n- **Fixed window**: count per minute; simple, bursts at window edges.\n- **Sliding window log or counter**: smoother, a bit more state.\n- **Token bucket**: a bucket of capacity B refills at rate R; each request takes a token. Allows short bursts while enforcing an average. Used widely (for example by AWS API Gateway and Stripe's limiters).\n\n```ts\n// token bucket in Redis, atomic via a Lua script (sketch)\nconst script = `\nlocal tokens = tonumber(redis.call('HGET', KEYS[1], 't') or ARGV[1])\nlocal ts = tonumber(redis.call('HGET', KEYS[1], 'ts') or ARGV[3])\nlocal now = tonumber(ARGV[3])\ntokens = math.min(tonumber(ARGV[1]), tokens + (now - ts) * tonumber(ARGV[2]))\nlocal allowed = tokens >= 1\nif allowed then tokens = tokens - 1 end\nredis.call('HSET', KEYS[1], 't', tokens, 'ts', now)\nredis.call('EXPIRE', KEYS[1], 3600)\nreturn allowed and 1 or 0`;\n// args: capacity, refill per second, now in seconds; key = `rl:${userId}:${route}`\n```\n\nDesign choices: limit by **several keys** (IP, user, API key, tenant), weight expensive routes higher, return `429 Too Many Requests` with `Retry-After`, and publish limits in headers (the IETF RateLimit header fields draft is converging on `RateLimit` and `RateLimit-Policy`). Fail open or closed deliberately when the limiter store is down: failing open preserves availability; failing closed protects sensitive endpoints like login.\n\nBeyond request rate: cap page size, request body size, upload size, query complexity (GraphQL depth and cost analysis), regex input length (ReDoS), and per-request timeouts. API6 (business flows) needs product-level limits too: one promo code per account, purchase velocity checks, bot detection.\n\n## CORS: what it is and is not\n\nThe **same-origin policy** stops a script on `evil.com` from reading responses from `api.bank.com`. **CORS relaxes that policy**; it does not add protection to your server. A CORS misconfiguration therefore opens a hole; a correct configuration does not stop a server-side attacker, curl or a CSRF form post.\n\nHow it works:\n\n- \"Simple\" requests (GET/POST with simple headers and form content types) are sent directly; the browser then decides whether the page may **read** the response based on `Access-Control-Allow-Origin`.\n- Other requests (JSON content type, custom headers, PUT/DELETE) trigger a **preflight** `OPTIONS` request; the browser only sends the real request if the server approves the method, headers and origin.\n- With `credentials: \"include\"`, the server must return the exact origin (not `*`) and `Access-Control-Allow-Credentials: true`.\n\nThe dangerous pattern is reflecting any `Origin` header back with credentials allowed: any website can then read authenticated responses from your API. Also watch regex allowlists like `/example\\.com$/`, which match `evilexample.com`, and allowing the `null` origin (sandboxed iframes can send it).\n\n```ts\nconst ALLOWED = new Set([\"https://app.example.com\", \"https://admin.example.com\"]);\n\napp.use((req, res, next) => {\n  const origin = req.get(\"origin\");\n  if (origin && ALLOWED.has(origin)) {\n    res.set(\"Access-Control-Allow-Origin\", origin);\n    res.set(\"Access-Control-Allow-Credentials\", \"true\");\n    res.set(\"Vary\", \"Origin\");                    // caches must key on Origin\n  }\n  if (req.method === \"OPTIONS\") {\n    res.set(\"Access-Control-Allow-Methods\", \"GET,POST,PATCH,DELETE\");\n    res.set(\"Access-Control-Allow-Headers\", \"Content-Type, Authorization, X-CSRF-Token\");\n    res.set(\"Access-Control-Max-Age\", \"600\");\n    return res.sendStatus(204);\n  }\n  next();\n});\n```\n\n## Security headers\n\nFor APIs and the HTML pages that call them, the OWASP HTTP Headers Cheat Sheet and MDN are the references:\n\n| Header | Purpose |\n| --- | --- |\n| `Strict-Transport-Security: max-age=31536000; includeSubDomains` | Force HTTPS for a year |\n| `Content-Security-Policy` | Restrict script, style, frame and connect sources; a nonce-based `script-src` with `strict-dynamic` is the strongest XSS mitigation; `frame-ancestors 'none'` stops clickjacking |\n| `X-Content-Type-Options: nosniff` | Stop MIME sniffing (a JSON response treated as HTML or script) |\n| `Referrer-Policy: strict-origin-when-cross-origin` | Do not leak full URLs (with tokens or ids) to other sites |\n| `Cache-Control: no-store` | For responses with personal data, so shared caches and the back button do not keep them |\n| `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy` | Isolate your windows and resources from cross-origin pages |\n\nFor pure JSON APIs, the essentials are HSTS, `nosniff`, `Cache-Control` on personal data, a restrictive `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` (cheap insurance) and correct `Content-Type: application/json`.\n\n## Audit logging\n\nAudit logs answer \"who did what, to what, when, from where, and was it allowed?\" They are different from debug logs: structured, append-only, retained for a defined period, and protected from tampering (write to a separate store or service the application cannot delete from).\n\n```json\n{\n  \"ts\": \"2026-10-04T06:12:44.120Z\",\n  \"actor\": { \"type\": \"user\", \"id\": \"u_42\", \"tenant\": \"t_acme\", \"sessionId\": \"s_hash_9f1\" },\n  \"action\": \"invoice.approve\",\n  \"target\": { \"type\": \"invoice\", \"id\": \"inv_981\" },\n  \"result\": \"allowed\",\n  \"ip\": \"203.0.113.7\",\n  \"userAgent\": \"Mozilla/5.0 ...\",\n  \"requestId\": \"req_7c2e\"\n}\n```\n\nLog: logins (success and failure), MFA changes, password resets, permission and role changes, API key creation, admin actions, data exports, authorization denials. **Never log** passwords, tokens, session ids (log a hash), full card numbers or other secrets; be careful with personal data. Alert on patterns such as bursts of 401/403, an admin logging in from a new country, or mass exports.\n\n## API inventory and versions\n\nAPI9 is boring and deadly: an old `/v1` endpoint without the new authorization middleware, a staging host with production data, or a debug route left in. Keep an inventory (an OpenAPI spec generated from code), route every version through the same auth middleware, retire versions on a schedule, and scan for undocumented endpoints.\n\n## Common mistakes\n\n- Relying on CORS to \"secure\" an API.\n- Returning ORM objects directly as JSON.\n- Rate limiting only by IP, or not at all on login, OTP and password-reset routes.\n- `limit` and `offset` parameters with no maximum.\n- Verbose error responses with stack traces and SQL.\n- API keys in query strings (they end up in logs and `Referer` headers); send them in headers.\n- Treating third-party API responses as trusted (API10): validate them like user input.\n\n## In the interview\n\n**What they probe:** a layered mental model, BOLA as the top risk, practical rate limiting, an accurate understanding of CORS, and operational maturity (audit logs, inventory).\n\n**A 60-second answer outline:**\n1. Pipeline: size and rate limits, authentication, CSRF check for cookies, schema validation with unknown keys rejected, function- and object-level authorization, explicit output DTOs.\n2. Token-bucket rate limiting keyed by user, IP and route cost, returning 429 with `Retry-After`.\n3. CORS is an allowlist that relaxes the same-origin policy; never reflect arbitrary origins with credentials.\n4. Security headers (HSTS, CSP, nosniff, no-store) and structured, tamper-resistant audit logs.\n5. Map to the OWASP API Top 10, especially BOLA and property-level authorization.\n\n**Follow-ups to expect:** \"Design rate limiting for a public API with free and paid tiers\"; \"Why does a preflight happen and what does it check?\"; \"What would you put in an audit log, and what would you keep out?\"; \"How do you stop mass assignment?\"",
+      "keyPoints": [
+        "Three of the OWASP API Top 10 are authorization failures: object level (BOLA), property level and function level.",
+        "Validate inputs with strict schemas that reject unknown keys, bound every size, and serialise outputs through explicit DTOs.",
+        "Rate limit with a token bucket keyed by user, IP and route cost; return 429 with Retry-After.",
+        "CORS relaxes the same-origin policy; it never protects the server, and reflecting any Origin with credentials is a hole.",
+        "Audit logs record actor, action, target, result and request id in a tamper-resistant store, without secrets."
+      ],
+      "interview": [
+        "How does CORS work, and what is a dangerous CORS misconfiguration?",
+        "How would you design rate limiting for a public API?",
+        "Walk through the OWASP API Security Top 10. Which risks do you see most often in practice?"
+      ],
+      "check": [
+        {
+          "q": "An API sets Access-Control-Allow-Origin to whatever Origin header it receives and also sends Access-Control-Allow-Credentials: true. What is the impact?",
+          "options": [
+            "None, because CORS is enforced by the server",
+            "Only preflight requests are affected",
+            "Any website a logged-in user visits can read authenticated API responses",
+            "Requests from curl are blocked"
+          ],
+          "answer": 2,
+          "why": "The browser trusts the reflected origin and allows the page to read responses sent with the user's cookies, exposing their data to any site."
+        },
+        {
+          "q": "PATCH /api/me binds the whole JSON body into the user model, and an attacker sends {\"role\": \"admin\"}. Which OWASP API risk is this?",
+          "options": [
+            "API4 Unrestricted Resource Consumption",
+            "API3 Broken Object Property Level Authorization (mass assignment)",
+            "API9 Improper Inventory Management",
+            "API7 Server Side Request Forgery"
+          ],
+          "answer": 1,
+          "why": "The caller may update their own object but not that property. A strict schema or explicit field allowlist prevents it."
+        },
+        {
+          "q": "Why is a token bucket a popular rate-limiting algorithm for APIs?",
+          "options": [
+            "It allows short bursts up to the bucket size while enforcing a long-run average rate",
+            "It needs no state at all",
+            "It guarantees exactly one request per second",
+            "It blocks all requests from new IP addresses"
+          ],
+          "answer": 0,
+          "why": "Tokens refill at rate R up to capacity B, so clients can burst briefly but cannot exceed the average, which matches real client behaviour."
+        }
+      ],
+      "resources": [
+        {
+          "title": "OWASP API Security Top 10 (2023)",
+          "url": "https://owasp.org/API-Security/editions/2023/en/0x11-t10/"
+        },
+        {
+          "title": "MDN: Cross-Origin Resource Sharing (CORS)",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS"
+        },
+        {
+          "title": "OWASP HTTP Security Response Headers Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html"
+        },
+        {
+          "title": "OWASP REST Security Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html"
+        },
+        {
+          "title": "Stripe engineering: Scaling your API with rate limiters",
+          "url": "https://stripe.com/blog/rate-limiters"
+        },
+        {
+          "title": "OWASP Logging Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html"
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "auth-service",
+      "title": "Production-grade auth service with sessions, OIDC, passkeys and fine-grained authorization",
+      "level": "advanced",
+      "hours": 70,
+      "stack": [
+        "TypeScript",
+        "Node.js (Fastify or NestJS)",
+        "PostgreSQL with row-level security",
+        "Redis (rate limits, optional)",
+        "jose (JWT/JWKS)",
+        "SimpleWebAuthn",
+        "argon2",
+        "Vitest + Playwright"
+      ],
+      "summary": "A self-hosted identity service for a multi-tenant SaaS: password, passkey and TOTP login, server sessions, an OIDC server (code + PKCE, client credentials) with rotating refresh tokens and JWKS key rotation, relationship-based permissions and a tamper-evident audit log.",
+      "why": "Auth is where interviewers separate people who used a library from people who understand the threats. This project lets you defend every decision with specifics: why Argon2id parameters, why refresh token reuse revokes a family, how keys rotate without downtime, how a cross-tenant request is blocked twice (application and RLS), and how you tested it with an attack suite. It maps directly onto backend and security interview questions.",
+      "architecture": "```text\nbrowser (demo SaaS) --cookie __Host-sid--> BFF / app server --> resource API (verifies JWT via JWKS)\n        |                                        |                       |\n        |  login, passkeys, TOTP                 | OIDC code + PKCE      | authz.check(user, action, obj)\n        v                                        v                       v\n   +-------------------- auth service (Fastify) ----------------------+\n   | /login /webauthn/* /mfa/*  /authorize /token /jwks.json /userinfo |\n   | /.well-known/openid-configuration  /revoke  /introspect           |\n   | rate limiter (Redis token bucket, Postgres fallback)              |\n   | key manager: active + previous signing keys (kid), KMS-wrapped     |\n   +--------------------------------------------------------------------+\n        | Postgres: users, credentials, sessions(hash), refresh_tokens(family),\n        |           clients, relation_tuples, audit_log (hash chain), RLS by tenant\n```\nKey decisions: server sessions for the first-party app and JWT access tokens only for APIs; Argon2id with rehash-on-login; refresh tokens opaque, hashed and rotated with family revocation; ES256 signing keys with kid-based rotation and private keys wrapped by a KMS (or a local master key in dev); a Zanzibar-style tuple table for sharing plus RBAC for admin; tenant isolation enforced in repositories and by Postgres RLS.",
+      "lessons": [
+        "as-sessions-cookies",
+        "as-jwt",
+        "as-oauth-oidc",
+        "as-passwords-mfa",
+        "as-authorization",
+        "as-api-security",
+        "as-secrets-crypto"
+      ],
+      "milestones": [
+        {
+          "id": "m1",
+          "title": "Accounts, password hashing and sessions",
+          "details": [
+            "Sign-up and login with Argon2id (m=19 MiB, t=2, p=1), PHC strings and rehash-on-login when parameters change",
+            "Breached-password check via the Pwned Passwords range API at sign-up and password change",
+            "Server sessions with hashed ids, __Host- cookie (Secure, HttpOnly, SameSite=Lax), idle and absolute timeouts, id regeneration at login",
+            "Checkable: integration tests prove fixation is impossible and logout invalidates the server-side session"
+          ]
+        },
+        {
+          "id": "m2",
+          "title": "CSRF, rate limiting and enumeration resistance",
+          "details": [
+            "CSRF middleware combining Sec-Fetch-Site/Origin checks and a synchronizer token for unsafe methods",
+            "Token-bucket limits per IP, per account and per route, Redis-backed with a Postgres fallback; 429 with Retry-After",
+            "Identical responses and similar timing for unknown email and wrong password (dummy hash)",
+            "Checkable: a k6 or autocannon script shows the limiter engaging and timing differences under 10%"
+          ]
+        },
+        {
+          "id": "m3",
+          "title": "MFA: TOTP and passkeys",
+          "details": [
+            "TOTP enrolment with QR code, encrypted secret storage, skew window of one step and replay protection",
+            "Hashed one-time recovery codes",
+            "WebAuthn registration and passkey login with SimpleWebAuthn, checking challenge, origin and rpId",
+            "Checkable: Playwright test using a virtual authenticator registers a passkey and logs in"
+          ]
+        },
+        {
+          "id": "m4",
+          "title": "OIDC authorization server",
+          "details": [
+            "Discovery document, /authorize with exact redirect URI matching, mandatory PKCE S256, state and nonce",
+            "/token for authorization_code, refresh_token and client_credentials (private_key_jwt client auth)",
+            "ID tokens and at+jwt access tokens signed with ES256, published at /jwks.json",
+            "Checkable: a certified OIDC client library (openid-client) completes login against your server"
+          ]
+        },
+        {
+          "id": "m5",
+          "title": "Refresh rotation, revocation and key rotation",
+          "details": [
+            "Opaque, hashed refresh tokens with family id; reuse of a rotated token revokes the family and logs an alert",
+            "Per-user token version for log-out-everywhere; /revoke and /introspect endpoints",
+            "Signing key rotation: publish next key, switch kid, retire the old key after max token lifetime",
+            "Checkable: a test replays a stolen refresh token and asserts the whole family is revoked; rotation runs with zero failed verifications"
+          ]
+        },
+        {
+          "id": "m6",
+          "title": "Authorization and tenant isolation",
+          "details": [
+            "RBAC for admin capabilities and a relation-tuple table with check(object, relation, user) for sharing",
+            "Repositories require tenantId; Postgres RLS with FORCE ROW LEVEL SECURITY and SET LOCAL per transaction",
+            "Checkable: an automated suite calls every endpoint as a user from another tenant and expects 404"
+          ]
+        },
+        {
+          "id": "m7",
+          "title": "Audit log, headers and attack test suite",
+          "details": [
+            "Append-only audit log with a hash chain (each row includes the previous row's hash) and a verify command",
+            "Security headers (HSTS, CSP, nosniff, no-store) and strict CORS allowlist",
+            "Attack suite: alg none, RS/HS confusion, wrong aud, expired tokens, CSRF, IDOR, open redirect on redirect_uri",
+            "Checkable: CI runs the attack suite and fails on any successful attack"
+          ]
+        }
+      ],
+      "stretch": [
+        "Step-up authentication: require fresh MFA (auth_time within 5 minutes) for sensitive actions",
+        "Device authorization grant (RFC 8628) for a CLI client",
+        "DPoP (RFC 9449) sender-constrained access tokens",
+        "Admin UI listing active sessions and devices with remote logout",
+        "Anomaly alerts: impossible travel and spikes in failed logins",
+        "Swap the tuple table for OpenFGA or SpiceDB and compare latency"
+      ],
+      "resume": [
+        "Built a multi-tenant identity service (OIDC code + PKCE, client credentials, passkeys, TOTP) serving [X] demo tenants with p95 token issuance of [Y ms]",
+        "Implemented rotating refresh tokens with family-based reuse detection and zero-downtime ES256 key rotation, verified by an attack suite of [N] automated exploit tests in CI",
+        "Enforced tenant isolation in both application repositories and PostgreSQL row-level security; cross-tenant test suite covers [Z%] of endpoints",
+        "Cut credential-stuffing success in load tests to [Q%] with multi-key token-bucket limits, breached-password checks and passkey adoption"
+      ],
+      "talking": [
+        "Why the first-party app uses sessions while APIs get short-lived JWTs, and what that costs",
+        "How refresh token reuse detection works and the race between two tabs refreshing",
+        "Zero-downtime signing key rotation using kid and overlapping JWKS entries",
+        "Defence in depth for tenant isolation and the SET LOCAL pooling pitfall",
+        "Why passkeys are phishing-resistant and how account recovery was designed",
+        "What the attack suite caught during development"
+      ],
+      "features": [
+        "Password, passkey and TOTP login with recovery codes",
+        "OIDC discovery, authorize, token, userinfo, JWKS, revoke and introspect endpoints",
+        "Session list with remote logout and log-out-everywhere",
+        "Refresh token theft simulation showing family revocation",
+        "Document sharing demo powered by relation tuples",
+        "Rate limiter dashboard and 429 responses under load",
+        "Audit log viewer with hash-chain verification",
+        "CI attack suite report"
+      ],
+      "deepDives": [
+        {
+          "title": "Refresh token rotation with reuse detection",
+          "body": "Refresh tokens are 256-bit random strings returned once and stored only as SHA-256 hashes in a `refresh_tokens` table with `family_id`, `parent_id`, `used_at`, `expires_at` and `family_expires_at`.\n\n```text\nrefresh(rt):\n  row = find by hash(rt)\n  if !row or expired -> invalid_grant\n  if row.used_at != null:\n      if now - row.used_at < 5s and same client -> return the child already issued (tab race)\n      else revoke all rows in row.family_id; audit 'refresh_reuse'; invalid_grant\n  mark row used; insert child with same family; issue new access token\n```\n\nThe whole operation runs in one transaction with `SELECT ... FOR UPDATE` on the row so two concurrent refreshes cannot both succeed. The short grace window handles two browser tabs refreshing at once without logging the user out; outside it, reuse is treated as theft. The family has an absolute lifetime (for example 30 days) so a continuously rotated chain still ends. Trade-off: the grace window slightly weakens detection, so it is limited to the same client id and a few seconds."
+        },
+        {
+          "title": "Zero-downtime signing key rotation",
+          "body": "Signing keys live in a `signing_keys` table with states `next`, `active`, `retiring` and `retired`; private keys are stored wrapped by a KMS key (or a local master key in development).\n\n```text\nday 0   publish K2 as next in JWKS (K1 active)        verifiers cache both\nday 1   switch: K2 active, K1 retiring             new tokens kid=K2, old kid=K1 still verify\nday 1 + max token lifetime  remove K1 from JWKS\n```\n\nPublishing the next key before using it matters because verifiers cache the JWKS; `jose`'s remote JWKS refetches on unknown `kid`, but other clients may cache for hours. The rotation job is idempotent and audited. An emergency rotation (suspected key leak) skips the waiting period, removes the old key immediately and accepts that outstanding tokens fail, which forces re-authentication via refresh tokens."
+        },
+        {
+          "title": "Two layers of tenant isolation",
+          "body": "Every request resolves a principal with a `tenantId` from the session or token, never from the body. Repositories take `tenantId` as a required argument, so forgetting it is a type error. Underneath, each tenant-owned table has RLS:\n\n```sql\nALTER TABLE documents ENABLE ROW LEVEL SECURITY;\nALTER TABLE documents FORCE ROW LEVEL SECURITY;\nCREATE POLICY tenant ON documents\n  USING (tenant_id = current_setting('app.tenant_id')::uuid)\n  WITH CHECK (tenant_id = current_setting('app.tenant_id')::uuid);\n```\n\nThe app connects as a non-owner role and runs `SET LOCAL app.tenant_id` at the start of each transaction, so pooled connections never carry a stale tenant. Migrations and support tools use a separate role with audited access. The cross-tenant test suite calls every route with a second tenant's credentials and expects 404, and a separate test disables the application filter to prove RLS alone still blocks the read."
+        },
+        {
+          "title": "Passkeys and account recovery",
+          "body": "Passkey registration stores the credential id, public key, sign counter, transports and a user-chosen label. Login uses discoverable credentials with conditional UI (autofill), verifying the challenge (single use, 5-minute expiry), origin, rpId hash and user verification flag.\n\nRecovery is the weak point of any strong-auth system. The design: users must have at least two authenticators or recovery codes before passwords can be removed; recovery codes are hashed and single-use; using one forces enrolment of a new passkey and notifies the user by email; changing MFA settings requires a fresh authentication within 5 minutes and triggers a 24-hour notification window. Support-assisted recovery is out of scope for the demo but documented as the main residual risk."
+        }
+      ]
+    }
+  ]
+}

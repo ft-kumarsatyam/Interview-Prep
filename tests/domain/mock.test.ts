@@ -21,7 +21,7 @@ import {
   type MockQuestion,
   type MockRound,
   type WrittenQuestion,
-} from "@/lib/domain/mock";
+} from "@/modules/mock/domain/mock";
 
 const pool: CodingCandidate[] = [
   { source: "sheet", slug: "two-sum", title: "Two Sum", difficulty: "Easy" },

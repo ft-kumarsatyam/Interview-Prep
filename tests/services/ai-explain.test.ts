@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetEnvForTests } from "@/lib/env";
-import { AiCache } from "@/lib/models/ai";
-import { explainAnswer } from "@/lib/services/ai-explain";
-import { mongoLlmStore } from "@/lib/services/llm-store";
+import { resetEnvForTests } from "@/core/env";
+import { AiCache } from "@/core/models/ai";
+import { explainAnswer } from "@/modules/ai/services/ai-explain";
+import { mongoLlmStore } from "@/modules/ai/services/llm-store";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

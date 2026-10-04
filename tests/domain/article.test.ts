@@ -10,8 +10,8 @@ import {
   plainText,
   readingMinutes,
   wordCount,
-} from "@/lib/domain/article";
-import { cleanSnippet } from "@/lib/domain/news";
+} from "@/modules/news/domain/article";
+import { cleanSnippet } from "@/modules/news/domain/news";
 
 describe("reading time and caps", () => {
   it("counts words in markdown, ignoring code, images and link targets", () => {

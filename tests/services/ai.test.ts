@@ -1,13 +1,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { settingsInputSchema } from "@/lib/domain/settings";
-import { resetEnvForTests } from "@/lib/env";
-import { AiCache, AiUsage, LlmState } from "@/lib/models/ai";
-import { Settings } from "@/lib/models/system";
-import { approvePaidToday, runAi, usageToday } from "@/lib/services/ai";
-import { MAX_CACHED_BYTES, cacheKey, cachedAi } from "@/lib/services/ai-cache";
-import { mongoLlmStore } from "@/lib/services/llm-store";
-import { getSettings, saveSettings } from "@/lib/services/settings";
+import { settingsInputSchema } from "@/modules/settings/domain/settings";
+import { resetEnvForTests } from "@/core/env";
+import { AiCache, AiUsage, LlmState } from "@/core/models/ai";
+import { Settings } from "@/core/models/system";
+import { approvePaidToday, runAi, usageToday } from "@/modules/ai/services/ai";
+import { MAX_CACHED_BYTES, cacheKey, cachedAi } from "@/modules/ai/services/ai-cache";
+import { mongoLlmStore } from "@/modules/ai/services/llm-store";
+import { getSettings, saveSettings } from "@/modules/settings/services/settings";
 import { at, resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

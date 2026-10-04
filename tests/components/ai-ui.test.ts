@@ -1,9 +1,9 @@
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { PaidFallbackNotice } from "@/components/ai/paid-fallback-notice";
-import { AiPanel } from "@/components/settings/ai-panel";
-import type { ProviderRow } from "@/lib/services/ai";
+import { PaidFallbackNotice } from "@/modules/ai/components/paid-fallback-notice";
+import { AiPanel } from "@/modules/settings/components/ai-panel";
+import type { ProviderRow } from "@/modules/ai/services/ai";
 
 const row = (over: Partial<ProviderRow>): ProviderRow => ({ id: "gemini", label: "Gemini", paid: false, configured: true, missing: [], health: "ok", note: null, ...over });
 
@@ -67,9 +67,9 @@ describe("AiPanel", () => {
   });
 });
 
-import { AiProvider } from "@/components/ai/ai-context";
-import { AskGemini } from "@/components/ai/ask-gemini";
-import { QuestionAiTools } from "@/components/quiz/question-ai-tools";
+import { AiProvider } from "@/modules/ai/components/ai-context";
+import { AskGemini } from "@/modules/ai/components/ask-gemini";
+import { QuestionAiTools } from "@/modules/quiz/components/question-ai-tools";
 
 const q = { prompt: "Which keyword declares a block-scoped variable?", options: ["var", "let", "function", "goto"], chosen: [0], correct: [1], explanation: "let is block scoped." };
 const withAi = (aiAvailable: boolean, child: ReactNode) => renderToStaticMarkup(createElement(AiProvider, { links: {}, aiAvailable }, child));

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseResumeText } from "@/lib/domain/resume";
-import { applyChanges, bulletRefs, renderResumeText, reorderSkills, skillsFirstFor, tailorPrompt, validateTailor, type TailorPatch } from "@/lib/domain/resume-tailor";
+import { parseResumeText } from "@/modules/resume/domain/resume";
+import { applyChanges, bulletRefs, renderResumeText, reorderSkills, skillsFirstFor, tailorPrompt, validateTailor, type TailorPatch } from "@/modules/resume/domain/resume-tailor";
 
 const TEXT = `Aarav Sharma
 aarav@example.com | +91 98765 43210 | github.com/aarav

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS as S } from "@/lib/domain/plan-config";
+import { DEFAULT_SETTINGS as S } from "@/modules/planner/domain/plan-config";
 import {
   buildDailyPlan,
   computeDsaTarget,
@@ -9,8 +9,8 @@ import {
   revisionStart,
   type ProblemState,
   type SubtopicState,
-} from "@/lib/domain/planner";
-import { addDays } from "@/lib/domain/dates";
+} from "@/modules/planner/domain/planner";
+import { addDays } from "@/core/domain/dates";
 
 const MON_W1 = "2026-10-05";
 const SAT_W1 = "2026-10-10";

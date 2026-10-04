@@ -4,7 +4,7 @@
  * Usage: npm run seed   (reads MONGODB_URI from .env.local)
  */
 import mongoose from "mongoose";
-import { seedContent } from "@/lib/services/seed";
+import { seedContent } from "@/core/services/seed";
 
 async function main() {
   const r = await seedContent();

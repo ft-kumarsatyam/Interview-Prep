@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft, ArrowRight, CheckCircle2, Circle, Timer, XCircle } from "lucide-react";
-import { DeleteMockButton, GradePanel, SelfReviewForm } from "@/components/mock/grade-panel";
-import { scoreTone } from "@/components/mock/mock-history";
+import { DeleteMockButton, GradePanel, SelfReviewForm } from "@/modules/mock/components/grade-panel";
+import { scoreTone } from "@/modules/mock/components/mock-history";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { MOCK_CONFIG, RUBRIC_MAX, isBlank, reportInsights, type MockQuestion, type QuestionAnswer } from "@/lib/domain/mock";
-import { formatDate } from "@/lib/plan-clock";
-import { freeAiConfigured, getMock } from "@/lib/services/mock";
-import { cn } from "@/lib/utils";
+import { MOCK_CONFIG, RUBRIC_MAX, isBlank, reportInsights, type MockQuestion, type QuestionAnswer } from "@/modules/mock/domain/mock";
+import { formatDate } from "@/core/plan-clock";
+import { freeAiConfigured, getMock } from "@/modules/mock/services/mock";
+import { cn } from "@/core/utils";
 
 export const metadata: Metadata = { title: "Mock report" };
 

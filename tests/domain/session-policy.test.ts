@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { REMEMBER_TTL_MS, RENEW_AFTER_MS, SHORT_TTL_MS, sessionTtlMs, shouldRenew } from "@/lib/domain/session-policy";
-import { signSession, verifySession } from "@/lib/auth/session";
+import { REMEMBER_TTL_MS, RENEW_AFTER_MS, SHORT_TTL_MS, sessionTtlMs, shouldRenew } from "@/core/domain/session-policy";
+import { signSession, verifySession } from "@/core/auth/session";
 
 const now = new Date("2026-10-02T12:00:00Z");
 const secs = (d: Date) => Math.floor(d.getTime() / 1000);

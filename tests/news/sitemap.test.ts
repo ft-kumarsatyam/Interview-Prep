@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanPageTitle, parsePageMeta, parseSitemap, pickRecentEntries } from "@/lib/domain/sitemap";
+import { cleanPageTitle, parsePageMeta, parseSitemap, pickRecentEntries } from "@/modules/news/domain/sitemap";
 
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

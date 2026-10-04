@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft, CheckCircle2, ChevronRight, CircleDashed, History, ListChecks, XCircle } from "lucide-react";
 import { LinkCard } from "@/components/shared/link-card";
-import { prettyDate } from "@/components/quiz/format";
+import { prettyDate } from "@/modules/quiz/components/format";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { listQuizHistory, type QuizHistoryRow } from "@/lib/services/quiz";
-import { cn } from "@/lib/utils";
+import { listQuizHistory, type QuizHistoryRow } from "@/modules/quiz/services/quiz";
+import { cn } from "@/core/utils";
 
 export const metadata: Metadata = { title: "Quiz history" };
 

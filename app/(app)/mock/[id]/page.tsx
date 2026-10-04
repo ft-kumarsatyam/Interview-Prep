@@ -1,14 +1,14 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
-import { ProblemStatement, ProblemStatementSkeleton } from "@/components/dsa/problem-statement";
-import { MockRunner, type CodingBundle } from "@/components/mock/mock-runner";
-import { ArticleMarkdown } from "@/components/news/article-markdown";
-import { problemBySlug, testcaseBySlug } from "@/lib/content";
-import { toRunnable } from "@/lib/domain/custom-problem";
-import { MOCK_CONFIG } from "@/lib/domain/mock";
-import { getCustomProblem } from "@/lib/services/custom-problems";
-import { getMock } from "@/lib/services/mock";
+import { ProblemStatement, ProblemStatementSkeleton } from "@/modules/dsa/components/problem-statement-section";
+import { MockRunner, type CodingBundle } from "@/modules/mock/components/mock-runner";
+import { ArticleMarkdown } from "@/modules/news/components/article-markdown";
+import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { toRunnable } from "@/modules/dsa/domain/custom-problem";
+import { MOCK_CONFIG } from "@/modules/mock/domain/mock";
+import { getCustomProblem } from "@/modules/dsa/services/custom-problems";
+import { getMock } from "@/modules/mock/services/mock";
 
 export const metadata: Metadata = { title: "Mock interview" };
 

@@ -24,6 +24,10 @@ Frontend and backend live in **one Next.js 16 repo**, deployed on Vercel with Mo
 | 54 news feeds + Google News keyword feeds | AI labs, AI news, JS/Node, databases, system design (ByteByteGo, System Design One, AlgoMaster…), big-tech engineering, tech news, career |
 | 25 system design case studies | URL shortener, KV store, rate limiter, ID generator, notifications, news feed, chat, video streaming, ride hailing, payments, ticket booking, collaborative docs, autocomplete, web crawler, file sync, ad click aggregator, leaderboard and more |
 
+## Code structure
+
+How the code is organised and the rules that keep it that way: [`docs/STRUCTURE.md`](docs/STRUCTURE.md). Ask the code graph instead of grepping: [`docs/GRAPH.md`](docs/GRAPH.md) (`npm run graph`, then `graphify query "what calls recomputeDay"`).
+
 ## Status
 
 All build phases (0–25) are done. See `docs/BUILD_PLAN.md` for the phase list and the ideas backlog.
@@ -55,10 +59,17 @@ docs/DESIGN.md         ← UI/UX spec for every page
 docs/BUILD_PLAN.md     ← phases (all done) and ideas for later
 docs/ROADMAP.md        ← the 24-week study plan
 app/                   ← pages, layouts, Server Actions, API routes (cron, export)
-lib/domain/            ← pure business logic (tested)
-lib/services/          ← I/O: Mongo reads/writes, sync, quiz, news, cron jobs
-lib/{leetcode,llm,news,notify}/ ← adapters for external services
-lib/models/ lib/auth/  ← Mongoose models, session/auth
+modules/<feature>/     ← one folder per feature (planner, quiz, progress, dsa, design, jobs,
+                         resume, news, learn, aptitude, mock, ai, notifications, settings, targets)
+  domain/              ← pure business logic, no I/O (tested)
+  services/            ← I/O: Mongo reads/writes, sync, cron jobs
+  components/          ← that feature's React components
+  lib/                 ← feature-specific adapters (e.g. dsa/lib/leetcode, news/lib)
+core/                  ← shared infrastructure, no feature knowledge
+  auth/ kv/ llm/ realtime/ notify/ sandbox/ models/ (Mongoose) pwa/
+  db.ts env.ts http*.ts content.ts utils.ts plan-clock.ts
+  domain/ services/    ← cross-cutting rules (dates, sessions, rate limits, cron, export)
+components/{ui,shared,layout}/ ← design-system primitives, shared widgets, app shell
 data/*.json            ← problems, syllabus, news sources, system design cases, quiz bank (seed)
 scripts/               ← seed, hash-password, quiz-bank generator, icons, Vercel env sync
 tests/                 ← Vitest: domain (pure) + services (in-memory MongoDB)

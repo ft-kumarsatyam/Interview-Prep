@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { decodeEvent, encodeEvent, resumeId, sseComment, sseMessage, sseRetry, summarise, type LiveEvent } from "@/lib/domain/live-events";
-import { MemoryKv } from "@/lib/kv/memory";
-import { MongoKv } from "@/lib/kv/mongo";
-import { liveLastId, publish, readLive } from "@/lib/realtime";
-import { liveStream } from "@/lib/realtime/stream";
-import { notify } from "@/lib/services/notifications";
-import { syncJobs } from "@/lib/services/job-sync";
-import { Settings } from "@/lib/models/system";
-import { invalidateSettings } from "@/lib/services/settings";
+import { decodeEvent, encodeEvent, resumeId, sseComment, sseMessage, sseRetry, summarise, type LiveEvent } from "@/core/domain/live-events";
+import { MemoryKv } from "@/core/kv/memory";
+import { MongoKv } from "@/core/kv/mongo";
+import { liveLastId, publish, readLive } from "@/core/realtime";
+import { liveStream } from "@/core/realtime/stream";
+import { notify } from "@/modules/notifications/services/notifications";
+import { syncJobs } from "@/modules/jobs/services/job-sync";
+import { Settings } from "@/core/models/system";
+import { invalidateSettings } from "@/modules/settings/services/settings";
 import { resetDb, startDb, stopDb } from "./db";
 
 beforeAll(startDb);

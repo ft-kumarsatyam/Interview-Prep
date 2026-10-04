@@ -1,4 +1,4 @@
-import { ProblemStatementSkeleton } from "@/components/dsa/problem-statement";
+import { ProblemStatementSkeleton } from "@/modules/dsa/components/problem-statement-section";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export default function ProblemLoading() {

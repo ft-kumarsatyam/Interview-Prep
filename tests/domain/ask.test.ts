@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MAX_PROMPT_CHARS, casePrompt, dsaPrompt, quizPrompt } from "@/lib/domain/ask-prompt";
-import { ASK_SUBJECT_IDS, FALLBACK_GEMINI_URL, checkGeminiLink, isAskSubject, resolveGeminiLink, subjectForTopic } from "@/lib/domain/ask-subjects";
+import { MAX_PROMPT_CHARS, casePrompt, dsaPrompt, quizPrompt } from "@/modules/ai/domain/ask-prompt";
+import { ASK_SUBJECT_IDS, FALLBACK_GEMINI_URL, checkGeminiLink, isAskSubject, resolveGeminiLink, subjectForTopic } from "@/modules/ai/domain/ask-subjects";
 
 describe("subjectForTopic", () => {
   it.each([
@@ -133,7 +133,7 @@ describe("prompt size", () => {
 
 describe("joinSections", () => {
   it("joins written sections with readable headings and skips empty ones", async () => {
-    const { joinSections } = await import("@/lib/domain/ask-prompt");
+    const { joinSections } = await import("@/modules/ai/domain/ask-prompt");
     expect(joinSections({ definition: "A page is fixed-size.", realSystems: "Linux uses 4 KiB pages.", example: "  ", tradeoffs: undefined })).toBe(
       "Definition:\nA page is fixed-size.\n\nReal Systems:\nLinux uses 4 KiB pages.",
     );

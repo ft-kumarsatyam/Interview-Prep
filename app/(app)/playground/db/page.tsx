@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Database } from "lucide-react";
-import { DbLab } from "@/components/db-lab/db-lab";
+import { DbLab } from "@/modules/dsa/components/db-lab/db-lab";
 import { PageHeader } from "@/components/shared/page-header";
 
 export const metadata: Metadata = { title: "DB Lab" };

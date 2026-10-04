@@ -3,10 +3,10 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { problemBySlug } from "@/lib/content";
-import { checkAccepted, type AcceptedCheck } from "@/lib/services/leetcode-sync";
-import { markAttempted, revealHiddenCase } from "@/lib/services/progress";
+import { requireSession } from "@/core/auth/dal";
+import { problemBySlug } from "@/core/content";
+import { checkAccepted, type AcceptedCheck } from "@/modules/dsa/services/leetcode-sync";
+import { markAttempted, revealHiddenCase } from "@/modules/progress/services/progress";
 
 const slugSchema = z.string().min(1).max(120);
 

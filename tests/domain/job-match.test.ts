@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { boardSearchLinks, companySearchUrl } from "@/lib/domain/job-links";
-import { DEFAULT_PREFS, highlightSegments, jobPrefsSchema, levelOf, matchPosting, roleFit, splitList, type MatchContext, type ScorablePosting } from "@/lib/domain/job-match";
+import { boardSearchLinks, companySearchUrl } from "@/modules/jobs/domain/job-links";
+import { DEFAULT_PREFS, highlightSegments, jobPrefsSchema, levelOf, matchPosting, roleFit, splitList, type MatchContext, type ScorablePosting } from "@/modules/jobs/domain/job-match";
 
 const NOW = new Date("2026-10-05T12:00:00Z");
 const day = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();

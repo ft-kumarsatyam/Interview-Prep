@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { isCronAuthorized } from "@/lib/auth/cron";
-import { alertNewJobs } from "@/lib/services/job-alerts";
-import { syncJobs } from "@/lib/services/job-sync";
+import { isCronAuthorized } from "@/core/auth/cron";
+import { alertNewJobs } from "@/modules/jobs/services/job-alerts";
+import { syncJobs } from "@/modules/jobs/services/job-sync";
 
 export const maxDuration = 60;
 

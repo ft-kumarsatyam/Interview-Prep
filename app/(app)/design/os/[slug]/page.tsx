@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { PracticeCaseDetail } from "@/components/design/practice-case-detail";
-import { practiceCaseBySlug } from "@/lib/content";
+import { PracticeCaseDetail } from "@/modules/design/components/practice-case-detail-section";
+import { practiceCaseBySlug } from "@/core/content";
 
 export async function generateMetadata({ params }: PageProps<"/design/os/[slug]">): Promise<Metadata> {
   const { slug } = await params;

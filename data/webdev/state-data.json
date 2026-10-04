@@ -1,0 +1,804 @@
+{
+  "tracks": [
+    {
+      "id": "state-data",
+      "name": "State and data fetching",
+      "color": "teal",
+      "blurb": "Where each kind of state should live and how to keep it in sync: Context, stores, server caches, forms, URL state, optimistic and real-time updates, offline sync.",
+      "area": "frontend"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "st-state-taxonomy",
+      "track": "state-data",
+      "title": "A taxonomy of state: where each kind should live",
+      "minutes": 18,
+      "summary": "Classify state as local, shared client, server cache, URL or form state, keep it close to where it is used, and derive anything computable instead of storing it.",
+      "body": "## The core idea\n\"State management\" sounds like one problem, but a real app holds at least five different kinds of state with different owners, lifetimes and failure modes. Most pain in React codebases (stale data, prop drilling, a 3,000-line global store, bugs where two copies of the same value disagree) comes from putting a piece of state in the wrong home.\n\nSo before picking a library, ask three questions about every value:\n\n1. **Who owns the truth?** The server, the URL, the user's in-progress input, or this browser tab?\n2. **Who reads it?** One component, a subtree, or screens that are far apart?\n3. **How long must it live?** Until the component unmounts, until a refresh, across devices?\n\nAnswer those and the tool usually picks itself. Kent C. Dodds makes the same argument in \"Application State Management with React\": most apps need far less global state than they think, because most of what ends up in a global store is really server cache.\n\n## The five kinds of state\n| Kind | Example | Owner of truth | Lifetime | Natural home |\n| --- | --- | --- | --- | --- |\n| Local UI | dropdown open, hover, current tab of a widget | one component | until unmount | `useState`, `useReducer` |\n| Shared client | theme, sidebar collapsed, multi-step wizard, editor selection | the browser tab | session or persisted | lifted state, Context, Zustand, Jotai, Redux Toolkit |\n| Server cache | user profile, orders, comments | the backend | until stale | TanStack Query, SWR, RTK Query, Server Components |\n| URL | filters, sort, page, selected item id | the address bar | as long as the link | `searchParams`, router, nuqs |\n| Form | draft values, touched fields, errors | the form while editing | until submit or cancel | uncontrolled inputs, React Hook Form, `useActionState` |\n\nTwo more are worth naming in interviews:\n\n- **Derived state**: anything you can compute from other state (filtered list, total price, `isValid`). It should usually not be stored at all.\n- **Persisted client state**: drafts, preferences, offline queues. It lives in `localStorage` or IndexedDB and is hydrated into one of the homes above.\n\n## How it actually works: a decision path\n```text\n              new piece of data\n                     |\n     can it be computed from other state? --yes--> derive it during render\n                     | no\n     does the server own it? --------------yes--> query cache (TanStack Query / SWR / RSC)\n                     | no\n     should a link or refresh restore it? -yes--> URL search params / path\n                     | no\n     is it an in-progress form draft? -----yes--> form library or uncontrolled form\n                     | no\n     how many components read it?\n          one ----------------> useState in that component\n          a few, close -------> lift to nearest common parent\n          many, far apart ----> Context (rarely changes) or store with selectors (changes often)\n```\n\nWalk a concrete screen through it. An orders dashboard has: the orders list (server), the status filter and page number (URL), \"is the export dialog open\" (local), the export form fields (form), the logged-in user's theme (shared client, persisted) and \"number of selected orders\" (derived from a `selectedIds` set, which is local or shared depending on who reads it). Only the theme and maybe `selectedIds` are candidates for a store. Everything else has a better home.\n\n## Where state should live inside the tree\nReact's own guidance (react.dev, \"Sharing state between components\") is: keep state as close as possible to where it is used, and lift it only to the closest common parent of the components that need it.\n\n- **Colocate by default.** State in a leaf re-renders only that leaf. State in the root re-renders everything below it unless children are memoised.\n- **Lift when two siblings must agree.** A filter panel and a results list both need `status`; the parent owns it and passes it down (or it goes in the URL, which is better here).\n- **Push down again when the reason goes away.** Teams lift state once and never move it back. If only one child reads it now, move it into that child.\n- **Composition before Context.** Dan Abramov's \"Before You memo()\" shows two cheap tricks: move state down into a smaller component, or lift the content up and pass it as `children` so it does not re-render when the parent's state changes. Both often remove the need for Context or `memo` entirely.\n\n```tsx\n// Before: typing in the search box re-renders the expensive grid\nfunction Page() {\n  const [query, setQuery] = useState(\"\");\n  return (\n    <>\n      <input value={query} onChange={(e) => setQuery(e.target.value)} />\n      <ExpensiveGrid />\n    </>\n  );\n}\n\n// After: state moved down, grid no longer re-renders on keystrokes\nfunction SearchBox() {\n  const [query, setQuery] = useState(\"\");\n  return <input value={query} onChange={(e) => setQuery(e.target.value)} />;\n}\nfunction Page() {\n  return (\n    <>\n      <SearchBox />\n      <ExpensiveGrid />\n    </>\n  );\n}\n```\n\n## Derived state: compute, do not store\nThe most common state bug in React is storing a value that is a function of other state, then keeping it in sync with an effect. react.dev's \"You Might Not Need an Effect\" and Kent C. Dodds' \"Don't Sync State. Derive It!\" both hammer this point.\n\n```tsx\n// Wrong: two sources of truth plus an extra render on every change\nconst [todos, setTodos] = useState<Todo[]>([]);\nconst [filter, setFilter] = useState<\"all\" | \"done\">(\"all\");\nconst [visible, setVisible] = useState<Todo[]>([]);\nuseEffect(() => {\n  setVisible(filter === \"all\" ? todos : todos.filter((t) => t.done));\n}, [todos, filter]);\n\n// Right: derive during render; memoise only if profiling says it is slow\nconst visible = useMemo(\n  () => (filter === \"all\" ? todos : todos.filter((t) => t.done)),\n  [todos, filter],\n);\n```\n\nWhy the effect version is worse:\n\n- It renders twice per change: once with stale `visible`, then again after the effect sets it. Users can see a flash of wrong data.\n- Any code path that updates `todos` but forgets the effect dependency leaves `visible` wrong.\n- It is more code to test.\n\nWith the React Compiler (stable since late 2025) many `useMemo` calls become unnecessary because the compiler memoises pure computations automatically, but the rule is unchanged: derive, do not sync.\n\n### Store ids, not copies\nA related rule from react.dev's \"Choosing the State Structure\": avoid duplicating objects in state. Store `selectedId`, not `selectedItem`. If you store a copy and the list item is edited, the copy goes stale.\n\n```tsx\nconst [items, setItems] = useState<Item[]>(initial);\nconst [selectedId, setSelectedId] = useState<string | null>(null);\nconst selected = items.find((i) => i.id === selectedId) ?? null; // always fresh\n```\n\nThe same document lists the other structural rules: group related state that always changes together, avoid contradictions (two booleans `isSending` and `isSent` that can both be true should be one `status` union), avoid deep nesting, and normalise when entities are shared.\n\n### Resetting state on prop change\nAnother \"sync with an effect\" trap: resetting a form when the selected user changes. Use a `key` instead, which tells React this is a different component instance:\n\n```tsx\n<ProfileEditor key={userId} userId={userId} />\n```\n\n## Server state is not client state\nThe biggest single win in most codebases is moving server data out of Redux or Context into a query cache. Server data is different in kind:\n\n- It is a **snapshot of something you do not own**; it can be stale the moment it arrives.\n- It needs caching, deduplication of identical requests, background refetching, retries, pagination and invalidation after mutations.\n- Several components read the same resource, and they should share one request and one cache entry.\n\nHand-rolling that in a global store means writing `isLoading`, `error` and `lastFetched` for every resource, plus race-condition handling. TanStack Query, SWR and RTK Query do it for you. In the Next.js App Router, Server Components can fetch on the server and never ship that state to the client at all, which removes even more client state.\n\n## Real example: from \"everything in Redux\" to classified state\nA typical 2019-era app had a single Redux store with slices for `user`, `orders`, `ordersFilters`, `ui.modals`, `forms.checkout`, plus thunks for every fetch. A realistic migration:\n\n| Was in Redux | Moves to | Effect |\n| --- | --- | --- |\n| `orders`, `user`, loading flags | TanStack Query or RTK Query | caching, dedupe, refetch on focus for free |\n| `ordersFilters` | URL search params | shareable links, back button works |\n| `forms.checkout` | React Hook Form | fewer re-renders, built-in validation |\n| `ui.modals.exportOpen` | local `useState` | no global churn |\n| `cart`, `theme` | small Zustand store or Redux slice | the genuinely shared client state |\n\nThe remaining store is often a small fraction of the original. That is the point: the global store should hold only state that is shared, client-owned and not derivable.\n\n## Trade-offs and when not to follow the rules\n- **Colocating too aggressively** means lifting later when requirements change. That is fine; moving state is cheap compared to the cost of a premature global store.\n- **URL state has limits**: keep it to small, serialisable, shareable values. Do not put a 2 KB JSON blob or secrets in the URL.\n- **Not everything server-owned needs a query library.** A static page fetched in a Server Component needs no client cache.\n- **Derived state can be expensive.** Computing a sort over 50,000 rows each render may need `useMemo`, a worker, or a precomputed index. Measure first.\n- **Sometimes you do mirror server data locally**: in a rich editor you copy the document into editable client state, then sync. That is a deliberate draft, not an accidental duplicate. Name it as such (`draft`, `initialValues`).\n\n## Common mistakes and debugging\n- **Syncing props into state** (`useState(props.value)` then expecting it to update). Initial state is read once. Either make the component controlled, derive, or reset with `key`.\n- **Booleans that contradict each other.** Replace `isLoading`, `isError`, `isSuccess` with one `status: \"idle\" | \"loading\" | \"error\" | \"success\"` discriminated union.\n- **Duplicated entities**: an item lives in a list and also in `selectedItem`; editing one leaves the other stale.\n- **Global store as a junk drawer**: modal flags, form drafts and API responses side by side, every component subscribed to big chunks.\n- **Debugging**: React DevTools \"Highlight updates when components render\" shows which state change re-renders what. The Profiler's \"Why did this render?\" (enable \"Record why each component rendered\") points at the state or prop that changed.\n\n## In the interview\n**What they probe:** whether you think in terms of ownership and lifetime rather than libraries; whether you know derived state and server cache are different; whether you can justify not adding a global store.\n\n**A 60-second answer outline:**\n1. \"I classify state first: local UI, shared client, server cache, URL and form state, plus derived values that I never store.\"\n2. \"Server data goes in a query cache like TanStack Query because it needs caching, dedupe and invalidation, not a reducer.\"\n3. \"Filters, sorting and pagination go in the URL so links and the back button work.\"\n4. \"Forms use uncontrolled inputs or React Hook Form; local UI stays in `useState` near where it is used.\"\n5. \"What is left, the genuinely shared client state like theme or a cart, goes in Context if it rarely changes or a small store with selectors if it changes often.\"\n6. \"And I derive values like filtered lists during render instead of syncing them with effects.\"\n\n**Follow-ups to expect:**\n- \"Where would you put the selected row in a data grid?\" (Local or URL if it should be linkable; store only its id.)\n- \"Why not just use Redux for everything?\" (Boilerplate for server data, no cache semantics, global re-render surface.)\n- \"How do you reset a child's state when the selected item changes?\" (`key`.)\n- \"When is it right to copy server data into local state?\" (Editable drafts, with a clear name and a save path.)",
+      "keyPoints": [
+        "Ask who owns the truth, who reads it and how long it must live; the answer picks the home",
+        "Server data is a cache (query library or Server Components), not client state in a reducer",
+        "Filters, sort and pagination belong in the URL; drafts belong to the form",
+        "Colocate state, lift to the nearest common parent only when needed, and push it back down later",
+        "Derive computed values during render; store ids, not copies; reset with key instead of effects"
+      ],
+      "interview": [
+        "What kinds of state exist in a frontend app, and where should each kind live?",
+        "What is derived state, and why should you avoid storing it in useState?",
+        "When should you lift state up, and when should you push it down instead?"
+      ],
+      "check": [
+        {
+          "q": "A component stores `filteredTodos` in useState and updates it in a useEffect whenever `todos` or `filter` changes. What is the best fix?",
+          "options": [
+            "Add `filteredTodos` to the effect dependency array",
+            "Compute the filtered list during render, with useMemo only if it is measurably slow",
+            "Move `filteredTodos` into a Redux slice",
+            "Use useLayoutEffect so the update happens before paint"
+          ],
+          "answer": 1,
+          "why": "Filtered todos are derived state. Computing them during render removes the second source of truth and the extra render with stale data."
+        },
+        {
+          "q": "A list item can be edited while it is also shown in a details panel. Which state shape avoids the panel showing stale data?",
+          "options": [
+            "Store a copy of the selected item object in its own useState",
+            "Store the selected item in Context",
+            "Deep-clone the item into the panel on every render",
+            "Store only `selectedId` and look the item up from the list during render"
+          ],
+          "answer": 3,
+          "why": "Storing the id keeps one source of truth; a copied object goes stale when the original is edited."
+        },
+        {
+          "q": "A profile editor must reset its internal draft state whenever the selected user changes. What is the idiomatic React approach?",
+          "options": [
+            "Render it with `key={userId}` so React creates a fresh instance",
+            "Call setState for every field in a useEffect on userId",
+            "Store the draft in a global store and clear it manually",
+            "Use useRef so the draft never re-renders"
+          ],
+          "answer": 0,
+          "why": "Changing the key tells React it is a different component, so all its state resets without an effect and without a render of stale values."
+        }
+      ],
+      "resources": [
+        {
+          "title": "React docs: Choosing the state structure",
+          "url": "https://react.dev/learn/choosing-the-state-structure"
+        },
+        {
+          "title": "React docs: Sharing state between components",
+          "url": "https://react.dev/learn/sharing-state-between-components"
+        },
+        {
+          "title": "React docs: You might not need an effect",
+          "url": "https://react.dev/learn/you-might-not-need-an-effect"
+        },
+        {
+          "title": "Kent C. Dodds: Application state management with React",
+          "url": "https://kentcdodds.com/blog/application-state-management-with-react"
+        },
+        {
+          "title": "Kent C. Dodds: Don't sync state. Derive it!",
+          "url": "https://kentcdodds.com/blog/dont-sync-state-derive-it"
+        },
+        {
+          "title": "Dan Abramov: Before you memo()",
+          "url": "https://overreacted.io/before-you-memo/"
+        }
+      ]
+    },
+    {
+      "id": "st-react-context",
+      "track": "state-data",
+      "title": "React Context: performance, splitting, selectors and useSyncExternalStore",
+      "minutes": 18,
+      "summary": "Context is transport, not state. Learn why every consumer re-renders, how to split and memoise values, and how useSyncExternalStore adds tear-free selectors.",
+      "body": "## The core idea\nReact Context is a **dependency-injection mechanism**, not a state manager. It lets a component deep in the tree read a value provided higher up without passing it through every intermediate prop. The state itself still lives in `useState` or `useReducer` in the provider component; Context only transports it. Mark Erikson (Redux maintainer) makes this distinction carefully in \"Why React Context is Not a State Management Tool\", and it is the frame interviewers want you to use.\n\nThat transport has one important property: **when the provider's `value` changes (by `Object.is`), every component that reads that context re-renders**, and there is no built-in way to subscribe to only part of the value. That is fine for values that change rarely (theme, locale, the current user, a router, a feature-flag client) and painful for values that change often (mouse position, a form with 40 fields, a live ticker).\n\n## How it actually works\n```text\n<ThemeProvider>            holds useState(theme)\n  value={{ theme, setTheme }}   <-- new object every render unless memoised\n     |\n     +-- <Layout>           does not read context: re-renders only if its parent re-renders it\n     |     +-- <Sidebar>    useContext(ThemeCtx) -> re-renders when value changes\n     |     +-- <Content>\n     |           +-- <Button> useContext(ThemeCtx) -> re-renders when value changes\n```\n\nStep by step when `setTheme(\"dark\")` runs:\n\n1. The provider component re-renders because its own state changed.\n2. It renders `<ThemeCtx value={...}>` with a new `value`. (In React 19 you can render the context itself as the provider; `<ThemeCtx.Provider>` still works.)\n3. React compares the new value with the old one using `Object.is`. If different, it walks the subtree and marks every fiber that reads this context to re-render, **even if an intermediate component is wrapped in `memo`**. Context propagation bypasses `memo`.\n4. Each consumer re-renders and reads the whole value. There is no per-field comparison.\n\nTwo consequences follow:\n\n- **An unmemoised object value re-renders every consumer every time the provider renders**, even if nothing changed, because `{ theme, setTheme }` is a new object each time.\n- **Children passed as props do not re-render** just because the provider did. If the provider is `function ThemeProvider({ children })`, then `children` is the same element reference across provider re-renders, so only the context consumers update. This is why the provider-wraps-children pattern is efficient.\n\n## Real code: a well-built provider\n```tsx\n\"use client\";\nimport { createContext, use, useMemo, useState, type ReactNode } from \"react\";\n\ntype Theme = \"light\" | \"dark\";\nconst ThemeValueCtx = createContext<Theme | null>(null);\nconst ThemeSetterCtx = createContext<((t: Theme) => void) | null>(null);\n\nexport function ThemeProvider({ children }: { children: ReactNode }) {\n  const [theme, setTheme] = useState<Theme>(\"light\");\n  // setTheme from useState is stable, so the setter context never changes\n  return (\n    <ThemeSetterCtx value={setTheme}>\n      <ThemeValueCtx value={theme}>{children}</ThemeValueCtx>\n    </ThemeSetterCtx>\n  );\n}\n\nexport function useTheme(): Theme {\n  const v = use(ThemeValueCtx);\n  if (v === null) throw new Error(\"useTheme must be used inside ThemeProvider\");\n  return v;\n}\n\nexport function useSetTheme() {\n  const v = use(ThemeSetterCtx);\n  if (v === null) throw new Error(\"useSetTheme must be used inside ThemeProvider\");\n  return v;\n}\n```\n\nWhat this gets right:\n\n- **Split state and dispatch.** Components that only change the theme (a toggle in a menu) read `ThemeSetterCtx`, whose value never changes, so they never re-render on theme changes. This is the pattern in react.dev's \"Scaling Up with Reducer and Context\" (separate contexts for state and `dispatch`).\n- **A `null` default plus a throwing hook** catches a missing provider at the call site instead of rendering with a silent default.\n- **Primitive value** for the state context, so there is nothing to memoise. If you must pass an object, wrap it in `useMemo` (Kent C. Dodds' \"How to optimize your context value\" covers this).\n- `use(Context)` (React 19) works like `useContext` but can also be called conditionally.\n\n## Fixing context performance: the ladder\nWhen a context re-renders too much, try these in order.\n\n**1. Memoise the value.** `const value = useMemo(() => ({ user, logout }), [user, logout])`. Cheap and removes re-renders caused by the provider's parent re-rendering.\n\n**2. Split by change frequency.** One giant `AppContext` with `{ user, theme, notifications, cart }` re-renders every consumer when notifications tick. Make separate contexts so a consumer only depends on what it reads.\n\n**3. Split state from actions.** As above. Most consumers either read or write, rarely both.\n\n**4. Memoise expensive children below consumers.** A consumer re-rendering is fine if what it renders is cheap or memoised. Consider reading context in a small wrapper and passing a primitive prop into a `memo`'d heavy child.\n\n**5. Use selectors.** If many components need different slices of a frequently changing object, Context is the wrong transport. Options:\n- `use-context-selector` (Daishi Kato) adds `useContextSelector(ctx, s => s.count)`.\n- Put a **stable store object** in Context and subscribe with `useSyncExternalStore` (below). The context value never changes; components subscribe to the slice they need.\n- Use Zustand, Jotai or Redux, which are built exactly this way.\n\nThe React Compiler memoises components and values automatically, which removes many accidental re-renders of non-consumers, but it does not change context semantics: a consumer still re-renders when the value changes.\n\n## useSyncExternalStore: the bridge to external state\n`useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot?)` is the official way to read state that lives **outside React** (a store module, `navigator.onLine`, `window.matchMedia`, a WebSocket client) without tearing.\n\n**Tearing** is the bug it solves. With concurrent rendering (transitions, Suspense), React can pause a render halfway through the tree. If an external store changes during that pause, components rendered before and after the change could show different values in the same commit. `useSyncExternalStore` detects that the snapshot changed during render and re-renders synchronously so the screen is consistent. React-Redux v8+ and Zustand use it internally.\n\n```ts\n// A tiny store with selector support\ntype Listener = () => void;\nexport function createStore<S>(initial: S) {\n  let state = initial;\n  const listeners = new Set<Listener>();\n  return {\n    getState: () => state,\n    setState(update: (s: S) => S) {\n      state = update(state);\n      listeners.forEach((l) => l());\n    },\n    subscribe(l: Listener) {\n      listeners.add(l);\n      return () => listeners.delete(l);\n    },\n  };\n}\n\nexport function useStore<S, T>(store: ReturnType<typeof createStore<S>>, selector: (s: S) => T): T {\n  return useSyncExternalStore(\n    store.subscribe,\n    () => selector(store.getState()),\n    () => selector(store.getState()),\n  );\n}\n```\n\nRules that bite people:\n\n- **`getSnapshot` must return the same value if nothing changed.** If your selector returns a new object or array every call (`s => s.items.filter(...)`), React sees a different snapshot each time and throws or loops (\"The result of getSnapshot should be cached\"). Select primitives or stable references, or memoise the derived value.\n- **`subscribe` should be stable** (defined outside the component or wrapped in `useCallback`). A new function each render resubscribes every render.\n- **Provide `getServerSnapshot`** for SSR, returning what the server rendered, or hydration will mismatch.\n- Updates from an external store are always synchronous (they cannot be marked as non-blocking transitions).\n\nA browser API example:\n\n```ts\nfunction subscribe(cb: () => void) {\n  window.addEventListener(\"online\", cb);\n  window.addEventListener(\"offline\", cb);\n  return () => {\n    window.removeEventListener(\"online\", cb);\n    window.removeEventListener(\"offline\", cb);\n  };\n}\nexport function useOnline() {\n  return useSyncExternalStore(subscribe, () => navigator.onLine, () => true);\n}\n```\n\n## Context plus a store: the scoped-store pattern\nGlobal module-level stores are hard to test and leak between requests on the server. A common pattern (recommended in Zustand and TkDodo's \"Working with Zustand\") is to create the store once per provider and pass the **store instance**, which never changes, through Context:\n\n```tsx\nconst StoreCtx = createContext<ReturnType<typeof createStore<BoardState>> | null>(null);\n\nexport function BoardProvider({ initial, children }: { initial: BoardState; children: ReactNode }) {\n  const [store] = useState(() => createStore(initial)); // created once\n  return <StoreCtx value={store}>{children}</StoreCtx>;\n}\n\nexport function useBoard<T>(selector: (s: BoardState) => T) {\n  const store = use(StoreCtx);\n  if (!store) throw new Error(\"BoardProvider missing\");\n  return useStore(store, selector);\n}\n```\n\nContext handles scoping (one store per board, per test, per request); `useSyncExternalStore` handles fine-grained subscriptions.\n\n## Trade-offs and when not to use Context\n**Good fits:** theme, locale, auth/session object, router, design-system configuration, a query client instance, a store instance, compound-component internals (a `Tabs` component sharing the active tab with `Tab` children).\n\n**Poor fits:** high-frequency values (cursor position, scroll, animation frames, text typed into a big form), large objects many components read different parts of, server data (use a query cache).\n\n**Prop drilling is not always bad.** Two or three levels of explicit props are easy to trace. React's docs suggest trying props and composition (passing JSX as `children`) before reaching for Context.\n\n## Common mistakes and debugging\n- **Inline object value**: `<Ctx value={{ a, b }}>` without `useMemo` re-renders all consumers whenever the provider renders.\n- **One mega-context** for unrelated values.\n- **Provider placed too high**: a provider for a modal's state wrapping the whole app means every update re-renders consumers app-wide; place it around the subtree that needs it.\n- **Default value hides a missing provider**: `createContext({ user: null })` renders silently wrong when the provider is missing.\n- **Expecting `memo` to stop context re-renders**: it does not; consumers inside a memoised component still update.\n- **Unstable `getSnapshot`** in `useSyncExternalStore` causing an infinite loop.\n- **Debugging**: React DevTools Profiler with \"Record why each component rendered\" shows \"Context changed\" as the reason. Count how many components re-render per update; if it is dozens for a small change, split or move to a store.\n\n## In the interview\n**What they probe:** do you know Context is transport, not state; do you understand why it re-renders and how to fix it; do you know `useSyncExternalStore` exists and what tearing is.\n\n**A 60-second answer outline:**\n1. \"Context passes a value down without prop drilling; the state still lives in a provider's useState or useReducer.\"\n2. \"When the value changes by reference, every consumer re-renders, even through memo, and there are no selectors.\"\n3. \"So I memoise the value, split contexts by change frequency, and separate state from dispatch.\"\n4. \"For hot, widely-read state I put a stable store in Context and subscribe with useSyncExternalStore, or just use Zustand or Redux, which do exactly that.\"\n5. \"useSyncExternalStore exists so external stores do not tear under concurrent rendering; the snapshot must be referentially stable.\"\n\n**Follow-ups to expect:**\n- \"Why does `memo` not prevent a context consumer from re-rendering?\"\n- \"What happens if `getSnapshot` returns a new array each time?\"\n- \"How would you build `useContextSelector` yourself?\"\n- \"Does the React Compiler fix context performance?\" (It removes accidental re-renders of non-consumers, not consumer updates.)",
+      "keyPoints": [
+        "Context transports a value; the state still lives in the provider's useState or useReducer",
+        "When the value changes by Object.is, every consumer re-renders, even inside memo, and there are no selectors",
+        "Memoise object values, split contexts by change frequency, and separate state from dispatch",
+        "useSyncExternalStore reads external stores without tearing; getSnapshot must return stable references",
+        "Pass a stable store instance through Context and subscribe to slices for scoped, fine-grained state"
+      ],
+      "interview": [
+        "Why can React Context cause unnecessary re-renders, and how do you fix it?",
+        "What does useSyncExternalStore solve, and when would you use it?",
+        "When is React Context the right tool, and when is it not?"
+      ],
+      "check": [
+        {
+          "q": "A consumer of a context is wrapped in React.memo and its props have not changed. The context value changes. What happens?",
+          "options": [
+            "It does not re-render because memo blocks it",
+            "It re-renders only if it also receives children",
+            "It re-renders, because context propagation bypasses memo",
+            "React logs a warning and skips the update"
+          ],
+          "answer": 2,
+          "why": "memo compares props only. A component that reads a context is scheduled to re-render whenever that context's value changes."
+        },
+        {
+          "q": "Your useSyncExternalStore call uses `getSnapshot = () => store.getState().items.filter(i => i.done)`. What goes wrong?",
+          "options": [
+            "Nothing, filter is cheap",
+            "getSnapshot returns a new array every call, so React sees a changed snapshot and loops or errors",
+            "The component never re-renders",
+            "It only fails during server rendering"
+          ],
+          "answer": 1,
+          "why": "getSnapshot must return the same reference when the store has not changed; a fresh array each call makes React think the store changed on every check."
+        },
+        {
+          "q": "Which change most reduces re-renders for buttons that only call `setTheme` but never read the theme?",
+          "options": [
+            "Wrap every button in memo",
+            "Move the theme into useRef",
+            "Use useLayoutEffect in the provider",
+            "Provide the setter in its own context, separate from the theme value"
+          ],
+          "answer": 3,
+          "why": "The setter from useState is stable, so a setter-only context never changes and its consumers never re-render on theme changes."
+        }
+      ],
+      "resources": [
+        {
+          "title": "React docs: useSyncExternalStore",
+          "url": "https://react.dev/reference/react/useSyncExternalStore"
+        },
+        {
+          "title": "React docs: Scaling up with reducer and context",
+          "url": "https://react.dev/learn/scaling-up-with-reducer-and-context"
+        },
+        {
+          "title": "Mark Erikson: Why React Context is not a state management tool",
+          "url": "https://blog.isquaredsoftware.com/2021/01/context-redux-differences/"
+        },
+        {
+          "title": "Kent C. Dodds: How to optimize your context value",
+          "url": "https://kentcdodds.com/blog/how-to-optimize-your-context-value"
+        },
+        {
+          "title": "Mark Erikson: A (mostly) complete guide to React rendering behavior",
+          "url": "https://blog.isquaredsoftware.com/2020/05/blogged-answers-a-mostly-complete-guide-to-react-rendering-behavior/"
+        },
+        {
+          "title": "use-context-selector (Daishi Kato)",
+          "url": "https://github.com/dai-shi/use-context-selector"
+        }
+      ]
+    },
+    {
+      "id": "st-redux-zustand",
+      "track": "state-data",
+      "title": "Client stores: Redux Toolkit, Zustand, Jotai and signals",
+      "minutes": 20,
+      "summary": "How selector-based stores work, what Redux Toolkit, Zustand, Jotai and signals each optimise for, and how to choose one for the shared client state that remains.",
+      "body": "## The core idea\nOnce you have moved server data into a query cache, filters into the URL and drafts into forms, what remains is **shared client state**: a cart, an editor's selection and undo history, a multi-step wizard, a canvas of shapes, panel layout, a local queue of pending operations. When that state is read by many components far apart and changes often, you want a store: state outside the component tree, with **selectors** so each component re-renders only when its slice changes.\n\nThe main options in 2026 are Redux Toolkit, Zustand, Jotai and signals-based libraries. They differ less in power than in **shape of the state** (one tree vs many atoms), **how much structure they impose**, and **how updates propagate**. Picking well means matching those to your app and team, not following fashion.\n\n## How a selector-based store works\nRedux and Zustand share the same core mechanism:\n\n```text\n           store (outside React)\n           state = { cards, columns, ui }\n                 |\n   dispatch / set(...)  -> new state object (immutable update)\n                 |\n         notify all subscribers\n                 |\n  each component runs its selector:  s => s.cards[id].title\n                 |\n  compare result with previous result (=== by default)\n        same  -> skip render\n        diff  -> re-render this component only\n```\n\nReact-Redux and Zustand both subscribe through `useSyncExternalStore`, so reads are tear-free under concurrent rendering. The performance model follows directly:\n\n- **Every store update runs every mounted selector.** Selectors must be cheap.\n- **A component re-renders only if its selector result changes by reference** (or by a custom equality function).\n- So a selector that returns a **new object or array** each time (`s => s.cards.filter(...)`, `s => ({ a: s.a, b: s.b })`) re-renders on every update, or, in Zustand v5, can trigger an infinite render loop. Use memoised selectors or shallow comparison.\n\n## Redux Toolkit\nRedux Toolkit (RTK) is the official, modern way to write Redux; hand-written action constants and switch reducers are legacy. One store, state organised into **slices**, updates described as **actions**, applied by pure **reducers**.\n\n```ts\nimport { configureStore, createSlice, createSelector, type PayloadAction } from \"@reduxjs/toolkit\";\n\ntype Card = { id: string; title: string; columnId: string };\ntype BoardState = { cards: Record<string, Card>; order: Record<string, string[]> };\n\nconst boardSlice = createSlice({\n  name: \"board\",\n  initialState: { cards: {}, order: {} } as BoardState,\n  reducers: {\n    cardMoved(state, action: PayloadAction<{ id: string; to: string; index: number }>) {\n      const { id, to, index } = action.payload;\n      const from = state.cards[id].columnId;\n      state.order[from] = state.order[from].filter((c) => c !== id); // Immer: \"mutations\" are safe\n      state.order[to].splice(index, 0, id);\n      state.cards[id].columnId = to;\n    },\n  },\n});\n\nexport const store = configureStore({ reducer: { board: boardSlice.reducer } });\nexport type RootState = ReturnType<typeof store.getState>;\nexport const { cardMoved } = boardSlice.actions;\n\n// Memoised selector: recomputes only when its inputs change\nexport const selectColumnCards = createSelector(\n  [(s: RootState) => s.board.order, (s: RootState) => s.board.cards, (_: RootState, col: string) => col],\n  (order, cards, col) => (order[col] ?? []).map((id) => cards[id]),\n);\n```\n\nWhat RTK gives you:\n- **Immer** inside `createSlice`, so you write mutating code and get immutable updates.\n- **`configureStore`** with Redux DevTools, thunk middleware and dev-only checks for accidental mutation and non-serialisable values.\n- **`createEntityAdapter`** for normalised collections (`ids` + `entities`) with ready-made CRUD reducers and selectors.\n- **RTK Query** for server state, so you do not hand-write fetch thunks.\n- **Time-travel debugging and an action log**: every change is a named, serialisable event. In a complex app that log is the main reason to choose Redux.\n\nCosts: more concepts (actions, reducers, middleware, thunks), more files, and one global store that must be designed carefully. For a team of 30 working on a large app, that structure is a feature.\n\n## Zustand\nZustand (from pmndrs) is a tiny hook-based store: no providers required, no actions or reducers unless you want them.\n\n```ts\nimport { create } from \"zustand\";\nimport { useShallow } from \"zustand/react/shallow\";\n\ntype Board = {\n  cards: Record<string, Card>;\n  selected: Set<string>;\n  select: (id: string) => void;\n  moveCard: (id: string, to: string) => void;\n};\n\nexport const useBoard = create<Board>()((set) => ({\n  cards: {},\n  selected: new Set(),\n  select: (id) => set((s) => ({ selected: new Set(s.selected).add(id) })),\n  moveCard: (id, to) =>\n    set((s) => ({ cards: { ...s.cards, [id]: { ...s.cards[id], columnId: to } } })),\n}));\n\n// Good: primitive selector, re-renders only when this title changes\nconst title = useBoard((s) => s.cards[id].title);\n\n// Good: actions are stable references\nconst moveCard = useBoard((s) => s.moveCard);\n\n// Picking several values: wrap in useShallow so a new object does not loop\nconst { cards, selected } = useBoard(useShallow((s) => ({ cards: s.cards, selected: s.selected })));\n```\n\nNotes worth knowing:\n- `set` **merges** the top level shallowly; nested updates are yours to spread (or add the `immer` middleware).\n- Middleware: `persist` (localStorage/IndexedDB with versioned migrations), `devtools` (Redux DevTools), `immer`, `subscribeWithSelector`.\n- In v5, `create` no longer takes a custom equality function; use `useShallow` or `createWithEqualityFn` from `zustand/traditional`.\n- TkDodo's \"Working with Zustand\" recommends exporting **custom hooks per slice** rather than the raw store, keeping actions in a separate `actions` object, and keeping stores small.\n- A module-level store is a singleton. In Next.js with SSR, a singleton is shared across requests on the server, so per-request data must go in a store created inside a provider (the scoped-store pattern from the Context lesson).\n\n## Jotai\nJotai (also pmndrs) models state **bottom-up as atoms**. Each atom is a tiny piece of state; derived atoms compute from others; components subscribe to exactly the atoms they read.\n\n```ts\nimport { atom, useAtomValue, useSetAtom } from \"jotai\";\n\nconst cardsAtom = atom<Record<string, Card>>({});\nconst filterAtom = atom<\"all\" | \"mine\">(\"all\");\nconst visibleCardsAtom = atom((get) => {\n  const cards = Object.values(get(cardsAtom));\n  return get(filterAtom) === \"all\" ? cards : cards.filter((c) => c.ownerId === \"me\");\n});\n\nfunction CardList() {\n  const cards = useAtomValue(visibleCardsAtom); // recomputes only when inputs change\n  /* ... */\n}\n```\n\nJotai shines when state is a **graph of many small, independent pieces** (a design tool where each layer has its own atom, a spreadsheet of cells, a settings page) and when you want derived values without writing selectors. Async atoms integrate with Suspense. The cost: global data flow is harder to see than in one Redux tree, and debugging needs Jotai's DevTools.\n\n## Signals\nSignals (Solid, Preact Signals, Angular, Vue's `ref` is the same idea, Svelte 5 runes) are **reactive values that track their readers automatically**. Reading `count.value` inside a computed or an effect subscribes to it; writing it notifies only those dependents.\n\n```ts\nimport { signal, computed, effect } from \"@preact/signals-react\";\nconst count = signal(0);\nconst double = computed(() => count.value * 2);\neffect(() => console.log(double.value)); // re-runs only when count changes\ncount.value++;\n```\n\nThe difference from React's model is the **unit of update**. React re-runs a component function and diffs the output; signals update the exact DOM text node or computation that depends on the value, with no diff. That is why Solid has no virtual DOM and why signal frameworks do well on fine-grained update benchmarks. In React, signals libraries work by integrating with the renderer, and they cut against React's \"UI is a function of state\" mental model; most React teams stay with selectors. A TC39 proposal for standard signals in JavaScript exists but is at an early stage, so do not treat it as shipped.\n\n## Choosing a store\n| Need | Good fit |\n| --- | --- |\n| Little shared state, changes rarely | `useState` + lifting, or Context |\n| Several shared values, small team, minimal ceremony | Zustand |\n| Large app, many developers, strict conventions, auditability, undo/time-travel | Redux Toolkit (+ RTK Query) |\n| Many small independent pieces, lots of derived values | Jotai |\n| Fine-grained updates as a core design goal | Solid, Svelte or Vue rather than bolting signals onto React |\n| Server data | none of these: TanStack Query, SWR or RTK Query |\n\nQuestions to ask in a real decision: How much shared client state is there after removing server and URL state? Do you need an action log (debugging, analytics, collaborative replay)? How many people touch the store? Does it need to work with SSR per request? What does the team already know? Switching cost matters more than library elegance.\n\n## Trade-offs and when not to use a store\n- **Global stores make data flow implicit.** Any component can write anything; discipline (actions in the store, not ad-hoc `setState` calls everywhere) matters.\n- **Everything-in-the-store** reintroduces the problems of putting server data in Redux. Keep the store for client-owned state.\n- **Persisting the whole store** to localStorage leaks state between users on shared machines and breaks on schema changes; persist a whitelisted subset with a version and migration.\n- **Normalise** when the same entity appears in many places (a card in a column and in search results): store by id once, reference by id elsewhere (Redux's \"Normalizing State Shape\" guide).\n\n## Common mistakes and debugging\n- **Selecting the whole store** (`useBoard()` or `useSelector(s => s)`): the component re-renders on every update.\n- **Selectors that build new objects** without memoisation or `useShallow`.\n- **Mutating state outside Immer** (`state.cards[id].title = x` in a Zustand `set` without the immer middleware): subscribers do not see a change because the reference did not change.\n- **Non-serialisable values** (class instances, Dates, Maps) in Redux break DevTools and persistence; store ISO strings and plain objects.\n- **Putting derived data in the store** and keeping it in sync manually; compute it in a selector.\n- **Debugging**: Redux DevTools (works with Zustand's `devtools` middleware) shows each action, the diff and the resulting state. React DevTools Profiler shows which components re-rendered per action; if a single keystroke re-renders 200 components, look for whole-object selectors.\n\n## In the interview\n**What they probe:** can you justify a store at all; do you understand selector re-render semantics; can you compare tools on trade-offs instead of taste.\n\n**A 60-second answer outline:**\n1. \"First I shrink the problem: server data in a query cache, filters in the URL, forms local. What is left is shared client state.\"\n2. \"If it is small and changes rarely, Context. If it is shared and changes often, a store with selectors.\"\n3. \"Zustand for minimal ceremony; Redux Toolkit when a big team benefits from conventions, the action log and DevTools; Jotai when state is many small atoms with derived values.\"\n4. \"Performance comes from selectors: each component subscribes to a slice and re-renders only when that slice changes by reference, so selectors must return primitives or memoised values.\"\n5. \"Signals go further and update the exact dependents with no diff; great in Solid or Vue, but in React I usually stay with selectors.\"\n\n**Follow-ups to expect:**\n- \"Why would `useSelector(s => ({ a: s.a, b: s.b }))` cause extra renders?\"\n- \"How do you avoid a shared Zustand singleton leaking between SSR requests?\"\n- \"What does Immer actually do?\" (Records mutations on a draft proxy and produces a new immutable state with structural sharing.)\n- \"When is Redux still the right choice in 2026?\"",
+      "keyPoints": [
+        "A store holds shared client state outside the tree; selectors make each component re-render only for its slice",
+        "Every update runs every selector; results are compared by reference, so return primitives or memoised values",
+        "Redux Toolkit: conventions, Immer, DevTools, action log and RTK Query; best for large teams and complex flows",
+        "Zustand: minimal hook store with middleware; Jotai: atoms and derived atoms for many small pieces of state",
+        "Signals update exact dependents with no diff; powerful in Solid or Vue, but against the grain of React"
+      ],
+      "interview": [
+        "How do you choose between Redux Toolkit, Zustand, Jotai and plain React state?",
+        "How do selectors work in Redux or Zustand, and what goes wrong with them?",
+        "What are signals, and how does their reactivity model differ from React's?"
+      ],
+      "check": [
+        {
+          "q": "A component uses `useSelector(s => ({ name: s.user.name, count: s.cart.count }))`. Why does it re-render on unrelated store updates?",
+          "options": [
+            "useSelector always re-renders on every dispatch",
+            "The selector returns a new object each time, so the default reference comparison always sees a change",
+            "Redux Toolkit disables memoisation in development",
+            "The store is not wrapped in a Provider"
+          ],
+          "answer": 1,
+          "why": "useSelector compares results with ===. A freshly built object is never equal, so the component re-renders for every action; select primitives or use shallowEqual or createSelector."
+        },
+        {
+          "q": "A design tool has thousands of independent layers, each with its own position and style, and many derived values. Which model fits most naturally?",
+          "options": [
+            "One Context holding all layers",
+            "Local useState in the root component",
+            "Jotai atoms per layer with derived atoms",
+            "Storing layers in the URL"
+          ],
+          "answer": 2,
+          "why": "Atoms let each layer component subscribe to just its own state, and derived atoms compute values without hand-written selectors."
+        },
+        {
+          "q": "What is the key difference between how signals and React components propagate a change?",
+          "options": [
+            "Signals update only the computations and DOM nodes that read the value; React re-runs component functions and diffs the output",
+            "Signals are always slower because they skip batching",
+            "React tracks dependencies automatically; signals require a dependency array",
+            "There is no difference; signals are a React feature"
+          ],
+          "answer": 0,
+          "why": "Signals track readers automatically and notify exactly those dependents; React re-renders the component subtree and reconciles the virtual DOM."
+        }
+      ],
+      "resources": [
+        {
+          "title": "Redux Essentials: Redux overview and concepts",
+          "url": "https://redux.js.org/tutorials/essentials/part-1-overview-concepts"
+        },
+        {
+          "title": "Redux docs: Deriving data with selectors",
+          "url": "https://redux.js.org/usage/deriving-data-selectors"
+        },
+        {
+          "title": "Zustand docs: Introduction",
+          "url": "https://zustand.docs.pmnd.rs/learn/getting-started/introduction"
+        },
+        {
+          "title": "TkDodo: Working with Zustand",
+          "url": "https://tkdodo.eu/blog/working-with-zustand"
+        },
+        {
+          "title": "Jotai docs: atom",
+          "url": "https://jotai.org/docs/core/atom"
+        },
+        {
+          "title": "Preact Signals guide",
+          "url": "https://preactjs.com/guide/v10/signals/"
+        }
+      ]
+    },
+    {
+      "id": "st-server-state",
+      "track": "state-data",
+      "title": "Server state with TanStack Query: caching, keys, invalidation and prefetching",
+      "minutes": 22,
+      "summary": "Treat server data as a cache: stale-while-revalidate, staleTime vs gcTime, hierarchical query keys, invalidation, prefetching, avoiding waterfalls, and how SWR and RTK Query compare.",
+      "body": "## The core idea\nData that comes from your backend is not \"state\" in the same sense as a toggle. It is a **cached snapshot of something another system owns**. It can go stale the moment it arrives, other users can change it, many components want the same resource at once, and every request can fail or come back out of order. TkDodo (TanStack Query maintainer) puts it simply in \"React Query as a State Manager\": React Query is an **async state manager** whose job is keeping a cache in sync with the server.\n\nA server-state library gives you, per resource: a cache keyed by what you asked for, request **deduplication**, **stale-while-revalidate** (show cached data now, refresh in the background), retries, refetch on window focus and reconnect, garbage collection of unused entries, pagination helpers, and an API to update or invalidate the cache after mutations. Writing that by hand with `useEffect` and a global store is where most \"Redux boilerplate\" came from.\n\n## Why useEffect fetching is not enough\n```tsx\n// The naive version: what is wrong with it?\nfunction Profile({ id }: { id: string }) {\n  const [user, setUser] = useState<User | null>(null);\n  useEffect(() => {\n    fetch(`/api/users/${id}`).then((r) => r.json()).then(setUser);\n  }, [id]);\n  return user ? <h1>{user.name}</h1> : <Spinner />;\n}\n```\n\n- **Race condition**: switch from id 1 to id 2 quickly; if request 1 resolves last, you show user 1 on user 2's page. You need an `ignore` flag or `AbortController`.\n- **No cache**: navigate away and back and you get a spinner again.\n- **No dedupe**: three components showing the same user fire three requests.\n- **No error, retry or loading state**, and `fetch` does not reject on 404 or 500.\n- **Waterfalls**: data starts loading only after the component renders, and children fetch only after parents finish.\n- **Strict Mode** in development runs the effect twice, which surfaces the missing cleanup.\n\nreact.dev's \"You Might Not Need an Effect\" recommends a framework data mechanism or a client cache instead of raw effects for exactly these reasons.\n\n## How TanStack Query works\n```text\n useQuery({ queryKey: [\"todos\", { status }], queryFn })\n        |\n        v\n  QueryCache: hash(queryKey) -> Query { data, status, dataUpdatedAt, observers }\n        |\n  is there data?  no  -> status \"pending\", fetch (deduped: one in-flight promise per key)\n        |         yes -> return it immediately\n        |\n  is it stale? (now - dataUpdatedAt > staleTime)\n        |  yes, and a trigger fires (mount, window focus, reconnect, invalidate, interval)\n        v\n  background refetch, isFetching = true, old data stays on screen\n        |\n  new data -> structural sharing (unchanged parts keep the same reference)\n        |\n  notify observers -> components re-render only if fields they read changed\n\n  no observers for gcTime (default 5 min) -> entry is garbage collected\n```\n\nThe two knobs everyone confuses:\n\n- **`staleTime`** (default `0`): how long data counts as fresh. Fresh data is served from cache with **no** refetch. With the default, data is stale immediately, so any mount or window focus triggers a background refetch.\n- **`gcTime`** (default 5 minutes, called `cacheTime` before v5): how long an **unused** entry stays in memory after its last observer unmounts. It has nothing to do with freshness.\n\nOther defaults from the \"Important Defaults\" guide: failed queries retry 3 times with exponential backoff, and queries refetch on mount, window focus and network reconnect when stale. Set `staleTime` per resource from how fast the data really changes: a country list can be `Infinity`, a notifications count maybe 30 seconds.\n\n`isPending` means \"no data yet\"; `isFetching` means \"a request is in flight\", including background refetches. Show a full skeleton only for `isPending`; show a small indicator for `isFetching`.\n\n## Real code\n```ts\nimport { queryOptions, useQuery, useMutation, useQueryClient } from \"@tanstack/react-query\";\n\nasync function getJson<T>(url: string, signal: AbortSignal): Promise<T> {\n  const res = await fetch(url, { signal });\n  if (!res.ok) throw new Error(`${res.status} ${url}`); // fetch does not throw on 4xx/5xx\n  return res.json() as Promise<T>;\n}\n\n// Query key factory: one place that defines keys and fetchers\nexport const todoQueries = {\n  all: () => [\"todos\"] as const,\n  lists: () => [...todoQueries.all(), \"list\"] as const,\n  list: (filters: { status: string; page: number }) =>\n    queryOptions({\n      queryKey: [...todoQueries.lists(), filters],\n      queryFn: ({ signal }) => getJson<Todo[]>(`/api/todos?status=${filters.status}&page=${filters.page}`, signal),\n      staleTime: 30_000,\n    }),\n  detail: (id: string) =>\n    queryOptions({\n      queryKey: [...todoQueries.all(), \"detail\", id],\n      queryFn: ({ signal }) => getJson<Todo>(`/api/todos/${id}`, signal),\n    }),\n};\n\nfunction TodoList({ status, page }: { status: string; page: number }) {\n  const { data, isPending, isError, isFetching } = useQuery({\n    ...todoQueries.list({ status, page }),\n    placeholderData: (prev) => prev, // keep the previous page visible while the next loads\n  });\n  /* render */\n}\n\nfunction useCompleteTodo() {\n  const qc = useQueryClient();\n  return useMutation({\n    mutationFn: (id: string) => fetch(`/api/todos/${id}/complete`, { method: \"POST\" }),\n    onSuccess: (_res, id) => {\n      // fuzzy match: invalidates every list regardless of filters, plus the detail\n      return Promise.all([\n        qc.invalidateQueries({ queryKey: todoQueries.lists() }),\n        qc.invalidateQueries({ queryKey: todoQueries.detail(id).queryKey }),\n      ]);\n    },\n  });\n}\n```\n\nPoints to notice:\n\n- The `signal` passed to `queryFn` lets the library **cancel** requests that are no longer needed, and solves the race condition: each key has its own cache entry, so a late response for page 1 can never be shown as page 2.\n- `queryOptions` gives type-safe reuse of key + fetcher in `useQuery`, `prefetchQuery`, `setQueryData` and `getQueryData`.\n- Returning the invalidation promise from `onSuccess` keeps the mutation `isPending` until fresh data has arrived, which avoids a flash of old data.\n\n## Query keys\nKeys are the cache's identity. TkDodo's \"Effective React Query Keys\" sets out the rules:\n\n- **Everything the fetch depends on goes in the key.** If `queryFn` reads `status` and `page`, the key must contain them; otherwise two different requests share one cache entry. The ESLint plugin (`@tanstack/eslint-plugin-query`) flags missing dependencies.\n- **Keys are hierarchical**, from generic to specific: `[\"todos\", \"list\", { status: \"open\" }]`. Invalidation does **prefix matching**: `invalidateQueries({ queryKey: [\"todos\"] })` hits every todo query; `[\"todos\", \"list\"]` hits all lists but not details.\n- **Objects in keys are hashed deterministically**, so `{ a: 1, b: 2 }` and `{ b: 2, a: 1 }` are the same key.\n- **Use a key factory** per feature so keys are not hand-typed strings scattered across the codebase.\n\n## Invalidation, direct updates and prefetching\nAfter a mutation you have three tools:\n\n1. **Invalidate** (`invalidateQueries`): marks matching queries stale and refetches the ones currently on screen. Simple and correct; costs a round-trip.\n2. **Update from the response** (`setQueryData`): when the mutation returns the updated entity, write it into the detail cache directly. Fast, but you must also deal with lists that contain it (often by invalidating them).\n3. **Optimistic update**: write the expected result before the server answers, roll back on error (covered in the optimistic and real-time lesson).\n\n**Prefetching** removes waiting:\n\n```ts\n// On hover or focus of a link, warm the cache\n<Link href={`/todos/${id}`} onMouseEnter={() => qc.prefetchQuery(todoQueries.detail(id))} />\n\n// In a router loader (TanStack Router, React Router), start fetching before render\nloader: ({ params }) => qc.ensureQueryData(todoQueries.detail(params.id)),\n```\n\nWith SSR (Next.js App Router), prefetch on the server, `dehydrate` the cache, and wrap the client tree in `HydrationBoundary`; set a non-zero `staleTime` (for example 60 seconds) so the client does not immediately refetch what the server just fetched. The \"Advanced Server Rendering\" guide covers this. In many App Router pages, a Server Component that fetches directly is simpler still, and you add TanStack Query only for client-side interactivity like infinite scroll or polling.\n\n## Avoiding waterfalls\nA **request waterfall** is when request B starts only after request A finishes even though B does not need A's result. TanStack's \"Performance and Request Waterfalls\" guide lists the common causes: nested components that each fetch on mount, `useSuspenseQuery` calls in sequence in one component (each suspends before the next starts), and code-split components that fetch only after their chunk loads.\n\nFixes: hoist fetches to the route (loaders or a parent with `useQueries` / parallel `prefetchQuery`), prefetch on intent, fetch on the server, and flatten dependent requests into one API call when the backend can do the join.\n\n## SWR and RTK Query compared\n| | TanStack Query | SWR | RTK Query |\n| --- | --- | --- | --- |\n| Core idea | async state manager with rich cache API | stale-while-revalidate hook, minimal API | server state inside Redux |\n| Keys | array keys, prefix invalidation | string or array key, `mutate(key)` | endpoints with cache tags |\n| Mutations | `useMutation` with lifecycle callbacks | `useSWRMutation`, bound `mutate` | mutation endpoints that invalidate tags |\n| Devtools | dedicated devtools | community | Redux DevTools |\n| Pick when | most React apps, complex caching | small apps, Vercel/Next stacks, minimal needs | you already use Redux Toolkit |\n\nSWR (by Vercel) dedupes identical requests within a 2-second window by default and revalidates on focus and reconnect. RTK Query's **tag-based invalidation** (`providesTags` / `invalidatesTags`) is a nice declarative alternative to key prefixes.\n\n## Trade-offs and when not to use a query cache\n- **Server Components fetching on the server** need no client cache at all. Use a client cache where you need client-side refetching, polling, infinite lists, optimistic updates or offline.\n- **Real-time-heavy data** (chat, collaborative docs) is better driven by a socket or sync engine that writes into the cache, with `staleTime: Infinity` so focus refetches do not fight it.\n- **Very large normalised graphs** shared across many queries (the same user object in 20 lists) are a pain with document-style caches; Apollo or Relay normalise automatically for GraphQL.\n- Refetch on window focus surprises people; it is a feature (fresh data when the user returns), but tune `staleTime` rather than disabling it globally.\n\n## Common mistakes and debugging\n- **Copying query data into `useState`** or a store: you lose background updates. Read from the query; derive with `select`.\n- **Missing key dependencies**: the cache returns data for the wrong filters.\n- **Not throwing on HTTP errors**: the query \"succeeds\" with an error body.\n- **Creating `QueryClient` inside a component** body without `useState`: a new, empty cache every render.\n- **Confusing `staleTime` and `gcTime`**: raising `gcTime` does not stop refetches.\n- **Debugging**: TanStack Query Devtools show every key, its status, observers and last update; the Network panel shows duplicate or waterfalled requests.\n\n## In the interview\n**What they probe:** whether you understand server data as a cache; staleness vs garbage collection; key design and invalidation; waterfalls and race conditions.\n\n**A 60-second answer outline:**\n1. \"Server data is a snapshot I do not own, so I treat it as a cache: TanStack Query, SWR or RTK Query, or Server Components when no client interactivity is needed.\"\n2. \"The cache is keyed by everything the fetch depends on, dedupes requests, and does stale-while-revalidate: show cached data, refetch in the background when stale.\"\n3. \"`staleTime` controls freshness, `gcTime` controls how long unused entries stay in memory.\"\n4. \"After a mutation I invalidate by key prefix, write the response with `setQueryData`, or apply an optimistic update with rollback.\"\n5. \"I prefetch on intent or in route loaders and hoist fetches to avoid waterfalls.\"\n\n**Follow-ups to expect:**\n- \"What happens on window focus with the default settings?\"\n- \"How would you invalidate all filtered lists after creating an item?\"\n- \"How do you hydrate a server-prefetched cache without a double fetch?\"\n- \"When would you use RTK Query instead?\"",
+      "keyPoints": [
+        "Server data is a cached snapshot; a query library adds dedupe, stale-while-revalidate, retries and garbage collection",
+        "staleTime decides when data needs a refetch; gcTime decides how long unused entries stay in memory",
+        "Put every fetch dependency in the query key; keys are hierarchical and invalidation matches by prefix",
+        "After mutations: invalidate, write the response with setQueryData, or update optimistically with rollback",
+        "Prefetch on intent or in loaders and hoist fetches to avoid request waterfalls"
+      ],
+      "interview": [
+        "Why should server data live in a query cache like TanStack Query instead of a global store?",
+        "Explain staleTime vs gcTime in TanStack Query and how stale-while-revalidate works.",
+        "How do you design query keys and invalidate them after a mutation?",
+        "How do you avoid request waterfalls when fetching data in a React app?"
+      ],
+      "check": [
+        {
+          "q": "With TanStack Query defaults, a user leaves a tab showing a todo list and comes back two minutes later. What happens?",
+          "options": [
+            "Nothing; the data is cached for 5 minutes",
+            "The list shows cached data and refetches in the background because staleTime is 0",
+            "The list is cleared and shows a loading skeleton",
+            "The query throws because gcTime expired"
+          ],
+          "answer": 1,
+          "why": "Default staleTime is 0, so data is stale immediately and a window focus triggers a background refetch while cached data stays on screen."
+        },
+        {
+          "q": "Keys are `['todos','list',{status}]` and `['todos','detail',id]`. Which call refetches every list but no detail?",
+          "options": [
+            "invalidateQueries({ queryKey: ['todos'] })",
+            "invalidateQueries({ queryKey: ['todos','detail'] })",
+            "removeQueries({ queryKey: ['todos'] })",
+            "invalidateQueries({ queryKey: ['todos','list'] })"
+          ],
+          "answer": 3,
+          "why": "Invalidation matches by key prefix; ['todos','list'] matches every list key regardless of filters and no detail key."
+        },
+        {
+          "q": "A component calls useSuspenseQuery for the user, then useSuspenseQuery for the user's projects (which do not depend on the user). What is the problem?",
+          "options": [
+            "A waterfall: the first call suspends, so the second request starts only after the first resolves",
+            "The second query will never run",
+            "Both queries share a cache entry",
+            "Suspense queries cannot be used together"
+          ],
+          "answer": 0,
+          "why": "Each suspense query suspends the component before the next line runs. Fetch them in parallel with useSuspenseQueries or prefetch both earlier."
+        }
+      ],
+      "resources": [
+        {
+          "title": "TanStack Query: Important defaults",
+          "url": "https://tanstack.com/query/latest/docs/framework/react/guides/important-defaults"
+        },
+        {
+          "title": "TkDodo: Effective React Query keys",
+          "url": "https://tkdodo.eu/blog/effective-react-query-keys"
+        },
+        {
+          "title": "TkDodo: Practical React Query",
+          "url": "https://tkdodo.eu/blog/practical-react-query"
+        },
+        {
+          "title": "TanStack Query: Performance and request waterfalls",
+          "url": "https://tanstack.com/query/latest/docs/framework/react/guides/request-waterfalls"
+        },
+        {
+          "title": "TanStack Query: Advanced server rendering",
+          "url": "https://tanstack.com/query/latest/docs/framework/react/guides/advanced-ssr"
+        },
+        {
+          "title": "SWR: Getting started",
+          "url": "https://swr.vercel.app/docs/getting-started"
+        }
+      ]
+    },
+    {
+      "id": "st-forms-state",
+      "track": "state-data",
+      "title": "Form state: controlled vs uncontrolled, React Hook Form, zod and React 19 actions",
+      "minutes": 20,
+      "summary": "Handle form drafts well: controlled vs uncontrolled inputs, React Hook Form with a shared zod schema, server validation, and React 19 form actions with useActionState and useFormStatus.",
+      "body": "## The core idea\nForm state is its own kind of state: a **draft** the user owns until they submit. It has values, but also metadata that other state rarely has: which fields were touched, which are dirty, validation errors per field, whether submission is pending, and errors the server returned. Getting forms right is mostly about three decisions:\n\n1. **Who holds the current value**: React state (controlled) or the DOM input itself (uncontrolled)?\n2. **Where validation runs and when**: on change, on blur, on submit, and always again on the server.\n3. **How submission works**: a client `onSubmit` handler calling an API, or a form **action** (React 19, Server Actions) that also works before JavaScript loads.\n\n## Controlled vs uncontrolled\n```text\nCONTROLLED                               UNCONTROLLED\nkeystroke                                keystroke\n   |                                        |\nonChange -> setState(value)              DOM input updates its own value\n   |                                        |\nReact re-renders component               no React render\n   |                                        |\n<input value={state}> written back       read on submit: FormData or ref.current.value\n```\n\n**Controlled** inputs (`value` + `onChange`) make React the source of truth. You can transform input as it is typed (masking a phone number), enable the submit button live, or show derived UI. The cost is a re-render of the owning component on every keystroke; in a 60-field form held in one `useState` object, typing in one field re-renders all 60 unless you split components carefully.\n\n**Uncontrolled** inputs (`defaultValue`, read via `FormData` or a ref) let the DOM hold the value. No re-render per keystroke, less code, and they work with native form submission. The cost is that you cannot easily react to every change without subscribing explicitly.\n\nJosh Comeau's \"Data Binding in React\" walks through controlled inputs in detail; his main warning is never to switch an input between controlled and uncontrolled (passing `value={undefined}` and later a string), which React warns about.\n\nRule of thumb: **uncontrolled by default**, controlled for the fields that need live behaviour. React Hook Form is built on that idea.\n\n## React Hook Form + zod\nReact Hook Form (RHF) registers native inputs as uncontrolled and tracks state in refs, so the form component does not re-render on every keystroke. `formState` is a proxy: the component only re-renders for the pieces it actually reads (`errors`, `isDirty`, `isSubmitting`).\n\n```tsx\n\"use client\";\nimport { useForm, useFieldArray } from \"react-hook-form\";\nimport { zodResolver } from \"@hookform/resolvers/zod\";\nimport { z } from \"zod\";\n\nexport const InviteSchema = z.object({\n  teamName: z.string().trim().min(2, \"At least 2 characters\").max(60),\n  emails: z\n    .array(z.object({ value: z.string().email(\"Not a valid email\") }))\n    .min(1, \"Add at least one person\")\n    .max(20),\n  role: z.enum([\"viewer\", \"editor\", \"admin\"]),\n});\nexport type Invite = z.infer<typeof InviteSchema>;\n\nexport function InviteForm({ onSave }: { onSave: (v: Invite) => Promise<{ fieldErrors?: Record<string, string> }> }) {\n  const {\n    register, control, handleSubmit, setError,\n    formState: { errors, isSubmitting },\n  } = useForm<Invite>({\n    resolver: zodResolver(InviteSchema),\n    defaultValues: { teamName: \"\", emails: [{ value: \"\" }], role: \"viewer\" },\n    mode: \"onTouched\", // validate after first blur, then on change\n  });\n  const { fields, append, remove } = useFieldArray({ control, name: \"emails\" });\n\n  const onSubmit = handleSubmit(async (values) => {\n    const res = await onSave(values);\n    for (const [name, message] of Object.entries(res.fieldErrors ?? {})) {\n      setError(name as keyof Invite, { message }); // server errors land on the same fields\n    }\n  });\n\n  return (\n    <form onSubmit={onSubmit} noValidate>\n      <label htmlFor=\"teamName\">Team name</label>\n      <input id=\"teamName\" {...register(\"teamName\")} aria-invalid={!!errors.teamName} aria-describedby=\"teamName-err\" />\n      {errors.teamName && <p id=\"teamName-err\" role=\"alert\">{errors.teamName.message}</p>}\n\n      {fields.map((f, i) => (\n        <div key={f.id}>\n          <input {...register(`emails.${i}.value`)} aria-label={`Email ${i + 1}`} />\n          <button type=\"button\" onClick={() => remove(i)}>Remove</button>\n        </div>\n      ))}\n      <button type=\"button\" onClick={() => append({ value: \"\" })}>Add person</button>\n\n      <select {...register(\"role\")}>\n        <option value=\"viewer\">Viewer</option>\n        <option value=\"editor\">Editor</option>\n        <option value=\"admin\">Admin</option>\n      </select>\n      <button disabled={isSubmitting}>{isSubmitting ? \"Sending...\" : \"Send invites\"}</button>\n    </form>\n  );\n}\n```\n\nWhy this combination works:\n\n- **One schema, one source of validation truth.** `z.infer` gives the TypeScript type; the same `InviteSchema` runs on the server with `safeParse`. Client validation is for UX only; **the server must always validate again** because anyone can bypass the browser.\n- **`useFieldArray`** handles dynamic lists with stable `field.id` keys (never use the array index as the React key for removable rows).\n- **`Controller`** wraps third-party controlled components (date pickers, comboboxes) that do not expose a ref to a native input.\n- **`useWatch`** subscribes to one field in a child component so live previews do not re-render the whole form.\n- **Validation modes**: `onSubmit` (default) shows errors only after the first submit; `onTouched` or `onBlur` is usually the friendliest: no red errors while the user is still typing their first character.\n\n## React 19 form actions\nReact 19 made forms a first-class async primitive. You can pass a **function** to `<form action>`. React calls it with the form's `FormData` inside a transition, tracks pending state, and resets uncontrolled fields after a successful action.\n\n```tsx\n\"use client\";\nimport { useActionState } from \"react\";\nimport { useFormStatus } from \"react-dom\";\nimport { createInvite } from \"./actions\"; // a Server Action (\"use server\") or a client async function\n\ntype State = { ok: boolean; fieldErrors?: Record<string, string[]>; message?: string };\n\nfunction SubmitButton() {\n  const { pending } = useFormStatus(); // must be rendered INSIDE the <form>\n  return <button disabled={pending}>{pending ? \"Saving...\" : \"Save\"}</button>;\n}\n\nexport function InviteActionForm() {\n  const [state, formAction, isPending] = useActionState<State, FormData>(createInvite, { ok: false });\n  return (\n    <form action={formAction}>\n      <input name=\"teamName\" defaultValue=\"\" aria-describedby=\"team-err\" />\n      {state.fieldErrors?.teamName && <p id=\"team-err\" role=\"alert\">{state.fieldErrors.teamName[0]}</p>}\n      <SubmitButton />\n      {state.message && <p role=\"status\">{state.message}</p>}\n    </form>\n  );\n}\n```\n\n```ts\n\"use server\";\nimport { z } from \"zod\";\nconst Schema = z.object({ teamName: z.string().trim().min(2).max(60) });\n\nexport async function createInvite(_prev: State, formData: FormData): Promise<State> {\n  const parsed = Schema.safeParse(Object.fromEntries(formData));\n  if (!parsed.success) return { ok: false, fieldErrors: z.flattenError(parsed.error).fieldErrors };\n  // auth check, write to DB, revalidate cache ...\n  return { ok: true, message: \"Invite created\" };\n}\n```\n\nThe pieces:\n\n- **`useActionState(action, initialState)`** returns `[state, formAction, isPending]`. The action receives the **previous state** and the `FormData`, and its return value becomes the new state. Good for \"submit, get back errors or a success message\".\n- **`useFormStatus()`** (from `react-dom`) reads the pending status of the **parent** form, so a reusable submit button does not need props. Calling it in the same component that renders the `<form>` does not work.\n- **`useOptimistic`** shows the expected result while the action runs (covered in the optimistic lesson).\n- **Progressive enhancement**: with Server Actions in Next.js, a form whose action is a Server Action submits even before hydration or with JavaScript disabled.\n- **Reset behaviour**: after a successful function action, React resets the form's uncontrolled inputs. If you need to keep values after a validation error, return them in state and use them as `defaultValue`, or use controlled inputs.\n\nThe Zod 4 helper `z.flattenError` shown above returns `{ formErrors, fieldErrors }`; in Zod 3 the equivalent was `error.flatten()`.\n\n### Which to use\n| Situation | Approach |\n| --- | --- |\n| Simple form, server mutation, Next.js App Router | `<form action>` + `useActionState` + Server Action + zod on the server |\n| Complex client form: dynamic arrays, wizard steps, live cross-field validation, many fields | React Hook Form + zod, submit to an API or call a Server Action from `handleSubmit` |\n| Search box, filter controls | URL state, not a form library |\n| One or two fields | plain uncontrolled inputs with `FormData` |\n\nThey combine: RHF for client-side UX and validation, then call a Server Action inside `handleSubmit` and map returned field errors with `setError`.\n\n## Trade-offs and when not to use a form library\n- A form library for a two-field login is overkill; native validation attributes (`required`, `type=\"email\"`, `minLength`) plus server validation are enough.\n- Fully controlled forms are simplest to reason about for small forms and fine performance-wise there; the re-render cost matters only for large forms or expensive children.\n- Client-side validation duplicated by hand on the server drifts. Share the schema.\n- Server Actions are POST endpoints; treat them like any public API: authenticate, authorise and validate inside every action.\n\n## Common mistakes and debugging\n- **Index as key** in dynamic field lists: removing row 2 shifts state into the wrong inputs.\n- **Switching controlled and uncontrolled** (`value={maybeUndefined}`): use `value={x ?? \"\"}`.\n- **Validating on every keystroke from the first character**: users see errors before they finish typing; validate on blur or touch first.\n- **Not disabling double submits**: use `isSubmitting` / `pending`, and make the server idempotent anyway.\n- **Errors not announced**: link errors with `aria-describedby`, set `aria-invalid`, and move focus to the first invalid field on submit (RHF does this with `shouldFocusError`, on by default).\n- **Losing server errors**: map them back to fields (`setError`) instead of a generic toast.\n- **Debugging**: RHF DevTools show field state; React DevTools show which components re-render while typing. If the whole page re-renders per keystroke, you have a controlled field state too high in the tree.\n\n## In the interview\n**What they probe:** controlled vs uncontrolled trade-offs; validation placement (client for UX, server for truth); modern React 19 APIs; accessibility of errors.\n\n**A 60-second answer outline:**\n1. \"Controlled inputs make React the source of truth and re-render on every keystroke; uncontrolled ones let the DOM hold the value and are read on submit.\"\n2. \"For complex forms I use React Hook Form: uncontrolled registration, per-field subscriptions, field arrays, with a zod schema as the resolver.\"\n3. \"The same zod schema validates on the server, because client validation is only UX.\"\n4. \"For simple mutations in React 19 or Next.js I use a form action with useActionState for returned errors and useFormStatus for the pending button, which also progressively enhances.\"\n5. \"Errors are tied to inputs with aria-describedby and focus moves to the first invalid field.\"\n\n**Follow-ups to expect:**\n- \"Why does `useFormStatus` return `pending: false` in the component that renders the form?\"\n- \"How do you show server-side validation errors next to the right field?\"\n- \"How would you build a multi-step wizard with per-step validation?\"\n- \"What happens to input values after a successful form action?\"",
+      "keyPoints": [
+        "Controlled inputs re-render on every keystroke; uncontrolled inputs keep the value in the DOM and are read on submit",
+        "React Hook Form registers uncontrolled inputs and re-renders only for the form state you read",
+        "Share one zod schema between client and server; client validation is UX, server validation is the truth",
+        "React 19: form action functions, useActionState for returned state, useFormStatus inside the form for pending",
+        "Tie errors to inputs with aria-describedby, focus the first invalid field, and prevent double submits"
+      ],
+      "interview": [
+        "Controlled vs uncontrolled form inputs: how do they differ, and which would you pick for a large form?",
+        "How would you build a large form with React Hook Form and zod, and why that combination?",
+        "How do React 19 form actions, useActionState and useFormStatus change form handling?"
+      ],
+      "check": [
+        {
+          "q": "A form component renders `<form action={formAction}>` and calls useFormStatus() in that same component. What does `pending` report?",
+          "options": [
+            "The correct pending state",
+            "Always false, because useFormStatus reads the status of a parent form, so it must be called in a child",
+            "It throws an error",
+            "The pending state of the previous submission"
+          ],
+          "answer": 1,
+          "why": "useFormStatus returns the status of the form that contains the calling component; call it in a child such as a SubmitButton."
+        },
+        {
+          "q": "You validate a signup form with zod on the client using React Hook Form. What must the server do?",
+          "options": [
+            "Trust the payload because the client validated it",
+            "Only check that the request is JSON",
+            "Validate the payload again, ideally with the same schema",
+            "Re-run validation only in development"
+          ],
+          "answer": 2,
+          "why": "Client validation can be bypassed with any HTTP client. The server must validate every input; sharing the schema prevents drift."
+        },
+        {
+          "q": "In a list of removable email inputs, rows are keyed by array index. After removing the second row, the third row's typed value appears in the wrong input. Why?",
+          "options": [
+            "React Hook Form does not support removal",
+            "The form needs to be controlled",
+            "zod reorders arrays",
+            "Index keys shift after removal, so React reuses DOM nodes for different items; use a stable id such as field.id"
+          ],
+          "answer": 3,
+          "why": "With index keys, the element that used to be row 3 now has key 1 and reuses row 2's DOM input and its state."
+        }
+      ],
+      "resources": [
+        {
+          "title": "React docs: useActionState",
+          "url": "https://react.dev/reference/react/useActionState"
+        },
+        {
+          "title": "React docs: useFormStatus",
+          "url": "https://react.dev/reference/react-dom/hooks/useFormStatus"
+        },
+        {
+          "title": "React docs: form component and actions",
+          "url": "https://react.dev/reference/react-dom/components/form"
+        },
+        {
+          "title": "React Hook Form: useForm",
+          "url": "https://react-hook-form.com/docs/useform"
+        },
+        {
+          "title": "Zod documentation",
+          "url": "https://zod.dev"
+        },
+        {
+          "title": "Josh Comeau: Data binding in React",
+          "url": "https://www.joshwcomeau.com/react/data-binding/"
+        }
+      ]
+    },
+    {
+      "id": "st-url-state",
+      "track": "state-data",
+      "title": "URL state: search params, routing state and shareable links",
+      "minutes": 16,
+      "summary": "Put view state users expect to share or restore in the URL: parse and validate params, push vs replace, debounced search, server reads, and nuqs-style typed params.",
+      "body": "## The core idea\nThe URL is the oldest state container on the web, and for a large class of UI state it is the best one. If a user would reasonably expect **refresh, the back button, a bookmark or a pasted link** to bring them back to the same view, that state belongs in the URL: search query, filters, sort order, page, selected tab, open item id, map viewport, date range.\n\nPutting it anywhere else (useState, a store, localStorage) silently breaks things users rely on: they share a link to \"open bugs assigned to me, sorted by priority\" and the recipient sees the default list; they press back after opening an item and leave the page entirely. URL state also makes **server rendering** straightforward, because the server receives the state with the request.\n\n## What belongs in the URL\n| Belongs in the URL | Does not |\n| --- | --- |\n| Search text (after debounce), filters, sort, page or cursor | Secrets, tokens, personal data (URLs end up in logs, analytics, Referer headers and browser history) |\n| Selected tab or view mode when it is a meaningful \"place\" | Hover, focus, transient open/close of a tooltip |\n| Id of the open item, modal or drawer that should be linkable | Large blobs (whole form drafts, big JSON) |\n| Date range, map centre and zoom | High-frequency values (scroll position, slider while dragging) |\n\nTwo kinds of URL state:\n\n- **Path** for identity and hierarchy: `/projects/42/issues/1337`. Changing it is navigation to a different resource.\n- **Search params** for views of a resource: `/projects/42/issues?status=open&sort=-priority&page=2`. Changing them refines the same page.\n\n## How it actually works\n```text\nuser changes a filter\n      |\nserialize state -> URLSearchParams (\"status=open&sort=-priority\")\n      |\nhistory.replaceState / pushState  (or router.replace / router.push)\n      |                                   \\\nURL changes, no full page load             browser history entry added (push) or replaced (replace)\n      |\nrouter notifies subscribers -> components read params -> parse + validate -> render\n      |\n(optional) server re-renders with the new searchParams (Next.js non-shallow navigation)\n\nback button -> popstate -> router re-reads URL -> same parse path -> UI restored\n```\n\nKey decisions:\n\n- **push vs replace.** Push creates a history entry, so back undoes it. Replace changes the URL without an entry. Use **push** for discrete, meaningful changes (choosing a tab, applying a filter set, paginating) and **replace** for continuous ones (typing in a search box, dragging a map), otherwise the back button steps through every keystroke.\n- **Parse and validate on read.** URL params are untrusted user input. `?page=banana` or `?sort=drop table` must fall back to defaults, not crash.\n- **Canonical, minimal URLs.** Omit params equal to their default so the default view has a clean URL and caches well.\n\n## Real code: Next.js App Router without libraries\n```tsx\n\"use client\";\nimport { usePathname, useRouter, useSearchParams } from \"next/navigation\";\nimport { useTransition } from \"react\";\nimport { z } from \"zod\";\n\nconst Filters = z.object({\n  status: z.enum([\"all\", \"open\", \"closed\"]).catch(\"all\"),\n  sort: z.enum([\"-created\", \"created\", \"-priority\"]).catch(\"-created\"),\n  page: z.coerce.number().int().min(1).catch(1),\n});\ntype Filters = z.infer<typeof Filters>;\nconst DEFAULTS: Filters = { status: \"all\", sort: \"-created\", page: 1 };\n\nexport function useFilters() {\n  const params = useSearchParams();\n  const router = useRouter();\n  const pathname = usePathname();\n  const [isPending, startTransition] = useTransition();\n\n  const filters = Filters.parse(Object.fromEntries(params)); // .catch() makes bad values fall back\n\n  function setFilters(patch: Partial<Filters>, mode: \"push\" | \"replace\" = \"push\") {\n    const next = { ...filters, ...patch, ...(patch.page === undefined ? { page: 1 } : {}) }; // reset page on filter change\n    const sp = new URLSearchParams(params);\n    for (const [k, v] of Object.entries(next)) {\n      if (v === DEFAULTS[k as keyof Filters]) sp.delete(k);\n      else sp.set(k, String(v));\n    }\n    const url = sp.size ? `${pathname}?${sp}` : pathname;\n    startTransition(() => (mode === \"push\" ? router.push(url, { scroll: false }) : router.replace(url, { scroll: false })));\n  }\n  return { filters, setFilters, isPending };\n}\n```\n\nAnd on the server, the page reads the same params:\n\n```tsx\n// app/issues/page.tsx (Server Component). searchParams is a Promise in Next.js 15+.\nexport default async function IssuesPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {\n  const raw = await searchParams;\n  const filters = Filters.parse(raw);\n  const issues = await listIssues(filters);\n  return <IssueTable issues={issues} />;\n}\n```\n\nNotes:\n\n- Resetting `page` to 1 when a filter changes avoids \"page 7 of 2\" empty results.\n- `useTransition` keeps the old list visible (with a pending indicator) while the server renders the new one.\n- In the App Router, `router.push` with new search params re-renders Server Components for that route. If the change is purely client-side (for example, which column is highlighted), `window.history.replaceState(null, \"\", url)` updates the URL and Next's `useSearchParams` without a server round-trip; Next.js integrates native `pushState`/`replaceState` with its router.\n- `useSearchParams` in a statically rendered route makes the component render on the client up to the nearest `Suspense` boundary; wrap it in `Suspense` or the build warns.\n\n## nuqs-style patterns\nHand-rolling the parse/serialise/defaults code for every page gets repetitive. **nuqs** is a small library that makes a search param behave like `useState`, with typed parsers:\n\n```tsx\n\"use client\";\nimport { parseAsInteger, parseAsStringLiteral, parseAsString, useQueryStates } from \"nuqs\";\n\nconst statusValues = [\"all\", \"open\", \"closed\"] as const;\n\nexport function useIssueFilters() {\n  return useQueryStates(\n    {\n      q: parseAsString.withDefault(\"\"),\n      status: parseAsStringLiteral(statusValues).withDefault(\"all\"),\n      page: parseAsInteger.withDefault(1),\n    },\n    { history: \"push\" },\n  );\n}\n\n// in a component\nconst [{ q, status, page }, setFilters] = useIssueFilters();\nsetFilters({ status: \"open\", page: 1 });\n```\n\nDefaults worth knowing: nuqs uses `history: \"replace\"` unless you ask for push, updates are **shallow** by default in Next.js (client only, no Server Component re-render) unless you pass `shallow: false`, values equal to the default are removed from the URL by default (configurable), and URL writes are throttled because browsers rate-limit the History API. It also has server-side helpers to parse the same params in Server Components with the same parsers.\n\nTanStack Router takes the idea further: search params are declared per route with a validation schema and are fully typed in links and navigation.\n\n## Routing state beyond search params\n- **Modals as routes**: an issue drawer at `/issues?open=1337`, or with Next.js intercepting and parallel routes, `/issues/1337` that renders as a modal over the list when navigated from the list, and as a full page on refresh or direct visit. Users can share the link and the back button closes the modal.\n- **Scroll restoration**: the browser restores scroll on back/forward if content is ready; lists that load data async need cached data (a query cache helps) so the page height exists when restoration happens.\n- **Hash fragments** (`#section-3`) are never sent to the server; fine for in-page anchors, not for state the server must render.\n\n## Debouncing search\nTyping \"kubernetes\" should not create ten history entries or ten requests.\n\n```tsx\nconst [{ q }, setFilters] = useIssueFilters();\nconst [input, setInput] = useState(q);           // local, instant\nuseEffect(() => setInput(q), [q]);               // back button updates the box\nuseEffect(() => {\n  const t = setTimeout(() => { if (input !== q) setFilters({ q: input || null, page: 1 }); }, 300);\n  return () => clearTimeout(t);\n}, [input]);                                       // URL updates after 300 ms idle\n```\n\nThe input is local state for responsiveness; the URL is the committed state. On back/forward, the URL drives the input. Use `replace` for these updates.\n\n## Trade-offs and when not to use the URL\n- **Length**: browsers handle long URLs, but proxies, CDNs, logs and servers often cap request lines; keep URLs compact and avoid serialising large structures. If a filter set is huge, save it server-side and put its id in the URL.\n- **Privacy**: anything in the URL is visible in history, server logs, analytics and may leak via `Referer` to third parties (mitigated with a `Referrer-Policy`, but do not rely on it for secrets).\n- **Caching**: each distinct query string is a distinct cache key at the CDN; normalise param order and drop defaults to avoid fragmenting the cache.\n- **Server cost**: non-shallow updates in Next.js re-render on the server; use shallow updates for client-only state.\n- **SEO**: faceted URLs can create near-infinite crawlable pages; use canonical links and `noindex` on combinations you do not want indexed.\n\n## Common mistakes and debugging\n- **Duplicating URL state into useState** and letting them drift; read from the URL, keep local state only for the in-progress input.\n- **Not validating params** and crashing on `?page=-1`.\n- **Push on every keystroke**, making the back button useless.\n- **Forgetting to reset pagination** when filters change.\n- **Building query strings by concatenation** without encoding; always use `URLSearchParams`, which encodes values for you.\n- **Debugging**: watch the URL bar and the history stack (press back a few times); in DevTools, check whether filter changes fire a server request (Next.js RSC fetches show as `?_rsc=` requests) when you expected a client-only update.\n\n## In the interview\n**What they probe:** do you know which state belongs in the URL and why; can you handle push vs replace, validation, defaults, and SSR; do you know the privacy and caching implications.\n\n**A 60-second answer outline:**\n1. \"Anything a user expects refresh, back or a shared link to restore goes in the URL: filters, sort, pagination, selected item, tab.\"\n2. \"Path for identity, search params for views of that resource.\"\n3. \"I parse and validate params on read with defaults, drop default values from the URL, and reset pagination when filters change.\"\n4. \"Push for discrete changes so back works; replace and debounce for typing.\"\n5. \"The server reads the same params, so the first render is correct and the page is cacheable. In Next.js I use shallow updates for client-only state.\"\n6. \"No secrets or large blobs in the URL.\"\n\n**Follow-ups to expect:**\n- \"How do you make a modal linkable without breaking the back button?\"\n- \"How do you sync a debounced search box with the URL and with back/forward?\"\n- \"What are the downsides of putting state in the URL?\"\n- \"How do you type search params end to end?\" (zod or a nuqs or TanStack Router schema.)",
+      "keyPoints": [
+        "State that refresh, back or a shared link should restore belongs in the URL: filters, sort, page, selected item",
+        "Path for resource identity, search params for views of that resource",
+        "Treat params as untrusted input: parse, validate, fall back to defaults and drop defaults from the URL",
+        "Push for discrete changes, replace and debounce for continuous ones like typing",
+        "Never put secrets or large blobs in the URL; distinct query strings also fragment CDN caches"
+      ],
+      "interview": [
+        "Which state belongs in the URL, and why?",
+        "How do you sync filters with URL search params without breaking history or performance?"
+      ],
+      "check": [
+        {
+          "q": "A search box writes the query to the URL with history push on every keystroke. What is the user-visible problem?",
+          "options": [
+            "The back button steps through every partial query instead of leaving the search",
+            "The page cannot be refreshed",
+            "Search params are not sent to the server",
+            "The URL becomes invalid after 10 characters"
+          ],
+          "answer": 0,
+          "why": "Each push adds a history entry. Use replace and debounce for continuous input, push for discrete changes."
+        },
+        {
+          "q": "A user opens `/issues?page=abc`. What should the app do?",
+          "options": [
+            "Throw an error page",
+            "Pass 'abc' to the database query",
+            "Parse and validate the param, falling back to page 1",
+            "Redirect to the home page"
+          ],
+          "answer": 2,
+          "why": "URL params are untrusted input; validate and fall back to defaults so bad links still render a sensible view."
+        },
+        {
+          "q": "Which value should NOT be stored in URL search params?",
+          "options": [
+            "The selected sort order",
+            "The id of an open issue drawer",
+            "The current page number",
+            "A password-reset token for later reuse in the app"
+          ],
+          "answer": 3,
+          "why": "URLs end up in history, logs, analytics and Referer headers, so secrets and tokens must not live there as app state."
+        }
+      ],
+      "resources": [
+        {
+          "title": "MDN: URLSearchParams",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/URLSearchParams"
+        },
+        {
+          "title": "MDN: History API",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/History_API"
+        },
+        {
+          "title": "Next.js docs: useSearchParams",
+          "url": "https://nextjs.org/docs/app/api-reference/functions/use-search-params"
+        },
+        {
+          "title": "nuqs: type-safe search params state",
+          "url": "https://nuqs.dev"
+        },
+        {
+          "title": "TanStack Router: Search params",
+          "url": "https://tanstack.com/router/latest/docs/guide/search-params"
+        }
+      ]
+    },
+    {
+      "id": "st-optimistic-realtime",
+      "track": "state-data",
+      "title": "Optimistic updates, real-time data and conflict handling",
+      "minutes": 22,
+      "summary": "Make apps feel instant and live: the optimistic update lifecycle and rollback, useOptimistic, choosing polling, SSE or WebSockets, merging events into a cache and resolving conflicts.",
+      "body": "## The core idea\nTwo techniques make an app feel instant and alive:\n\n- **Optimistic updates**: show the result of a user's action immediately, assuming the server will accept it, and roll back if it does not. Dragging a card, liking a post, ticking a todo should not wait 300 ms for a round-trip.\n- **Real-time updates**: push other people's changes (and server-side events) to the client as they happen, instead of waiting for a refresh.\n\nBoth mean the client's view is temporarily **ahead of or behind the server**. The engineering is in reconciling those views: rolling back cleanly, not letting a stale refetch overwrite a pending change, merging pushed events into the cache, and deciding what happens when two people edit the same thing.\n\n## Optimistic updates: the lifecycle\n```text\nuser drags card A to \"Done\"\n   |\n1. cancel in-flight fetches of the board (so an old response cannot overwrite us)\n2. snapshot current cache value               prev = board\n3. write the optimistic value                  board' = move(A, Done)  -> UI updates now\n4. send the mutation                           POST /cards/A/move\n   |\n   +-- success -> 5a. (optionally) write the server's response\n   |\n   +-- error   -> 5b. restore snapshot (board = prev), show a toast with retry\n   |\n6. settle: invalidate/refetch the board to converge with the server's truth\n```\n\nWhy each step exists:\n\n- **Cancel** stops a refetch that started before the mutation from landing afterwards with pre-mutation data and making the card jump back.\n- **Snapshot** is what you roll back to. With several concurrent mutations, rolling back to an old snapshot can also undo a later successful change; the settle refetch repairs that.\n- **Settle** makes the server the final authority. The server may have applied the change differently (for example, recomputed an order).\n\n### With TanStack Query\n```ts\nfunction useMoveCard(boardId: string) {\n  const qc = useQueryClient();\n  const key = [\"board\", boardId] as const;\n  return useMutation({\n    mutationKey: [\"moveCard\", boardId],\n    mutationFn: (m: { cardId: string; toColumn: string; position: string }) =>\n      api.post(`/cards/${m.cardId}/move`, m),\n    onMutate: async (m) => {\n      await qc.cancelQueries({ queryKey: key });\n      const prev = qc.getQueryData<Board>(key);\n      qc.setQueryData<Board>(key, (b) => (b ? moveCard(b, m) : b));\n      return { prev };\n    },\n    onError: (_err, _m, ctx) => {\n      if (ctx?.prev) qc.setQueryData(key, ctx.prev);\n      toast.error(\"Could not move the card. It has been put back.\");\n    },\n    onSettled: () => {\n      // with several moves in flight, only refetch when the last one settles\n      if (qc.isMutating({ mutationKey: [\"moveCard\", boardId] }) === 1) {\n        return qc.invalidateQueries({ queryKey: key });\n      }\n    },\n  });\n}\n```\n\nThe `isMutating(...) === 1` check comes from TkDodo's \"Concurrent Optimistic Updates in React Query\": if you invalidate after every mutation while others are still pending, the refetch can return a state that does not include the in-flight moves, and cards flicker. Waiting for the last one avoids that.\n\nA lighter variant for a single place in the UI: skip the cache write and render `mutation.variables` while `isPending` (for example, show the new comment greyed out at the bottom of the list). Nothing to roll back, because nothing in the cache changed.\n\n### With React 19 useOptimistic\n`useOptimistic(state, updateFn)` returns a value that equals `state` normally, but while an action or transition is pending, shows the result of applying your optimistic updates on top. When the action finishes, the optimistic layer is discarded and the component shows whatever `state` now is.\n\n```tsx\n\"use client\";\nimport { useOptimistic, startTransition } from \"react\";\n\nexport function Comments({ comments, addComment }: { comments: Comment[]; addComment: (text: string) => Promise<void> }) {\n  const [optimistic, addOptimistic] = useOptimistic(\n    comments,\n    (current, text: string) => [...current, { id: `temp-${crypto.randomUUID()}`, text, pending: true }],\n  );\n\n  async function submit(formData: FormData) {\n    const text = String(formData.get(\"text\"));\n    addOptimistic(text);          // must run inside an action or transition\n    await addComment(text);       // Server Action; revalidation brings the real list as `comments`\n  }\n\n  return (\n    <>\n      <ul>{optimistic.map((c) => <li key={c.id} aria-busy={c.pending}>{c.text}</li>)}</ul>\n      <form action={submit}><input name=\"text\" /><button>Post</button></form>\n    </>\n  );\n}\n```\n\nRollback is automatic: if `addComment` throws, the transition ends, the optimistic layer disappears and the list reverts to `comments`. You still need to surface the error (an error boundary or caught error shown to the user). Calling the setter outside a transition logs a warning and the optimistic value is not shown as intended; wrap manual calls in `startTransition`.\n\n### When not to be optimistic\n- Actions with **low success probability** or **important side effects**: payments, sending email, deleting an account. Show a pending state instead.\n- Results the client **cannot predict**: a server-assigned price, a moderation decision.\n- When rollback would be confusing: a list re-sorted around an optimistic item that then vanishes.\n\n## Real-time transport: polling, SSE, WebSockets\n| | Polling | Server-sent events (SSE) | WebSockets |\n| --- | --- | --- | --- |\n| Direction | client pulls | server to client | both ways |\n| Protocol | plain HTTP | HTTP response that stays open, `text/event-stream` | upgraded TCP connection (`ws`/`wss`) |\n| Reconnect | n/a | built into `EventSource`, resumes with `Last-Event-ID` | you implement it (backoff, heartbeats) |\n| Data | anything | UTF-8 text | text or binary |\n| Infra | trivial, cacheable | works through most HTTP infra; watch proxy buffering and timeouts | needs load balancers and servers that hold long-lived connections; sticky or shared pub/sub |\n| Good for | dashboards refreshed every 30 s, low-frequency data | notifications, feeds, progress, LLM token streaming | chat, collaborative editing, games, presence |\n\nMDN's SSE guide notes a real constraint: over HTTP/1.1, browsers allow only about six connections per domain, shared across tabs, so several tabs each holding an `EventSource` can starve other requests. HTTP/2 multiplexes streams over one connection and largely removes that problem.\n\nServerless platforms often cannot hold WebSockets; there you use SSE with short-lived connections, a managed real-time service, or polling.\n\n```ts\n// SSE into TanStack Query: events carry ids, the cache is updated or invalidated\nuseEffect(() => {\n  const es = new EventSource(`/api/boards/${boardId}/events`);\n  es.addEventListener(\"card.updated\", (e) => {\n    const card = JSON.parse((e as MessageEvent).data) as Card;\n    qc.setQueryData<Board>([\"board\", boardId], (b) => (b ? upsertCard(b, card) : b));\n  });\n  es.addEventListener(\"board.changed\", () => qc.invalidateQueries({ queryKey: [\"board\", boardId] }));\n  return () => es.close();\n}, [boardId, qc]);\n```\n\nTkDodo's \"Using WebSockets with React Query\" describes the two strategies: **push invalidation** (the event says \"board 42 changed\", the client refetches; simple and always correct) and **push data** (the event carries the new entity, the client writes it with `setQueryData`; fewer requests but you must handle ordering). When the socket drives freshness, set a high `staleTime` so focus refetches do not fight the stream, and **refetch on reconnect**, because events sent while disconnected are lost unless your protocol replays them.\n\n## Merging events safely\n- **Ordering**: events can arrive out of order or duplicated. Give every entity a monotonically increasing `version` (or server timestamp from one clock) and ignore events older than what you have.\n- **Echoes**: your own mutation comes back as an event. Tag mutations with a client-generated id and ignore your own echoes, or make applying them idempotent.\n- **Gaps**: after reconnect, either replay from the last event id (SSE `Last-Event-ID`, a server-side event log) or refetch the whole resource.\n- **Pending local changes**: if an event arrives for a card you are optimistically moving, decide who wins (usually: keep the pending local change until your mutation settles, then accept the server state).\n\n## Conflict handling\nTwo users edit the same card at once. Options, from simplest to most capable:\n\n1. **Last write wins (LWW)**: the later write overwrites. Simple; silently loses the other edit. Acceptable for low-stakes fields, or per field rather than per document (Figma's multiplayer post explains they resolve conflicts per property with the server as the authority, so two people changing different properties of the same object do not clash).\n2. **Optimistic concurrency control**: each entity has a version or ETag. The client sends `If-Match: \"v7\"`; if the server's version is now v8, it rejects with `412 Precondition Failed` (or 409), and the client refetches and either reapplies or asks the user. Nothing is lost; users occasionally see \"this card changed, review\".\n3. **Merge**: field-level merge (title from A, description from B), or three-way merge against the common base.\n4. **OT or CRDTs** for collaborative text and structures where everyone edits simultaneously (Google Docs uses operational transformation; Yjs and Automerge are CRDT libraries). Covered in the offline and sync lesson.\n\n**Ordering lists** is a special conflict: if two users insert cards at \"position 3\" using integer indices, every insert renumbers the column. **Fractional indexing** (Figma's \"Realtime Editing of Ordered Sequences\") gives each item a sortable key between its neighbours (`\"a0\"`, `\"a0V\"`, `\"a1\"`), so a move updates one row and concurrent inserts rarely conflict.\n\n## Common mistakes and debugging\n- **Forgetting `cancelQueries`**: the card snaps back when an older refetch lands.\n- **Rolling back without telling the user**: changes silently disappear. Always surface the failure.\n- **Temp ids leaking**: an optimistic item with `temp-123` gets edited before the server returns the real id. Map temp ids to real ids, or queue edits until creation settles.\n- **No reconnect strategy**: a laptop sleeps, the socket dies, and the board is silently stale for hours. Heartbeats, backoff with jitter, and refetch on reconnect.\n- **Pushing whole documents on every keystroke** over the socket instead of small operations.\n- **Debugging**: simulate failures (DevTools request blocking or an MSW handler returning 500), throttle the network to \"Slow 4G\" to see optimistic states, and the Network panel's EventStream / WS message views to inspect events.\n\n## In the interview\n**What they probe:** the optimistic lifecycle and its race conditions; choosing a transport with reasons; merging pushed events into a cache; conflict strategies and their costs.\n\n**A 60-second answer outline:**\n1. \"Optimistic update: cancel in-flight fetches, snapshot, write the expected state, send the mutation, roll back and notify on error, and invalidate on settle so the server stays the source of truth.\"\n2. \"In React 19, useOptimistic layers the optimistic value over real state during an action and reverts automatically.\"\n3. \"For live updates I pick polling for low-frequency data, SSE for server-to-client streams with built-in reconnect, WebSockets for bidirectional low-latency work like chat or collaboration.\"\n4. \"Events update or invalidate the query cache; I use versions to drop stale events, ignore my own echoes and refetch after reconnect.\"\n5. \"For conflicts: last-write-wins per field for low stakes, version checks with If-Match for important records, CRDTs or OT for true co-editing.\"\n\n**Follow-ups to expect:**\n- \"Two optimistic moves are in flight and the first fails. What does the user see?\"\n- \"How would you scale WebSocket servers horizontally?\" (Pub/sub fan-out such as Redis, sticky sessions or connection-aware routing.)\n- \"How does SSE resume after a dropped connection?\"\n- \"How do you order cards so concurrent moves do not renumber the column?\"",
+      "keyPoints": [
+        "Optimistic lifecycle: cancel in-flight fetches, snapshot, write, mutate, roll back and notify on error, invalidate on settle",
+        "useOptimistic shows an optimistic layer during an action and reverts automatically when it ends",
+        "Polling for low-frequency data, SSE for server-to-client streams with auto reconnect, WebSockets for bidirectional",
+        "Merge pushed events with versions, ignore your own echoes and refetch after reconnect to fill gaps",
+        "Conflicts: last-write-wins per field, version checks with If-Match, or CRDTs and OT for co-editing"
+      ],
+      "interview": [
+        "Walk through an optimistic update with a server-state cache: how do you apply it, roll it back and reconcile?",
+        "When would you choose WebSockets, server-sent events or polling for live updates?",
+        "How do you handle conflicting edits when two users change the same item in real time?",
+        "How do you merge real-time events into a client-side query cache safely?"
+      ],
+      "check": [
+        {
+          "q": "After an optimistic card move, the card briefly jumps back to its old column before settling in the new one. What is the most likely cause?",
+          "options": [
+            "The mutation succeeded too quickly",
+            "useOptimistic is not supported for drag and drop",
+            "A refetch started before the mutation resolved with old data; onMutate should cancel in-flight queries",
+            "staleTime is too high"
+          ],
+          "answer": 2,
+          "why": "An in-flight refetch returns pre-mutation data and overwrites the optimistic value. cancelQueries in onMutate prevents it."
+        },
+        {
+          "q": "A dashboard needs a server-to-client stream of notifications with automatic reconnection and resume, running behind ordinary HTTP infrastructure. Which transport fits best?",
+          "options": [
+            "Server-sent events with EventSource",
+            "WebSockets",
+            "Polling every 100 ms",
+            "WebRTC data channels"
+          ],
+          "answer": 0,
+          "why": "SSE is one-way server to client over HTTP, and EventSource reconnects automatically and resumes with Last-Event-ID."
+        },
+        {
+          "q": "A client updates a record with `If-Match: \"v7\"` but the server's current version is v8. What should the server do?",
+          "options": [
+            "Apply the update and set version v9",
+            "Silently ignore the request",
+            "Return 200 with the old data",
+            "Reject with 412 Precondition Failed so the client can refetch and resolve the conflict"
+          ],
+          "answer": 3,
+          "why": "Optimistic concurrency control rejects writes based on a stale version, preventing a silent lost update."
+        }
+      ],
+      "resources": [
+        {
+          "title": "TanStack Query: Optimistic updates",
+          "url": "https://tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates"
+        },
+        {
+          "title": "TkDodo: Concurrent optimistic updates in React Query",
+          "url": "https://tkdodo.eu/blog/concurrent-optimistic-updates-in-react-query"
+        },
+        {
+          "title": "React docs: useOptimistic",
+          "url": "https://react.dev/reference/react/useOptimistic"
+        },
+        {
+          "title": "TkDodo: Using WebSockets with React Query",
+          "url": "https://tkdodo.eu/blog/using-web-sockets-with-react-query"
+        },
+        {
+          "title": "MDN: Using server-sent events",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events"
+        },
+        {
+          "title": "Figma: How Figma's multiplayer technology works",
+          "url": "https://www.figma.com/blog/how-figmas-multiplayer-technology-works/"
+        }
+      ]
+    },
+    {
+      "id": "st-offline-sync",
+      "track": "state-data",
+      "title": "Offline and sync: IndexedDB, service workers, background sync and CRDTs",
+      "minutes": 22,
+      "summary": "Build apps that work without the network: IndexedDB and storage limits, service worker caching, an idempotent outbox with background sync, local-first ideas and what CRDTs do and do not guarantee.",
+      "body": "## The core idea\nMost web apps treat the network as always there: every read is a request, every write waits for the server. Offline-capable apps flip that: the **client has its own durable copy of the data**, reads come from it instantly, writes go to it first and **sync** to the server when possible. This is what makes Linear, Figma, Notion's offline mode and good PWAs feel fast even on bad connections.\n\nThe building blocks in the browser are:\n\n- **IndexedDB** for structured data on the device.\n- **Service workers** to serve the app shell and cached responses without the network, and to intercept requests.\n- **Cache Storage** for HTTP responses (HTML, JS, CSS, images, API responses).\n- **Background Sync** (Chromium only) to retry queued writes after connectivity returns, even if the tab closed.\n- A **sync protocol**: an outbox of pending mutations plus a way to pull changes, or a **CRDT** that merges concurrent edits automatically.\n\nThe hard part is not storing data; it is **sync and conflict resolution**.\n\n## Browser storage, compared\n| | localStorage | IndexedDB | Cache Storage |\n| --- | --- | --- | --- |\n| API | synchronous, strings only | asynchronous, transactional, structured clone (objects, Blobs, Dates) | asynchronous, Request/Response pairs |\n| Size | about 5 MB per origin | large: a share of free disk (see web.dev \"Storage for the web\" for current limits) | same quota pool as IndexedDB |\n| Available in workers | no | yes | yes |\n| Use for | tiny preferences, a theme flag | app data, outbox, drafts, large lists | app shell, static assets, cached API responses |\n\n`localStorage` blocks the main thread on every read and write and is shared across tabs with only a `storage` event for coordination. Use it for a few small values only.\n\n**Eviction is real.** Storage is \"best-effort\" by default: under disk pressure the browser can delete an origin's data. Call `navigator.storage.persist()` to request persistent storage (Chromium grants it based on engagement heuristics, Firefox asks the user) and `navigator.storage.estimate()` to see usage. Safari, as WebKit documented in 2020, caps all script-writable storage for sites the user has not interacted with in seven days of browser use, except for web apps added to the home screen. So never treat the device as the only copy of important data; it is a cache with a sync queue.\n\n## How an offline-first app works\n```text\n                 UI (React)\n                    |  reads / subscribes          writes\n                    v                                 |\n            local store (IndexedDB)  <----------------+\n              |   tables: cards, columns                 also appends to\n              |   outbox: [{id, op, payload, ts}]  <------ outbox\n              |\n        sync engine (in a worker or the page)\n              | push: send outbox ops (idempotent, with client op ids)\n              | pull: GET /changes?since=cursor -> apply to local tables\n              v\n          server (source of truth for ordering and auth)\n\n  service worker: serves app shell from Cache Storage when offline,\n                  optionally triggers Background Sync to flush the outbox\n```\n\nStep by step for \"move card while offline\":\n\n1. The UI writes the move to the local `cards` table and appends `{ opId, type: \"moveCard\", cardId, toColumn, position }` to the outbox, in **one IndexedDB transaction** so they cannot diverge.\n2. The UI re-renders from local data. The user sees the move instantly; nothing is \"optimistic\" from the UI's point of view, because the local store is the UI's source of truth.\n3. When online, the sync engine sends pending ops in order. Each has a client-generated `opId`, and the server stores processed ids, so a retried request is not applied twice (an **idempotency key**).\n4. The server applies, assigns a server version, and responds. The engine removes acked ops from the outbox.\n5. The engine pulls changes since its last cursor and applies them, rebasing any still-pending local ops on top (the pattern Replicache popularised: server state plus replayed pending mutations).\n\nLinear has described their sync engine publicly: the client holds a local object graph in IndexedDB, mutations are sent as transactions, and the server broadcasts deltas with increasing sync ids that clients apply in order.\n\n## Real code: IndexedDB with an outbox\nUsing Jake Archibald's `idb` wrapper, which turns IndexedDB's event API into promises:\n\n```ts\nimport { openDB, type DBSchema } from \"idb\";\n\ninterface BoardDB extends DBSchema {\n  cards: { key: string; value: Card; indexes: { byColumn: string } };\n  outbox: { key: string; value: { opId: string; type: \"moveCard\"; payload: MoveCard; createdAt: number } };\n  meta: { key: string; value: string };\n}\n\nconst dbPromise = openDB<BoardDB>(\"board\", 2, {\n  upgrade(db, oldVersion) {\n    if (oldVersion < 1) {\n      db.createObjectStore(\"cards\", { keyPath: \"id\" }).createIndex(\"byColumn\", \"columnId\");\n      db.createObjectStore(\"meta\");\n    }\n    if (oldVersion < 2) db.createObjectStore(\"outbox\", { keyPath: \"opId\" });\n  },\n});\n\nexport async function moveCardLocal(m: MoveCard) {\n  const db = await dbPromise;\n  const tx = db.transaction([\"cards\", \"outbox\"], \"readwrite\");\n  const card = await tx.objectStore(\"cards\").get(m.cardId);\n  if (!card) throw new Error(\"unknown card\");\n  await tx.objectStore(\"cards\").put({ ...card, columnId: m.toColumn, position: m.position });\n  await tx.objectStore(\"outbox\").put({ opId: crypto.randomUUID(), type: \"moveCard\", payload: m, createdAt: Date.now() });\n  await tx.done; // both writes commit or neither does\n}\n\nexport async function flushOutbox() {\n  const db = await dbPromise;\n  const ops = (await db.getAll(\"outbox\")).sort((a, b) => a.createdAt - b.createdAt);\n  for (const op of ops) {\n    const res = await fetch(\"/api/ops\", {\n      method: \"POST\",\n      headers: { \"content-type\": \"application/json\", \"idempotency-key\": op.opId },\n      body: JSON.stringify(op),\n    });\n    if (res.status >= 500) break;                 // retry later, keep order\n    if (res.ok || res.status === 409) await db.delete(\"outbox\", op.opId); // 409: server rejected; pull will correct us\n  }\n}\n```\n\nNotes: the schema is **versioned** (`upgrade` runs migrations by version, just like a server database), and IndexedDB transactions auto-commit when there are no pending requests, so do not `await` unrelated network calls in the middle of one.\n\n## Service workers and Background Sync\nA service worker is a script that sits between the page and the network. It can serve the app shell from Cache Storage so the app opens with no connection, and apply caching strategies per route. The web.dev \"Offline Cookbook\" by Jake Archibald is the classic catalogue:\n\n- **Cache first** for versioned static assets (hashed JS and CSS).\n- **Network first, falling back to cache** for HTML and API data that should be fresh when possible.\n- **Stale-while-revalidate** for things like avatars: serve cached, update in the background.\n\n```ts\n// in the page: queue a sync when a write is made offline\nconst reg = await navigator.serviceWorker.ready;\nif (\"sync\" in reg) await (reg as ServiceWorkerRegistration & { sync: { register(tag: string): Promise<void> } }).sync.register(\"flush-outbox\");\nelse window.addEventListener(\"online\", () => flushOutbox(), { once: true });\n\n// in the service worker\nself.addEventListener(\"sync\", (event) => {\n  if (event.tag === \"flush-outbox\") event.waitUntil(flushOutbox()); // the browser retries if this rejects\n});\n```\n\nBackground Sync is supported in Chromium-based browsers only; Safari and Firefox need the fallback: flush on the `online` event, on app start and on an interval while open. Workbox (Google's service worker library) wraps routing, caching strategies, precaching and a background-sync queue plugin.\n\nService worker pitfalls: a new version waits until all tabs of the old one close unless you `skipWaiting`, and skipping waiting while old pages are open can serve them mismatched assets. Ship an \"update available, reload\" prompt instead of forcing it.\n\n## Local-first and CRDTs\nThe Ink & Switch essay \"Local-first software\" (Kleppmann, Wiggins, van Hardenberg, McGranaghan, 2019) argues for apps where the primary copy lives on the user's device, work happens offline, collaboration is real-time when online, and the server is a helper rather than a gatekeeper. The enabling technology is **CRDTs** (conflict-free replicated data types): data structures designed so that replicas that have seen the same set of operations converge to the same state, regardless of order, without a central coordinator.\n\nSimple CRDTs, to build intuition:\n\n- **G-Counter** (grow-only counter): each replica keeps its own count; merge takes the max per replica; value is the sum. Concurrent increments never get lost.\n- **LWW-Register**: each write carries a timestamp (plus replica id as a tie-breaker); merge keeps the latest. Converges, but concurrent writes still lose one value.\n- **OR-Set** (observed-remove set): adds are tagged with unique ids; a remove only removes the tags it has seen, so a concurrent add survives.\n- **Sequence CRDTs** (RGA, Yjs's YATA): each inserted character or list item gets a unique id and a reference to its neighbour, so concurrent inserts at the same position interleave deterministically. This is what makes collaborative text editors possible.\n\nLibraries: **Yjs** (very fast, widely used in editors such as Tiptap and BlockNote, with network providers for WebSocket and WebRTC), and **Automerge** (a JSON-like document CRDT; the design is described in Kleppmann and Beresford's paper \"A Conflict-Free Replicated JSON Datatype\").\n\nCosts that interviewers like to hear:\n\n- **Metadata overhead**: ids and tombstones for deleted items make documents larger than the plain data; libraries compress heavily but it is not free.\n- **Convergence is not correctness**: a CRDT guarantees everyone sees the same result, not that the result makes sense (two people both moving the same card to different columns: one wins; an invariant like \"column limit 5\" can be violated). Kleppmann's talk \"CRDTs: The Hard Parts\" covers these cases.\n- **Authorisation and validation** are harder when the server is not the gatekeeper; many production systems keep the server authoritative and use CRDTs only for collaborative content.\n\nAlternatives to rolling your own: sync engines such as Replicache/Zero, ElectricSQL and PowerSync sync a subset of a Postgres database to the client with a local query layer.\n\n## Trade-offs and when not to go offline-first\n- Offline-first is a **large architectural commitment**: local schema migrations, sync protocol, conflict UX, multi-tab coordination (Web Locks or `BroadcastChannel` so only one tab runs the sync loop), storage eviction, and security of data at rest on shared devices.\n- For most CRUD apps, a query cache with persistence (TanStack Query's persisters) plus a small offline outbox for a few critical actions is enough.\n- Do not go offline for data that must be authoritative in real time: inventory counts at checkout, bank balances, auctions.\n\n## Common mistakes and debugging\n- **Writing to the local store and the outbox in separate transactions**: a crash between them loses or duplicates an op.\n- **Non-idempotent sync endpoints**: retries apply a mutation twice.\n- **Ignoring order**: replaying \"rename\" before \"create\".\n- **Unbounded outboxes and caches** filling the quota; handle `QuotaExceededError`.\n- **Assuming Background Sync exists everywhere.**\n- **Debugging**: Chrome DevTools Application panel shows IndexedDB contents, Cache Storage, service worker status (update, skip waiting, bypass for network) and lets you simulate offline; \"Clear site data\" resets everything. Test with the network toggled mid-operation and with two tabs open.\n\n## In the interview\n**What they probe:** whether you know the browser primitives and their limits; whether you can design an outbox with idempotency and ordering; whether you understand CRDTs well enough to name their guarantees and costs.\n\n**A 60-second answer outline:**\n1. \"A service worker caches the app shell so the app opens offline; data lives in IndexedDB, which the UI reads from.\"\n2. \"Writes update local tables and append to an outbox in one transaction; a sync loop sends ops in order with idempotency keys and pulls server changes since a cursor, rebasing pending ops.\"\n3. \"Background Sync flushes the outbox in Chromium; elsewhere I flush on `online` and app start.\"\n4. \"Conflicts: server-authoritative with versions for records, CRDTs like Yjs or Automerge for collaborative content, which converge without coordination but carry metadata and do not enforce invariants.\"\n5. \"I request persistent storage and still treat the device as a cache, because browsers can evict data.\"\n\n**Follow-ups to expect:**\n- \"How do you stop two tabs from both flushing the outbox?\" (Web Locks API, or leader election over BroadcastChannel.)\n- \"What does a CRDT guarantee, and what does it not?\"\n- \"How do you migrate the IndexedDB schema for users who were offline during a deploy?\"\n- \"Where would you put the conflict UI for a card edited offline by two people?\"",
+      "keyPoints": [
+        "localStorage is small and synchronous; IndexedDB holds structured app data; Cache Storage holds HTTP responses",
+        "Storage can be evicted (and Safari caps it for inactive sites); request persistence and treat the device as a cache",
+        "Write local tables and the outbox in one transaction; sync ops in order with idempotency keys, then pull and rebase",
+        "Background Sync is Chromium only; fall back to flushing on online and on app start",
+        "CRDTs converge without coordination but add metadata and do not enforce invariants; many apps keep the server authoritative"
+      ],
+      "interview": [
+        "How would you make a web app work offline?",
+        "What is local-first software, and how do CRDTs help?",
+        "localStorage vs IndexedDB vs Cache Storage: when do you use each?"
+      ],
+      "check": [
+        {
+          "q": "Why should a local write and its outbox entry be stored in the same IndexedDB transaction?",
+          "options": [
+            "IndexedDB requires it",
+            "It is faster than two transactions",
+            "It enables Background Sync",
+            "So a crash or error cannot leave the UI showing a change that will never be synced, or sync a change the UI never showed"
+          ],
+          "answer": 3,
+          "why": "A single transaction commits both writes or neither, keeping local state and the pending-sync queue consistent."
+        },
+        {
+          "q": "What does a CRDT guarantee?",
+          "options": [
+            "Replicas that have received the same operations converge to the same state, regardless of delivery order",
+            "No user's edit is ever overwritten",
+            "Application invariants such as column limits always hold",
+            "Edits are applied in wall-clock order"
+          ],
+          "answer": 0,
+          "why": "CRDTs guarantee convergence. They do not guarantee every edit is preserved (an LWW register drops one) or that business invariants hold."
+        },
+        {
+          "q": "An app queues writes offline and relies on the Background Sync API to flush them. Which users will have problems?",
+          "options": [
+            "Chrome users on Android",
+            "Edge users on Windows",
+            "Safari and Firefox users, because Background Sync is Chromium only",
+            "None; it is supported everywhere"
+          ],
+          "answer": 2,
+          "why": "Background Sync ships only in Chromium-based browsers. Other browsers need a fallback such as flushing on the online event and at app start."
+        }
+      ],
+      "resources": [
+        {
+          "title": "web.dev: Storage for the web",
+          "url": "https://web.dev/articles/storage-for-the-web"
+        },
+        {
+          "title": "web.dev: The offline cookbook",
+          "url": "https://web.dev/articles/offline-cookbook"
+        },
+        {
+          "title": "MDN: Background Synchronization API",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/Background_Synchronization_API"
+        },
+        {
+          "title": "Ink & Switch: Local-first software",
+          "url": "https://www.inkandswitch.com/local-first/"
+        },
+        {
+          "title": "Martin Kleppmann: CRDTs, the hard parts",
+          "url": "https://martin.kleppmann.com/2020/07/06/crdt-hard-parts-hydra.html"
+        },
+        {
+          "title": "Kleppmann and Beresford: A Conflict-Free Replicated JSON Datatype",
+          "url": "https://arxiv.org/abs/1608.03960"
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "slug": "realtime-kanban",
+      "title": "Real-time collaborative Kanban board with offline support",
+      "level": "advanced",
+      "hours": 50,
+      "stack": [
+        "Next.js App Router + TypeScript",
+        "TanStack Query",
+        "Zustand",
+        "PostgreSQL",
+        "Server-sent events or WebSockets",
+        "IndexedDB (idb)",
+        "zod",
+        "Playwright"
+      ],
+      "summary": "A multi-user Kanban board (think a small Trello or Linear) where card moves are instant and optimistic, other users' changes stream in live, filters live in the URL, and edits made offline sync and resolve conflicts when the connection returns.",
+      "why": "It exercises every state category in one product: server cache, URL state, forms, shared client state, optimistic updates, real-time events, offline queues and conflict resolution. Hiring managers can open two browser windows, drag cards, pull the network cable and watch it converge, which demonstrates judgement about consistency trade-offs that most portfolio CRUD apps never touch.",
+      "architecture": "```text\n Browser tab                                              Server (Next.js)\n +--------------------------------------------+           +-----------------------------+\n | UI: columns, cards, drawer, filters (URL)  |           | Route handlers / Actions    |\n |   | useQuery(select)     | useMutation     |  HTTPS    |  zod + auth + versions      |\n |   v                      v                 | --------> |  UPDATE ... WHERE version   |\n | TanStack Query cache  <- optimistic writes |           |            |                |\n |   ^            ^                           |           |            v                |\n |   | events     | hydrate/persist           |  SSE      | Postgres: cards, columns,   |\n | EventSource    IndexedDB (board + outbox)  | <-------- |   board_events (id, opId)   |\n |                  ^ flush (Web Locks)       |           | fan-out (pub/sub per board) |\n | Service worker: app shell, Background Sync |           +-----------------------------+\n +--------------------------------------------+\n```\n\nKey decisions:\n\n- **One client copy of server data**: the query cache. Optimistic writes, live events and offline replays all write into it.\n- **Server is authoritative** for versions and event order; clients drop events older than their cached version and ignore their own echoes by `opId`.\n- **Fractional position keys** so a move is a single-row update.\n- **Versions plus 409** for card edits, last-write-wins for moves.\n- **IndexedDB outbox** with idempotency keys; one tab syncs at a time.",
+      "lessons": [
+        "st-state-taxonomy",
+        "st-server-state",
+        "st-url-state",
+        "st-forms-state",
+        "st-optimistic-realtime",
+        "st-offline-sync",
+        "st-redux-zustand"
+      ],
+      "milestones": [
+        {
+          "id": "m1",
+          "title": "Data model, API and server-rendered board",
+          "details": [
+            "Postgres tables for boards, columns, cards (with version and fractional position key) and an append-only board_events log",
+            "Route handlers or Server Actions with zod validation and auth for create, update, move and delete",
+            "Done when a seeded board renders on the server with cards ordered by position and every write bumps the card version"
+          ]
+        },
+        {
+          "id": "m2",
+          "title": "Client cache and URL filters",
+          "details": [
+            "Hydrate the board into TanStack Query with a query key factory and a non-zero staleTime",
+            "Filters (assignee, label, search) and the open card id live in search params with validation and defaults",
+            "Done when a filtered URL pasted into a new window shows the same view and back closes the card drawer"
+          ]
+        },
+        {
+          "id": "m3",
+          "title": "Optimistic drag and drop",
+          "details": [
+            "Keyboard-accessible drag and drop that computes a fractional index between neighbours",
+            "onMutate cancels queries, snapshots and applies the move; onError rolls back with a toast; settle invalidates only after the last pending move",
+            "Done when moves feel instant with network throttled to Slow 4G and a forced 500 puts the card back with a message"
+          ]
+        },
+        {
+          "id": "m4",
+          "title": "Live updates between users",
+          "details": [
+            "SSE (or WebSocket) endpoint streaming board events with monotonically increasing ids and resume via Last-Event-ID",
+            "Client applies events with setQueryData, ignores its own echoes by client op id and drops events older than the cached version",
+            "Done when two windows converge within [N] ms and a reconnect after sleep refetches or replays missed events"
+          ]
+        },
+        {
+          "id": "m5",
+          "title": "Conflict handling",
+          "details": [
+            "Card edits send the expected version; the server returns 409 with the current card when it is stale",
+            "Field-level merge for non-overlapping edits and a compare dialog when the same field changed",
+            "Done when a scripted test of two simultaneous title edits never silently loses one of them"
+          ]
+        },
+        {
+          "id": "m6",
+          "title": "Offline outbox",
+          "details": [
+            "Persist the board in IndexedDB and write local changes plus outbox ops in one transaction",
+            "Flush ops in order with idempotency keys on online, app start and Background Sync where supported; use Web Locks so one tab syncs",
+            "Done when moves made offline in two tabs sync exactly once after reconnecting and survive a page reload"
+          ]
+        },
+        {
+          "id": "m7",
+          "title": "Tests, metrics and write-up",
+          "details": [
+            "Playwright tests with two browser contexts for live sync, offline mode and conflicts; Vitest for reducers and fractional indexing",
+            "Measure move-to-paint latency and event propagation latency and record them in the README",
+            "Done when CI runs the multi-user suite green and the README explains each consistency decision"
+          ]
+        }
+      ],
+      "stretch": [
+        "Presence avatars and live cursors on the board over the same event channel",
+        "Undo and redo of moves using an operation log",
+        "Collaborative card descriptions with Yjs instead of version checks",
+        "Swap the custom sync for a sync engine (Zero, ElectricSQL or PowerSync) and compare complexity",
+        "Virtualised columns that stay smooth with [N] thousand cards"
+      ],
+      "resume": [
+        "Built a real-time collaborative Kanban board in Next.js and TypeScript with optimistic drag and drop, cutting perceived move latency from [X ms] to under [Y ms] on throttled networks",
+        "Designed an event stream with resumable ids and versioned cards so [N] concurrent users converge within [Z ms] with no lost updates in automated conflict tests",
+        "Implemented offline editing with an IndexedDB outbox and idempotent sync, replaying [N] queued operations exactly once after reconnection across multiple tabs",
+        "Wrote a multi-context Playwright suite covering live sync, offline mode and conflicts, catching [K] race-condition bugs before release"
+      ],
+      "talking": [
+        "Why server state lives in TanStack Query, filters in the URL and only drag state in Zustand",
+        "How fractional indexing lets a move update one row and avoids renumbering whole columns",
+        "Why settle-time invalidation waits for the last pending mutation",
+        "Push-data vs push-invalidate for live events, and how echoes and gaps are handled",
+        "Version checks vs CRDTs: why cards use versions and descriptions could use Yjs",
+        "How the outbox stays exactly-once with idempotency keys and a single syncing tab"
+      ],
+      "features": [
+        "Drag a card and it moves instantly; a forced server error puts it back with a toast",
+        "Two browser windows side by side stay in sync within a fraction of a second",
+        "Filters and the open card are in the URL, so links and the back button work",
+        "Go offline, keep moving cards, reconnect and watch them sync exactly once",
+        "Edit the same card title in two windows and get a clear conflict dialog instead of a silent overwrite",
+        "Fully keyboard-accessible drag and drop with live-region announcements"
+      ],
+      "deepDives": [
+        {
+          "title": "Where each piece of state lives",
+          "body": "The board is a good exercise in state classification because every category appears.\n\n| State | Home | Why |\n| --- | --- | --- |\n| Boards, columns, cards | TanStack Query cache, hydrated from the server | server-owned, needs dedupe, invalidation and optimistic writes |\n| Filters, search, open card id | URL search params | shareable links, back button closes the drawer, server can render the filtered view |\n| Card edit form | React Hook Form + zod (shared schema with the server) | draft with per-field errors |\n| Drag in progress (active card, hover target) | small Zustand store or local state in the DnD context | high-frequency client-only state, must not touch the server cache on every pointer move |\n| Pending outbox ops, offline copy | IndexedDB | durable across reloads |\n| Visible cards per column | derived in a selector from cards + filters | never stored |\n\nThe important negative decision: there is no global store holding cards. The cache is the single client copy, real-time events and optimistic updates both write into it, and every component reads through `useQuery` with a `select` function so a column re-renders only when its own cards change."
+        },
+        {
+          "title": "Ordering with fractional indexing",
+          "body": "Storing integer positions means moving a card to the top of a 200-card column rewrites 200 rows, and two users inserting at index 3 at the same moment produce duplicates or a renumbering race.\n\nInstead, each card stores a string `position` key that sorts lexicographically. To insert between neighbours with keys `a` and `b`, generate a key strictly between them; inserting at the top uses a key before the first, at the bottom a key after the last. A move is then a single-row update `{ columnId, position }`.\n\n```text\nbefore:  a0 [Design]   a1 [Build]   a2 [Ship]\nmove Ship between Design and Build\nafter:   a0 [Design]   a0V [Ship]   a1 [Build]\n```\n\nFigma's post on realtime editing of ordered sequences describes the same idea. Edge cases to handle: two clients generating the same key between the same neighbours (add a random or client-id suffix as a tie-breaker), and keys growing long after many inserts in the same gap (rebalance a column occasionally in a background job, which emits one event)."
+        },
+        {
+          "title": "Optimistic moves, live events and echoes",
+          "body": "A move goes through `onMutate` (cancel board queries, snapshot, apply locally), then the request. Each mutation carries a client-generated `opId`.\n\nThe server applies the move, increments the card's `version`, appends an event `{ id, opId, card }` to `board_events` and fans it out over SSE. Clients apply events with these rules:\n\n1. If `event.opId` is one of my pending or recent ops, ignore it (echo); my optimistic state already reflects it, and settle-time invalidation will reconcile.\n2. If `event.card.version` is lower than or equal to the cached version, ignore it (stale or duplicate).\n3. If the card has a pending local move, keep the local position until that mutation settles, then accept server state.\n4. Otherwise `setQueryData` to upsert the card.\n\nSettle-time invalidation runs only when `isMutating` reports this is the last pending move, so rapid drags do not flicker. On reconnect, the client sends `Last-Event-ID`; if the server still has events after it, it replays them, otherwise it tells the client to refetch the whole board."
+        },
+        {
+          "title": "Conflicts: versions for records, merge for fields",
+          "body": "Card edits use optimistic concurrency control. The client sends the edited fields plus `expectedVersion`. The server runs `UPDATE cards SET ... , version = version + 1 WHERE id = $1 AND version = $2`; zero rows updated means a conflict, and it responds 409 with the current card.\n\nThe client then does a three-way comparison between the base it started editing from, its own draft and the server's current card:\n\n- Fields only I changed: reapply automatically with the new version.\n- Fields only they changed: take theirs.\n- Fields we both changed to different values: show a compare dialog.\n\nMoves are treated differently: last write wins on `{ columnId, position }`, because a card ending up in the most recent column is what users expect and a dialog for every concurrent drag would be noise. This is the honest trade-off to explain in an interview: different fields deserve different conflict policies."
+        },
+        {
+          "title": "Offline outbox and exactly-once sync",
+          "body": "The board is persisted in IndexedDB. A local change writes the card and appends `{ opId, type, payload, baseVersion }` to an `outbox` store in a single transaction.\n\nFlushing runs on the `online` event, at app start, on an interval while open, and via Background Sync where the browser supports it. Only one tab flushes at a time, using `navigator.locks.request('outbox', ...)`. Ops are sent in creation order; each request carries `Idempotency-Key: opId`, and the server records processed op ids so a retry after a timeout is not applied twice.\n\nResponses decide what happens next: success removes the op; 409 removes it and marks the card for the conflict flow; 5xx or a network error stops the loop and keeps order for the next attempt. After flushing, the client pulls events since its last cursor and rebases any ops still pending. Storage is requested as persistent, and the UI shows a small 'N changes waiting to sync' badge so users know the device holds unsynced work."
+        }
+      ]
+    }
+  ]
+}

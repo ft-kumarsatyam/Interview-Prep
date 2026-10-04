@@ -3,10 +3,10 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
-import { requireSession } from "@/lib/auth/dal";
-import { PRIORITIES, TIER_IDS } from "@/lib/domain/companies";
-import { isDateStr } from "@/lib/domain/dates";
-import { addTarget, removeTarget, setPinned, updateTarget } from "@/lib/services/targets";
+import { requireSession } from "@/core/auth/dal";
+import { PRIORITIES, TIER_IDS } from "@/modules/targets/domain/companies";
+import { isDateStr } from "@/core/domain/dates";
+import { addTarget, removeTarget, setPinned, updateTarget } from "@/modules/targets/services/targets";
 
 const id = z.string().regex(/^[a-f0-9]{24}$/, "Unknown target");
 const date = z.string().refine(isDateStr, "Use a real date").nullable();

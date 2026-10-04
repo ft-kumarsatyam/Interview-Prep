@@ -2,8 +2,8 @@
 
 import { refresh } from "next/cache";
 import { z } from "zod";
-import { requireSession } from "@/lib/auth/dal";
-import { markNotificationsRead } from "@/lib/services/notifications";
+import { requireSession } from "@/core/auth/dal";
+import { markNotificationsRead } from "@/modules/notifications/services/notifications";
 
 export async function markNotificationsReadAction(ids?: string[]): Promise<void> {
   await requireSession();

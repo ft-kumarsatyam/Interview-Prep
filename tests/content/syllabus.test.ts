@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { topics, tracks } from "@/lib/content";
+import { topics, tracks } from "@/core/content";
 
 function djb2(str: string): string {
   let h = 5381;

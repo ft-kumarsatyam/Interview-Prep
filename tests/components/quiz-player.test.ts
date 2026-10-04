@@ -1,9 +1,9 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { QuizPlayer } from "@/components/quiz/quiz-player";
-import { maskOf } from "@/lib/domain/quiz";
-import type { PublicQuestion, QuizOutcome } from "@/lib/quiz/question";
+import { QuizPlayer } from "@/modules/quiz/components/quiz-player";
+import { maskOf } from "@/modules/quiz/domain/quiz";
+import type { PublicQuestion, QuizOutcome } from "@/modules/quiz/lib/question";
 
 const submit = async () => ({ ok: false as const, error: "unused" });
 const render = (questions: PublicQuestion[], extra: Record<string, unknown> = {}) =>

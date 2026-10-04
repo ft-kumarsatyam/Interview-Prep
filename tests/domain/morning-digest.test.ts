@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { escapeHtml, morningDigest, paceLine, type DigestInput } from "@/lib/domain/reminders";
-import type { DayProgress } from "@/lib/domain/streak";
+import { escapeHtml, morningDigest, paceLine, type DigestInput } from "@/modules/notifications/domain/reminders";
+import type { DayProgress } from "@/modules/progress/domain/streak";
 
 const day = (p: Partial<DayProgress> = {}): DayProgress => ({ kind: "study", dsaTarget: 2, dsaSolved: 0, theoryTarget: 1, theoryDone: 0, quizPassed: false, ...p });
 
