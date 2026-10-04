@@ -1,0 +1,420 @@
+{
+  "track": {
+    "id": "arch",
+    "name": "Architecture",
+    "blurb": "System design trade-offs for backend services: boundaries, APIs, caching, messaging, reliability and observability."
+  },
+  "questions": [
+    {
+      "id": "arch-when-microservices",
+      "level": "mid",
+      "q": "When would you choose microservices?",
+      "answer": "**I choose microservices when independent deployment and ownership are the bottleneck: several teams stepping on each other in one codebase, parts of the system with very different scaling or reliability needs, or hard isolation requirements. Without those pressures, a modular monolith is cheaper and faster.**\n\n**What microservices actually buy you:**\n- **Independent deploys:** a team ships billing without coordinating a release train.\n- **Independent scaling:** scale the image pipeline to 50 instances without scaling the admin panel.\n- **Fault and tech isolation:** a memory leak in recommendations does not take down checkout; a team can use Go or Python where it fits.\n\n**What they cost:**\n- Network calls that fail, time out and need retries, idempotency and circuit breakers.\n- No cross-service transactions: you need sagas, outboxes and eventual consistency.\n- Observability (distributed tracing, central logs), contract versioning, CI/CD per service, service discovery, more infrastructure and on-call surface.\n\n**Good signals to split:**\n- A module has a clear bounded context and a stable interface already.\n- A team of 5-9 people can own it end to end, including its data.\n- It changes at a different rate or has a different SLO.\n\n**Warning sign, the distributed monolith:** services that must be deployed together, share a database, or chain synchronous calls five deep. You pay every cost and gain none of the benefits.\n\n```text\nGood:  orders-svc --(event: OrderPlaced)--> billing-svc, shipping-svc   (own DBs)\nBad:   orders-svc --sync--> users-svc --sync--> billing-svc --> shared DB\n```\n\n**Real example:** Segment famously moved back from 140+ microservices to a monolith because a small team could not carry the operational load. Amazon's teams, by contrast, split because the org was too large to coordinate one deployable.",
+      "followUps": [
+        "What is a distributed monolith and how do you spot one?",
+        "How does Conway's law relate to service boundaries?",
+        "What platform capabilities must exist before you split?"
+      ],
+      "mistakes": [
+        "Picking microservices for performance, when in-process calls are faster than network calls.",
+        "Splitting by technical layer (auth service, DB service) instead of by business capability.",
+        "Sharing one database across services, which keeps all the coupling and adds network hops."
+      ],
+      "lesson": "arch-monolith-vs-micro"
+    },
+    {
+      "id": "arch-modular-monolith",
+      "level": "mid",
+      "q": "How do you structure a modular monolith?",
+      "answer": "**Organise the code by business capability (bounded context), not by technical layer. Each module owns its data and exposes a small public API; everything else is internal. Modules talk through that API or in-process events, and the boundaries are enforced by tooling, not goodwill.**\n\n**Structure:**\n\n```text\nsrc/modules/\n  catalog/   index.ts (public API)  domain/  infra/  http/\n  orders/    index.ts               domain/  infra/  http/\n  billing/   index.ts               ...\nsrc/shared/  logging, config, db connection (no business logic)\n```\n\n**Rules that make it work:**\n- **Public surface only:** other modules import from `orders/index.ts`, never from `orders/infra/...`.\n- **Data ownership:** each module owns its tables (ideally its own schema, e.g. `billing.*`). No joins across modules; ask the owning module or keep a read-only projection.\n- **Communication:** synchronous calls through the public interface for queries; domain events (`OrderPlaced`) for side effects, so the publisher does not know who listens.\n- **Dependency direction:** no cycles. If two modules need each other, extract shared concepts or use events.\n\n**Enforcement:** ESLint `no-restricted-imports` or `eslint-plugin-boundaries`, Nx module boundary tags, `dependency-cruiser`, or ArchUnit-style tests that fail CI on illegal imports.\n\n```ts\n// orders module uses billing only through its port\nimport { BillingApi } from \"@/modules/billing\";\nawait billing.authorize({ orderId, amountCents });\n```\n\n**Benefits:** single deploy and real ACID transactions where you need them, but with the clarity of services. If one module later needs to scale independently, the interface and data are already separated, so extracting it is mostly swapping an in-process call for HTTP or a queue.\n\n**Trade-off:** it takes discipline; the deploy unit is still shared, so one bad module can still crash the process.",
+      "followUps": [
+        "How do you enforce boundaries in CI?",
+        "Can modules share a database?",
+        "How do modules communicate without coupling?"
+      ],
+      "mistakes": [
+        "Folders named controllers, services, repositories at the top level, which is layering, not modularity.",
+        "Letting any module query any table, so boundaries exist only on paper."
+      ],
+      "lesson": "arch-monolith-vs-micro"
+    },
+    {
+      "id": "arch-migrate-monolith",
+      "level": "senior",
+      "q": "How do you migrate a monolith safely?",
+      "answer": "**Incrementally, with the strangler fig pattern: put a routing layer in front, carve out one well-bounded capability at a time, shift traffic to the new service gradually behind a flag, and keep the old path as a rollback until the new one is proven. Never do a big-bang rewrite.**\n\n**Step by step:**\n1. **Find seams first:** modularise inside the monolith so the capability has a clear interface and owns its tables. This is often most of the work.\n2. **Add a facade:** an API gateway, reverse proxy or in-code router decides whether a request goes to the monolith or the new service.\n3. **Build the new service** behind that interface, starting with something valuable but low risk (notifications, search, PDF generation) rather than the core ledger.\n4. **Migrate data:** the new service gets its own store. Sync via change data capture (Debezium) or dual writes through an outbox, backfill history, and reconcile counts.\n5. **Shadow then shift:** mirror read traffic and compare responses (dark launch), then route 1%, 10%, 50%, 100% with feature flags, watching error rates and latency.\n6. **Delete the old code** and tables once traffic is fully moved. Skipping this step leaves two systems forever.\n\n```text\nclient -> gateway --/invoices/*--> invoices-svc (new DB)\n                 \\--everything else--> monolith\n```\n\n**Database is the hardest part:** for a period both systems may need the data. Pick one writer at any moment, replicate to the other, and switch the writer only after reconciliation shows parity.\n\n**Risk controls:** a per-route kill switch back to the monolith, contract tests between the two, and SLO dashboards comparing old and new paths.\n\n**Real example:** extracting a reporting module first is a common win; it is read-heavy, can tolerate replication lag, and immediately takes load off the primary database.",
+      "followUps": [
+        "How do you handle the database during migration?",
+        "How do you verify the new service behaves the same?",
+        "What would you extract first?"
+      ],
+      "mistakes": [
+        "Proposing a big-bang rewrite that freezes features for months.",
+        "Extracting the service code but leaving it reading the monolith's tables.",
+        "No way to roll back traffic to the old path."
+      ],
+      "lesson": "arch-monolith-vs-micro"
+    },
+    {
+      "id": "arch-sharing-data",
+      "level": "senior",
+      "q": "How do services share data?",
+      "answer": "**Each service owns its data and nobody else touches its database. Others get data through the owner's API for on-demand reads, or by subscribing to its events and keeping their own local read model. Accept eventual consistency for copied data.**\n\n**Why no shared database:** shared tables couple schemas, deploys and performance. One team's migration breaks another team, and you lose the independence that justified services.\n\n**Patterns:**\n- **API call (query on demand):** orders calls `GET /customers/42`. Always fresh, but adds latency and a runtime dependency; needs timeouts, caching and fallbacks.\n- **Event-carried state transfer:** customers publishes `CustomerUpdated { id, name, tier }`; orders stores the fields it needs locally. Reads are fast and survive the customer service being down; data is slightly stale.\n- **Change data capture:** tools like Debezium stream the owner's DB changes to Kafka; useful when retrofitting events onto a legacy system. Publish a curated schema, not raw table rows, or you re-couple to the internals.\n- **API composition / BFF:** a gateway calls several services and joins the result for one screen.\n- **CQRS read store:** a search or reporting service consumes events from many services into Elasticsearch or a warehouse.\n\n```text\ncustomers-svc --CustomerUpdated--> [Kafka] --> orders-svc (customer_snapshot table)\n                                            \\-> search-svc (index)\n```\n\n**Choosing:** prefer a local copy for data you read constantly and that changes rarely (product names, customer tier). Prefer a synchronous call for data that must be current at decision time (account balance, stock reservation), and let the owner make that decision rather than copying the data.\n\n**Snapshotting on purpose:** an order should store the price and address at purchase time anyway; that is business history, not a cache.",
+      "followUps": [
+        "How do you handle a query that needs data from three services?",
+        "What is change data capture?",
+        "How stale can a local copy be?"
+      ],
+      "mistakes": [
+        "Letting services read each other's databases directly.",
+        "Making every read a synchronous call chain, which multiplies latency and failure."
+      ],
+      "lesson": "arch-monolith-vs-micro"
+    },
+    {
+      "id": "arch-rest-graphql-grpc",
+      "level": "mid",
+      "q": "REST vs GraphQL vs gRPC: when each?",
+      "answer": "**REST for public and resource-oriented APIs where HTTP caching and simplicity matter; GraphQL when many clients need different shapes of deeply related data, usually behind one product UI; gRPC for internal service-to-service calls where performance, streaming and strict contracts matter.**\n\n**REST:**\n- Resources and HTTP verbs, status codes, `ETag`/`Cache-Control` caching at CDNs, easy to debug with curl.\n- Downsides: over-fetching or under-fetching, several round trips for one screen, versioning discipline needed.\n- Best for: public APIs, webhooks, CRUD, anything third parties integrate with.\n\n**GraphQL:**\n- One endpoint, typed schema, the client asks for exactly the fields it needs; great for mobile and complex UIs.\n- Downsides: caching is harder (POST, unique queries; use persisted queries and client caches), N+1 resolvers, query cost limits, more complex authorization per field.\n- Best for: product frontends aggregating many backends, often as a BFF.\n\n**gRPC:**\n- Protobuf contracts, HTTP/2, binary encoding, generated clients, deadlines and bidirectional streaming.\n- Downsides: not browser-native (needs gRPC-Web or Connect), harder to inspect, less useful through CDNs.\n- Best for: internal microservice calls, low-latency or high-volume paths, polyglot systems.\n\n```text\nBrowser/mobile --GraphQL or REST--> BFF/gateway --gRPC--> users-svc, orders-svc\nPartners      --REST + webhooks---> public API\n```\n\n**Real-world mix:** many companies use exactly that: REST for the public API, GraphQL for their own apps, gRPC between services. The choice is about consumers, not fashion; pick what your clients and team can operate well.",
+      "followUps": [
+        "How do you cache GraphQL responses?",
+        "How would a browser call a gRPC service?",
+        "How do you protect a GraphQL API from expensive queries?"
+      ],
+      "mistakes": [
+        "Saying GraphQL is always faster; it moves complexity to the server and can create N+1 and costly queries.",
+        "Ignoring HTTP caching, which REST gets for free and GraphQL POSTs do not.",
+        "Proposing gRPC for public browser APIs without mentioning gRPC-Web or a proxy."
+      ],
+      "lesson": "arch-api-patterns"
+    },
+    {
+      "id": "arch-graphql-n-plus-one",
+      "level": "mid",
+      "q": "What is the N+1 problem in GraphQL?",
+      "answer": "**Because each field resolver runs independently, a query for a list of N items plus a related field on each makes 1 query for the list and N more queries for the relation. The standard fix is batching with a per-request DataLoader, which collects all the keys requested in one tick and loads them with a single query.**\n\n**Example:**\n\n```text\nquery { posts(first: 50) { title author { name } } }\n-> SELECT * FROM posts LIMIT 50\n-> SELECT * FROM users WHERE id = 1\n-> SELECT * FROM users WHERE id = 2\n   ... 50 times\n```\n\n**With DataLoader:**\n\n```ts\n// create per request, in the GraphQL context\nconst userLoader = new DataLoader<string, User>(async (ids) => {\n  const rows = await db.user.findMany({ where: { id: { in: [...ids] } } });\n  const byId = new Map(rows.map((u) => [u.id, u]));\n  return ids.map((id) => byId.get(id) ?? new Error(`User ${id} not found`));\n});\n\nconst resolvers = {\n  Post: { author: (post, _args, ctx) => ctx.userLoader.load(post.authorId) },\n};\n```\n\n**How it works:** every `load(id)` call made during the same event-loop tick is queued; at the end of the tick the batch function runs once with all ids (`WHERE id IN (...)`). Results must be returned in the same order as the keys. It also memoizes per request, so the same author is fetched once.\n\n**Why per request:** the cache has no invalidation and no authorization context. A global loader would serve stale data and could return one user's data to another.\n\n**Other approaches:** join-aware resolvers using the query's field selection (lookahead) to `JOIN` up front, or ORMs like Prisma that batch `findUnique` calls automatically. Also add query depth and complexity limits, since nested lists can multiply queries even with batching.",
+      "followUps": [
+        "Why must a DataLoader be created per request?",
+        "How else could you solve it, for example with joins or lookahead?"
+      ],
+      "mistakes": [
+        "Not knowing DataLoader batches within one tick of the event loop.",
+        "Sharing a DataLoader instance across requests, which leaks data between users and caches forever."
+      ],
+      "lesson": "arch-api-patterns"
+    },
+    {
+      "id": "arch-api-versioning",
+      "level": "mid",
+      "q": "How do you version an API?",
+      "answer": "**Avoid breaking changes as long as possible by evolving additively; when a break is unavoidable, introduce a new version (URL path like `/v2` for public REST APIs, or a header / dated version), run both side by side, measure usage of the old one, and retire it on a published schedule.**\n\n**Non-breaking (no new version):** adding an optional field, a new endpoint, a new optional parameter, a new enum value if clients were told to tolerate unknowns.\n\n**Breaking:** removing or renaming a field, changing a type or meaning, making a parameter required, changing error codes or default behaviour.\n\n**Strategies:**\n- **URL path (`/v1/orders`):** explicit, easy to route and cache, easy to see in logs. Most common for public APIs.\n- **Header (`Accept: application/vnd.acme.v2+json` or `Api-Version: 2026-09-01`):** cleaner URLs, version per request.\n- **Date-based per account (Stripe):** each account is pinned to the version it signed up with; the server transforms responses through a chain of version adapters so internal code stays on the latest model.\n- **GraphQL:** usually no versions; add fields and mark old ones `@deprecated`, track usage, remove later.\n- **gRPC/protobuf:** never reuse field numbers; add new fields, reserve removed ones.\n\n```ts\n// one internal model, adapters at the edge\napp.get(\"/v1/orders/:id\", async (req, res) => res.json(toV1(await orders.get(req.params.id))));\napp.get(\"/v2/orders/:id\", async (req, res) => res.json(toV2(await orders.get(req.params.id))));\n```\n\n**Retiring versions:** announce with a timeline, return `Deprecation` and `Sunset` headers, log which clients still call the old version, contact them, then remove. For internal APIs, consumer-driven contract tests (Pact) tell you whether a change breaks anyone before you deploy.",
+      "followUps": [
+        "What counts as a breaking change?",
+        "How do you deprecate and retire an old version?",
+        "How does Stripe's date-based versioning work?"
+      ],
+      "mistakes": [
+        "Bumping the version for every change instead of making additive, backward-compatible changes.",
+        "No deprecation policy or usage metrics, so old versions live forever."
+      ],
+      "lesson": "arch-api-patterns"
+    },
+    {
+      "id": "arch-reliable-webhooks",
+      "level": "senior",
+      "q": "Design webhooks that are reliable and secure.",
+      "answer": "**As a sender: record each event durably, deliver from a queue with retries and exponential backoff, sign every payload with an HMAC and timestamp, and expose a delivery log with manual replay. As a receiver: verify the signature, acknowledge fast with 2xx, process asynchronously, and dedupe by event id because delivery is at-least-once.**\n\n**Sender design:**\n- Write the event to an outbox in the same transaction as the state change, so no event is lost.\n- A worker POSTs to each subscriber with a short timeout (5-10 s); non-2xx or timeout means retry with exponential backoff and jitter for up to a day or more, then dead-letter and notify the customer.\n- Include a unique `event_id`, `type`, `created_at`, and either the full object or just an id plus a fetch URL (\"thin events\", which avoid stale data).\n- Disable endpoints that fail for days; let users rotate secrets with an overlap period.\n- Validate subscriber URLs against SSRF: HTTPS only, block private and metadata IP ranges at connect time.\n\n**Signing (Stripe-style):**\n\n```ts\nconst ts = Math.floor(Date.now() / 1000);\nconst sig = createHmac(\"sha256\", secret).update(`${ts}.${rawBody}`).digest(\"hex\");\nheaders[\"Webhook-Signature\"] = `t=${ts},v1=${sig}`;\n\n// receiver\nconst expected = createHmac(\"sha256\", secret).update(`${t}.${rawBody}`).digest();\nconst ok = timingSafeEqual(expected, Buffer.from(v1, \"hex\")) && Math.abs(now - t) < 300;\n```\n\nThe receiver must verify the **raw** body, not re-serialized JSON, compare in constant time, and reject old timestamps to stop replays.\n\n**Receiver design:**\n- Return 200 quickly after storing the event; do the work in a background job, otherwise slow processing causes timeouts and redundant retries.\n- Dedupe with a unique constraint on `event_id`.\n- Do not rely on ordering; compare `created_at` or object versions, or re-fetch the current object from the API.\n\nThe Standard Webhooks spec captures most of these conventions.",
+      "followUps": [
+        "How does the receiver prevent replay attacks?",
+        "What if events arrive out of order?",
+        "How do you protect against SSRF from user-supplied webhook URLs?"
+      ],
+      "mistakes": [
+        "Sending webhooks inline in the request that triggered the event.",
+        "No signature, or comparing signatures with a non-constant-time check.",
+        "Assuming exactly-once, in-order delivery on the receiver side."
+      ],
+      "lesson": "arch-api-patterns"
+    },
+    {
+      "id": "arch-cache-stampede",
+      "level": "senior",
+      "q": "How do you prevent a cache stampede?",
+      "answer": "**A stampede (thundering herd) happens when a hot key expires and thousands of requests miss at once and all hit the database to rebuild it. Prevent it by letting only one request recompute (request coalescing or a lock), serving stale data while refreshing, refreshing early, and adding jitter to TTLs.**\n\n**Techniques:**\n- **Single flight / request coalescing:** in-process, concurrent misses for the same key share one promise. Across instances, use a short Redis lock (`SET key:lock NX PX 5000`): the winner recomputes, others wait briefly or serve stale.\n- **Stale-while-revalidate:** store the value with a soft expiry and a longer hard TTL. After the soft expiry, return the stale value immediately and refresh in the background.\n- **Probabilistic early refresh (XFetch):** each reader recomputes slightly before expiry with a probability that rises as expiry approaches, so one request usually refreshes early.\n- **TTL jitter:** `ttl = base + random(0, 10%)` so keys written together do not expire together.\n- **Pre-warm** known hot keys after deploys or cache flushes.\n\n```ts\nconst inflight = new Map<string, Promise<unknown>>();\n\nasync function getCached<T>(key: string, load: () => Promise<T>, ttlSec = 300): Promise<T> {\n  const hit = await redis.get(key);\n  if (hit) return JSON.parse(hit) as T;\n  if (!inflight.has(key)) {\n    inflight.set(key, load().then(async (v) => {\n      await redis.set(key, JSON.stringify(v), \"EX\", ttlSec + Math.floor(Math.random() * 30));\n      return v;\n    }).finally(() => inflight.delete(key)));\n  }\n  return inflight.get(key) as Promise<T>;\n}\n```\n\n**Real example:** a homepage \"trending products\" query taking 2 s, cached for 60 s, with 5,000 requests per second. Without protection every expiry sends thousands of identical queries to the primary and can take it down; with coalescing plus stale-while-revalidate, the database sees one query per minute.\n\n**Trade-off:** serving stale data must be acceptable for that key. Locks need TTLs so a crashed holder does not block refreshes.",
+      "followUps": [
+        "How does probabilistic early expiration work?",
+        "What happens if the lock holder crashes?",
+        "How do you handle a cold cache after a deploy or Redis restart?"
+      ],
+      "mistakes": [
+        "Only adding more cache servers; the problem is many misses for the same key at once.",
+        "Giving every key the same TTL, so large batches expire simultaneously."
+      ],
+      "lesson": "arch-caching-queues"
+    },
+    {
+      "id": "arch-outbox",
+      "level": "senior",
+      "q": "Explain the outbox pattern.",
+      "answer": "**The outbox pattern solves the dual-write problem: instead of writing to the database and then publishing to a broker (either of which can fail independently), you insert the event into an `outbox` table in the same transaction as the business change. A separate relay reads the outbox and publishes to the broker, retrying until it succeeds.**\n\n**The problem:**\n\n```text\nBEGIN; INSERT order; COMMIT;   then  publish(OrderPlaced)   <- crash here: event lost\npublish(OrderPlaced); then INSERT order fails               <- phantom event\n```\n\n**The fix:**\n\n```ts\nawait db.transaction(async (tx) => {\n  const order = await tx.insert(orders).values(input).returning();\n  await tx.insert(outbox).values({\n    id: randomUUID(), aggregateId: order.id, type: \"OrderPlaced\", payload: order,\n  });\n});\n\n// relay (separate worker)\nconst rows = await db.query(\n  `SELECT * FROM outbox WHERE published_at IS NULL ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED`);\nfor (const r of rows) { await broker.publish(r.type, r.payload, { messageId: r.id }); await markPublished(r.id); }\n```\n\n**Relay options:**\n- **Polling:** simple, works anywhere; `FOR UPDATE SKIP LOCKED` lets several relays run safely.\n- **Change data capture:** Debezium tails the database log (Postgres WAL) and publishes outbox inserts to Kafka; lower latency and no polling load, but more infrastructure.\n\n**Guarantees:** the event is published if and only if the transaction committed, but possibly more than once (the relay can crash after publishing and before marking). Consumers must be idempotent, deduping on the event id.\n\n**Ordering:** publish per aggregate in order (partition by `aggregateId` in Kafka) if consumers depend on sequence.\n\n**Housekeeping:** delete or archive published rows on a schedule.\n\n**Mirror image:** the **inbox** pattern on the consumer side stores processed message ids in the same transaction as the consumer's state change, giving exactly-once effects.",
+      "followUps": [
+        "Polling relay vs change data capture: which and why?",
+        "How do consumers handle duplicates from the relay?",
+        "How do you keep the outbox table from growing forever?"
+      ],
+      "mistakes": [
+        "Publishing to the broker inside the DB transaction and assuming a rollback also un-publishes.",
+        "Thinking the outbox gives exactly-once delivery; it gives at-least-once."
+      ],
+      "lesson": "arch-caching-queues"
+    },
+    {
+      "id": "arch-exactly-once",
+      "level": "senior",
+      "q": "How do you get exactly-once effects?",
+      "answer": "**Exactly-once delivery is impossible over an unreliable network, but exactly-once effects are achievable: accept at-least-once delivery and make processing idempotent, either by recording processed message ids in the same transaction as the state change or by making the operation naturally idempotent.**\n\n**Why delivery cannot be exactly once:** a consumer processes a message and crashes before acknowledging. The broker cannot know whether the work happened, so it redelivers. The alternative, acknowledging before processing, risks losing the message (at-most-once).\n\n**Ways to make processing idempotent:**\n- **Dedup table (inbox):** insert the message id with a unique constraint in the same DB transaction as the business change. A duplicate fails the insert and is skipped.\n- **Natural idempotency:** `SET status = 'shipped'` or upserts by a business key, rather than `balance = balance + 10`.\n- **Conditional writes:** apply only if `version = n` or `last_event_seq < seq`.\n- **Idempotency keys downstream:** pass the message id to payment providers and other APIs that support it.\n\n```ts\nawait db.transaction(async (tx) => {\n  const fresh = await tx.query(\n    `INSERT INTO processed_messages (id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id`, [msg.id]);\n  if (fresh.rowCount === 0) return;             // duplicate, already applied\n  await tx.query(`UPDATE wallets SET balance = balance + $1 WHERE id = $2`, [msg.amount, msg.walletId]);\n});\nawait msg.ack();\n```\n\n**About Kafka EOS:** idempotent producers plus transactions give exactly-once within Kafka (read from a topic, process, write to a topic, commit offsets atomically). Once the side effect is a database write, an email or an HTTP call, you are back to needing idempotent consumers.\n\n**Retention:** keep processed ids at least as long as the maximum redelivery window (often days), then prune.\n\n**Real example:** a \"credit wallet\" consumer without dedup will double-credit on every rebalance; with an inbox table it is safe to replay the whole topic.",
+      "followUps": [
+        "Does Kafka's exactly-once semantics solve this end to end?",
+        "How long do you keep processed ids?",
+        "How do you make an external API call idempotent?"
+      ],
+      "mistakes": [
+        "Claiming the broker can guarantee exactly-once delivery to arbitrary side effects.",
+        "Checking for a processed id in one step and writing it in another, outside the transaction."
+      ],
+      "lesson": "arch-caching-queues"
+    },
+    {
+      "id": "arch-saga-choreography-orchestration",
+      "level": "senior",
+      "q": "Choreography vs orchestration in sagas?",
+      "answer": "**A saga is a sequence of local transactions across services, each with a compensating action if a later step fails. In choreography, services react to each other's events with no central coordinator. In orchestration, a coordinator tells each service what to do next and tracks the saga's state.**\n\n**Choreography:**\n\n```text\norders: OrderCreated -> payments: PaymentCaptured -> inventory: StockReserved -> shipping\n                     on StockFailed -> payments refunds -> orders cancels\n```\n\n- Pros: loose coupling, no central component, simple for 2-4 steps.\n- Cons: the flow is implicit and spread across services; hard to see \"where is order 123?\", easy to create cyclic event chains, adding a step touches several services.\n\n**Orchestration:**\n\n```ts\n// orchestrator (e.g. a Temporal workflow)\nexport async function placeOrder(order: Order) {\n  const payment = await activities.capturePayment(order);\n  try {\n    await activities.reserveStock(order);\n  } catch (e) {\n    await activities.refund(payment.id);   // compensation\n    throw e;\n  }\n  await activities.createShipment(order);\n}\n```\n\n- Pros: the flow is explicit in one place, easy to monitor, version, add timeouts and retries; state is persisted.\n- Cons: a central component to run, risk of putting business logic in the orchestrator that belongs in services.\n\n**Important properties either way:**\n- Compensations are semantic undo (refund, release stock), not rollbacks; other users may see intermediate states, so design for that (e.g. status `pending`).\n- Every step and compensation must be idempotent and retryable; a compensation that fails must retry until it succeeds or alert a human.\n- Use the outbox pattern so steps and their events are atomic.\n\n**Rule of thumb:** choreography for short, stable flows; orchestration (Temporal, AWS Step Functions, a state machine table) for long-running, branching business processes like order fulfilment or onboarding.",
+      "followUps": [
+        "What is a compensating action and what if it fails?",
+        "How do you see the state of a choreographed saga?",
+        "What tools implement orchestration?"
+      ],
+      "mistakes": [
+        "Describing sagas as distributed transactions with rollback; compensations are new forward actions, and intermediate states are visible.",
+        "Choosing choreography for long, branching flows, which become impossible to follow."
+      ],
+      "lesson": "arch-caching-queues"
+    },
+    {
+      "id": "arch-cascading-failures",
+      "level": "senior",
+      "q": "How do you prevent cascading failures?",
+      "answer": "**A cascading failure is when one slow or failed dependency exhausts resources in its callers, which then fail their callers. Prevent it with timeouts on every call, bounded retries with backoff, circuit breakers, bulkheads that isolate resource pools, load shedding, and graceful degradation.**\n\n**How cascades happen:** service C slows from 50 ms to 5 s. B's connection pool fills with requests waiting on C, so B stops answering A. A's users retry, tripling load. Now everything is down, although only C had a problem.\n\n**Defences:**\n- **Timeouts and deadlines:** every outbound call has one, set from the dependency's p99 plus margin. Propagate a deadline so downstream work stops when the caller has already given up.\n- **Bounded retries:** only for idempotent operations, with exponential backoff and jitter, and a retry budget (e.g. at most 10% extra traffic). Retry at one layer, not all of them.\n- **Circuit breakers:** after repeated failures, fail fast for a while instead of waiting, then probe with a few requests (half-open).\n- **Bulkheads:** separate connection pools or concurrency limits per dependency, so a slow recommendations service cannot consume the pool checkout needs.\n- **Load shedding and backpressure:** reject excess work early with 429/503 when queues or concurrency exceed limits; prioritise critical traffic.\n- **Graceful degradation:** serve cached or default content (no recommendations rather than no page).\n\n```ts\nconst res = await fetch(url, { signal: AbortSignal.timeout(800) })\n  .catch(() => null);\nconst recs = res?.ok ? await res.json() : FALLBACK_RECOMMENDATIONS;\n```\n\n**Also:** autoscaling helps with gradual load but not sudden failures; queues absorb bursts but need limits; test with chaos experiments (kill a dependency in staging, inject latency) to confirm the system degrades rather than collapses.",
+      "followUps": [
+        "How do you choose timeout values?",
+        "What is load shedding and where do you do it?",
+        "What is a retry storm and how does a retry budget help?"
+      ],
+      "mistakes": [
+        "Having no timeouts on outbound calls, so slow dependencies exhaust threads, sockets or memory.",
+        "Retrying at every layer, multiplying load on a struggling service.",
+        "Only mentioning circuit breakers."
+      ],
+      "lesson": "arch-reliability-obs"
+    },
+    {
+      "id": "arch-backoff-jitter",
+      "level": "mid",
+      "q": "Explain exponential backoff with jitter.",
+      "answer": "**When a call fails, wait before retrying, doubling the wait each attempt up to a cap (exponential backoff), and randomise each wait (jitter) so that many clients that failed at the same moment do not all retry at the same moment again.**\n\n**Why exponential:** a failing service usually needs time to recover. Immediate retries add load exactly when it can least handle it. Doubling quickly reduces pressure: 100 ms, 200 ms, 400 ms, 800 ms.\n\n**Why jitter:** if 10,000 clients fail together and all wait exactly 400 ms, they hit the server together again, in waves. Randomising spreads the retries over the interval. AWS's analysis found \"full jitter\" gives the best balance of total work and completion time.\n\n```ts\nasync function withRetry<T>(fn: () => Promise<T>, max = 5, base = 100, cap = 10_000): Promise<T> {\n  for (let attempt = 0; ; attempt++) {\n    try {\n      return await fn();\n    } catch (err) {\n      if (attempt >= max - 1 || !isRetryable(err)) throw err;\n      const delay = Math.random() * Math.min(cap, base * 2 ** attempt);   // full jitter\n      await new Promise((r) => setTimeout(r, delay));\n    }\n  }\n}\n```\n\n**What to retry:**\n- Yes: network errors, timeouts, `429`, `502`, `503`, `504`, and connection resets.\n- No: `400`, `401`, `403`, `404`, `422`, which will fail again.\n- Only retry non-idempotent operations (POST payments) when they carry an idempotency key.\n- Honour `Retry-After` when the server sends it.\n\n**Limits:** cap the number of attempts and the total time (it must fit within the caller's deadline), and use a retry budget so retries cannot multiply traffic during an outage. Most SDKs (AWS, Stripe, gRPC) implement this already; configure them rather than wrapping them in a second retry loop.",
+      "followUps": [
+        "Which errors should and should not be retried?",
+        "How does a Retry-After header change your logic?"
+      ],
+      "mistakes": [
+        "Retrying immediately in a tight loop.",
+        "Exponential backoff without jitter, so clients still retry in synchronized waves.",
+        "Retrying non-idempotent requests or 4xx validation errors."
+      ],
+      "lesson": "arch-reliability-obs"
+    },
+    {
+      "id": "arch-error-budget",
+      "level": "mid",
+      "q": "What is an error budget?",
+      "answer": "**An error budget is the amount of unreliability your SLO allows: with a 99.9% monthly availability SLO, 0.1% of requests (about 43 minutes of full downtime a month) may fail. While budget remains, teams ship freely; when it is burning too fast or is spent, they slow releases and prioritise reliability work.**\n\n**Why it exists:** 100% reliability is impossible and infinitely expensive, and users cannot tell 99.99% from 100% through their own flaky networks. The budget turns \"reliability vs velocity\" from an argument into a number both product and engineering agreed on.\n\n**Computing it:**\n\n```text\nSLO: 99.9% of requests succeed in < 300 ms over 30 days\nTraffic: 100M requests/month\nBudget: 0.1% x 100M = 100,000 bad requests\nBad so far this month: 60,000 -> 40% of budget left\n```\n\n**Using it:**\n- **Policy:** agreed ahead of time, e.g. if more than 100% of the budget is used in a window, freeze non-critical launches and spend the next sprint on reliability.\n- **Burn-rate alerts:** alert on how fast the budget is being consumed, not on single errors. A 14.4x burn rate sustained over an hour means a 30-day budget would be gone in about two days, so page someone; slower burns become tickets. Multi-window alerts (1 h and 5 min) cut noise.\n- **Planning:** risky migrations and chaos experiments are funded by remaining budget.\n\n**Related terms:**\n- **SLI:** the measurement (ratio of good requests).\n- **SLO:** the internal target for the SLI.\n- **SLA:** the contract with customers and penalties, set looser than the SLO so you breach internally first.\n\n**Real example:** a team with 80% of its budget burned by a bad deploy pauses feature releases, adds canary analysis to the pipeline, and resumes when the rolling window recovers.",
+      "followUps": [
+        "What happens when the budget is exhausted?",
+        "What is a burn-rate alert?",
+        "Why not aim for 100% availability?"
+      ],
+      "mistakes": [
+        "Treating the SLO as the same thing as the contractual SLA.",
+        "Setting a 100% target, which leaves no room to ship changes."
+      ],
+      "lesson": "arch-reliability-obs"
+    },
+    {
+      "id": "arch-risky-rollout",
+      "level": "senior",
+      "q": "How do you roll out a risky change safely?",
+      "answer": "**Decouple deploy from release, expose the change to a small slice of traffic first, watch the metrics that matter, expand gradually, and keep a fast, tested rollback. Use feature flags for behaviour, canaries for binaries, and expand-contract for schema changes.**\n\n**Toolkit:**\n- **Feature flags:** ship code dark, then enable for internal users, then 1%, 10%, 50%, 100%. Turning it off is a config change, not a deploy. Remove the flag afterwards.\n- **Canary deployments:** route a small percentage of traffic to the new version and compare its error rate, latency and business metrics (checkouts per minute) with the baseline. Automate promotion or rollback (Argo Rollouts, Flagger, cloud deploy tools).\n- **Blue-green:** run old and new side by side and switch traffic at once; instant rollback, but double capacity and no gradual signal.\n- **Shadow traffic / dark launch:** send copies of real requests to the new path and compare results without affecting users.\n\n**Database changes with expand-contract:**\n\n```text\n1. Expand:   add new column (nullable), deploy code that writes both old and new\n2. Backfill: migrate existing rows in batches\n3. Switch:   read from the new column (behind a flag)\n4. Contract: stop writing the old column, then drop it in a later release\n```\n\nEach step is backward compatible, so you can roll back the code at any point.\n\n**Operational practice:**\n- Define success and abort criteria before starting, plus who is watching.\n- Deploy during working hours, not before a weekend; avoid batching unrelated changes.\n- Make rollback a one-click, rehearsed action; know which changes (data migrations, emails sent) cannot be undone.\n- Limit blast radius: roll out per region, per tenant tier, or internal users first.\n\n**Real example:** migrating to a new pricing engine: run it in shadow mode for a week comparing outputs, enable for 1% of accounts behind a flag, then ramp while watching invoice discrepancies.",
+      "followUps": [
+        "How do you handle a database schema change that the old code cannot read?",
+        "What metrics decide whether a canary is healthy?",
+        "Blue-green vs canary: when each?"
+      ],
+      "mistakes": [
+        "Deploying to 100% at once and relying on monitoring to notice.",
+        "Combining a schema change and the code that depends on it in one irreversible step.",
+        "Having a rollback plan that was never tested."
+      ],
+      "lesson": "arch-reliability-obs"
+    },
+    {
+      "id": "arch-caching-strategies",
+      "level": "mid",
+      "q": "Compare cache-aside, write-through and write-behind caching. How do you handle invalidation?",
+      "answer": "**Cache-aside: the app reads the cache, falls back to the DB on a miss and populates the cache. Write-through: every write goes to the cache and the DB synchronously. Write-behind: writes go to the cache and are flushed to the DB asynchronously. Cache-aside with TTLs and delete-on-write is the sensible default.**\n\n**Cache-aside (lazy loading):**\n- Only requested data is cached, and a cache outage degrades to slower reads, not failure.\n- First request after a miss is slow; data can be stale until TTL or invalidation.\n\n**Write-through:**\n- Cache is always fresh for written keys; writes are slower (two systems), and you cache data that may never be read.\n\n**Write-behind (write-back):**\n- Very fast writes and batching, but data is lost if the cache dies before flushing. Only for data that tolerates loss, such as view counters or metrics.\n\n**Read-through** is cache-aside done by the cache library or provider itself.\n\n```ts\nasync function getProduct(id: string) {\n  const key = `product:v3:${id}`;\n  const hit = await redis.get(key);\n  if (hit) return JSON.parse(hit);\n  const p = await db.product.findUnique({ where: { id } });\n  await redis.set(key, JSON.stringify(p), \"EX\", 600);\n  return p;\n}\nasync function updateProduct(id: string, data: ProductInput) {\n  await db.product.update({ where: { id }, data });\n  await redis.del(`product:v3:${id}`);   // delete, don't set\n}\n```\n\n**Invalidation:**\n- **Delete after the DB write** rather than writing the new value, which avoids two concurrent writers leaving the older value in the cache. A short TTL bounds any remaining race.\n- **Event-driven:** publish change events and let consumers evict; useful across services or many instances with local caches.\n- **Versioned keys:** include a version in the key (`v3`) so deploys that change the shape do not read old entries.\n- **HTTP/CDN:** `Cache-Control`, `stale-while-revalidate`, and purge by tag.\n\nWatch hit ratio, latency and evictions. A cache with a 20% hit ratio adds complexity for little gain.",
+      "followUps": [
+        "Why delete the key on write rather than update it?",
+        "How do you cache per-user data safely?",
+        "What metrics tell you a cache is working?"
+      ],
+      "mistakes": [
+        "Updating the cache and the DB in an order that leaves stale data after a race.",
+        "Caching without a TTL, so a missed invalidation lives forever."
+      ]
+    },
+    {
+      "id": "arch-cqrs-event-sourcing",
+      "level": "senior",
+      "q": "What are CQRS and event sourcing, and when are they worth it?",
+      "answer": "**CQRS separates the write model (commands that enforce business rules) from read models optimised for queries. Event sourcing stores state as an append-only log of domain events and derives current state by replaying them. They are often combined but independent, and both are worth it only for complex domains with strong audit or read-scaling needs.**\n\n**CQRS:**\n- Writes go through aggregates that validate invariants; reads come from denormalised views (a SQL table, Elasticsearch, Redis) built for each screen.\n- Can be as light as separate query services over the same DB, or as heavy as separate stores updated from events.\n- Cost: read models lag behind writes (eventual consistency) and there is more code to keep in sync.\n\n**Event sourcing:**\n\n```text\naccount-42: Opened(0) -> Deposited(100) -> Withdrawn(30) -> Deposited(50)\ncurrent balance = fold(events) = 120\n```\n\n- Full audit trail and the ability to answer \"what was the state on March 1?\".\n- New read models can be built later by replaying history.\n- Natural fit with event-driven integration.\n\n```ts\nconst state = events.reduce(apply, initialAccount);\nfunction apply(s: Account, e: AccountEvent): Account {\n  switch (e.type) {\n    case \"Deposited\": return { ...s, balance: s.balance + e.amount };\n    case \"Withdrawn\": return { ...s, balance: s.balance - e.amount };\n    default: return s;\n  }\n}\n```\n\n**Costs of event sourcing:**\n- Events are forever: schema evolution needs upcasters or versioned event types.\n- Long streams need snapshots to load quickly.\n- Querying current state requires projections; GDPR deletion needs crypto-shredding or careful design.\n- Steep learning curve for the team.\n\n**When it fits:** ledgers, payments, inventory, booking systems, and domains where auditors or users need history. **When not:** CRUD admin apps, content management, most early products. A regular table plus an audit log usually covers \"we need history\".",
+      "followUps": [
+        "How do you rebuild a projection?",
+        "How do you change an event's schema after it is stored?",
+        "What are snapshots for?"
+      ],
+      "mistakes": [
+        "Treating CQRS and event sourcing as the same thing or as always paired.",
+        "Applying event sourcing to simple CRUD domains.",
+        "Forgetting that read models are eventually consistent and the UI must handle it."
+      ]
+    },
+    {
+      "id": "arch-gateway-bff",
+      "level": "mid",
+      "q": "What is an API gateway, and what is the Backend-for-Frontend pattern?",
+      "answer": "**An API gateway is a single entry point in front of your services that handles cross-cutting edge concerns: routing, TLS, authentication, rate limiting, request size limits and observability. A Backend-for-Frontend is a thin backend dedicated to one client type (web, iOS, partner API) that aggregates and shapes data for that client's screens.**\n\n**Gateway responsibilities:**\n- Route `/orders/*` to orders-svc, `/users/*` to users-svc.\n- Validate JWTs and pass identity downstream, enforce quotas and rate limits.\n- TLS termination, CORS, compression, request ids, access logs, WAF rules.\n- Examples: Kong, AWS API Gateway, Envoy, NGINX, Cloudflare.\n\n**BFF responsibilities:**\n- Call several services in parallel and compose one response for a screen, cutting mobile round trips.\n- Shape payloads per client: the mobile app gets a compact response, the web app richer data.\n- Owned by the frontend team, so they can change it at their pace.\n\n```text\niOS app  -> mobile-BFF --\\\nWeb app  -> web-BFF ------> gateway policies -> users-svc, orders-svc, catalog-svc\nPartners -> public API --/\n```\n\n```ts\n// web BFF: one call for the order page\napp.get(\"/bff/order/:id\", async (req, res) => {\n  const [order, user] = await Promise.all([orders.get(req.params.id), users.get(req.user.id)]);\n  res.json({ order, customerName: user.name, canCancel: order.status === \"pending\" });\n});\n```\n\n**Pitfalls:**\n- Business rules creeping into the gateway or BFF; they belong in domain services.\n- Too many BFFs duplicating logic; share code through libraries, or use a GraphQL layer as a single BFF.\n- The gateway is critical path: run it redundantly, keep it fast, and avoid heavy per-request plugins.\n\n**In Next.js apps** route handlers and server components often act as the BFF already.",
+      "followUps": [
+        "What should never go into a gateway?",
+        "How does GraphQL federation compare to a BFF?"
+      ],
+      "mistakes": [
+        "Putting business logic into the gateway, creating a new monolith in the middle.",
+        "Making the gateway a single point of failure without redundancy."
+      ]
+    },
+    {
+      "id": "arch-load-balancing-discovery",
+      "level": "mid",
+      "q": "How do service discovery and load balancing work? What is the difference between L4 and L7?",
+      "answer": "**Service discovery answers \"where are the healthy instances of service X right now?\" (via DNS, a registry like Consul, or Kubernetes Services). Load balancing spreads requests across them. An L4 balancer routes TCP/UDP connections by IP and port without reading the payload; an L7 balancer understands HTTP and can route by path, header or cookie, retry, and terminate TLS.**\n\n**Discovery:**\n- **Kubernetes:** a Service gets a stable DNS name and virtual IP; endpoints are updated from pods that pass readiness probes.\n- **Registry:** instances register with Consul, Eureka or etcd and send heartbeats; clients or proxies query it.\n- **Service mesh:** a sidecar or node proxy (Envoy, Istio, Linkerd) handles discovery, mTLS, retries and balancing transparently.\n\n**L4 vs L7:**\n\n```text\nL4 (TCP):  client --conn--> LB --picks backend per connection--> pod\nL7 (HTTP): client --> LB reads \"GET /api/orders\" --picks backend per request--> orders pod\n```\n\n- **L4:** very fast, protocol-agnostic, cheap. AWS NLB, kube-proxy. Cannot inspect paths; balances per connection.\n- **L7:** content-based routing, header manipulation, retries, canary splits, auth. AWS ALB, Envoy, NGINX. More CPU per request.\n\n**Gotcha:** HTTP/2 and gRPC multiplex many requests over one long-lived connection. An L4 balancer pins all of them to one backend, so load becomes uneven. Use L7 balancing or client-side balancing per request.\n\n**Algorithms:** round robin, least connections or least outstanding requests (good for variable request cost), consistent hashing (cache affinity), and power-of-two-choices.\n\n**Health checks:** readiness takes an instance out of rotation (during startup or shutdown), liveness restarts a stuck one. Do not make liveness depend on downstream services, or one database blip restarts your whole fleet.",
+      "followUps": [
+        "Why can L4 balancing be uneven with HTTP/2 or gRPC?",
+        "What is the difference between client-side and server-side load balancing?",
+        "Liveness vs readiness checks?"
+      ],
+      "mistakes": [
+        "Not knowing L4 cannot route on path or headers.",
+        "Forgetting health checks, so traffic keeps going to dead instances."
+      ]
+    },
+    {
+      "id": "arch-circuit-breaker",
+      "level": "mid",
+      "q": "How does a circuit breaker work and what are its states?",
+      "answer": "**A circuit breaker wraps calls to a dependency and stops calling it when it is clearly failing. It has three states: closed (calls flow, failures are counted), open (calls fail immediately without touching the dependency) and half-open (after a cooldown, a few trial calls decide whether to close again or reopen).**\n\n**State machine:**\n\n```text\nCLOSED --failure rate > 50% over 20+ calls--> OPEN\nOPEN   --after 30 s cooldown--> HALF_OPEN\nHALF_OPEN --trial calls succeed--> CLOSED\nHALF_OPEN --a trial fails--> OPEN\n```\n\n**Why it helps:**\n- **Fail fast:** callers stop waiting on timeouts, freeing threads, sockets and memory, which prevents cascading failure.\n- **Gives the dependency room to recover** instead of hammering it.\n- **Enables fallbacks:** cached data, a default, or a clear degraded response.\n\n```ts\nimport CircuitBreaker from \"opossum\";\n\nconst breaker = new CircuitBreaker(fetchRecommendations, {\n  timeout: 800,                 // a call slower than this counts as failure\n  errorThresholdPercentage: 50,\n  volumeThreshold: 20,          // need enough calls before judging\n  resetTimeout: 30_000,         // time in OPEN before HALF_OPEN\n});\nbreaker.fallback(() => POPULAR_ITEMS);\nbreaker.on(\"open\", () => metrics.increment(\"breaker.recs.open\"));\n\nconst recs = await breaker.fire(userId);\n```\n\n**Design choices:**\n- Count only failures that indicate dependency trouble: timeouts, connection errors, 5xx; not 4xx.\n- Use rolling windows and a minimum volume so a couple of failures at low traffic do not trip it.\n- Scope breakers per dependency and per endpoint or host, so one bad replica or route does not block everything.\n- Emit metrics and alerts on state changes; an open breaker is an incident signal.\n\n**Where:** libraries like opossum (Node) or Resilience4j (JVM) in each client, or outlier detection in a service mesh like Envoy, which ejects failing hosts automatically. Breakers complement timeouts and retries; they do not replace them.",
+      "followUps": [
+        "How do you pick the thresholds?",
+        "What should the fallback return?",
+        "Where should the breaker live: in each client or in a mesh?"
+      ],
+      "mistakes": [
+        "Using one global breaker for a dependency with several independent endpoints or hosts.",
+        "Counting 4xx client errors as failures, which trips the breaker on bad input."
+      ]
+    },
+    {
+      "id": "arch-distributed-tracing",
+      "level": "mid",
+      "q": "How does distributed tracing with OpenTelemetry work?",
+      "answer": "**A trace follows one request across services as a tree of spans (timed operations with attributes). OpenTelemetry instruments your code, propagates a trace id and parent span id between services in the W3C `traceparent` header, and exports spans through the OTel Collector to a backend like Jaeger, Tempo, Honeycomb or Datadog.**\n\n**Key concepts:**\n- **Span:** one operation (HTTP handler, DB query, outbound call) with start, duration, status and attributes like `http.route` or `db.system`.\n- **Trace:** all spans sharing a trace id, forming a tree that shows where time went.\n- **Context propagation:** the caller injects `traceparent: 00-<trace-id>-<span-id>-01` into outgoing headers; the callee extracts it and parents its spans. For queues, put it in message headers.\n\n**Setup in Node:** auto-instrumentation covers HTTP, Express/Nest, pg, Redis, gRPC and more, and must load before the app.\n\n```ts\n// instrumentation.ts, loaded first (node --import ./instrumentation.js)\nimport { NodeSDK } from \"@opentelemetry/sdk-node\";\nimport { getNodeAutoInstrumentations } from \"@opentelemetry/auto-instrumentations-node\";\nimport { OTLPTraceExporter } from \"@opentelemetry/exporter-trace-otlp-http\";\nnew NodeSDK({ traceExporter: new OTLPTraceExporter(), instrumentations: [getNodeAutoInstrumentations()] }).start();\n\n// custom span for business logic\nconst tracer = trace.getTracer(\"checkout\");\nawait tracer.startActiveSpan(\"price-cart\", async (span) => {\n  span.setAttribute(\"cart.items\", items.length);\n  try { return await priceCart(items); } finally { span.end(); }\n});\n```\n\n**Sampling:** tracing everything is expensive. Head-based sampling decides at the start (e.g. 10%); tail-based sampling in the Collector keeps all slow or errored traces and a fraction of normal ones, which is usually what you want.\n\n**Correlation:** put `trace_id` in every log line so you can jump from a trace to its logs, and use exemplars to link metrics spikes to example traces.\n\n**Real use:** \"checkout p99 jumped to 3 s\" becomes \"the tax-service call inside checkout is waiting 2.5 s on a connection pool\", visible in one waterfall view.",
+      "followUps": [
+        "How is context propagated through a message queue?",
+        "Head-based vs tail-based sampling?",
+        "How do you connect logs to traces?"
+      ],
+      "mistakes": [
+        "Confusing tracing with logging; tracing shows causality and timing across services.",
+        "Not propagating context through queues, so async work shows up as separate unrelated traces.",
+        "Tracing 100% of traffic in production without considering cost."
+      ]
+    },
+    {
+      "id": "arch-sli-slo-sla",
+      "level": "junior",
+      "q": "What are SLIs, SLOs and SLAs?",
+      "answer": "**An SLI (service level indicator) is a measurement of user experience, such as the fraction of requests that succeed in under 300 ms. An SLO (objective) is the target for that SLI over a window, like 99.9% over 30 days. An SLA (agreement) is a contract with customers that specifies consequences, usually credits, if a promised level is missed.**\n\n**Good SLIs are ratios of good events to total events:**\n- **Availability:** successful requests / valid requests (exclude client 4xx errors).\n- **Latency:** requests faster than a threshold / all requests, measured as percentiles (p95, p99), never averages, which hide the slow tail.\n- **Freshness / correctness** for pipelines: share of records processed within 5 minutes.\n- Measure close to the user: at the load balancer or with real-user monitoring, not just inside the process.\n\n```text\nSLI:  good = status < 500 AND latency < 300ms; ratio = good / total\nSLO:  99.9% over rolling 28 days  -> error budget 0.1%\nSLA:  99.5% monthly uptime, else 10% service credit\n```\n\n**How they relate:**\n- SLA is looser than the SLO, so the team gets warned and reacts before a contractual breach.\n- The gap between 100% and the SLO is the error budget, which drives release decisions.\n- Not every service needs an SLA (internal ones rarely do), but user-facing ones should have SLOs.\n\n**Picking targets:** base them on what users need and what the system currently achieves, not on nines that sound good. Each extra nine costs roughly ten times more in engineering. A dependency chain also limits you: a service calling three dependencies each at 99.9% cannot promise 99.99%.\n\n**Real example:** a payments API might have an availability SLO of 99.95% and a latency SLO of 99% of requests under 500 ms, with alerting on burn rate instead of individual errors.",
+      "followUps": [
+        "How would you define an SLI for a background job pipeline?",
+        "Why measure at the load balancer or client rather than inside the service?"
+      ],
+      "mistakes": [
+        "Using averages instead of percentiles for latency.",
+        "Defining SLOs on internal metrics like CPU that users do not experience."
+      ]
+    },
+    {
+      "id": "arch-twelve-factor",
+      "level": "junior",
+      "q": "What is a twelve-factor app and which factors matter most today?",
+      "answer": "**The twelve-factor app is a set of principles for building services that deploy cleanly to cloud platforms and scale horizontally. The ones that matter most today are: config in the environment, stateless disposable processes, backing services as attached resources, one build promoted through environments, and logs as event streams.**\n\n**The important factors, explained:**\n- **Codebase:** one repo per app, many deploys (staging, prod) from it.\n- **Dependencies:** declared explicitly and isolated (lockfile, container image), never relying on system packages.\n- **Config:** anything that differs between environments (URLs, credentials, flags) comes from environment variables or a secrets manager, not from code. You should be able to open-source the code without leaking secrets.\n- **Backing services:** databases, queues and caches are attached by URL and swappable without code changes.\n- **Build, release, run:** build an immutable artifact once (a container image), combine with config to make a release, run it. Promote the same image from staging to production.\n- **Processes:** stateless; sessions, uploads and caches live in backing services, so any instance can serve any request and can be killed at any time.\n- **Port binding:** the app serves HTTP itself on a port.\n- **Concurrency:** scale out by running more processes, split by type (web, worker).\n- **Disposability:** start fast, shut down gracefully on SIGTERM.\n- **Dev/prod parity:** same backing services locally (Docker Compose, Testcontainers).\n- **Logs:** write to stdout as a stream; the platform collects and routes them.\n- **Admin processes:** migrations and one-off scripts run as the same release.\n\n```text\ndocker build -t api:sha-91f2 .      # build once\ndeploy api:sha-91f2 + staging env   # release\ndeploy api:sha-91f2 + prod env      # same image, different config\n```\n\n**Modern additions** people often mention: observability (metrics, traces), health checks, and API-first contracts. Kubernetes, Vercel and Heroku all assume these principles.",
+      "followUps": [
+        "How do you handle secrets under the config factor?",
+        "Why must processes be stateless?"
+      ],
+      "mistakes": [
+        "Reciting all twelve names without explaining why they matter.",
+        "Storing sessions or uploaded files on the local disk of an instance."
+      ]
+    },
+    {
+      "id": "arch-eventual-consistency",
+      "level": "mid",
+      "q": "What is eventual consistency between services and how do you design a product around it?",
+      "answer": "**Eventual consistency means that after a change, other services or read models will reflect it after a short delay rather than immediately; if no new updates happen, all copies converge. You design for it by making the delay visible in the UX, handling out-of-order and duplicate events, and running reconciliation for drift.**\n\n**Why it happens:** once each service owns its data, updates spread through events or replication. Strong consistency across services would require distributed transactions (2PC), which hurt availability and latency, so most systems choose availability and convergence (the CAP and PACELC trade-off).\n\n**Design techniques:**\n- **Honest UX:** show \"Payment processing\" instead of a final state; use optimistic UI for the user's own actions.\n- **Read-your-writes:** after a write, read from the write side (or the primary) for that user, or include a version token and wait until the read model has caught up to it.\n- **Idempotent, order-tolerant consumers:** dedupe by event id; ignore events older than the stored version.\n- **Single owner for invariants:** a rule like \"never oversell stock\" is enforced synchronously by the inventory service that owns the data, not by copies.\n- **Reconciliation:** periodic jobs compare sources of truth with copies (counts, checksums) and repair, plus dead-letter queues for failed events.\n\n```ts\n// order-tolerant projection update\nawait db.query(\n  `UPDATE customer_snapshot SET name = $1, version = $2\n   WHERE id = $3 AND version < $2`,\n  [evt.name, evt.version, evt.customerId],\n);\n```\n\n**What must be strongly consistent:** money movement within a ledger, uniqueness (usernames), inventory reservation, and authorization revocation. Keep each of those inside one service and one database transaction.\n\n**Real example:** after ordering on Amazon, the order list may take a moment to show the order, but the charge and stock reservation were decided atomically by their owning services.",
+      "followUps": [
+        "How do you implement read-your-writes when the read model lags?",
+        "How do you detect and repair drift between services?",
+        "Which operations must not be eventually consistent?"
+      ],
+      "mistakes": [
+        "Treating eventual consistency as a bug to hide rather than a property to design for.",
+        "Forgetting a reconciliation process, so lost or misordered events leave permanent drift."
+      ]
+    },
+    {
+      "id": "arch-multi-tenancy",
+      "level": "senior",
+      "q": "How would you design a multi-tenant SaaS backend?",
+      "answer": "**Pick an isolation model per tier: shared tables with a `tenant_id` column (cheapest, most common), schema or database per tenant (stronger isolation, more operations), or fully separate stacks for regulated customers. Then enforce tenant scoping centrally, not per query, and add per-tenant limits, observability and data lifecycle.**\n\n**Isolation models:**\n- **Pool (shared schema):** every row has `tenant_id`. Efficient and easy to migrate; the risk is a missing filter leaking data.\n- **Bridge (schema or DB per tenant):** good isolation and per-tenant backup/restore; migrations run N times and connection counts grow.\n- **Silo (stack per tenant):** strongest isolation and data residency; highest cost. Usually only for enterprise tiers.\n- Hybrids are common: small tenants pooled, large ones on dedicated databases, with a tenant registry that maps tenant to location.\n\n**Enforcing scope:**\n- Resolve tenant from the authenticated identity (token claim plus membership check), never from a client-supplied header alone.\n- Keep it in request context (AsyncLocalStorage) and apply it automatically in the data layer.\n- Postgres row-level security as defence in depth:\n\n```sql\nALTER TABLE invoices ENABLE ROW LEVEL SECURITY;\nCREATE POLICY tenant_isolation ON invoices\n  USING (tenant_id = current_setting('app.tenant_id')::uuid);\n-- per request/transaction: SET LOCAL app.tenant_id = '...';\n```\n\n- Include `tenant_id` first in composite indexes and unique constraints (`UNIQUE (tenant_id, email)`).\n- Carry tenant id in queue messages, cache keys (`t:{tenant}:...`) and storage paths.\n\n**Noisy neighbours:** per-tenant rate limits and quotas, fair queueing for background jobs, and the ability to move heavy tenants to dedicated resources.\n\n**Operations:** per-tenant metrics and cost attribution, tenant-aware logging, export and deletion for offboarding and GDPR, and tests that assert one tenant can never read another's data.",
+      "followUps": [
+        "How do you prevent one tenant from starving others (noisy neighbour)?",
+        "How would you move a large tenant to its own database?",
+        "How do you enforce tenant isolation in background jobs?"
+      ],
+      "mistakes": [
+        "Relying on developers to remember WHERE tenant_id = ? in every query.",
+        "Ignoring per-tenant limits, so one large customer degrades everyone.",
+        "Putting tenant id only in the URL and trusting it without checking membership."
+      ]
+    }
+  ]
+}

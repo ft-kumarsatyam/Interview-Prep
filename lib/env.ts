@@ -34,10 +34,18 @@ const schema = z.object({
   WHAPI_API_URL: z.url().default("https://gate.whapi.cloud"),
   /** Recipient in international format without + or spaces, e.g. 919891142251. */
   WHATSAPP_TO: z.string().regex(/^\d{8,15}$/, "digits only with country code, e.g. 919891142251").optional(),
+  /** Web Push (PWA notifications) key pair from `npx web-push generate-vapid-keys`. The public key is sent to the browser. */
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  /** Contact the push services can reach, e.g. `mailto:you@example.com`. Defaults to ADMIN_EMAIL. */
+  VAPID_SUBJECT: z.string().optional(),
   /** Brevo v3 key (`xkeysib-…`) or the base64 MCP form `{"api_key":"xkeysib-…"}`. */
   BREVO_API_KEY: z.string().optional(),
   /** Must be a verified sender in Brevo. */
   BREVO_SENDER_EMAIL: z.email().optional(),
+  /** Optional Upstash Redis (REST) for locks, rate limits, caches and the live-event log. Without both, MongoDB does the same jobs. */
+  UPSTASH_REDIS_REST_URL: z.url().optional(),
+  UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
   /** Public base URL used for links in emails, e.g. https://satyam-dev.in */
   APP_URL: z.url().optional(),
 });

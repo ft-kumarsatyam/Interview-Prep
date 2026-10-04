@@ -18,7 +18,7 @@ export function ExtensionStatus() {
   if (state === "yes")
     return (
       <p className="inline-flex items-center gap-2 text-sm text-success sm:col-span-2" role="status">
-        <CircleCheck className="size-4" aria-hidden /> Extension connected. &quot;Ask Gemini&quot; fills and sends the prompt in your open Gemini tab.
+        <CircleCheck className="size-4" aria-hidden /> Extension connected. &quot;Ask Gemini&quot; fills and sends the prompt in your open Gemini tab, and its toolbar button sends a job page or your profile to PrepOS.
       </p>
     );
   return (

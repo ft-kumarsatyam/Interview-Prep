@@ -22,9 +22,11 @@ export interface DsaFilters {
   pattern: string;
   sort: (typeof SORTS)[number];
   view: (typeof VIEWS)[number];
+  /** Id of a curated sheet (see data/dsa-sheets.json); "" means the whole track. Main track only. */
+  list: string;
 }
 
-export const DEFAULT_FILTERS: DsaFilters = { track: "main", q: "", difficulty: "all", status: "all", pattern: "", sort: "order", view: "pattern" };
+export const DEFAULT_FILTERS: DsaFilters = { track: "main", q: "", difficulty: "all", status: "all", pattern: "", sort: "order", view: "pattern", list: "" };
 
 function oneOf<T extends string>(options: readonly T[], value: unknown, fallback: T): T {
   return typeof value === "string" && (options as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -43,6 +45,7 @@ export function parseFilters(sp: Record<string, string | string[] | undefined>):
     pattern: str(sp.pattern, 80),
     sort: oneOf(SORTS, sp.sort, "order"),
     view: oneOf(VIEWS, sp.view, "pattern"),
+    list: str(sp.list, 40),
   };
 }
 

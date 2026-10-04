@@ -1,9 +1,10 @@
 "use client";
 
-import { AlertTriangle, Bug, Check, ChevronRight, CircleCheck, Copy, Eraser, Info, Loader2, Terminal, Timer, XCircle, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Bug, Check, ChevronRight, CircleCheck, Copy, Eraser, FlaskConical, Info, Loader2, Terminal, Timer, XCircle, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import type { LogLine, RunResult } from "@/lib/playground/runner";
+import { testSummary } from "@/lib/playground/test-summary";
 import { cn } from "@/lib/utils";
 
 const LEVEL: Record<LogLine["level"], { icon: LucideIcon; text: string; row: string; label: string }> = {
@@ -20,6 +21,7 @@ export function ConsoleOutput({
   running,
   onClear,
   modKey,
+  fill = false,
   className,
 }: {
   result: RunResult | null;
@@ -27,11 +29,14 @@ export function ConsoleOutput({
   running: boolean;
   onClear: () => void;
   modKey: string;
+  /** Fill the parent's height (inside a resizable IDE pane) instead of sizing to the content. */
+  fill?: boolean;
   className?: string;
 }) {
   const logs = running ? liveLogs : (result?.logs ?? []);
   const errors = logs.filter((l) => l.level === "error").length;
   const warnings = logs.filter((l) => l.level === "warn").length;
+  const tests = running ? null : testSummary(logs);
 
   async function copy() {
     try {
@@ -43,14 +48,14 @@ export function ConsoleOutput({
   }
 
   return (
-    <section aria-label="Console" className={cn("flex min-h-80 flex-col overflow-hidden rounded-lg border bg-muted/30", className)}>
-      <div className="flex min-h-11 items-center gap-2 border-b px-3 text-xs">
+    <section aria-label="Console" className={cn("flex flex-col overflow-hidden bg-muted/30", fill ? "h-full" : "min-h-80 rounded-lg border", className)}>
+      <div className="flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs">
         <Terminal className="size-3.5 text-muted-foreground" aria-hidden />
         <span className="font-medium">Console</span>
         <span className="flex min-w-0 flex-1 items-center gap-2 text-muted-foreground" aria-live="polite">
           {running ? (
             <span className="inline-flex items-center gap-1">
-              <Loader2 className="size-3.5 animate-spin" aria-hidden /> Running…
+              <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden /> Running…
             </span>
           ) : result?.timedOut ? (
             <span className="inline-flex items-center gap-1 text-warning">
@@ -58,7 +63,11 @@ export function ConsoleOutput({
             </span>
           ) : result ? (
             <>
-              {errors > 0 ? (
+              {tests ? (
+                <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium", tests.failed ? "bg-destructive/10 text-destructive" : "bg-success/10 text-success")}>
+                  <FlaskConical className="size-3.5" aria-hidden /> {tests.passed}/{tests.passed + tests.failed} tests passed
+                </span>
+              ) : errors > 0 ? (
                 <span className="inline-flex items-center gap-1 text-destructive">
                   <XCircle className="size-3.5" aria-hidden /> {errors} {errors === 1 ? "error" : "errors"}
                 </span>
@@ -84,9 +93,9 @@ export function ConsoleOutput({
         </Button>
       </div>
 
-      <div className="max-h-[60vh] flex-1 overflow-auto py-1 font-mono text-[13px] leading-relaxed lg:max-h-[520px]" role="log">
+      <div className={cn("flex-1 overflow-auto overscroll-contain py-1 font-mono text-[13px] leading-relaxed", !fill && "max-h-[60vh] lg:max-h-[520px]")} role="log">
         {!running && !result && (
-          <div className="flex h-full min-h-60 flex-col items-center justify-center gap-2 px-6 text-center font-sans text-sm text-muted-foreground">
+          <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 px-6 text-center font-sans text-sm text-muted-foreground">
             <Terminal className="size-6" aria-hidden />
             <p>Run your code to see its output here.</p>
             <p className="hidden text-xs sm:block">
@@ -113,7 +122,7 @@ export function ConsoleOutput({
         {result?.timedOut && !running && (
           <div className="mx-3 my-2 flex gap-2 rounded-md bg-warning/10 p-2.5 font-sans text-sm text-warning">
             <Timer className="mt-0.5 size-4 shrink-0" aria-hidden />
-            <span>Stopped: still running after 3 s. Look for an infinite loop or an interval that never clears.</span>
+            <span>Stopped: still running after 3 s. Look for an infinite loop, an interval that never clears, or a promise that never settles.</span>
           </div>
         )}
       </div>

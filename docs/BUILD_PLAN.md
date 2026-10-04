@@ -117,3 +117,14 @@ Known gaps:
 - **LLD class-diagram templates** for the LLD mock round (parking lot, elevator, splitwise).
 - **AI news summaries:** one batched LLM call per morning fills `articles.aiSummary` for the newest AI items.
 - **Full LeetCode history import:** an opt-in `LEETCODE_SESSION` cookie for backfilling beyond the last 20 accepted submissions. (Public sync is already done; see ARCHITECTURE §9.)
+
+## Career phases (resume, jobs, web dev)
+- **A. Resume**: import PDF/DOCX/TXT, deterministic ATS scorer with JD keyword match, roast (free LLM, rules fallback). Routes `/resume`, `/api/resume/parse`.
+- **B. Tailoring**: JD tailoring as a fact-checked patch, saved versions, PDF/DOCX/TXT download. Routes `/resume/tailor`, `/api/resume/[id]/download`.
+- **C. Jobs**: tracker with pipeline and follow-ups (in the daily briefing), extension capture of job and profile pages, profile audit. Routes `/jobs`, `/jobs/[id]`, extension `activeTab` button.
+- **D. Web dev**: lessons and guided projects outside the syllabus (see ARCHITECTURE §12). Routes `/web`, `/projects`.
+- **E1. Ports and optional Redis**: `KvStore` (Mongo default, optional Upstash with fallback), rate limiter, `lib/http-safe.ts`.
+- **E2. Career sources and sync**: `data/careers.json`, connectors, `jobpostings`, `syncJobs`, `/api/cron/jobs`, `jobs-sync.yml`, `careers:verify`.
+- **E3. Discovery**: preferences, deterministic match, Discover/Sources/Search links, posting page with inline tailoring and apply prompt, alerts and briefing section.
+- **E4. Live updates**: `/api/events` (SSE), `lib/realtime`, client provider with backoff and polling fallback.
+- **E5. Hardening**: rate limits, structured sync log with run id, docs and budgets.

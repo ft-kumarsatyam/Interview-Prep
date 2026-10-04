@@ -1,3 +1,5 @@
+import { mailField, mailPrefsFrom, type MailKind, type MailPrefs } from "@/lib/domain/mail-prefs";
+import { effectiveRoastLevel, type RoastLevel } from "@/lib/domain/roast";
 import { cache } from "react";
 import { news } from "@/lib/content";
 import { connectDb } from "@/lib/db";
@@ -31,6 +33,11 @@ export interface AppSettings extends PlanSettings {
   newsLastFailed: string[];
   leetcodeLastError: string | null;
   roastMode: boolean;
+  /** Effective roast intensity (see effectiveRoastLevel). `roastMode` is true for coach and savage. */
+  roastLevel: RoastLevel;
+  mail: MailPrefs;
+  /** Backlog items queued into each day (0 = off). */
+  backlogBudget: number;
   lastMorningRunAt: Date | null;
   lastEveningRunAt: Date | null;
   lastExportAt: Date | null;
@@ -100,7 +107,10 @@ async function loadSettings(): Promise<AppSettings> {
     newsLastFetchAt: doc.newsLastFetchAt ?? null,
     newsLastFailed: doc.newsLastFailed ?? [],
     leetcodeLastError: doc.leetcodeLastError ?? null,
-    roastMode: doc.roastMode ?? true,
+    roastMode: effectiveRoastLevel(doc.roastLevel as RoastLevel | null, doc.roastMode) !== "off",
+    roastLevel: effectiveRoastLevel(doc.roastLevel as RoastLevel | null, doc.roastMode),
+    mail: mailPrefsFrom(doc),
+    backlogBudget: typeof doc.backlogBudget === "number" ? doc.backlogBudget : 2,
     lastMorningRunAt: doc.lastMorningRunAt ?? null,
     lastEveningRunAt: doc.lastEveningRunAt ?? null,
     lastExportAt: doc.lastExportAt ?? null,
@@ -126,8 +136,25 @@ export async function markRun(field: "lastMorningRunAt" | "lastEveningRunAt" | "
 }
 
 export async function setRoastMode(on: boolean): Promise<void> {
+  await setRoastLevel(on ? "savage" : "off");
+}
+
+/** Stores the level and keeps the older on/off flag in step with it. */
+export async function setRoastLevel(level: RoastLevel): Promise<void> {
   await connectDb();
-  await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { roastMode: on } }, { upsert: true });
+  await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { roastLevel: level, roastMode: level !== "off" } }, { upsert: true });
+  invalidateSettings();
+}
+
+export async function setBacklogBudget(n: number): Promise<void> {
+  await connectDb();
+  await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { backlogBudget: Math.min(10, Math.max(0, Math.round(n))) } }, { upsert: true });
+  invalidateSettings();
+}
+
+export async function setMailPref(kind: MailKind, on: boolean): Promise<void> {
+  await connectDb();
+  await Settings.updateOne({ _id: SETTINGS_ID }, { $set: { [mailField(kind)]: on } }, { upsert: true });
   invalidateSettings();
 }
 

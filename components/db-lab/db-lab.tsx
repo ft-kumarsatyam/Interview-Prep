@@ -1,11 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CircleAlert, Eye, Lightbulb, ListChecks, Loader2, Play, RotateCcw, Table2 } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { ArrowRight, Check, Eraser, Eye, History, Lightbulb, ListChecks, Loader2, Play, RotateCcw, Send, Table2, Target, X } from "lucide-react";
 import { toast } from "sonner";
-import { Chip } from "@/components/shared/chip";
+import { CodeEditor } from "@/components/playground/code-editor";
+import { useModKey } from "@/components/playground/use-mod-key";
+import { DESKTOP_QUERY, readPref, useHydrated, useMediaQuery, writePref } from "@/components/ide/use-client-prefs";
+import { DifficultyBadge } from "@/components/shared/badges";
+import { CompactTabsList, CompactTabsTrigger } from "@/components/shared/compact-tabs";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import {
   MONGO_DATASETS,
   SQL_DATASETS,
@@ -13,50 +18,38 @@ import {
   challengesFor,
   compareRows,
   docsToRows,
+  isBlankQuery,
   mongoDataset,
   sqlDataset,
   type Cell,
   type DbChallenge,
   type DbMode,
+  type Difficulty,
   type Row,
 } from "@/lib/domain/db-lab";
 import { runMongo } from "@/lib/domain/mongo-query";
-import { resetSqlDatabase, runSql, type SqlResultSet } from "@/lib/sandbox/sql-run";
+import { parseSchema } from "@/lib/domain/sql-schema";
+import { judgeOutputs, runQuery, type QueryOutput, type QueryVerdict } from "@/lib/sandbox/sql-judge";
+import { resetSqlDatabase, type SqlResultSet } from "@/lib/sandbox/sql-run";
 import { cn } from "@/lib/utils";
-import { CodeEditor } from "@/components/playground/code-editor";
-import { useModKey } from "@/components/playground/use-mod-key";
-import { ResultTable } from "./result-table";
+import { QueryOutputView, VerdictBanner } from "./query-output";
+import { MongoSchemaBrowser, SqlSchemaBrowser } from "./schema-browser";
 
-type Pane = "query" | "challenges" | "schema";
-type Output = { kind: "sets"; sets: SqlResultSet[]; ms: number } | { kind: "error"; message: string };
+type SideTab = "challenges" | "schema";
+type BottomTab = "result" | "expected" | "history";
+type MobilePane = "query" | "challenges" | "schema";
+type Filter = "all" | Difficulty;
 
-const SOLVED_KEY = "prepos:db-lab:solved";
+const SOLVED_KEY = "db-lab:solved";
+const HISTORY_MAX = 20;
 
-function loadSolved(): Set<string> {
+function loadList(key: string): string[] {
   try {
-    return new Set(JSON.parse(localStorage.getItem(SOLVED_KEY) ?? "[]") as string[]);
+    const v = JSON.parse(readPref(key) ?? "[]") as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
-    return new Set();
+    return [];
   }
-}
-
-function saveSolved(s: Set<string>) {
-  try {
-    localStorage.setItem(SOLVED_KEY, JSON.stringify([...s]));
-  } catch {
-    // Private windows can refuse storage; progress just won't persist.
-  }
-}
-
-/** Table name and column list for each CREATE TABLE in a seed script. */
-function sqlSchema(seed: string): Array<{ table: string; columns: string[] }> {
-  return [...seed.matchAll(/CREATE TABLE (\w+) \(([^;]*)\);/g)].map((m) => ({
-    table: m[1]!,
-    columns: (m[2] ?? "")
-      .split(/,(?![^()]*\))/)
-      .map((c) => c.trim())
-      .filter((c) => c && !/^(PRIMARY|FOREIGN|UNIQUE)\b/i.test(c)),
-  }));
 }
 
 function docsToSet(docs: unknown[]): SqlResultSet {
@@ -69,107 +62,189 @@ function docsToSet(docs: unknown[]): SqlResultSet {
   return { columns, rows, total: rows.length };
 }
 
+/** Mongo results are compared as documents, so field order in a projection doesn't matter. */
+function mongoRows(s: SqlResultSet): Row[] {
+  return docsToRows(s.rows.map((r) => Object.fromEntries(s.columns.map((c, i) => [c, r[i]]))));
+}
+
+const starterFor = (c: DbChallenge | null, mode: DbMode) => (c ? `${mode === "sql" ? "--" : "//"} ${c.prompt}\n${mode === "sql" ? "SELECT " : "db."}` : STARTERS[mode]);
+const draftKey = (c: DbChallenge | null, mode: DbMode, dataset: string) => (c ? `db-lab:draft:${c.id}` : `db-lab:draft:free:${mode}:${dataset}`);
+
 export function DbLab() {
+  const hydrated = useHydrated();
+  if (!hydrated) return <div className="h-[calc(100dvh-15rem)] min-h-[560px] animate-pulse rounded-xl border bg-card motion-reduce:animate-none" aria-hidden />;
+  return <Lab />;
+}
+
+function Lab() {
   const modKey = useModKey();
-  const [mode, setMode] = useState<DbMode>("sql");
-  const [datasetId, setDatasetId] = useState("company");
-  const [code, setCode] = useState(STARTERS.sql);
-  const [pane, setPane] = useState<Pane>("query");
-  const [running, setRunning] = useState(false);
-  const [output, setOutput] = useState<Output | null>(null);
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  const [mode, setMode] = useState<DbMode>(() => (readPref("db-lab:mode") === "mongo" ? "mongo" : "sql"));
+  const [datasetId, setDatasetId] = useState(() => {
+    const saved = readPref("db-lab:dataset");
+    const list = mode === "sql" ? SQL_DATASETS : MONGO_DATASETS;
+    return list.some((d) => d.id === saved) ? saved! : list[0]!.id;
+  });
   const [active, setActive] = useState<DbChallenge | null>(null);
-  const [verdict, setVerdict] = useState<{ ok: boolean; text: string } | null>(null);
+  const [code, setCodeState] = useState(() => readPref(draftKey(null, mode, datasetId)) ?? STARTERS[mode]);
+  const [running, setRunning] = useState<"run" | "check" | null>(null);
+  const [output, setOutput] = useState<QueryOutput | null>(null);
+  const [outputTitle, setOutputTitle] = useState<string | undefined>(undefined);
+  const [expected, setExpected] = useState<QueryOutput | null>(null);
+  const [verdict, setVerdict] = useState<QueryVerdict | null>(null);
   const [showHint, setShowHint] = useState(false);
   const [showSolution, setShowSolution] = useState(false);
-  const outputRef = useRef<HTMLDivElement>(null);
-  const [solved, setSolved] = useState<Set<string>>(() => (typeof window === "undefined" ? new Set() : loadSolved()));
-
-  // On a phone the results land below the fold after Run, so bring them into view.
-  useEffect(() => {
-    if (output) outputRef.current?.scrollIntoView({ block: "nearest", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-  }, [output]);
+  const [sideTab, setSideTab] = useState<SideTab>("challenges");
+  const [bottomTab, setBottomTab] = useState<BottomTab>("result");
+  const [mobilePane, setMobilePane] = useState<MobilePane>("query");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [solved, setSolved] = useState<Set<string>>(() => new Set(loadList(SOLVED_KEY)));
+  const [history, setHistory] = useState<string[]>(() => loadList(`db-lab:history:${mode}`));
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const datasets = mode === "sql" ? SQL_DATASETS : MONGO_DATASETS;
   const challenges = useMemo(() => challengesFor(mode, datasetId), [mode, datasetId]);
-  const schema = useMemo(() => (mode === "sql" ? sqlSchema(sqlDataset(datasetId).seed) : []), [mode, datasetId]);
+  const visible = filter === "all" ? challenges : challenges.filter((c) => c.difficulty === filter);
+  const tables = useMemo(() => (mode === "sql" ? parseSchema(sqlDataset(datasetId).seed) : []), [mode, datasetId]);
   const collections = useMemo(() => (mode === "mongo" ? mongoDataset(datasetId).collections : {}), [mode, datasetId]);
+  const solvedHere = challenges.filter((c) => solved.has(c.id)).length;
+  const blurb = datasets.find((d) => d.id === datasetId)?.blurb;
+
+  function setCode(next: string) {
+    setCodeState(next);
+    clearTimeout(saveTimer.current);
+    const key = draftKey(active, mode, datasetId);
+    const starter = starterFor(active, mode);
+    saveTimer.current = setTimeout(() => writePref(key, next === starter ? null : next), 400);
+  }
 
   function clearFeedback() {
     setOutput(null);
+    setOutputTitle(undefined);
+    setExpected(null);
     setVerdict(null);
     setShowHint(false);
     setShowSolution(false);
+    setBottomTab("result");
+  }
+
+  function load(c: DbChallenge | null, m: DbMode, ds: string) {
+    clearTimeout(saveTimer.current);
+    setActive(c);
+    setCodeState(readPref(draftKey(c, m, ds)) ?? starterFor(c, m));
+    clearFeedback();
   }
 
   function switchMode(next: DbMode) {
     if (next === mode) return;
+    const ds = (next === "sql" ? SQL_DATASETS : MONGO_DATASETS)[0]!.id;
     setMode(next);
-    setDatasetId(next === "sql" ? "company" : "shop");
-    setCode(STARTERS[next]);
-    setActive(null);
-    clearFeedback();
+    setDatasetId(ds);
+    setHistory(loadList(`db-lab:history:${next}`));
+    writePref("db-lab:mode", next);
+    writePref("db-lab:dataset", ds);
+    load(null, next, ds);
   }
 
   function switchDataset(id: string) {
     setDatasetId(id);
-    setCode(STARTERS[mode]);
-    setActive(null);
-    clearFeedback();
+    writePref("db-lab:dataset", id);
+    load(null, mode, id);
   }
 
   function pick(c: DbChallenge) {
-    setActive(c);
-    clearFeedback();
-    const comment = mode === "sql" ? "--" : "//";
-    setCode(`${comment} ${c.prompt}\n${mode === "sql" ? "SELECT " : "db."}`);
-    setPane("query");
+    load(c, mode, datasetId);
+    setMobilePane("query");
   }
 
-  async function execute(source: string, fresh = false): Promise<Output> {
+  async function execute(source: string, fresh = false): Promise<QueryOutput> {
     if (mode === "mongo") {
       const started = performance.now();
       const res = runMongo(source, collections);
       if (!res.ok) return { kind: "error", message: res.error };
       return { kind: "sets", sets: [docsToSet(res.docs)], ms: Math.max(1, Math.round(performance.now() - started)) };
     }
-    const res = await runSql(sqlDataset(datasetId).seed, source, { fresh });
-    return res.ok ? { kind: "sets", sets: res.sets, ms: res.ms } : { kind: "error", message: res.error };
+    return runQuery(sqlDataset(datasetId).seed, source, { fresh });
+  }
+
+  function remember(source: string) {
+    const entry = source.trim();
+    const next = [entry, ...history.filter((h) => h !== entry)].slice(0, HISTORY_MAX);
+    setHistory(next);
+    writePref(`db-lab:history:${mode}`, JSON.stringify(next));
   }
 
   async function run() {
-    if (running || !code.trim()) return;
-    setRunning(true);
+    if (running) return;
+    if (isBlankQuery(code, mode)) return void toast.message("Write a query first.");
+    setRunning("run");
     setVerdict(null);
     const out = await execute(code);
     setOutput(out);
-    setRunning(false);
+    setOutputTitle(undefined);
+    setBottomTab("result");
+    if (out.kind === "sets") remember(code);
+    setRunning(null);
+  }
+
+  async function preview(name: string) {
+    if (running) return;
+    setRunning("run");
+    const out = await execute(mode === "sql" ? `SELECT * FROM ${name} LIMIT 100` : `db.${name}.find()`);
+    setOutput(out);
+    setOutputTitle(`Preview: ${name}`);
+    setVerdict(null);
+    setBottomTab("result");
+    setMobilePane("query");
+    setRunning(null);
+  }
+
+  async function showExpected() {
+    if (!active || running) return;
+    setRunning("check");
+    const ref = await execute(active.solution, true);
+    if (mode === "sql") resetSqlDatabase();
+    setExpected(ref);
+    setRunning(null);
   }
 
   async function check() {
     if (!active || running) return;
-    setRunning(true);
+    if (isBlankQuery(code, mode)) return void toast.message("Write a query first.");
+    setRunning("check");
     const mine = await execute(code, true);
+    const ref = await execute(active.solution, true);
+    if (mode === "sql") resetSqlDatabase();
     setOutput(mine);
-    if (mine.kind === "error") {
-      setVerdict({ ok: false, text: "Your query has an error. Fix it, then check again." });
-      return setRunning(false);
-    }
-    const reference = await execute(active.solution, true);
-    setRunning(false);
-    if (reference.kind === "error") return setVerdict({ ok: false, text: "Couldn't evaluate the reference answer. Try again." });
-    const last = <T,>(sets: T[]) => sets.at(-1);
-    const mineSet = last(mine.sets);
-    const refSet = last(reference.sets);
-    if (!mineSet || !refSet) return setVerdict({ ok: false, text: "Your query returned no result set. Use SELECT (or find/aggregate)." });
-    const asRows = (s: SqlResultSet) => (mode === "mongo" ? docsToRows(JSON.parse(JSON.stringify(s.rows.map((r) => Object.fromEntries(s.columns.map((c, i) => [c, r[i]])))))) : s.rows);
-    const result = compareRows(asRows(mineSet), asRows(refSet), active.ordered);
-    if (result.ok) {
-      setVerdict({ ok: true, text: "Correct. Your result matches the reference." });
+    setOutputTitle("Your output");
+    setExpected(ref);
+    setBottomTab("result");
+    setRunning(null);
+    let v: QueryVerdict;
+    if (mode === "mongo" && mine.kind === "sets" && ref.kind === "sets") {
+      const r = compareRows(mongoRows(mine.sets.at(-1)!), mongoRows(ref.sets.at(-1)!), active.ordered);
+      v = r.ok ? { ok: true, text: "Your documents match the expected result." } : { ok: false, text: r.reason };
+    } else v = judgeOutputs(mine, ref, active.ordered);
+    setVerdict(v);
+    if (v.ok) {
       const next = new Set(solved).add(active.id);
       setSolved(next);
-      saveSolved(next);
-      toast.success("Solved");
-    } else setVerdict({ ok: false, text: result.reason });
+      writePref(SOLVED_KEY, JSON.stringify([...next]));
+      toast.success(`Solved: ${active.title}`);
+    } else if (mine.kind === "sets") remember(code);
+  }
+
+  function nextChallenge() {
+    const from = active ? challenges.findIndex((c) => c.id === active.id) : -1;
+    const ordered = [...challenges.slice(from + 1), ...challenges.slice(0, from + 1)];
+    const next = ordered.find((c) => !solved.has(c.id) && c.id !== active?.id) ?? ordered[0];
+    if (next) pick(next);
+  }
+
+  function resetQuery() {
+    if (code !== starterFor(active, mode) && !window.confirm("Clear your query and start over?")) return;
+    setCode(starterFor(active, mode));
+    clearFeedback();
   }
 
   function resetData() {
@@ -178,183 +253,361 @@ export function DbLab() {
     toast.success("Database reset to its starting data");
   }
 
-  const solvedHere = challenges.filter((c) => solved.has(c.id)).length;
-
-  const left = (
-    <div className={cn("min-w-0 space-y-4", pane === "query" && "hidden lg:block")}>
-      <section className={cn(pane === "schema" && "hidden lg:block")} aria-label="Challenges">
-        <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
-          <ListChecks className="size-4 text-primary" aria-hidden /> Challenges
-          <span className="tabular ml-auto font-mono text-xs font-normal text-muted-foreground">
-            {solvedHere}/{challenges.length}
-          </span>
-        </h2>
-        <ul className="space-y-1">
-          {challenges.map((c) => (
+  const challengeList = (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-1" role="group" aria-label="Filter by difficulty">
+        {(["all", "Easy", "Medium", "Hard"] as const).map((f) => (
+          <button
+            key={f}
+            type="button"
+            aria-pressed={filter === f}
+            onClick={() => setFilter(f)}
+            className={cn(
+              "h-7 rounded-full border px-2.5 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+              filter === f ? "border-primary/50 bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            {f === "all" ? "All" : f}
+          </button>
+        ))}
+      </div>
+      <ul className="space-y-1.5">
+        {visible.map((c, i) => {
+          const isActive = active?.id === c.id;
+          const done = solved.has(c.id);
+          return (
             <li key={c.id}>
               <button
                 type="button"
                 onClick={() => pick(c)}
-                aria-current={active?.id === c.id ? "true" : undefined}
+                aria-current={isActive ? "true" : undefined}
                 className={cn(
-                  "flex min-h-11 w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-                  active?.id === c.id && "border-primary/50 bg-primary/5",
+                  "group flex min-h-12 w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                  isActive && "border-primary/50 bg-primary/5",
                 )}
               >
-                {solved.has(c.id) ? <Check className="mt-0.5 size-4 shrink-0 text-success" aria-label="Solved" /> : <span className="mt-0.5 size-4 shrink-0 rounded-full border" aria-hidden />}
+                <span
+                  className={cn("mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border font-mono text-2xs tabular", done ? "border-success/40 bg-success/10 text-success" : "text-muted-foreground")}
+                  aria-label={done ? "Solved" : undefined}
+                >
+                  {done ? <Check className="size-3" aria-hidden /> : i + 1}
+                </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block font-medium">{c.title}</span>
-                  <span className="block text-xs text-muted-foreground">
-                    {c.difficulty} · {c.concepts.slice(0, 2).join(", ")}
+                  <span className="block font-medium leading-snug">{c.title}</span>
+                  <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <DifficultyBadge difficulty={c.difficulty} />
+                    {c.concepts.slice(0, 2).map((k) => (
+                      <span key={k} className="rounded bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+                        {k}
+                      </span>
+                    ))}
                   </span>
                 </span>
               </button>
             </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className={cn(pane === "challenges" && "hidden lg:block")} aria-label="Schema">
-        <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
-          <Table2 className="size-4 text-primary" aria-hidden /> {mode === "sql" ? "Tables" : "Collections"}
-        </h2>
-        <div className="space-y-2">
-          {mode === "sql"
-            ? schema.map((t) => (
-                <div key={t.table} className="rounded-lg border p-2.5">
-                  <p className="font-mono text-xs font-semibold">{t.table}</p>
-                  <ul className="mt-1 space-y-0.5 font-mono text-2xs text-muted-foreground">
-                    {t.columns.map((c) => (
-                      <li key={c} className="truncate">
-                        {c}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))
-            : Object.entries(collections).map(([name, docs]) => (
-                <div key={name} className="rounded-lg border p-2.5">
-                  <p className="font-mono text-xs font-semibold">
-                    {name} <span className="font-normal text-muted-foreground">({docs.length} docs)</span>
-                  </p>
-                  <pre className="mt-1 overflow-x-auto font-mono text-2xs whitespace-pre-wrap text-muted-foreground">{JSON.stringify(docs[0])}</pre>
-                </div>
-              ))}
-        </div>
-      </section>
+          );
+        })}
+        {visible.length === 0 && <li className="py-6 text-center text-sm text-muted-foreground">No {filter} challenges for this dataset.</li>}
+      </ul>
     </div>
   );
 
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <Tabs value={mode} onValueChange={(v) => switchMode(v as DbMode)}>
-          <TabsList aria-label="Query language">
-            <TabsTrigger value="sql">SQL</TabsTrigger>
-            <TabsTrigger value="mongo">MongoDB</TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Dataset">
-          {datasets.map((d) => (
-            <Chip key={d.id} pressed={d.id === datasetId} onClick={() => switchDataset(d.id)} title={d.blurb}>
-              {d.label}
-            </Chip>
-          ))}
+  const schema = mode === "sql" ? <SqlSchemaBrowser tables={tables} onPreview={(t) => void preview(t)} /> : <MongoSchemaBrowser collections={collections} onPreview={(n) => void preview(n)} />;
+
+  const sidebar = (
+    <Tabs value={sideTab} onValueChange={(v) => setSideTab(v as SideTab)} className="flex min-h-0 flex-1 flex-col gap-0">
+      <div className="flex shrink-0 items-center border-b bg-muted/30 px-2 py-1.5">
+        <CompactTabsList>
+          <CompactTabsTrigger value="challenges">
+            <ListChecks className="size-3.5" /> Challenges
+            <span className="font-mono text-2xs text-muted-foreground tabular">
+              {solvedHere}/{challenges.length}
+            </span>
+          </CompactTabsTrigger>
+          <CompactTabsTrigger value="schema">
+            <Table2 className="size-3.5" /> {mode === "sql" ? "Tables" : "Collections"}
+          </CompactTabsTrigger>
+        </CompactTabsList>
+      </div>
+      <TabsContent value="challenges" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+        {challengeList}
+      </TabsContent>
+      <TabsContent value="schema" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+        {schema}
+      </TabsContent>
+    </Tabs>
+  );
+
+  const toolbar = (
+    <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b bg-muted/30 px-2 py-1.5">
+      <span className="flex min-w-0 flex-1 items-center gap-1.5 px-1 text-xs">
+        <Target className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="truncate font-medium">{active ? active.title : "Free query"}</span>
+        {active && (
+          <Button type="button" size="icon-sm" variant="ghost" className="size-6" onClick={() => load(null, mode, datasetId)} aria-label="Leave challenge, back to a free query" title="Back to free query">
+            <X />
+          </Button>
+        )}
+      </span>
+      <Button type="button" variant="ghost" size="icon-sm" className="size-8" onClick={resetQuery} aria-label="Clear the query and start over" title="Start over">
+        <Eraser />
+      </Button>
+      {mode === "sql" && (
+        <Button type="button" variant="ghost" size="sm" className="h-8" onClick={resetData} title="Undo any INSERT/UPDATE/DELETE you ran">
+          <RotateCcw /> <span className="hidden sm:inline">Reset data</span>
+        </Button>
+      )}
+      <Button type="button" variant={active ? "outline" : "default"} size="sm" className="h-8" onClick={run} disabled={running !== null} title={`Run (${modKey} + Enter)`}>
+        {running === "run" ? <Loader2 className="animate-spin motion-reduce:animate-none" /> : <Play />} Run
+      </Button>
+      {active && (
+        <Button type="button" size="sm" className="h-8" onClick={check} disabled={running !== null} title={`Check answer (${modKey} + Shift + Enter)`}>
+          {running === "check" ? <Loader2 className="animate-spin motion-reduce:animate-none" /> : <Send />} Check
+        </Button>
+      )}
+    </div>
+  );
+
+  const challengeCard = active && (
+    <div className="shrink-0 space-y-2 border-b px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <DifficultyBadge difficulty={active.difficulty} />
+        {solved.has(active.id) && (
+          <span className="inline-flex items-center gap-1 text-xs text-success">
+            <Check className="size-3.5" aria-hidden /> Solved before
+          </span>
+        )}
+        <div className="ml-auto flex gap-1">
+          <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowHint((v) => !v)} aria-expanded={showHint}>
+            <Lightbulb /> {showHint ? "Hide hint" : "Hint"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs"
+            onClick={() => (showSolution || window.confirm("Look at the answer? Try the hint first.")) && setShowSolution((v) => !v)}
+            aria-expanded={showSolution}
+          >
+            <Eye /> {showSolution ? "Hide answer" : "Answer"}
+          </Button>
         </div>
       </div>
+      <p className="text-sm text-pretty">{active.prompt}</p>
+      {showHint && <p className="rounded-md bg-info/10 px-2.5 py-1.5 text-sm text-info">{active.hint}</p>}
+      {showSolution && <pre className="overflow-x-auto rounded-md border bg-muted/40 p-2.5 font-mono text-xs whitespace-pre-wrap">{active.solution}</pre>}
+    </div>
+  );
 
-      <div className="grid grid-cols-3 gap-1 rounded-lg border p-1 lg:hidden" role="tablist" aria-label="Lab sections">
-        {(["query", "challenges", "schema"] as const).map((p) => (
-          <button
-            key={p}
-            role="tab"
-            type="button"
-            aria-selected={pane === p}
-            onClick={() => setPane(p)}
-            className={cn("min-h-9 rounded-md text-sm capitalize", pane === p ? "bg-muted font-medium" : "text-muted-foreground")}
-          >
-            {p}
-          </button>
-        ))}
-      </div>
+  const editor = (
+    <CodeEditor
+      value={code}
+      onChange={setCode}
+      onRun={run}
+      onSubmit={active ? check : undefined}
+      language={mode === "sql" ? "sql" : "javascript"}
+      fontSize={14}
+      fill={desktop}
+      minHeight="220px"
+      ariaLabel={mode === "sql" ? "SQL editor" : "Mongo query editor"}
+      className="rounded-none border-0"
+    />
+  );
 
-      <div className="grid items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        {left}
-
-        <div className={cn("min-w-0 space-y-3", pane !== "query" && "hidden lg:block")}>
+  const bottom = (
+    <Tabs value={bottomTab} onValueChange={(v) => setBottomTab(v as BottomTab)} className="flex h-full min-h-0 flex-col gap-0">
+      <div className="flex shrink-0 items-center border-y bg-muted/30 px-2 py-1">
+        <CompactTabsList>
+          <CompactTabsTrigger value="result">
+            Result
+            {output && <span className={cn("size-1.5 rounded-full", output.kind === "error" || verdict?.ok === false ? "bg-destructive" : "bg-success")} aria-hidden />}
+          </CompactTabsTrigger>
+          {active && <CompactTabsTrigger value="expected">Expected</CompactTabsTrigger>}
+          <CompactTabsTrigger value="history">
+            <History className="size-3.5" /> History
+          </CompactTabsTrigger>
+        </CompactTabsList>
+        <span className="ml-auto hidden text-2xs text-muted-foreground sm:inline">
+          <kbd className="rounded border bg-background px-1 font-mono">{modKey}</kbd> <kbd className="rounded border bg-background px-1 font-mono">Enter</kbd> run
           {active && (
-            <div className="space-y-2 rounded-xl border bg-card p-3">
-              <p className="text-sm">
-                <span className="font-semibold">{active.title}.</span> {active.prompt}
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                <Button type="button" size="sm" variant="ghost" onClick={() => setShowHint((v) => !v)} aria-expanded={showHint}>
-                  <Lightbulb /> {showHint ? "Hide hint" : "Hint"}
+            <>
+              {" · "}
+              <kbd className="rounded border bg-background px-1 font-mono">{modKey}</kbd> <kbd className="rounded border bg-background px-1 font-mono">Shift</kbd>{" "}
+              <kbd className="rounded border bg-background px-1 font-mono">Enter</kbd> check
+            </>
+          )}
+        </span>
+      </div>
+      <div className={cn("min-h-0 flex-1 p-3", desktop && "overflow-y-auto overscroll-contain")}>
+        <TabsContent value="result" className="space-y-3">
+          {verdict && (
+            <div className="space-y-2">
+              <VerdictBanner verdict={verdict} />
+              {verdict.ok && (
+                <Button type="button" size="sm" variant="secondary" onClick={nextChallenge}>
+                  Next challenge <ArrowRight />
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => (showSolution || window.confirm("Look at the answer? Try the hint first.")) && setShowSolution((v) => !v)}
-                  aria-expanded={showSolution}
-                >
-                  <Eye /> {showSolution ? "Hide answer" : "Show answer"}
+              )}
+              {!verdict.ok && expected && (
+                <Button type="button" size="sm" variant="ghost" onClick={() => setBottomTab("expected")}>
+                  Compare with the expected output <ArrowRight />
+                </Button>
+              )}
+            </div>
+          )}
+          <QueryOutputView
+            output={output}
+            running={running !== null}
+            title={outputTitle}
+            emptyHint={
+              <>
+                <p>Run a query to see rows here.</p>
+                <p className="text-xs">Tip: the eye icon next to a {mode === "sql" ? "table" : "collection"} previews its data without touching your editor.</p>
+              </>
+            }
+          />
+        </TabsContent>
+        {active && (
+          <TabsContent value="expected">
+            {expected ? (
+              <QueryOutputView output={expected} running={false} title="Expected output" emptyHint={null} />
+            ) : (
+              <div className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground">
+                <p>See the rows a correct answer returns, without the query.</p>
+                <Button type="button" size="sm" variant="outline" onClick={() => void showExpected()} disabled={running !== null}>
+                  <Eye /> Show expected output
                 </Button>
               </div>
-              {showHint && <p className="text-sm text-muted-foreground">{active.hint}</p>}
-              {showSolution && <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-2.5 font-mono text-xs whitespace-pre-wrap">{active.solution}</pre>}
-            </div>
-          )}
-
-          <CodeEditor value={code} onChange={setCode} onRun={run} language={mode === "sql" ? "sql" : "javascript"} minHeight="180px" ariaLabel={mode === "sql" ? "SQL editor" : "Mongo query editor"} />
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" onClick={run} disabled={running} className="h-10">
-              {running ? <Loader2 className="animate-spin" /> : <Play />} Run
-            </Button>
-            {active && (
-              <Button type="button" variant="secondary" onClick={check} disabled={running} className="h-10">
-                <Check /> Check answer
-              </Button>
             )}
-            {mode === "sql" && (
-              <Button type="button" variant="ghost" onClick={resetData} className="h-10">
-                <RotateCcw /> Reset data
-              </Button>
-            )}
-            <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">
-              <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-2xs">{modKey}</kbd> + <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-2xs">Enter</kbd> to run
-            </span>
-          </div>
-
-          {verdict && (
-            <p
-              role="status"
-              className={cn("flex items-start gap-2 rounded-lg border px-3 py-2 text-sm", verdict.ok ? "border-success/40 bg-success/10 text-success" : "border-warning/40 bg-warning/10")}
-            >
-              {verdict.ok ? <Check className="mt-0.5 size-4 shrink-0" aria-hidden /> : <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />}
-              {verdict.text}
-            </p>
-          )}
-
-          <div ref={outputRef} className="space-y-3 scroll-mb-24">
-          {output?.kind === "error" && (
-            <pre role="alert" className="overflow-x-auto rounded-lg border border-destructive/40 bg-destructive/10 p-3 font-mono text-xs whitespace-pre-wrap text-destructive">
-              {output.message}
-            </pre>
-          )}
-          {output?.kind === "sets" && (
-            <div className="space-y-3">
-              {output.sets.length === 0 && <p className="text-sm text-muted-foreground">Done in {output.ms} ms. The statement returned no rows.</p>}
-              {output.sets.map((s, i) => (
-                <ResultTable key={i} columns={s.columns} rows={s.rows} total={s.total} label={`Result ${i + 1}`} />
+          </TabsContent>
+        )}
+        <TabsContent value="history">
+          {history.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">Queries you run show up here. Click one to load it back into the editor.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {history.map((h) => (
+                <li key={h}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCode(h);
+                      setBottomTab("result");
+                    }}
+                    className="block w-full rounded-md border px-2.5 py-1.5 text-left font-mono text-xs hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                  >
+                    <span className="line-clamp-2 whitespace-pre-wrap">{h}</span>
+                  </button>
+                </li>
               ))}
-              {output.sets.length > 0 && <p className="text-xs text-muted-foreground">{output.ms} ms</p>}
-            </div>
+            </ul>
           )}
-          </div>
+        </TabsContent>
+      </div>
+    </Tabs>
+  );
+
+  return (
+    <div data-ide className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card p-2">
+        <div role="group" aria-label="Query language" className="flex rounded-lg bg-muted p-[3px]">
+          {(
+            [
+              ["sql", "SQL"],
+              ["mongo", "MongoDB"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={mode === id}
+              onClick={() => switchMode(id)}
+              className={cn(
+                "h-8 rounded-md px-3 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                mode === id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <label className="sr-only" htmlFor="db-lab-dataset">
+          Dataset
+        </label>
+        <select
+          id="db-lab-dataset"
+          value={datasetId}
+          onChange={(e) => switchDataset(e.target.value)}
+          className="h-9 rounded-md border bg-background px-2 text-sm focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+        >
+          {datasets.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+        <span className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground md:block">{blurb}</span>
+        <div className="ml-auto flex items-center gap-2 text-xs" title={`${solvedHere} of ${challenges.length} challenges solved`}>
+          <span className="text-muted-foreground">Solved</span>
+          <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted" aria-hidden>
+            <span className="block h-full rounded-full bg-success transition-[width]" style={{ width: `${challenges.length ? (solvedHere / challenges.length) * 100 : 0}%` }} />
+          </span>
+          <span className="font-mono tabular">
+            {solvedHere}/{challenges.length}
+          </span>
         </div>
       </div>
+
+      {!desktop && (
+        <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-[3px]" role="tablist" aria-label="Lab sections">
+          {(["query", "challenges", "schema"] as const).map((p) => (
+            <button
+              key={p}
+              role="tab"
+              type="button"
+              aria-selected={mobilePane === p}
+              onClick={() => setMobilePane(p)}
+              className={cn("min-h-9 rounded-md text-sm", mobilePane === p ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}
+            >
+              {p === "query" ? "Query" : p === "challenges" ? `Challenges ${solvedHere}/${challenges.length}` : mode === "sql" ? "Tables" : "Collections"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {desktop ? (
+        <div className="grid h-[calc(100dvh-15rem)] min-h-[560px] grid-cols-[300px_minmax(0,1fr)] gap-3">
+          <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card" aria-label="Challenges and schema">
+            {sidebar}
+          </aside>
+          <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card" aria-label="Query editor">
+            {toolbar}
+            {challengeCard}
+            <div className="min-h-0 flex-1">
+              <ResizablePanelGroup storageId="db-lab:editor-results" orientation="vertical">
+                <ResizablePanel id="editor" defaultSize="45" minSize="20">
+                  {editor}
+                </ResizablePanel>
+                <ResizableHandle orientation="vertical" />
+                <ResizablePanel id="results" defaultSize="55" minSize="15">
+                  {bottom}
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </div>
+          </section>
+        </div>
+      ) : (
+        <>
+          {mobilePane === "challenges" && <div className="rounded-xl border bg-card p-3">{challengeList}</div>}
+          {mobilePane === "schema" && <div className="rounded-xl border bg-card p-3">{schema}</div>}
+          <section className={cn("overflow-hidden rounded-xl border bg-card", mobilePane !== "query" && "hidden")} aria-label="Query editor">
+            {toolbar}
+            {challengeCard}
+            {editor}
+            {bottom}
+          </section>
+        </>
+      )}
     </div>
   );
 }

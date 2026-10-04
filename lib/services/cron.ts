@@ -1,9 +1,9 @@
-import { eveningReminder } from "@/lib/domain/reminders";
 import type { Extractor } from "@/lib/news/extract";
 import type { FeedFetcher } from "@/lib/news/fetch";
 import type { NotifyChannel } from "@/lib/notify";
+import { sendBriefing } from "./briefing";
 import { syncLeetCode } from "./leetcode-sync";
-import { buildEveningMail, buildMorningMail, roastReminder } from "./mail-content";
+import { buildEveningMail, buildMorningMail, buildNudgeMail, buildWeeklyMail } from "./mail-content";
 import { prefetchArticleContent, refreshNews } from "./news";
 import { notify } from "./notifications";
 import { ensureToday } from "./plan";
@@ -36,7 +36,7 @@ export async function runMorning(
     today = state.today;
     const mail = await buildMorningMail(state);
     if (!mail) return { kind: state.plan.kind, notified: false };
-    const res = await notify({ kind: "plan", ...mail.inApp, dedupeKey: `plan:${state.today}` }, { push: true, channels, pushContent: mail.push });
+    const res = await notify({ kind: "plan", ...mail.inApp, dedupeKey: `plan:${state.today}` }, { push: state.settings.mail.morning, channels, pushContent: mail.push });
     return { kind: state.plan.kind, notified: res.created, pushed: res.pushed };
   });
   const rebalance = await step(async () => ((await proposeRebalance(now)) ? "proposed" : "none"));
@@ -50,8 +50,10 @@ export async function runMorning(
     step(() => syncLeetCode({ force: true, now })),
   ]);
   const { news, articles } = newsChain;
+  // The briefing needs fresh news, so it follows the refresh. The briefing job sends it too if this run slips.
+  const briefing = await step(async () => sendBriefing(await ensureToday(now), now, channels));
   await markRun("lastMorningRunAt", now);
-  return { today, news, articles, plan, rebalance, leetcode };
+  return { today, news, articles, plan, briefing, rebalance, leetcode };
 }
 
 /**
@@ -64,20 +66,27 @@ export async function runEvening(now = new Date(), channels?: readonly NotifyCha
   const state = await ensureToday(now);
   await markRun("lastEveningRunAt", now);
   const mail = await buildEveningMail(now, state);
-  if (!mail) return { today: state.today, recapped: false, leetcode };
-  const res = await notify({ kind: "recap", ...mail.inApp, dedupeKey: `recap:${mail.date}` }, { push: true, channels, pushContent: mail.push });
-  return { today: state.today, date: mail.date, recapped: res.created, pushed: res.pushed, leetcode };
+  // On the Sunday that just ended the weekly report follows the recap. It is its own step so a failure can't lose the recap.
+  const weekly = await step(async () => {
+    const report = await buildWeeklyMail(now, state);
+    if (!report) return { sent: false };
+    const res = await notify({ kind: "recap", ...report.inApp, dedupeKey: `weekly:${report.date}` }, { push: state.settings.mail.weekly, channels, pushContent: report.push });
+    return { sent: res.created, pushed: res.pushed, date: report.date };
+  });
+  if (!mail) return { today: state.today, recapped: false, leetcode, weekly };
+  const res = await notify({ kind: "recap", ...mail.inApp, dedupeKey: `recap:${mail.date}` }, { push: state.settings.mail.night, channels, pushContent: mail.push });
+  return { today: state.today, date: mail.date, recapped: res.created, pushed: res.pushed, leetcode, weekly };
 }
 
 /**
- * Optional mid-evening nudge (for a free external scheduler such as
- * cron-job.org; Vercel Hobby only has two daily slots): if today's still
- * incomplete, remind via the in-app bell plus Telegram/email.
+ * The evening nudge (for a free external scheduler such as cron-job.org or the repo's GitHub Actions
+ * workflow; Vercel Hobby only has two daily slots): if today is still unfinished, say exactly what is
+ * left through the in-app bell plus every configured channel. Once per day; silent on finished days.
  */
 export async function runReminder(now = new Date(), channels?: readonly NotifyChannel[]) {
   const state = await ensureToday(now);
-  const msg = eveningReminder(state.day, state.streak);
-  if (!msg) return { today: state.today, reminded: false };
-  const res = await notify({ kind: "reminder", ...msg, dedupeKey: `reminder:${state.today}` }, { push: true, channels, pushContent: roastReminder(msg, state) });
+  const mail = await buildNudgeMail(state, now);
+  if (!mail) return { today: state.today, reminded: false };
+  const res = await notify({ kind: "reminder", ...mail.inApp, dedupeKey: `reminder:${state.today}` }, { push: state.settings.mail.nudge, channels, pushContent: mail.push });
   return { today: state.today, reminded: res.created, pushed: res.pushed };
 }

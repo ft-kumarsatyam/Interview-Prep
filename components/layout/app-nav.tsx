@@ -3,34 +3,34 @@
 import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Check, ChevronDown, Code2, ListChecks, LogOut, Menu } from "lucide-react";
+import { BookOpen, Check, Code2, ListChecks, LogOut, Menu } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { NavBadges, NavToday } from "@/lib/services/nav";
 import { cn } from "@/lib/utils";
-import { MOBILE_HUB_IDS, NAV_HUBS, hubFor, isHubLanding, pageFor, type NavHub, type NavPage } from "./nav-items";
+import { MOBILE_HUB_IDS, NAV_HUBS, hubFor, isHubLanding, type NavHub } from "./nav-items";
 
-type Badge = NavBadges[keyof NavBadges];
+export type Badge = NavBadges[keyof NavBadges];
 
-const badgeLabel = (b: Badge) => (b === true ? "ready" : b ? `${b}` : "");
+export const badgeLabel = (b: Badge) => (b === true ? "ready" : b ? `${b}` : "");
 const count = (n: number) => (n > 99 ? "99+" : String(n));
 
 const matchesPath = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
 /** The badge for a page, from the nav state keyed by href. */
-const pageBadge = (badges: NavBadges, href: string): Badge => badges[href as keyof NavBadges];
+export const pageBadge = (badges: NavBadges, href: string): Badge => badges[href as keyof NavBadges];
 
 /** A hub only ever shows a dot when any of its pages wants attention; counts live on the pages themselves. */
-function hubBadge(hub: NavHub, badges: NavBadges): Badge {
+export function hubBadge(hub: NavHub, badges: NavBadges): Badge {
   return hub.pages.some((p) => pageBadge(badges, p.href)) ? true : undefined;
 }
 
 /** Thin bar under a nav link while its route is loading, so a slow click still feels acknowledged. */
-function PendingBar() {
+export function PendingBar() {
   const { pending } = useLinkStatus();
   return <span aria-hidden className={cn("nav-pending", pending && "is-pending")} />;
 }
 
-function BadgeMark({ badge }: { badge: Badge }) {
+export function BadgeMark({ badge }: { badge: Badge }) {
   if (badge === true) return <span aria-hidden className="ml-auto size-2 rounded-full bg-primary" />;
   if (typeof badge === "number")
     return (
@@ -39,71 +39,6 @@ function BadgeMark({ badge }: { badge: Badge }) {
       </span>
     );
   return null;
-}
-
-function SubLink({ page, badge, active, onNavigate }: { page: NavPage; badge: Badge; active: boolean; onNavigate?: () => void }) {
-  const Icon = page.icon;
-  return (
-    <Link
-      href={page.href}
-      onClick={onNavigate}
-      aria-current={active ? "page" : undefined}
-      aria-label={badge ? `${page.label}, ${badgeLabel(badge)}` : undefined}
-      className={cn(
-        "relative flex min-h-9 items-center gap-2.5 overflow-hidden rounded-md py-1.5 pr-3 pl-9 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-        active && "bg-sidebar-accent font-medium text-foreground",
-      )}
-    >
-      <Icon className={cn("size-3.5", active && "text-primary")} aria-hidden />
-      {page.label}
-      <BadgeMark badge={badge} />
-      <PendingBar />
-    </Link>
-  );
-}
-
-/** Desktop sidebar: five hubs, the active one expanded to show its pages. */
-export function SidebarNav({ badges = {} }: { badges?: NavBadges }) {
-  const pathname = usePathname();
-  const activeHub = hubFor(pathname);
-  const activePage = pageFor(pathname);
-  return (
-    <nav aria-label="Main" className="flex flex-col gap-1">
-      {NAV_HUBS.map((hub) => {
-        const open = activeHub?.id === hub.id;
-        const badge = hubBadge(hub, badges);
-        const Icon = hub.icon;
-        return (
-          <div key={hub.id}>
-            <Link
-              href={hub.href}
-              aria-current={open && activePage?.href === hub.href ? "page" : undefined}
-              aria-expanded={hub.pages.length > 1 ? open : undefined}
-              aria-label={badge && !open ? `${hub.label}, ${badgeLabel(badge)}` : undefined}
-              className={cn(
-                "relative flex min-h-10 items-center gap-3 overflow-hidden rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-                open && "font-medium text-foreground",
-              )}
-            >
-              {open && <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-primary" />}
-              <Icon className={cn("size-4", open && "text-primary")} aria-hidden />
-              {hub.label}
-              {!open && <BadgeMark badge={badge} />}
-              {hub.pages.length > 1 && <ChevronDown aria-hidden className={cn("ml-auto size-3.5 transition-transform", open ? "" : "-rotate-90", !open && badge ? "ml-1" : "")} />}
-              <PendingBar />
-            </Link>
-            {open && hub.pages.length > 1 && (
-              <div className="mt-0.5 mb-1 flex flex-col gap-0.5">
-                {hub.pages.map((page) => (
-                  <SubLink key={page.href} page={page} badge={pageBadge(badges, page.href)} active={activePage?.href === page.href} />
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </nav>
-  );
 }
 
 /** Mobile: the current hub's pages as a scrollable tab strip at the top of its landing pages. */
@@ -150,10 +85,10 @@ export function HubTabs({ badges = {} }: { badges?: NavBadges }) {
   );
 }
 
-/** Compact view of today's targets, so progress is visible from every page. */
-export function TodayMiniCard({ today }: { today: NavToday | null }) {
-  if (!today || today.kind === "outside") return null;
-  const rows =
+/** Today's targets as rows; empty outside the plan window. */
+export function todayRows(today: NavToday | null) {
+  if (!today || today.kind === "outside") return [];
+  return (
     today.kind === "study" || today.kind === "revision"
       ? [
           { label: "DSA", icon: Code2, done: today.dsaSolved >= today.dsaTarget, value: `${today.dsaSolved}/${today.dsaTarget}`, href: "/dashboard#problems" },
@@ -168,7 +103,14 @@ export function TodayMiniCard({ today }: { today: NavToday | null }) {
         ]
       : today.kind === "sunday"
         ? [{ label: "Weekly quiz", icon: ListChecks, done: today.quizPassed, value: today.quizPassed ? "passed" : "open", href: "/quiz" }]
-        : [];
+        : []
+  );
+}
+
+/** Compact view of today's targets, so progress is visible from every page. */
+export function TodayMiniCard({ today }: { today: NavToday | null }) {
+  if (!today || today.kind === "outside") return null;
+  const rows = todayRows(today);
   const done = rows.filter((r) => r.done).length;
 
   return (

@@ -2,7 +2,9 @@ import { addDays, diffDays, type DateStr } from "./dates";
 import type { Pace } from "./pace";
 import { revisionStart } from "./planner";
 import type { PlanSettings } from "./plan-config";
-import { escapeHtml, joinList, paceLine, plural, type DigestLink } from "./reminders";
+import type { MailBacklog } from "./backlog-items";
+import { renderMail, type MailSpec, type MailStat } from "./mail-html";
+import { backlogSections, joinList, paceLine, plural, type DigestLink } from "./reminders";
 import type { DayProgress } from "./streak";
 
 /** What a day leaves undone. Unsolved problems and unfinished subtopics stay at the front of the next plan, so this is what carries over. */
@@ -126,11 +128,15 @@ export interface RecapInput {
   leftProblems: DigestLink[];
   leftTheory: DigestLink[];
   standing: StreakStanding;
+  /** Current streak in days, for the stats row. */
+  streak?: number;
   tomorrow: TomorrowPreview | null;
   pace: Pace | null;
   forecast: Forecast | null;
   /** Sunday only: how the week went. */
   week?: { completedDays: number; workDays: number; solved: number };
+  /** What is still owed beyond tomorrow's plan, already turned into links. */
+  backlog?: MailBacklog | null;
   appUrl?: string;
 }
 
@@ -140,18 +146,21 @@ interface Section {
   lines?: string[];
 }
 
+/** How much of a day's list is finished: problems, theory and the quiz (rest days have none). */
+export function dayCompletion(day: DayProgress): { done: number; total: number; pct: number } {
+  const total = day.dsaTarget + day.theoryTarget + (day.kind === "rest" ? 0 : 1);
+  const done = Math.min(day.dsaSolved, day.dsaTarget) + Math.min(day.theoryDone, day.theoryTarget) + (day.kind !== "rest" && day.quizPassed ? 1 : 0);
+  return { done, total, pct: total === 0 ? 100 : Math.round((100 * done) / total) };
+}
+
 const minutesText = (m: number) => (m >= 60 ? `${Math.floor(m / 60)} h ${m % 60 ? `${m % 60} min` : ""}`.trim() : `${m} min`);
 
 /** The end-of-day email: what got done, what's left, how tomorrow adapts. Null for days outside the plan. */
-export function eveningRecap(input: RecapInput): { title: string; summary: string; text: string; html: string } | null {
+export function eveningRecap(input: RecapInput): { title: string; summary: string; text: string; html: string; spec: MailSpec } | null {
   const { day } = input;
   if (day.kind === "outside") return null;
   const gap = dayGap(day);
-  const base = input.appUrl?.replace(/\/+$/, "");
-  const href = (path: string) => (base ? `${base}${path}` : null);
-
-  const total = day.dsaTarget + day.theoryTarget + (day.kind === "rest" ? 0 : 1);
-  const doneCount = Math.min(day.dsaSolved, day.dsaTarget) + Math.min(day.theoryDone, day.theoryTarget) + (day.kind !== "rest" && day.quizPassed ? 1 : 0);
+  const { done: doneCount, total } = dayCompletion(day);
   const headline =
     day.kind === "rest"
       ? "Day off"
@@ -215,43 +224,28 @@ export function eveningRecap(input: RecapInput): { title: string; summary: strin
     lines.push("Tomorrow's plan is a preview. It is rebuilt at 8:00 from whatever you finish before then.");
   }
 
-  const textItem = (l: DigestLink) => {
-    const url = href(l.path);
-    return `- ${l.title}${l.note ? ` (${l.note})` : ""}${url ? `\n  ${url}` : ""}`;
-  };
-  const text = [
-    intro,
-    ...sections.map((s) => `\n${s.heading}\n${[...(s.lines ?? []).map((x) => `- ${x}`), ...(s.items ?? []).map(textItem)].join("\n")}`),
-    ...(lines.length ? ["", ...lines] : []),
-    ...(base ? ["", `Open PrepOS: ${base}/dashboard`] : []),
-  ].join("\n");
+  const owed = input.backlog && input.backlog.total > 0 ? input.backlog : null;
+  if (owed && day.kind !== "rest") sections.push(...backlogSections(owed));
 
-  const htmlItem = (l: DigestLink) => {
-    const url = href(l.path);
-    const label = url ? `<a href="${escapeHtml(url)}" style="color:#2563eb;text-decoration:none">${escapeHtml(l.title)}</a>` : escapeHtml(l.title);
-    const note = l.note ? ` <span style="color:#6b7280">· ${escapeHtml(l.note)}</span>` : "";
-    return `<li style="margin:4px 0">${label}${note}</li>`;
-  };
-  const accent = input.complete || day.kind === "rest" ? "#16a34a" : "#d97706";
-  const html = [
-    `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;color:#111827;line-height:1.5">`,
-    `<h2 style="margin:0 0 4px">${escapeHtml(`Day recap · ${input.date}`)}</h2>`,
-    `<p style="margin:0 0 12px;font-weight:600;color:${accent}">${escapeHtml(headline)}</p>`,
-    `<p style="margin:0 0 16px">${escapeHtml(intro)}</p>`,
-    ...sections.map(
-      (s) =>
-        `<h3 style="margin:16px 0 4px;font-size:15px">${escapeHtml(s.heading)}</h3><ul style="margin:0;padding-left:20px">${[
-          ...(s.lines ?? []).map((x) => `<li style="margin:4px 0">${escapeHtml(x)}</li>`),
-          ...(s.items ?? []).map(htmlItem),
-        ].join("")}</ul>`,
-    ),
-    ...lines.map((f) => `<p style="margin:16px 0 0;color:#374151">${escapeHtml(f)}</p>`),
-    ...(base ? [`<p style="margin:20px 0 0"><a href="${escapeHtml(`${base}/dashboard`)}" style="color:#2563eb">Open PrepOS</a></p>`] : []),
-    `</div>`,
-  ].join("");
+  const stats: MailStat[] = [];
+  if (day.kind !== "rest") {
+    stats.push({ label: "Done today", value: `${doneCount}/${total}`, tone: input.complete ? "good" : doneCount === 0 ? "bad" : "warn" });
+    if ((input.streak ?? 0) > 0) stats.push({ label: "Streak", value: `${input.streak}d`, tone: "good" });
+    if (owed) stats.push({ label: "Backlog", value: String(owed.total), tone: owed.total >= 15 ? "bad" : "warn" });
+  }
+
+  const { text, html, spec } = renderMail({
+    title: `Day recap · ${input.date}`,
+    kicker: headline,
+    intro,
+    ...(stats.length ? { stats } : {}),
+    sections: sections.map((s) => ({ ...s, ...(s.heading.startsWith("Left") ? { tone: "warn" as const } : {}) })),
+    footer: lines,
+    ...(input.appUrl ? { appUrl: input.appUrl } : {}),
+  });
 
   const summary = input.complete || day.kind === "rest" ? intro : `${headline}. ${intro}`;
-  return { title, summary, text, html };
+  return { title, summary, text, html, spec };
 }
 
 /** The local calendar date a recap covers. A run that lands after midnight (cron windows are an hour wide) still reports the day that just ended. */

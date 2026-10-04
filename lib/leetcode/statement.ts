@@ -26,7 +26,9 @@ export function leetcodeHtmlToMarkdown(html: string): string {
   const prepared = html
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<sup>([\s\S]*?)<\/sup>/gi, (_m, inner: string) => `^${inner.replace(/<[^>]+>/g, "")}`)
-    .replace(/<sub>([\s\S]*?)<\/sub>/gi, (_m, inner: string) => `_${inner.replace(/<[^>]+>/g, "")}`);
+    .replace(/<sub>([\s\S]*?)<\/sub>/gi, (_m, inner: string) => `_${inner.replace(/<[^>]+>/g, "")}`)
+    // A bare <pre> (SQL schemas, examples) would lose its whitespace; as <pre><code> it becomes a fenced block.
+    .replace(/<pre(\s[^>]*)?>(?![\s]*<code)([\s\S]*?)<\/pre>/gi, (_m, _attrs: string | undefined, inner: string) => `<pre><code>${inner.replace(/^\r?\n/, "")}</code></pre>`);
   const md = restrictImages(htmlToMarkdown(prepared, "https://leetcode.com"));
   return md.length > STATEMENT_MAX ? `${md.slice(0, STATEMENT_MAX).trimEnd()}\n\n*(statement cut. Open it on LeetCode for the rest)*` : md;
 }

@@ -5,11 +5,13 @@ import { PageHeader } from "@/components/shared/page-header";
 import { AiPanel } from "@/components/settings/ai-panel";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { SettingsNav } from "@/components/settings/settings-nav";
+import { PushCard } from "@/components/settings/push-card";
 import { SettingsTools } from "@/components/settings/settings-tools";
 import { news } from "@/lib/content";
 import { env } from "@/lib/env";
 import { providerRows, usageToday } from "@/lib/services/ai";
 import { todayIn } from "@/lib/services/plan";
+import { listPushDevices } from "@/lib/services/push-subscriptions";
 import { getSettings } from "@/lib/services/settings";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -18,7 +20,7 @@ export default async function SettingsPage() {
   const s = await getSettings();
   const e = env();
   const defaultQueries = news.googleNews.defaultQueries.map((q) => q.query);
-  const [providers, usage] = await Promise.all([providerRows(), usageToday()]);
+  const [providers, usage, pushDevices] = await Promise.all([providerRows(), usageToday(), listPushDevices()]);
 
   return (
     <>
@@ -68,11 +70,19 @@ export default async function SettingsPage() {
                 envVars: "RESEND_API_KEY, RESEND_FROM_EMAIL, NOTIFY_EMAIL",
               },
               { name: "WhatsApp (Whapi)", configured: !!(e.WHAPI_TOKEN && e.WHATSAPP_TO), envVars: "WHAPI_TOKEN, WHATSAPP_TO" },
+              {
+                name: "App notifications (PWA)",
+                configured: !!(e.VAPID_PUBLIC_KEY && e.VAPID_PRIVATE_KEY && pushDevices.length > 0),
+                envVars: "VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY",
+                ...(e.VAPID_PUBLIC_KEY && e.VAPID_PRIVATE_KEY ? { offHint: "No device yet. Turn it on under App notifications below." } : {}),
+              },
             ]}
-            roastMode={s.roastMode}
+            roastLevel={s.roastLevel}
+            mail={s.mail}
             emailTo={e.NOTIFY_EMAIL ?? null}
             name={e.ADMIN_NAME}
           />
+          <PushCard publicKey={e.VAPID_PUBLIC_KEY ?? null} devices={pushDevices} />
         </div>
       </div>
     </>

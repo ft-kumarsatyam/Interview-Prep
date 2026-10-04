@@ -4,6 +4,7 @@ import { addDays, dayOfWeek, eachDay, type DateStr } from "@/lib/domain/dates";
 import { pace } from "@/lib/domain/pace";
 import { buildDailyPlan, dayKind } from "@/lib/domain/planner";
 import {
+  dayCompletion,
   dayGap,
   eveningRecap,
   forecastFinish,
@@ -20,6 +21,7 @@ import type { DayProgress } from "@/lib/domain/streak";
 import { env } from "@/lib/env";
 import { DailyPlan, DayLog, Quiz } from "@/lib/models/day";
 import { ProblemProgress, SubtopicProgress } from "@/lib/models/progress";
+import { getBacklogMail } from "./backlog";
 import { countSolvedMain } from "./dashboard";
 import { recomputeDay } from "./day";
 import { getPlan, loadPlanInputs, type TodayState } from "./plan";
@@ -126,6 +128,8 @@ export async function buildEveningRecap(now: Date, state: Pick<TodayState, "toda
     };
   }
 
+  const backlog = await getBacklogMail({ today: date, plan, settings });
+  const standing = streakStanding({ complete: day.complete, settled: date < state.today, freezeUsed: day.freezeUsed, freezeTokens: state.freezeTokens, streak: state.streak });
   const recap = eveningRecap({
     date,
     day,
@@ -136,12 +140,33 @@ export async function buildEveningRecap(now: Date, state: Pick<TodayState, "toda
     quiz: { passed: day.quizPassed, bestPct: quiz?.bestPct ?? null },
     leftProblems: planned.filter((s) => !solved.has(s)).flatMap(problemLink),
     leftTheory: plan.theory.filter((id) => !doneTheory.has(id)).flatMap(theoryLink),
-    standing: streakStanding({ complete: day.complete, settled: date < state.today, freezeUsed: day.freezeUsed, freezeTokens: state.freezeTokens, streak: state.streak }),
+    standing,
+    streak: state.streak,
+    backlog,
     tomorrow: preview,
     pace: pace(date, solvedMain, mainProblemCount, settings),
     forecast: await getForecast(date, settings, solvedMain),
     ...(week ? { week } : {}),
     appUrl: env().APP_URL,
   });
-  return recap ? { date, complete: day.complete, rest: day.kind === "rest", ...recap } : null;
+  const completion = dayCompletion(day);
+  const left = completion.total - completion.done;
+  return recap
+    ? {
+        date,
+        complete: day.complete,
+        rest: day.kind === "rest",
+        ...recap,
+        /** What the roast needs to sound like it knows the day. */
+        roast: {
+          streak: state.streak,
+          backlog: backlog.total,
+          left,
+          pct: completion.pct,
+          solved: day.dsaSolved,
+          streakBroken: standing.type === "broken",
+          quizOnly: left === 1 && !day.quizPassed,
+        },
+      }
+    : null;
 }

@@ -54,6 +54,32 @@ function validatorsOf(res: Response): FeedValidators {
   return { ...(etag ? { etag } : {}), ...(lastModified ? { lastModified } : {}) };
 }
 
+/** Reads the body but stops downloading once it passes the cap (the old check ran after the whole body was in memory). */
+async function readBounded(res: Response, message: string): Promise<string> {
+  const declared = Number(res.headers.get("content-length") ?? 0);
+  if (declared > MAX_BYTES) throw new Error(message);
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const whole = await res.text();
+    if (whole.length > MAX_BYTES) throw new Error(message);
+    return whole;
+  }
+  const decoder = new TextDecoder();
+  let text = "";
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(message);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 const PAGE_TIMEOUT_MS = 8_000;
 /** Meta tags live in `<head>`; there's no need to download the article. */
 const PAGE_HEAD_BYTES = 200_000;
@@ -106,8 +132,7 @@ async function fetchSitemapFeed(source: FeedSource, validators?: FeedValidators)
   });
   if (res.status === 304) return { notModified: true };
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const xml = await res.text();
-  if (xml.length > MAX_BYTES) throw new Error("Sitemap too large");
+  const xml = await readBounded(res, "Sitemap too large");
   const recent = pickRecentEntries(parseSitemap(xml), { match: source.match, limit: SITEMAP_ITEMS });
   if (recent.length === 0) throw new Error("No pages in sitemap");
   const limit = pLimit(PAGE_CONCURRENCY);
@@ -127,8 +152,7 @@ export const fetchFeed: FeedFetcher = async (source, validators) => {
   });
   if (res.status === 304) return { notModified: true };
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const xml = await res.text();
-  if (xml.length > MAX_BYTES) throw new Error("Feed too large");
+  const xml = await readBounded(res, "Feed too large");
   const feed = await parser.parseString(xml);
   const items = feed.items.flatMap((item) => {
     const url = safeUrl(item.link);

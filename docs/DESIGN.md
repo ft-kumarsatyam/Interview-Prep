@@ -56,7 +56,7 @@ Difficulty badges: Easy = success, Medium = warning, Hard = destructive, all as 
   - **Plan**: Planner, Calendar, Stats
   - **Settings**: Settings, Setup
   Every old URL still works; only the grouping changed. `pageFor()` matches the longest prefix, so `/playground/db` is DB Lab.
-- **Desktop (≥1024px):** a 240px sidebar of the five hubs; the active hub expands to list its pages. The top bar shows the hub name, today's date, the palette (`⌘K`), notifications and the theme toggle. The page's own title is the `PageHeader` h1, never repeated in the top bar.
+- **Desktop (≥1024px):** a 240px sidebar of the five hubs (`AppSidebar`). Each hub has its own expand button: the current hub opens by itself, and hubs you open by hand stay open on this device. `⌘/Ctrl + B` or the footer button collapses it to a 64px icon rail where each hub opens a flyout of its pages and today's progress shrinks to a chip; the choice is kept in a cookie so the server renders the right width. The top bar shows the hub name, today's date, the palette (`⌘K`), notifications and the theme toggle. The page's own title is the `PageHeader` h1, never repeated in the top bar.
 - **Mobile:** a bottom bar of Today · Practice · Learn · Plan · More (Settings, Setup, sign out). Inside a hub, a scrollable tab strip (`HubTabs`) switches pages; it shows only on a hub's own pages, not on detail pages such as `/dsa/two-sum`.
 - **Today's session:** `SessionBar` (Quiz and Review pages) shows Solve → Theory → Review → Quiz with a "Next" button. The logic is `lib/domain/session.ts`; the quiz stays locked until its unlock rule is met.
 - Content max-width 1200px, centred; IDE pages go full width.
@@ -101,7 +101,11 @@ Centred card on a dark background with a faint animated grid or noise. It contai
 - The header shows overall progress, a "Core ✅" milestone, a difficulty split donut and solved-this-week.
 - Each **pattern accordion** carries a progress bar and an "x / y" count. Inside it is a table with order #, title (links out to LeetCode ↗), difficulty badge, status, confidence and last solved date.
 - Filters: pattern, difficulty, status (todo/solved/struggled), and search. Sort by order (default) or by last solved.
-- **Problem log page** (`/dsa/[slug]`): a big "Open on LeetCode ↗" button, form fields, and a markdown notes editor with preview. It also shows a review history timeline.
+- **Problem page** (`/dsa/[slug]`): a compact header (back, title, difficulty, status, Mark solved, LeetCode ↗, prev/next) above an IDE for every problem. The left pane is always Problem · Notes · History; the right pane depends on the track:
+  - Problems with test cases: the full IDE below.
+  - **SQL track**: a SQL workspace on in-browser SQLite with each problem's LeetCode tables and sample rows. Run shows your rows; Submit compares them with a reference query (Accepted opens the solve sheet). The bottom tabs are Result, Expected (on request) and Tables (columns, keys, row counts, a data preview).
+  - **JavaScript track**: LeetCode's template plus the examples as `test(…)` blocks. Run shows an "x/y tests passed" chip in the console, and a full pass offers "Log solve". Copy + open LeetCode copies the code without the examples.
+  - Anything else: a scratch editor (JavaScript, TypeScript, Python) with a console.
 - **IDE shell** (`components/ide/`, used by `/dsa/[slug]`, `/problems/[slug]` and mock coding rounds), tuned for a 13–14" laptop:
   - From `lg`: two resizable panes. Left: tabs per page (Problem, Notes and History on `/dsa`; Problem, Solution and Solves on `/problems`). Right: the editor on top and a resizable bottom panel (Testcases, Result, Edge cases, Console). Pane sizes persist per page type. A full-screen toggle hides the app chrome.
   - Below `lg`: a Problem | Code tab switch, the editor at a fixed comfortable height.
@@ -131,10 +135,16 @@ A queue of cards due today. Each card offers "Open ↗", then "Re-solved: easy /
 - HLD topics get a "Design template" button that inserts the standard skeleton (Requirements / Estimates / API / Data model / HLD / Deep dives / Trade-offs) into the notes.
 
 ### 3.5b Playground
-- A split view: editor on the left (CodeMirror 6, JavaScript, TypeScript or Python, `⌘↵` to run), console on the right. Logs are colour-coded by level, and timing is shown.
+- A split view: editor on the left (CodeMirror 6, JavaScript, TypeScript or Python, `⌘↵` to run), console on the right. Logs are colour-coded by level, and timing is shown. The split is resizable (side by side from `xl`, stacked below) and persists; a status bar shows lines, characters and shortcuts.
+- Scratch work autosaves on the device. The snippets sidebar collapses, font size persists, and a share button copies a `?snippet=` link.
 - Code runs in a **Web Worker** with a 3 s timeout (terminated on infinite loops) and has no DOM or network access, which is safe for experiments.
 - **Snippets** sidebar: save, rename and tag by topic (e.g. `js-async`). Snippets can be linked from a subtopic's notes.
 - **Output drills:** event-loop / `this` / closure puzzles. You predict the console output first, then run the code and compare. Results can feed the daily quiz.
+
+### 3.5c DB Lab
+- A top bar with the SQL / MongoDB switch, the dataset picker and a solved progress bar.
+- From `lg`: a 300px sidebar (Challenges with difficulty filters and concept tags, or Tables/Collections with columns, keys, row counts and an eye button that previews the data without touching the editor), and the main pane: a toolbar (Start over, Reset data, Run, Check), the challenge card (prompt, Hint, Answer behind a confirm), then a resizable editor over Result · Expected · History tabs. Accepted offers "Next challenge".
+- Below `lg`: Query · Challenges · Tables tabs. Drafts, the solved set and the last 20 queries persist on the device.
 
 ### 3.6 Quiz
 - **Locked state:** a lock icon plus "Solve at least 1 problem and check 1 topic to unlock", with links to both.
@@ -175,7 +185,7 @@ Shared primitives in `components/shared/` (use these before writing a new card, 
 | `EmptyState` | The only dashed "nothing here yet" box |
 | `DifficultyBadge`, `TrackChip` | Problem difficulty and syllabus track |
 
-Layout components: `SidebarNav`, `HubTabs`, `MobileTabBar`, `SessionBar`, `TopBarTitle`, `CommandPalette`, `ThemeToggle`.
+Layout components: `AppSidebar`, `HubTabs`, `MobileTabBar`, `SessionBar`, `TopBarTitle`, `CommandPalette`, `ThemeToggle`.
 
 ## 5. States and copy
 

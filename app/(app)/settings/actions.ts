@@ -8,7 +8,10 @@ import { SETTINGS_SECTION_IDS, mergeSections, settingsInputSchema, type Settings
 import { settingsToInput } from "@/lib/services/settings-input";
 import { lookupLeetCodeStats } from "@/lib/services/leetcode-sync";
 import { seedContent } from "@/lib/services/seed";
-import { getSettings, saveSettings, setRoastMode } from "@/lib/services/settings";
+import { MAIL_KINDS } from "@/lib/domain/mail-prefs";
+import { ROAST_LEVELS, type RoastLevel } from "@/lib/domain/roast";
+import { getSettings, saveSettings, setMailPref, setRoastLevel, setRoastMode } from "@/lib/services/settings";
+import { pushSubscriptionSchema, removePushSubscription, savePushSubscription } from "@/lib/services/push-subscriptions";
 import { sendTestMail } from "@/lib/services/test-mail";
 
 const sectionsSchema = z.object({
@@ -56,7 +59,7 @@ export async function saveSettingsSectionsAction(input: unknown): Promise<Action
   return { ok: true, saved, failed, values: after };
 }
 
-const testMailKind = z.enum(["ping", "morning", "evening"]);
+const testMailKind = z.enum(["ping", "morning", "briefing", "alerts", "nudge", "night", "weekly"]);
 
 export async function testNotificationAction(
   kind: unknown = "ping",
@@ -68,6 +71,37 @@ export async function testNotificationAction(
     const res = await sendTestMail(parsed.data);
     if (!res) return { ok: false, error: "No channel configured. Set the Telegram, WhatsApp, Brevo or Resend env vars first" };
     return { ok: true, ...res };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Sending failed" };
+  }
+}
+
+export async function subscribePushAction(input: unknown): Promise<ActionResult<{ endpoint: string }>> {
+  await requireSession();
+  const parsed = z.object({ subscription: pushSubscriptionSchema, label: z.string().max(200) }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "The browser sent an invalid push subscription" };
+  await savePushSubscription(parsed.data.subscription, parsed.data.label);
+  return { ok: true, endpoint: parsed.data.subscription.endpoint };
+}
+
+export async function unsubscribePushAction(endpoint: unknown): Promise<ActionResult<{ endpoint: string }>> {
+  await requireSession();
+  const parsed = z.url().safeParse(endpoint);
+  if (!parsed.success) return { ok: false, error: "Unknown device" };
+  await removePushSubscription(parsed.data);
+  return { ok: true, endpoint: parsed.data };
+}
+
+/** Sends a real (or sample) message to PWA push only, so the structured notification can be checked. */
+export async function testPushAction(kind: unknown = "morning"): Promise<ActionResult<{ sent: string[]; errors: Record<string, string> }>> {
+  await requireSession();
+  const parsed = testMailKind.safeParse(kind);
+  if (!parsed.success) return { ok: false, error: "Unknown test type" };
+  try {
+    const res = await sendTestMail(parsed.data, new Date(), "push");
+    if (!res) return { ok: false, error: "Push isn't configured. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY first" };
+    if (res.sent.length === 0) return { ok: false, error: res.errors.push ?? "Sending failed" };
+    return { ok: true, sent: res.sent, errors: res.errors };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Sending failed" };
   }
@@ -103,4 +137,22 @@ export async function testLeetCodeAction(username: unknown): Promise<ActionResul
   if (stats) return { ok: true, message: `Found @${parsed.data}: ${stats.solved.All} problems solved.` };
   if (!reachable) return { ok: false, error: "Couldn't reach LeetCode. Try again in a moment." };
   return { ok: false, error: `No public LeetCode profile called "${parsed.data}". Check the spelling and that the profile is public.` };
+}
+
+export async function setRoastLevelAction(level: unknown): Promise<ActionResult<{ roastLevel: RoastLevel }>> {
+  await requireSession();
+  const parsed = z.enum(ROAST_LEVELS).safeParse(level);
+  if (!parsed.success) return { ok: false, error: "Pick off, coach or savage" };
+  await setRoastLevel(parsed.data);
+  refresh();
+  return { ok: true, roastLevel: parsed.data };
+}
+
+export async function setMailPrefAction(input: unknown): Promise<ActionResult<{ kind: string; on: boolean }>> {
+  await requireSession();
+  const parsed = z.object({ kind: z.enum(MAIL_KINDS), on: z.boolean() }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Unknown email" };
+  await setMailPref(parsed.data.kind, parsed.data.on);
+  refresh();
+  return { ok: true, kind: parsed.data.kind, on: parsed.data.on };
 }

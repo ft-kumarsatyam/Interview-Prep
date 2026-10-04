@@ -1,29 +1,49 @@
 "use client";
 
 import { useOptimistic, useState, useTransition } from "react";
-import { AlertTriangle, Bell, CheckCircle2, CircleDashed, Flame, Moon, RefreshCw, Send, Sun } from "lucide-react";
+import { AlertTriangle, Bell, CalendarRange, CheckCircle2, CircleDashed, Flame, Briefcase, Moon, Newspaper, RefreshCw, Send, Sun, Sunset, Zap } from "lucide-react";
 import { toast } from "sonner";
-import { setRoastModeAction, testNotificationAction } from "@/app/(app)/settings/actions";
+import { setMailPrefAction, setRoastLevelAction, testNotificationAction } from "@/app/(app)/settings/actions";
+import { Chip } from "@/components/shared/chip";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ROAST_LINES } from "@/lib/domain/roast";
+import { MAIL_INFO, MAIL_KINDS, type MailKind, type MailPrefs } from "@/lib/domain/mail-prefs";
+import { ROAST_LEVELS, ROAST_LEVEL_HINT, ROAST_LEVEL_LABEL, roastFor, type RoastLevel, type RoastMailSlot } from "@/lib/domain/roast";
 
-type Kind = "ping" | "morning" | "evening";
+type Kind = "ping" | "morning" | "briefing" | "alerts" | "nudge" | "night" | "weekly";
 type Result =
   | { ok: true; subject: string; sent: string[]; failed: string[]; errors: Record<string, string>; sample: boolean; to: string | null }
   | { ok: false; error: string };
 
-const PREVIEW = [...ROAST_LINES.morning, ...ROAST_LINES.evening];
+/** Example moments for the roast preview, each with believable numbers. */
+const PREVIEW_MOMENTS: Array<{ slot: RoastMailSlot; label: string; ctx: Parameters<typeof roastFor>[2] }> = [
+  { slot: "morning", label: "Morning, 12 behind", ctx: { backlog: 12, streak: 5, daysLeft: 120 } },
+  { slot: "morning", label: "Morning, streak going", ctx: { backlog: 0, streak: 9, daysLeft: 120 } },
+  { slot: "evening", label: "Evening, 3 left", ctx: { left: 3, pct: 40, streak: 5 } },
+  { slot: "night", label: "Night, day done", ctx: { pct: 100, solved: 4, streak: 6 } },
+  { slot: "night", label: "Night, nothing done", ctx: { pct: 0, streak: 6 } },
+  { slot: "weekly", label: "Weekly, 50%", ctx: { weekPct: 50 } },
+];
+const MAIL_ICON: Record<MailKind, typeof Sun> = { morning: Sun, briefing: Newspaper, alerts: Zap, jobs: Briefcase, nudge: Sunset, night: Moon, weekly: CalendarRange };
 
 const TESTS: Array<{ kind: Kind; label: string; icon: typeof Send }> = [
   { kind: "ping", label: "Quick ping", icon: Send },
-  { kind: "morning", label: "Morning mail", icon: Sun },
-  { kind: "evening", label: "Evening mail", icon: Moon },
+  { kind: "morning", label: "Morning plan", icon: Sun },
+  { kind: "briefing", label: "Daily briefing", icon: Newspaper },
+  { kind: "alerts", label: "News alert", icon: Zap },
+  { kind: "nudge", label: "Evening nudge", icon: Sunset },
+  { kind: "night", label: "Night recap", icon: Moon },
+  { kind: "weekly", label: "Weekly report", icon: CalendarRange },
 ];
 
 /** Plain-language next step for the common provider errors. */
 function hintFor(channel: string, error: string): string {
+  if (channel === "push") {
+    if (/no device|expired/i.test(error)) return "Turn on App notifications below, on each phone or computer that should get them.";
+    if (/401|403/i.test(error)) return "The push service rejected the VAPID keys. Check VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are a matching pair.";
+    return "Check the device is online and notifications are still allowed for this site.";
+  }
   if (channel === "whatsapp") {
     if (/401|403|unauthori[sz]ed|token/i.test(error)) return "Whapi rejected the token. Copy WHAPI_TOKEN again from the Whapi dashboard and redeploy.";
     if (/402|limit|trial|plan/i.test(error)) return "The Whapi plan limit or trial ran out. Check the channel in the Whapi dashboard.";
@@ -39,29 +59,41 @@ function hintFor(channel: string, error: string): string {
 
 export function NotificationCard({
   channels,
-  roastMode,
+  roastLevel,
+  mail,
   emailTo,
   name,
 }: {
-  channels: Array<{ name: string; configured: boolean; envVars: string }>;
-  roastMode: boolean;
+  channels: Array<{ name: string; configured: boolean; envVars: string; offHint?: string }>;
+  roastLevel: RoastLevel;
+  mail: MailPrefs;
   emailTo: string | null;
   name: string;
 }) {
   const anyConfigured = channels.some((c) => c.configured);
-  const [roast, setOptimisticRoast] = useOptimistic(roastMode);
+  const [level, setOptimisticLevel] = useOptimistic(roastLevel);
+  const [prefs, setOptimisticPref] = useOptimistic(mail, (cur: MailPrefs, next: { kind: MailKind; on: boolean }) => ({ ...cur, [next.kind]: next.on }));
   const [, startRoast] = useTransition();
+  const [, startPref] = useTransition();
   const [sending, startSend] = useTransition();
   const [active, setActive] = useState<Kind | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [previewIdx, setPreviewIdx] = useState(0);
 
-  const toggleRoast = (on: boolean) =>
+  const chooseLevel = (next: RoastLevel) =>
     startRoast(async () => {
-      setOptimisticRoast(on);
-      const res = await setRoastModeAction(on);
+      setOptimisticLevel(next);
+      const res = await setRoastLevelAction(next);
       if (!res.ok) toast.error(`${res.error}. Try again.`);
-      else toast.success(on ? "Roast mode on. Ab bach ke dikha." : "Roast mode off. Plain emails from now on.");
+      else toast.success(next === "off" ? "Roast off. Plain emails from now on." : next === "coach" ? "Coach mode: firm and encouraging." : "Savage mode on. Ab bach ke dikha.");
+    });
+
+  const togglePref = (kind: MailKind, on: boolean) =>
+    startPref(async () => {
+      setOptimisticPref({ kind, on });
+      const res = await setMailPrefAction({ kind, on });
+      if (!res.ok) toast.error(`${res.error}. Try again.`);
+      else toast.success(`${MAIL_INFO[kind].label} ${on ? "on" : "off"}.`);
     });
 
   const send = (kind: Kind) => {
@@ -77,7 +109,8 @@ export function NotificationCard({
     });
   };
 
-  const preview = PREVIEW[previewIdx % PREVIEW.length].replaceAll("{name}", name);
+  const moment = PREVIEW_MOMENTS[previewIdx % PREVIEW_MOMENTS.length]!;
+  const preview = roastFor(level, moment.slot, moment.ctx, `preview-${previewIdx}`, name);
 
   return (
     <Card id="notifications" className="scroll-mt-32 lg:scroll-mt-20">
@@ -85,7 +118,7 @@ export function NotificationCard({
         <CardTitle className="flex items-center gap-2">
           <Bell className="size-4 text-muted-foreground" aria-hidden /> Notification channels
         </CardTitle>
-        <CardDescription>Morning plan at 08:00 and evening recap at 23:59. In-app notifications always work; email, Telegram and WhatsApp are set with env vars.</CardDescription>
+        <CardDescription>Morning plan, evening nudge, night recap and a weekly report. In-app notifications always work; email, Telegram and WhatsApp are set with env vars.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <ul className="space-y-2 text-sm">
@@ -103,7 +136,11 @@ export function NotificationCard({
                 </div>
                 {!c.configured && (
                   <p className="mt-0.5 text-xs break-words text-muted-foreground">
-                    Set <code className="font-mono">{c.envVars}</code> to turn it on.
+                    {c.offHint ?? (
+                      <>
+                        Set <code className="font-mono">{c.envVars}</code> to turn it on.
+                      </>
+                    )}
                   </p>
                 )}
               </div>
@@ -111,22 +148,54 @@ export function NotificationCard({
           ))}
         </ul>
 
+        <fieldset className="space-y-2 rounded-lg border p-3">
+          <legend className="px-1 text-sm font-medium">Your emails</legend>
+          <ul className="space-y-2">
+            {MAIL_KINDS.map((kind) => {
+              const Icon = MAIL_ICON[kind];
+              const info = MAIL_INFO[kind];
+              return (
+                <li key={kind}>
+                  <label htmlFor={`mail-${kind}`} className="flex cursor-pointer items-start gap-3">
+                    <Checkbox id={`mail-${kind}`} checked={prefs[kind]} onCheckedChange={(c) => togglePref(kind, c === true)} className="mt-0.5" />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5 text-sm font-medium">
+                        <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden /> {info.label}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {info.when}. {info.what}
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="text-xs text-muted-foreground">Turning one off still posts it to the in-app bell; only the email, Telegram and WhatsApp copies stop. The evening nudge needs the optional scheduler described in the README.</p>
+        </fieldset>
+
         <div className="space-y-3 rounded-lg border p-3">
-          <label htmlFor="roastMode" className="flex cursor-pointer items-start gap-3">
-            <Checkbox id="roastMode" checked={roast} onCheckedChange={(c) => toggleRoast(c === true)} className="mt-0.5" />
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1.5 text-sm font-medium">
-                <Flame className="size-3.5 text-primary" aria-hidden /> Roast mode
-              </span>
-              <span className="block text-xs text-muted-foreground">
-                Each email starts with a desi one-liner in the subject. A finished day gets praise, an unfinished one gets roasted.
-              </span>
-            </span>
-          </label>
-          {roast && (
+          <div>
+            <p className="flex items-center gap-1.5 text-sm font-medium">
+              <Flame className="size-3.5 text-primary" aria-hidden /> Roast level
+            </p>
+            <p className="text-xs text-muted-foreground">Each email leads with a line in the subject that uses your real numbers: backlog, streak, what is left, how the week went.</p>
+          </div>
+          <div role="group" aria-label="Roast level" className="flex flex-wrap gap-1.5">
+            {ROAST_LEVELS.map((l) => (
+              <Chip key={l} pressed={level === l} onClick={() => chooseLevel(l)}>
+                {ROAST_LEVEL_LABEL[l]}
+              </Chip>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">{ROAST_LEVEL_HINT[level]}</p>
+          {preview && (
             <div className="flex items-center gap-2 rounded-md bg-primary/10 px-3 py-2">
-              <p className="min-w-0 flex-1 text-sm font-medium text-primary">&ldquo;{preview}&rdquo;</p>
-              <Button variant="ghost" size="icon-sm" aria-label="Show another line" onClick={() => setPreviewIdx((i) => i + 1 + Math.floor(Math.random() * 5))}>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-primary">&ldquo;{preview}&rdquo;</p>
+                <p className="text-2xs text-muted-foreground">Example: {moment.label}</p>
+              </div>
+              <Button variant="ghost" size="icon-sm" aria-label="Show another example" onClick={() => setPreviewIdx((i) => i + 1)}>
                 <RefreshCw aria-hidden />
               </Button>
             </div>
@@ -141,11 +210,11 @@ export function NotificationCard({
                 Email goes to <span className="font-mono text-foreground">{emailTo}</span>.{" "}
               </>
             ) : null}
-            Morning and evening send the real email for today, marked [Test].
+            Each test sends the real email for today (the weekly one covers the latest Sunday), marked [Test].
           </p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="flex flex-wrap gap-2">
             {TESTS.map(({ kind, label, icon: Icon }) => (
-              <Button key={kind} variant="outline" className="h-9" onClick={() => send(kind)} loading={active === kind} disabled={!anyConfigured || sending}>
+              <Button key={kind} variant="outline" className="h-9 shrink-0 whitespace-nowrap pointer-coarse:h-11" onClick={() => send(kind)} loading={active === kind} disabled={!anyConfigured || sending}>
                 {active !== kind && <Icon aria-hidden />} {active === kind ? "Sending…" : label}
               </Button>
             ))}

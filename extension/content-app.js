@@ -47,9 +47,33 @@ if (!arm()) {
   window.addEventListener("DOMContentLoaded", () => obs.disconnect(), { once: true });
 }
 
+// Job and profile captures: background -> this script -> the page (which validates and saves them).
+// Mirrors lib/domain/capture-bridge.ts.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type !== "capture" || !document.documentElement.hasAttribute(ATTR)) return;
+  reply({ type: "capture", id: msg.id, payload: msg.payload });
+});
+
+function handleCaptureMessage(data) {
+  if (!data || typeof data !== "object" || data.source !== SOURCE_APP) return false;
+  if (data.type === "drain-captures") {
+    chrome.runtime.sendMessage({ type: "drain" }, (list) => {
+      if (chrome.runtime.lastError || !Array.isArray(list)) return;
+      for (const c of list) reply({ type: "capture", id: c.id, payload: c.payload });
+    });
+    return true;
+  }
+  if (data.type === "capture-ack" && typeof data.id === "string" && data.id.length <= 64) {
+    chrome.runtime.sendMessage({ type: "ack", id: data.id });
+    return true;
+  }
+  return false;
+}
+
 window.addEventListener("message", (event) => {
   if (event.source !== window || event.origin !== window.location.origin) return;
   if (!document.documentElement.hasAttribute(ATTR)) return;
+  if (handleCaptureMessage(event.data)) return;
   const req = parse(event.data);
   if (!req) return;
   reply({ type: "received", id: req.id });

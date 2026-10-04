@@ -56,6 +56,18 @@ const settingsSchema = new Schema(
     leetcodeStatsCache: { type: Schema.Types.Mixed, default: null },
     /** Lead morning/evening emails with a desi roast line (lib/domain/roast.ts). */
     roastMode: { type: Boolean, default: true },
+    /** Roast intensity: off | coach | savage. Unset on older settings; then roastMode decides (on = savage). */
+    roastLevel: { type: String, enum: ["off", "coach", "savage"], default: null },
+    /** Per-email switches. Anything not explicitly false is on. */
+    mailMorning: { type: Boolean, default: true },
+    mailBriefing: { type: Boolean, default: true },
+    mailAlerts: { type: Boolean, default: true },
+    mailJobs: { type: Boolean, default: true },
+    mailNudge: { type: Boolean, default: true },
+    mailNight: { type: Boolean, default: true },
+    mailWeekly: { type: Boolean, default: true },
+    /** How many backlog items the daily plan queues for you each day (0 turns the automatic queue off). */
+    backlogBudget: { type: Number, default: 2, min: 0, max: 10 },
     lastMorningRunAt: { type: Date, default: null },
     lastEveningRunAt: { type: Date, default: null },
     lastExportAt: { type: Date, default: null },
@@ -118,17 +130,36 @@ const feedStateSchema = new Schema({
 
 const notificationSchema = new Schema(
   {
-    kind: { type: String, enum: ["plan", "reminder", "recap", "streak", "milestone", "sync"], required: true },
+    kind: { type: String, enum: ["plan", "reminder", "recap", "streak", "milestone", "sync", "news"], required: true },
     title: { type: String, required: true },
     body: { type: String, default: "" },
     read: { type: Boolean, default: false },
     /** e.g. `plan:2026-10-05`; makes cron retries idempotent. */
     dedupeKey: { type: String },
+    /** The full message (a `MailSpec`) shown on /notifications/[id]; the bell keeps the short title and body. */
+    detail: { type: Schema.Types.Mixed },
+    /** The roast line that led the email, shown above the detail. */
+    roast: { type: String },
   },
   { timestamps: true },
 );
 notificationSchema.index({ read: 1, createdAt: -1 });
 notificationSchema.index({ dedupeKey: 1 }, { unique: true, sparse: true });
+
+/** One row per browser/device that turned on PWA notifications. Single user, so no owner field. */
+const pushSubscriptionSchema = new Schema(
+  {
+    endpoint: { type: String, required: true, unique: true },
+    keys: {
+      p256dh: { type: String, required: true },
+      auth: { type: String, required: true },
+    },
+    /** Short device label from the user agent, shown in Settings. */
+    label: { type: String, default: "" },
+    lastOkAt: { type: Date },
+  },
+  { timestamps: true },
+);
 
 /** Failed logins, kept for 15 minutes for throttling. */
 const loginAttemptSchema = new Schema({
@@ -146,5 +177,8 @@ export const Article: Model<ArticleDoc> = models.Article ?? model("Article", art
 export const FeedState = models.FeedState ?? model("FeedState", feedStateSchema);
 export const Notification: Model<NotificationDoc> = models.Notification ?? model("Notification", notificationSchema);
 export const LoginAttempt = models.LoginAttempt ?? model("LoginAttempt", loginAttemptSchema);
+export type PushSubscriptionDoc = InferSchemaType<typeof pushSubscriptionSchema>;
+export const PushSubscriptionModel: Model<PushSubscriptionDoc> =
+  models.PushSubscription ?? model("PushSubscription", pushSubscriptionSchema);
 
 export { SETTINGS_ID };

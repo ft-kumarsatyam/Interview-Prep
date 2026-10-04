@@ -1,10 +1,19 @@
+import type { PushContent } from "@/lib/domain/roast";
 import { env } from "@/lib/env";
 import { fetchWithPolicy } from "@/lib/http";
+import { webPushChannel } from "./web-push";
+
+/** What PWA push needs beyond the text: the structured message, where a tap goes, and a replace-tag. */
+export interface PushMeta {
+  content: PushContent;
+  url: string;
+  tag: string;
+}
 
 export interface NotifyChannel {
-  name: "telegram" | "email" | "whatsapp";
+  name: "telegram" | "email" | "whatsapp" | "push";
   /** `html` is an optional richer body for email; channels that can't render it use `body`. */
-  send(title: string, body: string, html?: string): Promise<void>;
+  send(title: string, body: string, html?: string, meta?: PushMeta): Promise<void>;
 }
 
 const TIMEOUT_MS = 10_000;
@@ -101,6 +110,11 @@ export function configuredChannels(): NotifyChannel[] {
     else if (e.RESEND_API_KEY) channels.push(emailChannel(e.RESEND_API_KEY, e.NOTIFY_EMAIL, e.RESEND_FROM_EMAIL));
   }
   if (e.WHAPI_TOKEN && e.WHATSAPP_TO) channels.push(whatsappChannel(e.WHAPI_TOKEN, e.WHATSAPP_TO, e.WHAPI_API_URL));
+  if (e.VAPID_PUBLIC_KEY && e.VAPID_PRIVATE_KEY) {
+    channels.push(
+      webPushChannel({ publicKey: e.VAPID_PUBLIC_KEY, privateKey: e.VAPID_PRIVATE_KEY, subject: e.VAPID_SUBJECT ?? `mailto:${e.ADMIN_EMAIL}` }),
+    );
+  }
   return channels;
 }
 
@@ -110,8 +124,9 @@ export async function pushToChannels(
   body: string,
   channels: readonly NotifyChannel[] = configuredChannels(),
   html?: string,
+  meta?: PushMeta,
 ): Promise<{ sent: string[]; failed: string[]; errors: Record<string, string> }> {
-  const results = await Promise.allSettled(channels.map((c) => c.send(title, body, html)));
+  const results = await Promise.allSettled(channels.map((c) => c.send(title, body, html, meta)));
   const sent: string[] = [];
   const failed: string[] = [];
   const errors: Record<string, string> = {};

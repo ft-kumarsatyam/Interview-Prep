@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { CheckCircle2, ExternalLink, RefreshCw } from "lucide-react";
+import { CheckCircle2, ExternalLink, PlayCircle, RefreshCw } from "lucide-react";
 import { DifficultyBadge } from "@/components/shared/badges";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { StatusIcon } from "@/components/shared/status-icon";
@@ -18,7 +18,7 @@ function ProblemStatusIcon({ prog }: { prog?: ProgressSummary }) {
   return <StatusIcon kind="todo" label="Not started" />;
 }
 
-export function ProblemRow({ p, prog, isNext }: { p: ContentProblem; prog?: ProgressSummary; isNext?: boolean }) {
+export function ProblemRow({ p, prog, isNext, video }: { p: ContentProblem; prog?: ProgressSummary; isNext?: boolean; video?: string }) {
   return (
     <li className={cn("flex items-center gap-1 rounded-lg", isNext && "bg-primary/5 ring-1 ring-primary/30")}>
       <Link
@@ -46,6 +46,18 @@ export function ProblemRow({ p, prog, isNext }: { p: ContentProblem; prog?: Prog
         </span>
         <DifficultyBadge difficulty={p.difficulty} />
       </Link>
+      {video && (
+        <a
+          href={video}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Watch the ${p.title} walkthrough on YouTube`}
+          title="Video walkthrough"
+          className="grid size-10 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          <PlayCircle className="size-4" />
+        </a>
+      )}
       <a
         href={p.url}
         target="_blank"
@@ -75,6 +87,7 @@ export function ProblemGroups({
   open,
   onOpenChange,
   nextSlug,
+  videos,
 }: {
   title?: string;
   groups: ProblemGroup[];
@@ -82,6 +95,7 @@ export function ProblemGroups({
   open: string[];
   onOpenChange: (open: string[]) => void;
   nextSlug?: string;
+  videos?: Record<string, string>;
 }) {
   if (groups.length === 0) return null;
   const keys = new Set(groups.map((g) => g.key));
@@ -127,7 +141,7 @@ export function ProblemGroups({
               <AccordionContent className="pb-2 [&_a]:no-underline">
                 <ul className="-mx-1 space-y-0.5">
                   {g.items.map((p) => (
-                    <ProblemRow key={p.slug} p={p} prog={progress[p.slug]} isNext={p.slug === nextSlug} />
+                    <ProblemRow key={p.slug} p={p} prog={progress[p.slug]} isNext={p.slug === nextSlug} video={videos?.[p.slug]} />
                   ))}
                 </ul>
               </AccordionContent>

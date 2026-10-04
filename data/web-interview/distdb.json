@@ -1,0 +1,353 @@
+{
+  "track": {
+    "id": "distdb",
+    "name": "Distributed databases",
+    "blurb": "Consensus, replication, partitioning and CockroachDB-style distributed SQL, plus how to pick the right database for the job."
+  },
+  "questions": [
+    {
+      "id": "distdb-cap-pacelc",
+      "level": "mid",
+      "q": "Explain CAP and PACELC.",
+      "answer": "**CAP says that during a network partition a distributed system must choose between consistency (every read sees the latest write, i.e. linearizability) and availability (every request to a live node gets a non-error answer). PACELC adds that even without a partition, there is a trade-off between latency and consistency.**\n\n**CAP precisely:**\n- **P** is not a choice: networks do partition, so a real system must tolerate it.\n- **During a partition, CP** systems refuse some requests (the minority side cannot accept writes) to stay consistent. Examples: etcd, ZooKeeper, CockroachDB, Spanner, MongoDB with majority concerns.\n- **AP** systems keep answering on both sides and reconcile later, accepting stale reads and conflicts. Examples: Cassandra and DynamoDB at default (eventual) settings, Riak.\n\n**PACELC:** if **P**artition, choose **A** or **C**; **E**lse (normal operation), choose **L**atency or **C**onsistency.\n\n```text\nSystem         Partition   Else\nCassandra      PA          EL   (tunable: QUORUM moves toward C)\nDynamoDB       PA          EL   (strongly consistent reads optional)\nMongoDB        PC          EC   (with majority read/write concerns)\nCockroachDB    PC          EC   (pays consensus latency on every write)\nSpanner        PC          EC\n```\n\n**Why PACELC matters more day to day:** partitions are rare; latency is constant. A strongly consistent write must reach a quorum, which in a multi-region setup can mean 50-150 ms. Systems that answer from one local replica are faster but can return stale data.\n\n**How to use this in a design discussion:** decide per operation. A shopping cart or like counter can be AP and merge later; a payment, inventory reservation or username uniqueness needs CP. Many databases are tunable, so the choice is often made per query (read/write concern, consistency level), not per product.",
+      "followUps": [
+        "Is MongoDB CP or AP?",
+        "Why is \"CA\" not a real option for a distributed system?",
+        "Where do Cassandra and CockroachDB sit in PACELC?"
+      ],
+      "mistakes": [
+        "Saying you pick any two of three; partitions are not optional, so the real choice is C or A during a partition.",
+        "Using C in CAP to mean ACID consistency; it means linearizability.",
+        "Ignoring the latency trade-off that exists all the time, which is what PACELC adds."
+      ],
+      "lesson": "distdb-fundamentals"
+    },
+    {
+      "id": "distdb-quorums",
+      "level": "mid",
+      "q": "How do quorums work?",
+      "answer": "**With N replicas, a write succeeds after W acknowledge it and a read queries R replicas. If R + W > N, every read set overlaps every write set in at least one replica, so the read sees the latest acknowledged write (picking the newest version by timestamp or version number).**\n\n**Example with N = 3:**\n- **W = 2, R = 2:** overlap guaranteed, tolerates one node down for both reads and writes. The common default (Cassandra `QUORUM`).\n- **W = 3, R = 1:** fast reads, but any single node down blocks writes.\n- **W = 1, R = 1:** fastest and most available, but reads can be stale (eventual consistency).\n\n```text\nN=3, W=2, R=2\nwrite v2 -> A(v2) B(v2) C(v1)      ack after A, B\nread     -> B(v2) C(v1)            overlap at B -> return v2, repair C\n```\n\n**Failure tolerance:** a majority quorum of `floor(N/2)+1` tolerates `N - quorum` failures: 3 nodes tolerate 1, 5 tolerate 2.\n\n**Why it is not automatically linearizable:**\n- A write that reached only one replica before failing may or may not be seen by later reads, so two readers can disagree.\n- Concurrent writes need conflict resolution (last-write-wins can silently drop one).\n- Sloppy quorums (writing to substitute nodes during failures, with **hinted handoff** later) break the overlap guarantee.\nLeaderless stores add **read repair** and **anti-entropy** (Merkle tree comparison) to converge.\n\n**Consensus vs quorum reads:** Raft and Paxos also use majority quorums, but with a single leader and an ordered log, which gives linearizable writes. Dynamo-style quorums are cheaper and more available but weaker.\n\n**Multi-region:** `LOCAL_QUORUM` keeps latency low within a region while another region catches up asynchronously, trading global consistency for latency.",
+      "followUps": [
+        "Does R + W > N guarantee linearizability?",
+        "What are sloppy quorums and hinted handoff?",
+        "What happens to a write that reached fewer than W replicas?"
+      ],
+      "mistakes": [
+        "Claiming R + W > N gives linearizability; without read repair and careful handling of failed writes it does not.",
+        "Forgetting that quorum size determines how many failures you can tolerate."
+      ],
+      "lesson": "distdb-fundamentals"
+    },
+    {
+      "id": "distdb-raft",
+      "level": "senior",
+      "q": "How does Raft elect a leader and commit?",
+      "answer": "**Nodes start as followers; if one hears no heartbeat before its randomized election timeout, it becomes a candidate, increments the term and requests votes. A majority of votes makes it leader. The leader appends client commands to its log, replicates them, and an entry is committed once a majority has stored it, after which it is applied to the state machine.**\n\n**Election:**\n- Time is split into **terms**, each with at most one leader.\n- A candidate votes for itself and sends `RequestVote` with its last log index and term.\n- A node grants at most one vote per term, and only if the candidate's log is **at least as up to date** as its own. This guarantees the new leader has every committed entry.\n- **Randomized timeouts** (e.g. 150-300 ms) make split votes rare; if one happens, the term times out and a new election starts.\n\n**Log replication:**\n\n```text\nclient -> leader: SET x=5\nleader appends (term 4, index 17), sends AppendEntries to followers\nF1 ack, F2 ack  -> majority (3 of 5) -> commit index = 17\nleader applies, replies to client; next heartbeat tells followers to apply\n```\n\n- `AppendEntries` carries the previous index and term; a follower rejects mismatches, and the leader walks back until logs match, overwriting the follower's conflicting suffix.\n- A leader only directly commits entries from its own term (older ones become committed with them), which avoids a known safety edge case.\n\n**Failure behaviour:**\n- A partitioned old leader cannot commit (no majority); when it returns, it sees the higher term, steps down and its uncommitted entries are discarded.\n- A 5-node group survives 2 failures; a minority partition cannot make progress.\n\n**Reads:** to be linearizable the leader must confirm it is still leader (a heartbeat round, ReadIndex) or rely on time-based **leader leases**, which CockroachDB and etcd use to serve reads locally.\n\n**Where it is used:** etcd, Consul, CockroachDB (one Raft group per range), TiKV, YugabyteDB, MongoDB's replication protocol is Raft-inspired.",
+      "followUps": [
+        "Why are randomized election timeouts used?",
+        "How does a leader serve linearizable reads?",
+        "What happens to uncommitted entries on an old leader?"
+      ],
+      "mistakes": [
+        "Saying an entry is committed when the leader writes it; it is committed only once a majority has stored it.",
+        "Forgetting the voting restriction that a candidate's log must be at least as up to date as the voter's."
+      ],
+      "lesson": "distdb-fundamentals"
+    },
+    {
+      "id": "distdb-range-vs-hash",
+      "level": "mid",
+      "q": "Range vs hash partitioning?",
+      "answer": "**Range partitioning splits data by contiguous key ranges, which keeps related keys together and makes range scans efficient but risks hotspots on sequential keys. Hash partitioning places keys by a hash, which spreads load evenly but turns range queries into scatter-gather across all partitions.**\n\n**Range partitioning:**\n- Partitions like `[a, f)`, `[f, m)`. Ranges split when they grow and can move between nodes.\n- **Good:** `WHERE ts BETWEEN ...` or prefix scans hit one or a few partitions; ordered iteration is cheap.\n- **Bad:** sequential keys (timestamps, auto-increment ids) send every insert to the last range, a **write hotspot**. Skewed popular ranges create read hotspots.\n- Used by CockroachDB, Spanner, HBase, Bigtable, TiDB, MongoDB ranged sharding.\n\n**Hash partitioning:**\n- `partition = hash(key) mod N`, or better a position on a **consistent hashing** ring so adding nodes moves only a fraction of keys.\n- **Good:** uniform writes, no hotspot from sequential keys.\n- **Bad:** range scans touch every partition; one hot key still overloads its partition.\n- Used by Cassandra (token ring), DynamoDB (partition key), MongoDB hashed sharding, Redis Cluster (hash slots).\n\n**Hybrid designs:**\n\n```text\nCassandra / DynamoDB:  PRIMARY KEY ((tenant_id), created_at)\n  partition key hashed  -> spread across nodes\n  clustering/sort key    -> ordered within the partition, cheap range scans\nCockroachDB hash-sharded index:\n  CREATE INDEX ON events (ts) USING HASH;   -- spreads sequential writes\n```\n\n**Choosing:** list the dominant queries. If they are \"everything for entity X, ordered by time\", hash on X and sort by time within it. If they are global time ranges, range partition but break write hotspots (hash-sharded indexes, a bucket prefix). For celebrity keys, add a random suffix and fan in on read.",
+      "followUps": [
+        "How do you mitigate hotspots in range partitioning?",
+        "How does consistent hashing reduce data movement?",
+        "What does DynamoDB use?"
+      ],
+      "mistakes": [
+        "Choosing range partitioning on a monotonically increasing key, so all writes hit the last partition.",
+        "Choosing hash partitioning and then needing efficient range scans on the same key."
+      ],
+      "lesson": "distdb-fundamentals"
+    },
+    {
+      "id": "distdb-cockroach-serializable",
+      "level": "senior",
+      "q": "How does CockroachDB achieve serializable transactions across nodes?",
+      "answer": "**Each transaction gets a timestamp from a hybrid logical clock and all reads and writes are MVCC at that timestamp. Writes are stored as provisional \"intents\" replicated through Raft, and a single transaction record decides atomically whether they all commit. Conflicts are detected through timestamps, intents and a timestamp cache, and when serializability is at risk the transaction is pushed or restarted.**\n\n**The building blocks:**\n- **MVCC:** every value is versioned by timestamp; a read at time T sees the newest version at or before T.\n- **Write intents:** uncommitted writes are written as intents pointing to the **transaction record**. Each intent is replicated via the range's Raft group, so it is durable.\n- **Transaction record:** lives on the range of the first written key; flipping it to COMMITTED atomically commits every intent on every node. Intents are then resolved asynchronously.\n- **Parallel commits:** the coordinator writes intents and a STAGING record in parallel, so most commits take one round of consensus.\n\n**How serializability is preserved:**\n- **Read-write conflict:** the leaseholder records the latest read time per key in the **timestamp cache**. A later write to that key with an older timestamp is pushed above it, so it cannot invalidate a read that already happened.\n- **Write-write conflict:** a writer hitting another transaction's intent waits in a lock table queue, or pushes/aborts it (deadlock detection included).\n- **Pushed timestamps:** if a transaction's commit timestamp moved, it must **refresh** its reads (check nothing changed in between). If the refresh fails, it restarts with a retry error (SQLSTATE 40001).\n- **Clock uncertainty:** clocks may differ by up to `max-offset` (500 ms by default). A read that sees a value within its uncertainty window cannot know if it happened before, so it bumps its timestamp and may restart.\n\n```text\nBEGIN (ts=100) -> write intent k1 (range A), intent k2 (range B)\ncommit: txn record PENDING -> STAGING (parallel with intents) -> COMMITTED\nreaders hitting intents check the record, then see the value or wait\n```\n\nSERIALIZABLE is the default. READ COMMITTED is also supported (since 23.2) to reduce retries for apps ported from Postgres.",
+      "followUps": [
+        "What is a write intent?",
+        "What is the uncertainty interval and why does it cause restarts?",
+        "What are parallel commits?"
+      ],
+      "mistakes": [
+        "Saying it uses atomic clocks like Spanner; it uses hybrid logical clocks with a bounded clock offset.",
+        "Saying it uses locks and two-phase locking for everything; it relies on MVCC timestamps, intents and a transaction record."
+      ],
+      "lesson": "cockroach-architecture"
+    },
+    {
+      "id": "distdb-range-leaseholder",
+      "level": "mid",
+      "q": "What is a range and a leaseholder?",
+      "answer": "**CockroachDB splits the sorted key space into ranges (512 MiB by default), each replicated (3 times by default) as its own Raft group. One replica holds the range lease, the leaseholder, which serves all consistent reads and coordinates writes for that range.**\n\n**Ranges:**\n- All SQL data (tables and indexes) is encoded into one ordered key-value space, e.g. `/Table/orders/primary/<id>`.\n- Ranges split automatically when they grow large or get hot (**load-based splitting**) and merge when small.\n- The **rebalancer** moves replicas and leases across nodes for even disk use and load, and to honour locality constraints.\n\n**Leaseholder:**\n- Serves strongly consistent reads **locally without a Raft round trip**, because the lease guarantees no other replica can serve writes during that period.\n- Receives writes, evaluates them (checking the timestamp cache, conflicts), and proposes them to Raft. CockroachDB tries to keep the leaseholder and the Raft leader on the same replica.\n- Leases are tied to node liveness or, in newer versions, leader leases bound to the Raft leader's term.\n\n```text\nRange r42: /Table/orders/1000 - /Table/orders/2000\n  replicas: n1 (leaseholder + raft leader), n3, n5\n  read  -> n1 answers from local data\n  write -> n1 proposes -> n3 ack -> committed (2 of 3)\n```\n\n**Failure:** if the leaseholder's node dies, its lease expires (seconds), another replica acquires it, and the range is briefly unavailable for that interval. Ranges with a lost replica are up-replicated elsewhere automatically.\n\n**Performance implications:** a query's latency depends on where the leaseholders it touches live. Multi-region features pin leaseholders near users (`REGIONAL BY ROW`), and **follower reads** (`AS OF SYSTEM TIME follower_read_timestamp()`) let any nearby replica serve slightly stale data without contacting the leaseholder.",
+      "followUps": [
+        "How do range splits and rebalancing work?",
+        "What happens when the leaseholder node dies?",
+        "How do follower reads work?"
+      ],
+      "mistakes": [
+        "Confusing the leaseholder with the Raft leader; they are usually the same replica but are distinct roles.",
+        "Assuming any replica can serve consistent reads; by default only the leaseholder does."
+      ],
+      "lesson": "cockroach-architecture"
+    },
+    {
+      "id": "distdb-client-retries",
+      "level": "mid",
+      "q": "Why must clients retry transactions?",
+      "answer": "**Because CockroachDB runs at SERIALIZABLE isolation with optimistic concurrency, some conflicts can only be resolved by aborting a transaction and running it again. The server returns a retry error (SQLSTATE 40001), and correctness requires the client to replay the whole transaction, not just the last statement.**\n\n**Why retries happen:**\n- **Read-write conflicts:** another transaction wrote to data you read, after your timestamp; your timestamp gets pushed and your reads cannot be refreshed.\n- **Write-write conflicts** and deadlocks, where one transaction is aborted.\n- **Clock uncertainty:** you encounter a value within your uncertainty interval and must move your timestamp forward.\n- **Infrastructure events:** lease transfers, range splits or node restarts during the transaction.\n\n**What the server handles for you:** if the transaction has not yet sent any results to the client (for example a single statement, or a batch sent all at once), the gateway retries it automatically. Once results have been returned, the server cannot know what the app did with them, so the client must retry.\n\n**Postgres is not different in kind:** Postgres at SERIALIZABLE also returns 40001; CockroachDB just makes serializable the default, so every app needs the loop.\n\n**Reducing retries:** keep transactions small and short, avoid hot rows, use `SELECT ... FOR UPDATE` to take locks early on contended rows, and send statements together. If the app tolerates weaker semantics, READ COMMITTED (available since 23.2) greatly reduces retries but reintroduces anomalies like lost updates unless you lock explicitly.",
+      "followUps": [
+        "What does SQLSTATE 40001 mean?",
+        "Which retries does CockroachDB handle automatically?",
+        "How does READ COMMITTED change this?"
+      ],
+      "mistakes": [
+        "Assuming retries are rare edge cases you can ignore, instead of a normal outcome under contention.",
+        "Retrying only the failed statement rather than the whole transaction."
+      ],
+      "lesson": "cockroach-architecture"
+    },
+    {
+      "id": "distdb-cockroach-vs-postgres",
+      "level": "mid",
+      "q": "How does it differ from PostgreSQL?",
+      "answer": "**CockroachDB speaks the PostgreSQL wire protocol and much of its SQL dialect, but underneath it is a different system: a distributed, Raft-replicated key-value store that scales horizontally and survives node or region failures automatically. Postgres is a single-primary database that is faster per query on one machine but scales writes only vertically.**\n\n**Architecture:**\n- **Postgres:** one primary handles all writes; replicas are read-only, usually asynchronous; failover needs tooling (Patroni, managed services).\n- **CockroachDB:** every node accepts reads and writes; data is split into ranges with 3+ Raft replicas; failover is automatic with no data loss for committed transactions.\n\n**Behaviour differences:**\n- **Isolation:** SERIALIZABLE by default, so apps must handle 40001 retries. Postgres defaults to READ COMMITTED.\n- **Latency:** every write needs a consensus round across replicas (more across regions), so a single-row insert is a few ms slower than a local Postgres.\n- **Primary keys:** sequential keys create hotspots; use `gen_random_uuid()` or hash-sharded indexes. In Postgres sequential keys are ideal.\n- **Schema changes:** online and asynchronous by design, without the lock risks of Postgres DDL, but they run as background jobs with their own limits.\n- **Features:** most of SQL, JSONB, CTEs, window functions, partial and inverted indexes, triggers and UDFs in newer versions. Gaps or differences remain around extensions (no PostGIS-as-extension model, no arbitrary C extensions), some system catalogs, advisory lock semantics and certain planner behaviour.\n- **Multi-region SQL:** `REGIONAL BY ROW`, `GLOBAL` tables and survival goals are built in; in Postgres this needs Citus, logical replication or custom sharding.\n\n```sql\n-- CockroachDB-specific\nALTER DATABASE app SET PRIMARY REGION \"us-east1\";\nALTER TABLE users SET LOCALITY REGIONAL BY ROW;\n```\n\n**Operational and cost:** Postgres has a vast ecosystem and runs anywhere for little money. CockroachDB's licence moved to an enterprise model with a free tier for small companies, which is worth checking for a new project.",
+      "followUps": [
+        "Which Postgres features are missing or behave differently?",
+        "Why is single-row latency higher than on a local Postgres?"
+      ],
+      "mistakes": [
+        "Assuming it is Postgres with clustering bolted on; it is a new engine that only speaks the Postgres wire protocol and dialect.",
+        "Expecting existing Postgres apps to run unchanged without retry handling or primary key redesign."
+      ],
+      "lesson": "cockroach-architecture"
+    },
+    {
+      "id": "distdb-sequential-pk-bad",
+      "level": "mid",
+      "q": "Why are sequential primary keys bad on CockroachDB?",
+      "answer": "**Because CockroachDB stores rows sorted by primary key in ranges, consecutive keys land in the same range, so every insert goes to the one range holding the highest key and its single leaseholder. That turns a cluster of many nodes into a single-node write bottleneck.**\n\n**Mechanism:** with `id = 1001, 1002, 1003...` or a key starting with a timestamp, new rows always append to the last range. Load-based splitting cannot help, because the next split's right-hand side is again the only one receiving inserts.\n\n**Fixes:**\n- **Random UUIDs:** `id UUID PRIMARY KEY DEFAULT gen_random_uuid()` spreads inserts across all ranges. This is the standard recommendation.\n- **Hash-sharded indexes** when you need ordered access on a sequential column:\n\n```sql\nCREATE TABLE events (\n  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n  ts TIMESTAMPTZ NOT NULL DEFAULT now(),\n  payload JSONB\n);\n-- spreads writes on ts over 16 buckets; range scans fan out to the buckets\nCREATE INDEX events_ts_idx ON events (ts) USING HASH WITH (bucket_count = 16);\n```\n\n- **Composite keys** with a well-distributed leading column: `PRIMARY KEY (tenant_id, created_at, id)` puts each tenant's rows together while different tenants write to different ranges.\n- **`unique_rowid()`** (the default for `SERIAL` in CockroachDB) is roughly time-ordered too, so it still concentrates writes, although less than a strict sequence.\n\n**UUIDv7:** time-ordered, so it has the same hotspot problem here, even though it is ideal on Postgres.\n\n**Trade-offs:** random keys lose insert locality and ordered scans by id; hash sharding makes range scans touch every bucket. For low write rates the hotspot may not matter; it becomes serious at hundreds or thousands of inserts per second.",
+      "followUps": [
+        "What is a hash-sharded index?",
+        "Is UUIDv7 a good choice on CockroachDB?",
+        "What about SERIAL columns?"
+      ],
+      "mistakes": [
+        "Using SERIAL or a timestamp-leading primary key and seeing one node take every insert.",
+        "Not knowing that secondary indexes on sequential columns (like created_at) create the same hotspot."
+      ],
+      "lesson": "cockroach-modeling"
+    },
+    {
+      "id": "distdb-handle-retries",
+      "level": "mid",
+      "q": "How do you handle transaction retries?",
+      "answer": "**Wrap each transaction in a retry loop that catches SQLSTATE 40001, rolls back, waits with exponential backoff and jitter, and reruns the whole transaction function. Keep the body free of external side effects so running it twice is safe.**\n\n**A generic retry wrapper:**\n\n```js\nasync function withTxRetry(pool, fn, maxAttempts = 5) {\n  for (let attempt = 1; ; attempt++) {\n    const client = await pool.connect();\n    try {\n      await client.query(\"BEGIN\");\n      const result = await fn(client);\n      await client.query(\"COMMIT\");\n      return result;\n    } catch (err) {\n      await client.query(\"ROLLBACK\").catch(() => {});\n      if (err.code !== \"40001\" || attempt >= maxAttempts) throw err;\n      await new Promise(r => setTimeout(r, 2 ** attempt * 10 + Math.random() * 50));\n    } finally {\n      client.release();\n    }\n  }\n}\n```\n\n**Rules for the transaction body:**\n- **Idempotent and self-contained:** no HTTP calls, emails or queue publishes inside. Write an outbox row instead and publish after commit.\n- **Re-read inside the transaction:** do not reuse values read in a previous attempt.\n- **Short:** fewer statements and less time mean fewer conflicts.\n\n**Ambiguous commit errors:** if the connection drops during COMMIT (`40003` statement completion unknown), you cannot know whether it committed. Make the transaction idempotent (e.g. an idempotency key with a unique constraint) so a retry is harmless.\n\n**Reducing the need to retry:**\n- Use `SELECT ... FOR UPDATE` on contended rows to queue rather than abort.\n- Batch statements so the gateway can retry automatically before any results are sent.\n- Avoid hot rows such as a global counter.\n- Consider READ COMMITTED for workloads that do not need serializability.\n\n**Tooling:** CockroachDB's documentation provides retry helpers for common drivers (for example `crdbpgx.ExecuteTx` in Go), and some ORMs offer retry hooks; the advanced savepoint protocol (`SAVEPOINT cockroach_restart`) lets a client retry on the same connection.",
+      "followUps": [
+        "What makes a transaction safe to retry?",
+        "What is the cockroach_restart savepoint?",
+        "How do ORMs handle this?"
+      ],
+      "mistakes": [
+        "Performing side effects such as sending emails or calling APIs inside the retried block.",
+        "Retrying forever without a limit or backoff, amplifying contention."
+      ],
+      "lesson": "cockroach-modeling"
+    },
+    {
+      "id": "distdb-multi-region-latency",
+      "level": "senior",
+      "q": "How do you give users in different regions low latency?",
+      "answer": "**Place each user's data, specifically its leaseholder and a write quorum, in the user's home region, so their reads and writes stay local. For data read everywhere but rarely written, use global tables or follower reads so every region can read locally.**\n\n**CockroachDB multi-region building blocks:**\n- **REGIONAL BY ROW:** each row has a `crdb_region` column; its leaseholder and voting replicas live in that region. A Tokyo user's row is read and written in Tokyo with local latency.\n- **REGIONAL BY TABLE:** the whole table lives in one region; good for data mostly used from one place.\n- **GLOBAL tables:** reference data (currencies, feature flags, product catalog) readable with local latency in every region via non-blocking transactions; writes are slower (hundreds of ms) because they commit in the future and wait out clock uncertainty.\n- **Follower reads:** `AS OF SYSTEM TIME follower_read_timestamp()` returns data a few seconds stale from the nearest replica.\n\n```sql\nALTER DATABASE app SET PRIMARY REGION \"us-east1\";\nALTER DATABASE app ADD REGION \"europe-west1\";\nALTER DATABASE app ADD REGION \"asia-northeast1\";\nALTER TABLE users SET LOCALITY REGIONAL BY ROW;\nALTER TABLE currencies SET LOCALITY GLOBAL;\n```\n\n**Survival goals:**\n- **ZONE (default):** survive an availability zone failure; writes commit within one region, so they are fast.\n- **REGION:** survive losing a whole region; write quorums must span regions, adding cross-region latency to every write.\n\n**Application side:**\n- Route users to the nearest app and gateway nodes (geo DNS or an anycast load balancer).\n- Lookups by a unique column on a regional-by-row table may need to check other regions; locality-optimized search checks the local region first.\n\n**Beyond CockroachDB:** the same ideas apply elsewhere: Spanner's leader placement, DynamoDB global tables (multi-writer, last-writer-wins, eventually consistent), or sharding Postgres by region. Data residency rules (EU data stays in the EU) often push toward row-level homing anyway.",
+      "followUps": [
+        "What does survival goal REGION vs ZONE mean for write latency?",
+        "When would you use a GLOBAL table?",
+        "How do you handle data residency requirements?"
+      ],
+      "mistakes": [
+        "Replicating everything everywhere and expecting local writes; strongly consistent writes still need a quorum across regions.",
+        "Forgetting that the leaseholder location, not replica location, determines consistent read latency."
+      ],
+      "lesson": "cockroach-modeling"
+    },
+    {
+      "id": "distdb-not-cockroach",
+      "level": "mid",
+      "q": "When would you not choose CockroachDB?",
+      "answer": "**When a single Postgres instance with replicas meets your scale and availability needs, which is true for most applications. Also avoid it for latency-critical single-row workloads, heavy analytics, apps that depend on Postgres extensions, or teams unwilling to handle serializable retries and distributed data modelling.**\n\n**Reasons to skip it:**\n- **Scale you do not have:** a well-tuned Postgres on a large instance handles tens of thousands of transactions per second and terabytes of data. Managed services give automated failover with seconds of downtime.\n- **Latency:** every write needs consensus across replicas; for a local single-row write Postgres is faster and more predictable.\n- **Analytics and OLAP:** large scans and aggregations belong in a column store (ClickHouse, BigQuery, Snowflake, DuckDB), not a distributed OLTP engine.\n- **Extension ecosystem:** PostGIS, pgvector, TimescaleDB, pg_cron and many others are Postgres extensions. CockroachDB has its own spatial and vector support, but not the extension model.\n- **Hot contended rows:** highly contended counters or queues retry a lot under serializable isolation.\n- **Cost and licensing:** more nodes are needed for the same throughput, and the licence is an enterprise model above the free tier.\n- **Team skills:** debugging distributed performance (leaseholders, hotspots, retries) is a different skill set.\n\n**When it is right:** you need horizontal write scaling with SQL and ACID, automatic survival of node, zone or region loss, multi-region users with data homed near them, or data residency by row.\n\n**Practical approach:** start with Postgres unless one of those requirements is concrete today. Keep the model portable (UUID keys, retry-safe transactions, no exotic extensions) so a later move is possible.",
+      "followUps": [
+        "What would you choose instead for analytics?",
+        "How do you decide whether you really need multi-region active-active?"
+      ],
+      "mistakes": [
+        "Picking distributed SQL for a small single-region app and paying latency, complexity and cost for nothing.",
+        "Not considering Postgres extensions and ecosystem tools the product depends on."
+      ],
+      "lesson": "cockroach-modeling"
+    },
+    {
+      "id": "distdb-postgres-mongo-dynamo",
+      "level": "mid",
+      "q": "Postgres vs MongoDB vs DynamoDB?",
+      "answer": "**Postgres is the default for relational data, flexible queries and strong constraints. MongoDB fits document-shaped aggregates with evolving structure and built-in sharding. DynamoDB fits known, key-based access patterns at any scale with no servers to manage, but punishes ad hoc queries.**\n\n**PostgreSQL:**\n- Relational model, joins, rich SQL, constraints, transactions, extensions (pgvector, PostGIS).\n- Ad hoc queries and reporting are easy; indexes can be added later for new access patterns.\n- Scales vertically plus read replicas; horizontal writes need Citus or a distributed SQL database.\n\n**MongoDB:**\n- Documents with nested data; schema evolves without migrations of every row.\n- Secondary indexes, aggregation pipeline, transactions, change streams, Atlas Search and Vector Search.\n- Horizontal scaling with sharding; replica sets with automatic failover.\n- Weaker at many-to-many relationships and cross-collection constraints.\n\n**DynamoDB:**\n- Key-value and wide-column: every query uses the partition key (plus optional sort key) or a secondary index.\n- Serverless, single-digit-millisecond latency at any scale, pay per request or capacity, global tables.\n- You must design for access patterns up front, often **single-table design** where several entity types share a table with composite keys so one query fetches related items.\n- Limits: 400 KB items, 1 MB per query page, limited transactions (100 items), no joins; ad hoc queries become full scans; analytics need an export to S3.\n\n```text\nDynamoDB single table\nPK=USER#42   SK=PROFILE            name, email\nPK=USER#42   SK=ORDER#2026-10-01   total\nQuery PK=USER#42 AND begins_with(SK, \"ORDER#\")  -> a user's orders\n```\n\n**Choosing:** a B2B SaaS with reporting and many relationships: Postgres. A content platform with varied document types and fast iteration: MongoDB or Postgres with jsonb. A high-throughput, well-understood lookup workload on AWS (sessions, carts, IoT device state): DynamoDB.",
+      "followUps": [
+        "Why is single-table design common in DynamoDB?",
+        "How do access patterns change the choice?",
+        "What are DynamoDB's hard limits that affect modelling?"
+      ],
+      "mistakes": [
+        "Choosing DynamoDB without knowing the access patterns up front; ad hoc queries become scans.",
+        "Comparing them on \"SQL vs NoSQL\" instead of consistency, query flexibility, scaling and operational model."
+      ],
+      "lesson": "db-choosing"
+    },
+    {
+      "id": "distdb-when-cockroach",
+      "level": "mid",
+      "q": "When is CockroachDB the right choice?",
+      "answer": "**CockroachDB is the right choice when you need SQL and ACID transactions together with horizontal write scaling or automatic survival of zone and region failures, especially for globally distributed users or per-row data residency. It shines for systems of record that must never be down and must stay correct.**\n\n**Strong fits:**\n- **Global user bases:** users in several continents with their rows homed near them (`REGIONAL BY ROW`) for local latency.\n- **High availability requirements:** survive a zone or region outage with no data loss and automatic recovery, without hand-built failover.\n- **Write scale beyond one node** while keeping relational modelling and strong consistency, e.g. payments, ledgers, inventory, identity, order management.\n- **Data residency:** keep EU customers' rows in EU regions within one logical database.\n- **Teams that know Postgres:** the wire protocol and dialect reduce the learning curve.\n\n**Real-world shape:** a fintech ledger serving customers in the US and EU, needing serializable correctness, regional data residency and zero-downtime upgrades, is a classic fit.\n\n**Compared with alternatives:**\n- **Google Spanner:** similar model, managed on GCP, uses TrueTime with atomic clocks.\n- **YugabyteDB:** reuses Postgres's query layer, so better extension and feature compatibility.\n- **Amazon Aurora DSQL:** serverless distributed Postgres-compatible SQL on AWS with optimistic concurrency.\n- **Citus:** shards Postgres itself, strong for multi-tenant and analytics workloads, weaker on automatic multi-region survival.\n\n**Proof-of-concept checklist:** p99 latency of your hottest transactions, retry rate under realistic contention, key design for hotspots, behaviour when you kill a node or region, required SQL features and extensions, and total cost compared with managed Postgres.",
+      "followUps": [
+        "How does it compare with Spanner, YugabyteDB or Aurora DSQL?",
+        "What would you check in a proof of concept?"
+      ],
+      "mistakes": [
+        "Choosing it for scale without measuring whether a single Postgres would suffice.",
+        "Ignoring that it requires designing keys and transactions for a distributed system."
+      ],
+      "lesson": "db-choosing"
+    },
+    {
+      "id": "distdb-postgres-search",
+      "level": "mid",
+      "q": "How would you add search to a Postgres-backed app?",
+      "answer": "**Start inside Postgres: full-text search with a generated `tsvector` column and a GIN index, plus `pg_trgm` for fuzzy and substring matching, and `pgvector` for semantic search. Move to a dedicated engine (OpenSearch, Elasticsearch, Typesense, Meilisearch) when you need advanced relevance tuning, faceting at scale or very high query volume, and feed it via CDC.**\n\n**Built-in full-text search:**\n\n```sql\nALTER TABLE products ADD COLUMN search tsvector\n  GENERATED ALWAYS AS (\n    setweight(to_tsvector('english', coalesce(name, '')), 'A') ||\n    setweight(to_tsvector('english', coalesce(description, '')), 'B')\n  ) STORED;\nCREATE INDEX products_search_idx ON products USING GIN (search);\n\nSELECT id, name, ts_rank(search, q) AS rank\nFROM products, websearch_to_tsquery('english', 'wireless headphones') q\nWHERE search @@ q ORDER BY rank DESC LIMIT 20;\n```\n\n- **Pros:** transactional consistency (results always match the data), no extra system, can combine with SQL filters and joins.\n- **Typo tolerance and autocomplete:** `pg_trgm` with a GIN index supports `similarity()` and fast `ILIKE '%term%'`.\n- **Semantic and hybrid search:** store embeddings in a `vector` column with an HNSW index (`pgvector`), and combine vector and keyword ranks (reciprocal rank fusion).\n\n**Limits that justify a search engine:**\n- Sophisticated relevance (BM25 tuning, synonyms, per-field boosts, learning to rank) and many languages.\n- Faceted navigation with counts over millions of documents.\n- Search load that would compete with OLTP on the primary.\nExtensions like ParadeDB's `pg_search` bring BM25 into Postgres and narrow this gap.\n\n**If you add an external engine:** Postgres remains the source of truth; stream changes using logical replication or Debezium into the index (or the outbox pattern), make indexing idempotent, and have a full reindex job for recovery and mapping changes.",
+      "followUps": [
+        "When does Postgres full-text search stop being enough?",
+        "How would you add semantic search?",
+        "How do you keep a separate search index in sync?"
+      ],
+      "mistakes": [
+        "Jumping straight to Elasticsearch for a small catalog that Postgres full-text search would handle.",
+        "Using LIKE '%term%' without a trigram index, causing sequential scans."
+      ],
+      "lesson": "db-choosing"
+    },
+    {
+      "id": "distdb-cache-search-sync",
+      "level": "senior",
+      "q": "How do you keep a cache or search index in sync?",
+      "answer": "**Treat the database as the source of truth and derive everything else from its committed changes: for caches use cache-aside with invalidation on write and a TTL as a safety net; for search indexes, stream changes with CDC (logical replication, Debezium, change streams) or an outbox, and apply them idempotently with versions.**\n\n**Why dual writes fail:** \"update DB, then update Elasticsearch\" breaks when the second call fails (index permanently stale) or when two concurrent requests interleave (request A writes DB then index last, overwriting B's newer value).\n\n**Caches:**\n- **Cache-aside:** read from cache, on miss load from DB and populate with a TTL.\n- **On write, delete the key** after the DB commit rather than setting a new value; the next read repopulates from the truth. Deletes are idempotent and order-insensitive.\n- **TTL** bounds how long any missed invalidation can live.\n- **Stampede protection:** request coalescing (single flight), a short lock, or serving stale while one worker refreshes.\n- For stronger guarantees, invalidate from the CDC stream so a failed app-side delete is still caught.\n\n**Search indexes via CDC:**\n\n```text\nPostgres WAL -> Debezium -> Kafka topic (keyed by row id) -> indexer -> OpenSearch\nindexer: upsert doc with version = source LSN or updated_at; ignore older versions\n```\n\n- Keyed partitions keep per-row ordering.\n- **External versioning** (`version_type=external` in Elasticsearch/OpenSearch) rejects stale updates, making replays safe.\n- Deletes become tombstones that remove documents.\n- **Outbox** works when you want domain events rather than raw row changes.\n\n**Recovery and rebuilds:** build a new index from a snapshot while recording the stream position, replay changes from that position, then switch an alias atomically. Run periodic reconciliation (counts or checksums per range) to catch drift.\n\n**Trade-off to state:** these systems are eventually consistent, typically by under a second. If a user must see their edit immediately, read that item from the database or show the optimistic local result.",
+      "followUps": [
+        "Why is write-to-DB-then-write-to-cache racy?",
+        "How do you handle a cache stampede?",
+        "How do you rebuild the index without downtime?"
+      ],
+      "mistakes": [
+        "Dual writes from the application to the database and the cache or index, which drift when one fails or writes race.",
+        "Updating the cache on write instead of invalidating, allowing out-of-order writes to leave stale values."
+      ],
+      "lesson": "db-choosing"
+    },
+    {
+      "id": "distdb-consistent-hashing",
+      "level": "mid",
+      "q": "What is consistent hashing and why is it used?",
+      "answer": "**Consistent hashing maps both keys and nodes onto the same hash ring and assigns each key to the next node clockwise. When a node joins or leaves, only the keys in its segment move, roughly 1/N of the data, instead of nearly all keys as with `hash(key) mod N`.**\n\n**The problem with mod N:** going from 4 to 5 nodes changes `hash(k) mod N` for about 80% of keys. For a cache that means a near-total miss storm; for a database, massive data movement.\n\n**How the ring works:**\n\n```text\nring 0 .......................................... 2^64\n      nodeA(10)      nodeB(40)        nodeC(75)\nkey k hashes to 52 -> next node clockwise = nodeC\nadd nodeD at 60   -> only keys in (40, 60] move from C to D\n```\n\n**Virtual nodes:** each physical node is placed at many points (e.g. 128-256 tokens). This evens out load, lets bigger machines take more tokens, and spreads a failed node's data across many survivors instead of dumping it on one neighbour.\n\n**Replication:** store each key on the next R distinct physical nodes clockwise (Dynamo, Cassandra).\n\n**Where it is used:** Cassandra and ScyllaDB token rings, DynamoDB's internal partitioning, Riak, memcached client libraries, CDN and load balancer request routing (e.g. sticky routing to cache shards).\n\n**Variants:**\n- **Rendezvous (highest random weight) hashing:** each key picks the node with the highest `hash(key, node)`; simple, no ring, also moves about 1/N keys.\n- **Jump consistent hash:** tiny and fast, but nodes can only be added or removed at the end.\n- **Fixed slots:** Redis Cluster uses 16,384 hash slots assigned to nodes; moving a slot is explicit and easy to reason about. Range-partitioned databases (CockroachDB, Spanner) avoid hashing and split ranges instead.\n\n**Limitation:** consistent hashing balances keys, not load. A single hot key still overloads one node; mitigate with replication of hot keys or key splitting.",
+      "followUps": [
+        "What problem do virtual nodes solve?",
+        "How does rendezvous hashing compare?",
+        "Why does Redis Cluster use fixed hash slots instead?"
+      ],
+      "mistakes": [
+        "Describing hash mod N, which remaps almost every key when N changes.",
+        "Ignoring load imbalance without virtual nodes, especially with few physical nodes."
+      ]
+    },
+    {
+      "id": "distdb-leader-vs-leaderless",
+      "level": "senior",
+      "q": "Leader-follower vs leaderless replication: what are the trade-offs?",
+      "answer": "**In leader-follower replication one node orders all writes and followers copy its log, which makes consistency simple but ties write availability and throughput to the leader. In leaderless replication any replica accepts writes and clients use quorums, which gives high availability and low tail latency but needs conflict resolution and repair.**\n\n**Leader-follower (single leader):**\n- Used by Postgres, MySQL, MongoDB, and per-range by Raft systems (CockroachDB, etcd).\n- **Pros:** a total order of writes, no write conflicts, easy linearizable reads from the leader, simple transactions.\n- **Cons:** the leader is a write bottleneck (per shard); failover takes seconds; with async replication, a failover can lose acknowledged writes; split brain must be prevented (consensus, fencing).\n\n**Leaderless (Dynamo-style):**\n- Used by Cassandra, ScyllaDB, Riak; DynamoDB is Dynamo-inspired but actually uses leaders per partition internally.\n- Clients or a coordinator send writes to all N replicas and wait for W acks; reads ask R replicas.\n- **Pros:** no failover at all, a slow or dead node does not block writes, good multi-datacenter behaviour, tunable consistency per request.\n- **Cons:** concurrent writes to the same key conflict; resolved by last-write-wins (can silently drop data) or by versions and merges (vector clocks, CRDTs). Needs **read repair**, **hinted handoff** and **anti-entropy** with Merkle trees. No general multi-key transactions.\n\n**Multi-leader:** several leaders (one per region or device) accept writes and replicate asynchronously to each other. Good for multi-region writes and offline clients (collaborative editing, mobile sync), with the same conflict resolution burden.\n\n```text\nsingle leader:   client -> L -> F1, F2       (order decided at L)\nleaderless:      client -> R1, R2, R3        (W=2 acks; conflicts merged later)\n```\n\n**Choosing:** need transactions, uniqueness or invariants: single leader or consensus. Need always-writable, high-volume, simple key access across datacenters (telemetry, messaging inboxes, carts): leaderless.",
+      "followUps": [
+        "What is multi-leader replication and when is it used?",
+        "How do leaderless systems repair divergent replicas?",
+        "Which model gives linearizable writes?"
+      ],
+      "mistakes": [
+        "Assuming leaderless means strongly consistent with quorums; concurrent writes still need conflict resolution.",
+        "Ignoring failover risks in leader-based systems, such as split brain and lost async writes."
+      ]
+    },
+    {
+      "id": "distdb-vector-clocks",
+      "level": "senior",
+      "q": "How do vector clocks and conflict resolution work?",
+      "answer": "**A vector clock is a map of node id to counter attached to each version. Comparing two clocks tells you whether one version happened before the other or whether they are concurrent. Concurrent versions are conflicts, which must then be resolved by last-write-wins, application merge logic, or CRDTs.**\n\n**How they work:**\n- Each node increments its own counter when it updates a value, and the version carries the whole vector.\n- **A happened before B** if every counter in A is less than or equal to B's and at least one is smaller. Then B simply replaces A.\n- If neither dominates, the writes were **concurrent**: keep both as siblings and resolve.\n\n```text\nv1 {A:1}            written on A\nv2 {A:1, B:1}       B updates v1      -> v2 descends from v1\nv3 {A:2}            A updates v1      -> concurrent with v2\nmerge(v2, v3) -> {A:2, B:1}, value decided by the merge rule\n```\n\n**Resolution strategies:**\n- **Last-write-wins (LWW):** pick the highest timestamp. Simple and used by Cassandra and DynamoDB global tables, but silently drops one write and depends on clocks.\n- **Application merge:** return siblings to the client to merge (Riak, the original Dynamo shopping cart union, which famously could resurrect deleted items).\n- **CRDTs:** data types whose merge is commutative, associative and idempotent so replicas always converge: G-counters and PN-counters, OR-sets, LWW-registers, sequence CRDTs for collaborative text (Yjs, Automerge).\n\n**Practical notes:**\n- Vector clocks grow with the number of writers; systems prune them or use dotted version vectors.\n- **Lamport clocks** give a total order consistent with causality but cannot detect concurrency.\n- **Hybrid logical clocks** combine physical time with a logical counter for causally consistent timestamps close to wall time (CockroachDB, MongoDB cluster time).\n\n**Choosing:** use LWW only where losing a concurrent update is acceptable (a profile avatar). Use CRDTs for counters, sets and collaborative editing. Use a single leader or consensus when conflicts are unacceptable, such as balances.",
+      "followUps": [
+        "What are CRDTs and when would you use them?",
+        "Why is last-write-wins dangerous?",
+        "How does DynamoDB global tables resolve conflicts?"
+      ],
+      "mistakes": [
+        "Relying on wall-clock timestamps for ordering across nodes, ignoring clock skew.",
+        "Thinking vector clocks resolve conflicts; they only detect concurrency, and something else must merge."
+      ]
+    },
+    {
+      "id": "distdb-2pc-vs-saga",
+      "level": "senior",
+      "q": "Two-phase commit vs sagas: when do you use each?",
+      "answer": "**Two-phase commit makes one atomic transaction across several participants: everyone prepares, then the coordinator tells all to commit. It gives atomicity but blocks if the coordinator fails and couples availability. A saga breaks the work into local transactions with compensating actions, giving eventual consistency without distributed locks, which suits microservices.**\n\n**Two-phase commit:**\n1. **Prepare:** the coordinator asks each participant to make the change durable and promise it can commit, holding locks.\n2. **Commit/abort:** if all vote yes, the coordinator logs commit and tells everyone; otherwise abort.\n\n- **Blocking:** a participant that voted yes cannot decide alone; if the coordinator dies, it holds locks until it recovers.\n- Latency is at least two round trips and the slowest participant sets the pace.\n- **Where it works:** inside one distributed database (CockroachDB, Spanner and MongoDB cross-shard transactions use 2PC-style commits over replicated, highly available participants), or XA between a database and a broker in tightly controlled setups.\n\n**Sagas:**\n\n```text\nOrder saga (orchestrated)\n1 create order (PENDING)        compensate: cancel order\n2 reserve stock                 compensate: release stock\n3 charge card                   compensate: refund\n4 mark order CONFIRMED\nfailure at 3 -> run 2's and 1's compensations in reverse\n```\n\n- **Orchestration:** a central workflow (Temporal, AWS Step Functions, a state machine table) drives the steps; easier to reason about and monitor.\n- **Choreography:** services react to each other's events; looser coupling but the flow is harder to follow.\n- **Requirements:** each step and compensation idempotent (idempotency keys), reliable event publishing (outbox), and acceptance of intermediate states visible to users (\"payment pending\").\n- Isolation is missing: other requests can see partial results, so use semantic locks (status flags) or reorder steps so the hardest to undo (charging money) happens last.\n\n**Choosing:** same database or a distributed SQL database: use its transactions. Across services, third-party APIs or long-running business processes: sagas.",
+      "followUps": [
+        "Why is 2PC called a blocking protocol?",
+        "Orchestration vs choreography for sagas?",
+        "How do you make saga steps safe to retry?"
+      ],
+      "mistakes": [
+        "Proposing 2PC across microservices owned by different teams and external APIs that cannot participate.",
+        "Designing sagas without compensations or idempotency, leaving partial states after failures."
+      ]
+    },
+    {
+      "id": "distdb-clock-skew-hlc",
+      "level": "senior",
+      "q": "How do clock skew and hybrid logical clocks affect distributed databases?",
+      "answer": "**Physical clocks on different machines drift and jump, so timestamps from two nodes cannot reliably order events. Hybrid logical clocks combine wall time with a logical counter so timestamps respect causality while staying close to real time, and databases add a bounded clock uncertainty window to keep reads consistent.**\n\n**Why wall clocks are dangerous:**\n- NTP keeps clocks within milliseconds normally, but VM pauses, leap seconds and misconfiguration cause larger skew or backward jumps.\n- With last-write-wins, a node whose clock is 2 s ahead wins every conflict, even for writes that happened earlier.\n- A lease based on time can overlap with another node's lease if clocks disagree.\n\n**Hybrid logical clocks (HLC):**\n- A timestamp is `(physical, logical)`. On each local event or message receipt, a node takes the max of its wall clock and any timestamp it has seen, incrementing the logical part when physical time does not advance.\n- If A sends to B, B's next timestamp is greater than A's, so causality is preserved even if B's clock is behind.\n- Timestamps stay within the clock offset of real time, so they are useful for MVCC and time-travel queries.\n\n**CockroachDB's use:**\n- Transactions get HLC timestamps. A read at time T that finds a value with a timestamp in `(T, T + max_offset]` cannot tell whether it happened first, so it moves its timestamp up and may restart (an **uncertainty restart**).\n- `max-offset` defaults to 500 ms. A node detecting its clock beyond the bound shuts itself down, because correctness relies on it.\n\n**Spanner's TrueTime:** GPS and atomic clocks give an explicit uncertainty interval (a few ms); Spanner **waits out** the uncertainty at commit (commit wait), achieving external consistency without uncertainty restarts. AWS offers similar precision with its Time Sync Service and clock-bound, which Aurora DSQL relies on.\n\n```text\nnode A (HLC 100.0) --msg--> node B (wall 98)\nB's next timestamp = max(98, 100) -> 100.1   causality kept\n```",
+      "followUps": [
+        "How does Spanner's TrueTime differ from HLC?",
+        "What happens in CockroachDB if a node's clock drifts beyond max offset?",
+        "Why are Lamport clocks not enough?"
+      ],
+      "mistakes": [
+        "Trusting NTP-synchronized wall clocks to order events across machines.",
+        "Not knowing that clock offset bounds are a correctness assumption, so nodes beyond the bound must be removed."
+      ]
+    },
+    {
+      "id": "distdb-linearizable-vs-serializable",
+      "level": "senior",
+      "q": "What is the difference between linearizability and serializability?",
+      "answer": "**Linearizability is a recency guarantee for single operations on single objects: once a write completes, every later read sees it, as if there were one copy. Serializability is an isolation guarantee for transactions over many objects: the outcome equals some serial order, but that order need not match real time. Strict serializability combines both.**\n\n**Linearizability:**\n- Each operation appears to take effect atomically at some instant between its start and end.\n- If write W finishes before read R starts (in real time), R must see W or something newer.\n- Provided by consensus systems: etcd, ZooKeeper (for writes), single-key operations in Raft-backed stores, MongoDB with `linearizable` read concern.\n- This is the \"C\" in CAP.\n\n**Serializability:**\n- Transactions touching many rows behave as if run one at a time in some order.\n- The order can differ from real time: a serializable system may legally return a stale snapshot if pretending the read-only transaction ran earlier is consistent.\n- Provided by Postgres SERIALIZABLE (SSI), CockroachDB, two-phase locking systems. This is the \"I\" in ACID.\n\n```text\nT1: write x=1, commits at 10:00:00\nT2: read x at 10:00:05 returns 0\nSerializable?          yes, if T2 is ordered before T1 and nothing contradicts\nStrict serializable?   no, T2 started after T1 finished in real time\n```\n\n**Strict serializability (external consistency):** serializable plus respects real-time order. Spanner provides it with TrueTime. CockroachDB guarantees serializability and linearizability per key, and avoids most real-time anomalies through uncertainty intervals, but documents that it is not strictly serializable for all transaction pairs touching disjoint keys.\n\n**Why it matters in practice:** a payment system wants serializable transactions so invariants hold; a distributed lock or leader election needs linearizable operations so two holders never coexist. Knowing which guarantee your database provides tells you which bugs are still possible.",
+      "followUps": [
+        "What is strict serializability?",
+        "Can a database be serializable but return stale reads?",
+        "Which guarantee does a Raft-backed key-value store give?"
+      ],
+      "mistakes": [
+        "Treating the two as synonyms; one is about single-object recency, the other about multi-object transaction isolation.",
+        "Assuming serializable means you always read the latest data."
+      ]
+    }
+  ]
+}

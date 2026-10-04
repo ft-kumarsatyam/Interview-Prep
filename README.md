@@ -18,7 +18,7 @@ Frontend and backend live in **one Next.js 16 repo**, deployed on Vercel with Mo
 
 | Content | Details |
 |---|---|
-| 671 LeetCode problems (free, links checked) | 606 DSA (151 core first, then extended) · 35 JavaScript (*30 Days of JS*) · 30 SQL; 83 runnable in the in-app IDE |
+| 758 LeetCode problems (free, links checked) | 693 DSA (151 core first, then extended) · 35 JavaScript (*30 Days of JS*) · 30 SQL; 83 runnable in the in-app IDE. Follow them pattern by pattern, or by curated sheet: Blind 75, NeetCode 150, NeetCode All and Striver's SDE sheet, with YouTube walkthroughs (`data/dsa-sheets.json`) |
 | 79 topics, 502 subtopics, 250 written lessons | 10 tracks: JS & TS · Node · DSA concepts · DBMS & SQL · OOP · LLD · HLD · CS · AI · Behavioral |
 | 5,656 bank quiz questions | about 11 hand-written per subtopic (single, multi-select, true/false, JS output; tagged easy/medium/hard) plus DSA patterns. JS output-prediction answers are verified by actually running the code. Practice rotates toward unseen and missed questions, and a Mistakes review re-asks what you got wrong |
 | 54 news feeds + Google News keyword feeds | AI labs, AI news, JS/Node, databases, system design (ByteByteGo, System Design One, AlgoMaster…), big-tech engineering, tech news, career |
@@ -35,12 +35,13 @@ All build phases (0–25) are done. See `docs/BUILD_PLAN.md` for the phase list 
 | Calendar | `/calendar` month view of the whole plan: past days with what was done, future days as a projection of the topics and problems planned for that date, weekly mock days |
 | Setup | `/setup` checklist: database, secrets, LeetCode, crons, feeds, notifications, LLM, backups, session, each with a fix button |
 | System Design | `/design`: 45-minute framework, building blocks, latency/capacity cheat sheet, 17 cases (requirements → estimates → API → data model → diagram → deep dives → trade-offs → interviewer probes), mock-interview timer with autosaved sections and rubric, related articles from your feed |
-| DSA / Review | Progress per pattern, filters, `/dsa/[slug]` with solve form, markdown notes and history, and a laptop-sized IDE (resizable problem and editor panes, JavaScript, TypeScript or Python, editable test cases, Run and Submit); spaced-repetition review queue |
+| DSA / Review | Progress per pattern, filters, `/dsa/[slug]` with solve form, markdown notes and history, and a laptop-sized IDE (resizable problem and editor panes, JavaScript, TypeScript or Python, editable test cases, Run and Submit). SQL-track problems run on in-browser SQLite with LeetCode's tables and a Submit check; JavaScript-track problems start from LeetCode's template with the examples as runnable tests; spaced-repetition review queue |
 | Problems | Questions from anywhere: generate one with the free AI or paste a problem with your own test cases, then solve it in the same IDE. Kept out of the daily plan |
 | Mock interviews | DSA, JavaScript, Node.js, system design (HLD), LLD, SQL, project deep dive, behavioral and a full loop, each timed (auto-submits at zero) and scored out of 100 on tests, time and a rubric (free-AI grading with a self-review fallback). Weekly DSA and system design mocks on days you pick; they never affect the streak |
 | Learn | Checklists per topic, notes, a **Practice** quiz on every subtopic (mastery %) and a **topic quiz** that awards *Mastered* |
 | Quiz | Daily quiz (LLM or bank) that gates the streak, Sunday weekly quiz, history with explanations |
-| Playground | CodeMirror editor for JavaScript, TypeScript or Python, Web Worker runner with a 3 s timeout, saved snippets, output-prediction drills |
+| Playground | CodeMirror editor for JavaScript, TypeScript or Python, Web Worker runner with a 3 s timeout, resizable split, autosaved scratch, share links, saved snippets, output-prediction drills |
+| DB Lab | `/playground/db`: SQL (SQLite in the browser, with MySQL helpers) and MongoDB-style queries on seeded datasets, a schema browser with data preview, 23 graded challenges with hints, query history |
 | News | In-app reader with full article text (from the feed or extracted from the page), reading time, topic tags, system design picks, "Full articles" filter, bookmarks; reading counts toward the day |
 | Stats / Settings | Recharts dashboards, LeetCode card, JS mastery radar; plan, quiz, rest days, study hours, weekly mock days, keywords, LeetCode username, JSON export |
 | Ops | Morning/evening cron, notification bell, optional Telegram/email push, iPhone/Android home-screen app with offline page, Remember me (30-day sliding session), ⌘K palette |
@@ -85,7 +86,7 @@ npm run hash -- 'a-long-password-you-will-remember'   # paste output as ADMIN_PA
 openssl rand -base64 32                               # paste as AUTH_SECRET
 openssl rand -hex 32                                  # paste as CRON_SECRET
 # fill MONGODB_URI, ADMIN_EMAIL, ADMIN_NAME (and optionally LEETCODE_USERNAME) in .env.local
-npm run seed        # loads 671 problems, 79 topics and settings (safe to re-run)
+npm run seed        # loads 758 problems, 79 topics and settings (safe to re-run)
 npm run dev         # http://localhost:3000 → sign in → open /setup to see what's left
 ```
 
@@ -147,6 +148,7 @@ Pick an idea from the bottom of `docs/BUILD_PLAN.md`, check it works, commit.
    | `BREVO_API_KEY`, `BREVO_SENDER_EMAIL` | optional | email via Brevo's REST API (free, 300/day). Preferred over Resend when set. Verify the sender in Brevo and turn off API-key IP blocking (*Security → Authorised IPs*), since Vercel has no fixed IPs |
    | `RESEND_API_KEY`, `RESEND_FROM_EMAIL` | optional | email via Resend, used when Brevo isn't set. `RESEND_FROM_EMAIL` is a sender on a domain verified in Resend (e.g. `prepos@satyam-dev.in`); without it Resend only mails the account owner |
    | `WHAPI_TOKEN`, `WHATSAPP_TO` | optional | WhatsApp messages via [Whapi.Cloud](https://whapi.cloud). `WHATSAPP_TO` is digits with country code (e.g. `919891142251`). The free Sandbox plan caps messages; messages to the channel's own number land in "Message yourself" without a notification sound |
+   | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | optional | PWA notifications (free Web Push). Generate with `npx web-push generate-vapid-keys`, then turn them on per device in Settings → App notifications. Each shows a short summary of the email; tapping opens the full message at `/notifications/[id]`. iPhone needs iOS 16.4+ and the Home Screen app |
    | `APP_URL` | optional | public URL (e.g. `https://satyam-dev.in`) for links in the morning email |
 
    Shortcut from your laptop (needs `npm i -g vercel@latest`, `vercel login` and `vercel link`): `./scripts/sync-vercel-env.sh interview-prep` copies every non-empty key from `.env.local`. `.vercelignore` keeps `.env*` files out of CLI uploads.
@@ -191,8 +193,21 @@ It opens on the dashboard. On Android, long-press the icon for shortcuts to the 
 4. Read 2–3 articles in the in-app reader (System design picks are a good default).
    On HLD weeks, study the matching case in **System Design** and run a 45-minute mock.
 5. **Pass the daily quiz (≥ 60%)** to complete the day. 🔥 It unlocks after 1 problem and 1 subtopic.
-6. **23:59:** a recap email: what you did today, what is left, your streak standing, tomorrow's adjusted plan and when the DSA list finishes at your recent pace. An optional `/api/cron/reminder` (for an external scheduler) sends a mid-evening nudge if today is incomplete.
+6. **23:59:** a night recap email: what you did today, what is left, the backlog you still owe, your streak standing, tomorrow's adjusted plan and when the DSA list finishes at your recent pace.
+7. **Evening nudge (~20:30):** if today is unfinished, an email saying exactly what is left, how long you have and what the streak stands to lose. Vercel Hobby has only two cron slots, so this one runs from a free GitHub Actions schedule (`.github/workflows/evening-nudge.yml`): add the repository secrets `APP_URL` and `CRON_SECRET` to turn it on.
+8. **Daily briefing and top-news alerts (every few hours):** the top news for you, the system design reading and case to study, and the questions to practise, sent once after 08:00, plus a one-off push when a standout story lands (max 3 a day). Runs from `.github/workflows/news-briefing.yml` (same `APP_URL` and `CRON_SECRET` secrets) and also after the morning job. Each can be switched off in Settings.
+9. **Job discovery (every 3 hours):** `.github/workflows/jobs-sync.yml` calls `/api/cron/jobs` (same `APP_URL` and `CRON_SECRET` secrets) to read the public job boards of about 85 companies and three remote feeds. Press Refresh on `/jobs` to do it now. New roles that match your preferences trigger one notification (own switch in Settings). `npm run careers:verify` checks that every company board still works.
+10. **Optional Redis:** set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (Upstash free tier) to move locks, rate limits and the live-update log from MongoDB to Redis. Leave them empty and nothing changes.
+8. **Sunday night:** a weekly report after the recap: study days completed, problems solved, theory ticked, quizzes, study time, progress per track with bars, the backlog, and next week's focus.
+
+The morning mail and the night recap list your **backlog** (see below), and the morning mail queues today's backlog items. Each of the four emails has its own switch in **Settings → Notification channels**, where you can also pick the **roast level** (Off, Coach or Savage). The roast line in the subject uses your real numbers (backlog, streak, what is left, how the week went), and *Send a test* sends any of the four right now.
 
 Sunday is the re-solve and weekly quiz day. A 7-day streak earns a ❄ freeze token (max 2).
 
 Once a week, take the **DSA mock** and the **System design mock** from `/mock` (Saturday and Sunday by default, changeable in Settings). Use `/calendar` to see what's planned for any future date.
+
+
+## Backlog and target companies
+
+- **Backlog (`/backlog`)**: one ranked list of everything you owe beyond today's plan: overdue reviews, theory from past weeks, DSA behind pace, topic quizzes, system design cases, missed mocks, saved articles and the gaps for your target companies. Snooze an item for 1 day, 3 days or a week, dismiss it, or add it to today. Each morning a small **daily queue** (default 2 items, set it on the page, 0 turns it off) is picked for you. The backlog is optional and never affects your streak.
+- **Targets (`/targets`)**: add the companies you are aiming at (pick one or type your own) and say whether it is a dream, target or safe company. Each target gets a prep plan for its *kind* of company (big tech, large product, mid-tier product, startup, service/MNC): typical interview rounds, a DSA set at the right difficulty mix, the system design cases, and the subjects that round tests, with a readiness score. The profiles are typical patterns, not a list of that company's actual questions: pin problems and cases you know it asks. A target's gaps appear in your backlog, highest priority first.

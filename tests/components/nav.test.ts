@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MOBILE_HUB_IDS, NAV_HUBS, NAV_ITEMS, hubFor, isHubLanding, pageFor } from "@/components/layout/nav-items";
+import { MOBILE_HUB_IDS, NAV_HUBS, NAV_ITEMS, hubFor, isHubLanding, pageFor, parseOpenHubs, toggleHub } from "@/components/layout/nav-items";
 
 describe("nav hubs", () => {
   it("has unique hrefs, so every page belongs to exactly one hub", () => {
@@ -21,6 +21,8 @@ describe("nav hubs", () => {
     expect(pageFor("/playground/db")?.label).toBe("DB Lab");
     expect(pageFor("/playground")?.label).toBe("Playground");
     expect(pageFor("/playground/db/anything")?.label).toBe("DB Lab");
+    expect(pageFor("/web/interview/react")?.label).toBe("Web interview");
+    expect(pageFor("/web/react-rendering")?.label).toBe("Web dev");
   });
 
   it("finds the hub for detail pages and ignores unknown routes", () => {
@@ -35,6 +37,19 @@ describe("nav hubs", () => {
     expect(isHubLanding("/dsa/")).toBe(true);
     expect(isHubLanding("/dsa/two-sum")).toBe(false);
     expect(isHubLanding("/playground/db")).toBe(true);
+  });
+
+  it("reads stored expanded hubs defensively", () => {
+    expect(parseOpenHubs(null)).toEqual([]);
+    expect(parseOpenHubs("not json")).toEqual([]);
+    expect(parseOpenHubs('{"learn":true}')).toEqual([]);
+    expect(parseOpenHubs('["learn","nope",3,"learn","plan"]')).toEqual(["learn", "plan"]);
+  });
+
+  it("toggles a hub and keeps sidebar order", () => {
+    expect(toggleHub([], "plan")).toEqual(["plan"]);
+    expect(toggleHub(["plan"], "today")).toEqual(["today", "plan"]);
+    expect(toggleHub(["today", "plan"], "plan")).toEqual(["today"]);
   });
 
   it("keeps the mobile bar to four hubs plus More", () => {

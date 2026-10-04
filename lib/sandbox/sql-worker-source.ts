@@ -1,3 +1,5 @@
+import { SQL_COMPAT_SOURCE } from "./sql-compat";
+
 /**
  * Web Worker source for the SQL runner (sql.js: SQLite compiled to WebAssembly). The engine files are
  * served from /vendor/sqljs on our own origin, never a CDN. Each `load` builds a fresh in-memory database,
@@ -7,6 +9,7 @@ export const SQL_WORKER_SOURCE = String.raw`
 let SQL = null;
 let db = null;
 const MAX_ROWS = 500;
+${SQL_COMPAT_SOURCE}
 
 self.onmessage = async (e) => {
   const m = e.data;
@@ -18,6 +21,7 @@ self.onmessage = async (e) => {
     } else if (m.type === "load") {
       if (db) db.close();
       db = new SQL.Database();
+      registerMysqlCompat(db);
       db.exec(m.seed);
       self.postMessage({ type: "loaded" });
     } else if (m.type === "run") {

@@ -21,6 +21,11 @@ Content data lives in `data/*.json`. **Do not edit those files** unless asked. T
 - Every Server Action and API route checks auth (`requireSession()`), except `/api/cron/*`, which checks `Bearer CRON_SECRET`.
 - Validate all inputs with zod. Treat LLM output as untrusted text: validate it and never render it with `dangerouslySetInnerHTML`.
 - Treat every AI answer as untrusted and cache only validated output (`lib/services/ai-cache.ts`).
+- **Resumes are personal data:** resume AI features (`resume-roast`, `resume-tailor`) are `paid: "never"`, resume and profile text is never logged, and tailoring may never add a tool, number or employer that is not already in the resume (`validateTailor`). PrepOS never logs in to or applies on a job site; the extension only reads the page you click it on.
+- **Optional Redis (second owner-approved exception):** Upstash Redis (free tier, REST) is used only when `UPSTASH_REDIS_REST_URL` and `_TOKEN` are set, through the `KvStore` port in `lib/kv/`. Every use (sync lock, rate limits, live-event log) has a MongoDB implementation and falls back to it on error, so the app never requires Redis. Do not use Redis for anything that has no Mongo fallback.
+- **Job sources:** only public job-board APIs (Greenhouse, Lever, Ashby, Workable, SmartRecruiters) and free remote-job feeds are read automatically, through `lib/http-safe.ts` (SSRF checks, size and time caps). LinkedIn, Naukri, Indeed and Wellfound are never fetched by the server: they get search links and extension capture only.
+- **Realtime:** Vercel Hobby cannot hold WebSockets, so live updates are short-lived server-sent events (`/api/events`) behind `lib/realtime/`. Never put personal text in a live event, only counts and kinds.
+- Web-dev lessons and projects (`data/webdev.json`) stay out of `data/syllabus.json` so they never change the plan.
 - The app must work with **no LLM key** (falls back to `data/quiz-bank.json`) and **without cron** (`ensureToday()` on dashboard load).
 
 ## Conventions

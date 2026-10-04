@@ -1,4 +1,4 @@
-# PrepOS: Ask Gemini (Chrome extension)
+# PrepOS (Chrome extension): Ask Gemini + send job pages
 
 Gemini has no link that pre-fills a prompt, and a web page can't type into another site's tab.
 This small extension bridges the gap: when you press **Ask Gemini** in PrepOS it
@@ -26,3 +26,20 @@ from Gemini and sends nothing anywhere; the prompt goes from your PrepOS tab to 
 Gemini changes its markup now and then. The selectors for the input and send button are in
 `fillGemini` at the top of `background.js`; update them there. The prompt is always on your
 clipboard as well, so you can paste it meanwhile.
+
+
+## Send a job or profile page to PrepOS
+Open a job posting on Naukri, LinkedIn, Indeed, Wellfound or any careers page and click the PrepOS
+toolbar icon. The extension reads **only that page, only when you click** (the `activeTab` permission
+gives it no standing access to any site), pulls out the title, company and description (from the page's
+`JobPosting` data when it has it), and hands it to your open PrepOS tab. If PrepOS isn't open it waits in
+the extension's storage (at most 20) and is delivered the next time you open PrepOS.
+
+The badge tells you what happened: a green tick means PrepOS got it, a blue 1 means it is queued, `?`
+means the page didn't look like a job, `!` means the page can't be read (for example a `chrome://` page).
+
+On your own profile page (`linkedin.com/in/...`, Naukri's profile, Wellfound's profile) the icon sends
+the page text instead, and PrepOS saves a read-only snapshot you can audit like a resume.
+
+It never logs in, never clicks Apply and never sends anything except to your own PrepOS tab. Permissions
+added: `activeTab` and `storage`. Reload the extension at `chrome://extensions` after updating it.

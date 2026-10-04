@@ -3,17 +3,24 @@ import {
   BookOpen,
   Brain,
   CalendarDays,
+  Briefcase,
   CalendarRange,
   Code2,
   Database,
+  Globe,
+  Hammer,
+  FileText,
+  Inbox,
   LayoutDashboard,
   Library,
   ListChecks,
+  MessageCircleQuestion,
   Network,
   Newspaper,
   RotateCcw,
   Settings,
   SquareTerminal,
+  Target,
   Timer,
   Wrench,
   type LucideIcon,
@@ -52,6 +59,7 @@ export const NAV_HUBS: NavHub[] = [
       { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
       { href: "/quiz", label: "Daily quiz", icon: ListChecks },
       { href: "/review", label: "Review", icon: RotateCcw },
+      { href: "/backlog", label: "Backlog", icon: Inbox },
     ],
   },
   {
@@ -78,6 +86,9 @@ export const NAV_HUBS: NavHub[] = [
     pages: [
       { href: "/learn", label: "Syllabus", icon: BookOpen },
       { href: "/design", label: "System Design", icon: Network },
+      { href: "/web", label: "Web dev", icon: Globe },
+      { href: "/web/interview", label: "Web interview", icon: MessageCircleQuestion },
+      { href: "/projects", label: "Projects", icon: Hammer },
       { href: "/news", label: "Reading", icon: Newspaper },
     ],
   },
@@ -89,6 +100,9 @@ export const NAV_HUBS: NavHub[] = [
     href: "/plan",
     pages: [
       { href: "/plan", label: "Planner", icon: CalendarRange },
+      { href: "/targets", label: "Targets", icon: Target },
+      { href: "/resume", label: "Resume", icon: FileText },
+      { href: "/jobs", label: "Jobs", icon: Briefcase },
       { href: "/calendar", label: "Calendar", icon: CalendarDays },
       { href: "/stats", label: "Stats", icon: BarChart3 },
     ],
@@ -122,6 +136,33 @@ export function pageFor(pathname: string): (NavPage & { hub: NavHub["id"] }) | u
 export function hubFor(pathname: string): NavHub | undefined {
   const page = pageFor(pathname);
   return page ? NAV_HUBS.find((h) => h.id === page.hub) : undefined;
+}
+
+/** Cookie holding "collapsed" when the desktop sidebar is an icon rail; read on the server so the first paint is right. */
+export const SIDEBAR_COOKIE = "prepos-sidebar";
+/** localStorage key (under the `prepos:` prefix) for hubs the user expanded by hand. */
+export const OPEN_HUBS_KEY = "nav:open-hubs";
+
+const HUB_IDS = new Set<string>(NAV_HUBS.map((h) => h.id));
+
+/** Stored expanded hubs, keeping only known ids. Garbage, old formats or a missing value give an empty list. */
+export function parseOpenHubs(raw: string | null | undefined): NavHub["id"][] {
+  if (!raw) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.filter((v): v is NavHub["id"] => typeof v === "string" && HUB_IDS.has(v)))];
+  } catch {
+    return [];
+  }
+}
+
+/** Add or remove a hub from the expanded list, in the sidebar's order. */
+export function toggleHub(open: readonly NavHub["id"][], id: NavHub["id"]): NavHub["id"][] {
+  const next = new Set(open);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return NAV_HUBS.map((h) => h.id).filter((h) => next.has(h));
 }
 
 /** True on a hub's own pages (not on a detail page like /dsa/two-sum), where the tab strip belongs. */

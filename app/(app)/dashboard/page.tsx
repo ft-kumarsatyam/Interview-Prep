@@ -39,8 +39,10 @@ import { isLongRead } from "@/lib/domain/article";
 import { READINGS_PER_DAY } from "@/lib/domain/plan-config";
 import { listArticles } from "@/lib/services/news";
 import { formatDate, planClock } from "@/lib/plan-clock";
+import { ensureBacklogQueue } from "@/lib/services/backlog";
 import { getDashboard, type PlanProblem } from "@/lib/services/dashboard";
 import { syncLeetCode } from "@/lib/services/leetcode-sync";
+import { BacklogCard, type BacklogCardData } from "@/components/backlog/backlog-card";
 import { LeetCodeCard } from "@/components/leetcode/leetcode-card";
 import { WeeklyMocksCard } from "@/components/mock/weekly-mocks-card";
 import { weeklyMocks } from "@/lib/services/mock";
@@ -87,7 +89,14 @@ export default async function DashboardPage() {
   ]);
   const latestNews = [...unreadNews.filter((a) => isLongRead(a)), ...unreadNews.filter((a) => !isLongRead(a))].slice(0, 3);
   const { day, plan, settings, today } = data;
-  const [mockSlots, planUpdate] = await Promise.all([weeklyMocks(today, settings.mockSchedule), getPlanUpdate(today, settings, data.pace.solved)]);
+  const [mockSlots, planUpdate, backlog] = await Promise.all([
+    weeklyMocks(today, settings.mockSchedule),
+    getPlanUpdate(today, settings, data.pace.solved),
+    // The backlog is a bonus: if it can't load, the rest of the dashboard still shows.
+    ensureBacklogQueue({ today, plan, settings })
+      .then((v): BacklogCardData => ({ owed: v.open.length, minutes: v.totalMinutes, budget: v.budget, queueDone: v.queueDone, queue: v.queue.map((i) => ({ key: i.key, title: i.title, path: i.path, ...(i.note ? { note: i.note } : {}) })) }))
+      .catch(() => null),
+  ]);
   const clock = planClock(settings);
   const hour = localHour(settings.timezone);
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
@@ -394,6 +403,8 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {backlog && <BacklogCard data={backlog} />}
 
       <WeeklyMocksCard slots={mockSlots} today={today} compact />
 

@@ -11,7 +11,7 @@ export default function DbLabPage() {
       <PageHeader
         icon={Database}
         title="DB Lab"
-        description="Write real SQL (SQLite in your browser) or MongoDB-style queries against seeded data, then check your answer against a reference. Nothing leaves your device."
+        description="Real SQL (SQLite, with MySQL helpers) and MongoDB-style queries against seeded data. Pick a challenge, run, then check it against the expected rows. Everything runs on your device."
       />
       <DbLab />
     </>

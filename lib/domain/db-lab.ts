@@ -457,3 +457,16 @@ export function compareRows(actual: Row[], expected: Row[], ordered: boolean): V
   }
   return { ok: true };
 }
+
+/** A hint when the values may match but the column names don't; LeetCode does check names. */
+export function columnNameNote(actual: string[], expected: string[]): string | undefined {
+  if (actual.length !== expected.length) return undefined;
+  const differ = actual.some((c, i) => c.toLowerCase() !== expected[i]!.toLowerCase());
+  return differ ? `Column names differ: expected ${expected.join(", ")}; you have ${actual.join(", ")}.` : undefined;
+}
+
+/** True when the editor holds nothing but comments and whitespace. */
+export function isBlankQuery(source: string, mode: DbMode = "sql"): boolean {
+  const stripped = mode === "sql" ? source.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "") : source.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  return stripped.trim() === "";
+}

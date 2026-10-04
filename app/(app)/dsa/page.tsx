@@ -6,7 +6,7 @@ import { nextUnsolved, parseFilters } from "@/components/dsa/dsa-filters";
 import { DsaOverview } from "@/components/dsa/dsa-overview";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { problems } from "@/lib/content";
+import { dsaSheets, problems } from "@/lib/content";
 import { todayIn } from "@/lib/services/plan";
 import { countDueReviews, getProgressMap } from "@/lib/services/problems";
 import { getSettings } from "@/lib/services/settings";
@@ -21,7 +21,7 @@ export default async function DsaPage({ searchParams }: PageProps<"/dsa">) {
 
   return (
     <>
-      <PageHeader icon={Code2} title="DSA" description={`${problems.length} free LeetCode problems, solved in JavaScript. Work down the list pattern by pattern.`}>
+      <PageHeader icon={Code2} title="DSA" description={`${problems.length} free LeetCode problems, solved in JavaScript. Work pattern by pattern, or follow Blind 75, NeetCode 150 or Striver's SDE sheet.`}>
         {dueReviews > 0 && (
           <Button variant="outline" size="lg" asChild>
             <Link href="/review">
@@ -41,7 +41,7 @@ export default async function DsaPage({ searchParams }: PageProps<"/dsa">) {
         )}
       </PageHeader>
       <DsaOverview problems={problems} progress={progress} today={today} />
-      <DsaBrowser problems={problems} progress={progress} initial={parseFilters(sp)} />
+      <DsaBrowser problems={problems} progress={progress} initial={parseFilters(sp)} sheets={dsaSheets} />
     </>
   );
 }

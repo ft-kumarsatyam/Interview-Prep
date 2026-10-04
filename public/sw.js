@@ -27,6 +27,48 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+/*
+ * Push: the server sends { title, body, tag, url, actions, actionUrls } (lib/domain/push-payload.ts).
+ * Tapping opens the full message; an action button opens its own path. An open PrepOS window is
+ * reused instead of opening a new one.
+ */
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { body: event.data ? event.data.text() : "" };
+  }
+  const title = data.title || "PrepOS";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: data.body || "",
+      tag: data.tag || "prepos",
+      renotify: true,
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      actions: Array.isArray(data.actions) ? data.actions.slice(0, 2) : [],
+      data: { url: data.url || "/dashboard", actionUrls: data.actionUrls || {} },
+      timestamp: Date.now(),
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const { url = "/dashboard", actionUrls = {} } = event.notification.data || {};
+  const path = (event.action && actionUrls[event.action]) || url;
+  const target = new URL(path, self.location.origin);
+  if (target.origin !== self.location.origin) return;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+      const open = windows.find((w) => new URL(w.url).origin === target.origin);
+      if (open) return open.focus().then((w) => (w ? w.navigate(target.href) : self.clients.openWindow(target.href)));
+      return self.clients.openWindow(target.href);
+    }),
+  );
+});
+
 const isStaticAsset = (url) =>
   url.pathname.startsWith("/_next/static/") || /\.(?:png|svg|ico|woff2?)$/.test(url.pathname);
 

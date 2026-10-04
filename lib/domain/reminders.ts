@@ -1,3 +1,6 @@
+import { minutesLabel, type MailBacklog } from "./backlog-items";
+import { escapeHtml } from "./html";
+import { renderMail, type MailSection, type MailSpec, type MailStat } from "./mail-html";
 import type { Pace } from "./pace";
 import { isDayComplete, type DayProgress } from "./streak";
 
@@ -55,18 +58,12 @@ export interface DigestInput {
   pace: Pace | null;
   /** What yesterday left undone and how it carries into today, when anything did. */
   carryOver?: string | null;
+  /** What is owed beyond today's targets, already turned into links. */
+  backlog?: MailBacklog | null;
   appUrl?: string;
 }
 
-interface Section {
-  heading: string;
-  items: DigestLink[];
-  lines?: string[];
-}
-
-export function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-}
+export { escapeHtml };
 
 export function paceLine(p: Pace): string {
   if (p.delta > 0) return `You're ${plural(p.delta, "problem")} ahead of plan, so upcoming days are lighter.`;
@@ -74,18 +71,40 @@ export function paceLine(p: Pace): string {
   return "You're exactly on plan.";
 }
 
-/** The morning email: today's targets, what to read, and pace. Null when the day is outside the plan. */
-export function morningDigest(input: DigestInput): { title: string; text: string; html: string } | null {
+/** Sections describing the backlog: today's queue first, then one section per kind. Shared by every mail that shows it. */
+export function backlogSections(b: MailBacklog): MailSection[] {
+  const out: MailSection[] = [];
+  if (b.queue.length > 0) {
+    out.push({
+      heading: `Backlog queue for today (${b.queue.length} of ${b.budget})`,
+      tone: "info",
+      lines: [`${b.total} owed in all, about ${minutesLabel(b.totalMinutes)}. These are optional and never affect your streak.`],
+      items: b.queue,
+    });
+  }
+  for (const g of b.groups) {
+    out.push({
+      heading: `Backlog: ${g.label} (${g.total})`,
+      tone: "warn",
+      items: g.items,
+      more: { count: Math.max(0, g.total - g.items.length), path: g.path, label: g.noun },
+    });
+  }
+  return out;
+}
+
+/** The morning email: today's targets, the backlog, what to read, and pace. Null when the day is outside the plan. */
+export function morningDigest(input: DigestInput): { title: string; text: string; html: string; spec: MailSpec } | null {
   const { day, date } = input;
   if (day.kind === "outside") return null;
-  const base = input.appUrl?.replace(/\/+$/, "");
-  const href = (path: string) => (base ? `${base}${path}` : null);
 
-  const sections: Section[] = [];
+  const sections: MailSection[] = [];
   let title: string;
+  let kicker = "Morning plan";
   let intro: string;
   if (day.kind === "rest") {
     title = `Day off · ${date}`;
+    kicker = "Day off";
     intro = "Rest day. Today's work has been spread over the coming days, so nothing is due and your streak is safe.";
   } else if (day.kind === "sunday") {
     title = `Sunday review · ${date}`;
@@ -99,42 +118,36 @@ export function morningDigest(input: DigestInput): { title: string; text: string
     if (input.theory.length) sections.push({ heading: "Theory", items: input.theory });
     sections.push({ heading: "Quiz", items: [{ title: "Daily quiz", path: "/quiz" }] });
   }
+  // The backlog is what makes today's list honest, so it comes right after it.
+  const owed = input.backlog && input.backlog.total > 0 ? input.backlog : null;
+  if (owed && day.kind !== "rest") {
+    sections.push(...backlogSections(owed));
+    title += ` · ${owed.total} in backlog`;
+  }
   if (input.reading.length) sections.push({ heading: day.kind === "rest" ? "Optional reading" : "Today's reading", items: input.reading });
 
   const footer: string[] = [];
   if (input.pace && day.kind !== "rest") footer.push(paceLine(input.pace));
   if (input.streak > 0) footer.push(`Current streak: ${plural(input.streak, "day")}.`);
 
-  const textItem = (l: DigestLink) => {
-    const url = href(l.path);
-    return `- ${l.title}${l.note ? ` (${l.note})` : ""}${url ? `\n  ${url}` : ""}`;
-  };
-  const text = [
+  const stats: MailStat[] = [];
+  if (day.kind === "study" || day.kind === "revision") {
+    stats.push({ label: "DSA today", value: String(day.dsaTarget) }, { label: "Theory today", value: String(day.theoryTarget) });
+  }
+  if (day.kind !== "rest") {
+    if (input.streak > 0) stats.push({ label: "Streak", value: `${input.streak}d`, tone: "good" });
+    if (owed) stats.push({ label: "Backlog", value: String(owed.total), tone: owed.total >= 15 ? "bad" : "warn" });
+  }
+
+  const { text, html, spec } = renderMail({
+    title,
+    kicker,
     intro,
-    ...(input.carryOver ? [input.carryOver] : []),
-    ...sections.map((s) => `\n${s.heading}\n${s.items.map(textItem).join("\n")}`),
-    ...(footer.length ? ["", ...footer] : []),
-    ...(base ? ["", `Open PrepOS: ${base}/dashboard`] : []),
-  ].join("\n");
-
-  const htmlItem = (l: DigestLink) => {
-    const url = href(l.path);
-    const label = url ? `<a href="${escapeHtml(url)}" style="color:#2563eb;text-decoration:none">${escapeHtml(l.title)}</a>` : escapeHtml(l.title);
-    const note = l.note ? ` <span style="color:#6b7280">· ${escapeHtml(l.note)}</span>` : "";
-    return `<li style="margin:4px 0">${label}${note}</li>`;
-  };
-  const html = [
-    `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;color:#111827;line-height:1.5">`,
-    `<h2 style="margin:0 0 8px">${escapeHtml(title)}</h2>`,
-    `<p style="margin:0 0 16px">${escapeHtml(intro)}</p>`,
-    ...(input.carryOver ? [`<p style="margin:0 0 16px;padding:8px 12px;background:#fffbeb;border-left:3px solid #d97706">${escapeHtml(input.carryOver)}</p>`] : []),
-    ...sections.map(
-      (s) => `<h3 style="margin:16px 0 4px;font-size:15px">${escapeHtml(s.heading)}</h3><ul style="margin:0;padding-left:20px">${s.items.map(htmlItem).join("")}</ul>`,
-    ),
-    ...footer.map((f) => `<p style="margin:16px 0 0;color:#374151">${escapeHtml(f)}</p>`),
-    ...(base ? [`<p style="margin:20px 0 0"><a href="${escapeHtml(`${base}/dashboard`)}" style="color:#2563eb">Open PrepOS</a></p>`] : []),
-    `</div>`,
-  ].join("");
-
-  return { title, text, html };
+    ...(input.carryOver ? { callouts: [{ tone: "warn" as const, text: input.carryOver }] } : {}),
+    ...(stats.length ? { stats } : {}),
+    sections,
+    footer,
+    ...(input.appUrl ? { appUrl: input.appUrl } : {}),
+  });
+  return { title, text, html, spec };
 }

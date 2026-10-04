@@ -2,7 +2,7 @@ import { problemBySlug } from "@/lib/content";
 import { connectDb } from "@/lib/db";
 import { leetcodeQuestions, type LcQuestionFetcher } from "@/lib/leetcode/question";
 import { leetcodeHtmlToMarkdown } from "@/lib/leetcode/statement";
-import { LcProblemCache } from "@/lib/models/lc";
+import { LcProblemCache, STATEMENT_FORMAT } from "@/lib/models/lc";
 
 const DAY_MS = 86_400_000;
 /** How long each outcome is remembered. A failure is remembered only briefly, so an outage heals itself. */
@@ -45,7 +45,7 @@ export async function getLeetCodeProblem(slug: string, deps: { fetcher?: LcQuest
   await connectDb();
   const now = deps.now ?? new Date();
 
-  const hit = await LcProblemCache.findOne({ _id: slug, expiresAt: { $gt: now } }).lean();
+  const hit = await LcProblemCache.findOne({ _id: slug, expiresAt: { $gt: now }, format: STATEMENT_FORMAT }).lean();
   if (hit) {
     return {
       status: hit.status,
@@ -89,6 +89,7 @@ export async function getLeetCodeProblem(slug: string, deps: { fetcher?: LcQuest
         status: view.status,
         title: view.title,
         contentMd: view.contentMd,
+        format: STATEMENT_FORMAT,
         hints: view.hints,
         examples: view.examples,
         jsSnippet: view.jsSnippet,

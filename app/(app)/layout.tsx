@@ -1,15 +1,20 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { Suspense } from "react";
-import { Flame, LogOut } from "lucide-react";
+import { Flame } from "lucide-react";
 import { AiProvider } from "@/components/ai/ai-context";
-import { HubTabs, MobileTabBar, SidebarNav, TodayMiniCard, TopBarTitle } from "@/components/layout/app-nav";
+import { CaptureListener } from "@/components/jobs/capture-listener";
+import { LiveProvider } from "@/components/live/live-provider";
+import { LiveRefresh } from "@/components/live/live-refresh";
+import { HubTabs, MobileTabBar, TopBarTitle } from "@/components/layout/app-nav";
+import { AppSidebar } from "@/components/layout/app-sidebar";
 import { CommandPalette } from "@/components/layout/command-palette";
+import { SIDEBAR_COOKIE } from "@/components/layout/nav-items";
 import { InstallHint } from "@/components/layout/install-hint";
 import { NotificationBell, type BellItem } from "@/components/layout/notification-bell";
 import { RouteProgress } from "@/components/layout/route-progress";
 import { SessionBar } from "@/components/layout/session-bar";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { Button } from "@/components/ui/button";
 import { requireSession } from "@/lib/auth/dal";
 import { timeAgo } from "@/lib/domain/news";
 import { env } from "@/lib/env";
@@ -29,37 +34,25 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const aiAvailable = resolveProviders(env()).length > 0;
   const now = new Date();
   const bellItems: BellItem[] = notes.items.map((n) => ({ ...n, age: timeAgo(new Date(n.createdAt), now) }));
+  const sidebarCollapsed = (await cookies()).get(SIDEBAR_COOKIE)?.value === "collapsed";
   const todayLabel = settings ? formatDate(todayIn(settings, now), { weekday: "short", day: "numeric", month: "short" }) : "";
 
   return (
     <AiProvider links={settings?.geminiLinks ?? {}} aiAvailable={aiAvailable}>
+    <LiveProvider>
+    <CaptureListener />
+    <LiveRefresh types={["notification", "capture"]} />
     <Suspense fallback={null}>
       <RouteProgress />
     </Suspense>
-    <div className="min-h-dvh lg:grid lg:grid-cols-[240px_1fr]">
+    <div className="min-h-dvh lg:grid lg:grid-cols-[240px_minmax(0,1fr)] lg:transition-[grid-template-columns] lg:duration-200 lg:has-[>aside[data-collapsed=true]]:grid-cols-[64px_minmax(0,1fr)] motion-reduce:transition-none">
       <a
         href="#main"
         className="sr-only z-50 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground focus:not-sr-only focus:fixed focus:top-2 focus:left-2"
       >
         Skip to content
       </a>
-      <aside className="sticky top-0 hidden h-dvh flex-col gap-4 overflow-y-auto border-r bg-sidebar p-4 lg:flex">
-        <Link href="/dashboard" className="flex items-center gap-2 px-2 text-lg font-semibold">
-          <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-            <Flame className="size-4" />
-          </span>
-          PrepOS
-        </Link>
-        <SidebarNav badges={nav.badges} />
-        <div className="mt-auto space-y-2">
-          <TodayMiniCard today={nav.today} />
-          <form action={logout}>
-            <Button variant="ghost" className="w-full justify-start text-muted-foreground" type="submit">
-              <LogOut /> Sign out
-            </Button>
-          </form>
-        </div>
-      </aside>
+      <AppSidebar badges={nav.badges} today={nav.today} initialCollapsed={sidebarCollapsed} logout={logout} />
 
       <div className="flex min-w-0 flex-col">
         <header className="sticky top-0 z-30 flex h-[calc(3.5rem+env(safe-area-inset-top))] items-center gap-3 border-b bg-background/80 px-4 pt-[env(safe-area-inset-top)] backdrop-blur lg:px-8">
@@ -85,6 +78,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </div>
       <MobileTabBar badges={nav.badges} today={nav.today} logout={logout} />
     </div>
+    </LiveProvider>
     </AiProvider>
   );
 }

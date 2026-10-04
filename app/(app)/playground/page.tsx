@@ -28,7 +28,7 @@ export default async function PlaygroundPage({ searchParams }: PageProps<"/playg
       <PageHeader
         icon={SquareTerminal}
         title="Playground"
-        description="Experiment in JavaScript, TypeScript or Python, save snippets by topic, and train your intuition with predict-the-output drills. Code runs in a sandboxed Web Worker in your browser."
+        description="Run JavaScript, TypeScript or Python in a sandboxed worker, save snippets by topic, and train your intuition with predict-the-output drills. Scratch work is autosaved on this device."
       />
       <Playground snippets={snippets} initialCode={initialCode} />
     </>

@@ -1,0 +1,457 @@
+{
+  "track": {
+    "id": "nextjs",
+    "name": "Next.js",
+    "blurb": "Next.js 16 App Router in depth: Server and Client Components, Cache Components and revalidation, Server Actions, security, and rendering performance."
+  },
+  "questions": [
+    {
+      "id": "nextjs-server-vs-client-component",
+      "level": "junior",
+      "q": "Server vs Client Component: how do you decide?",
+      "answer": "**Default to Server Components, and use a Client Component only for the leaf that needs interactivity or browser APIs: state, effects, event handlers, refs, `window`/`localStorage`, or client-only libraries. Push the `\"use client\"` boundary as far down the tree as possible.**\n\n**Server Component when you need to:**\n- Fetch data close to the source (database, internal APIs) with secrets.\n- Keep heavy dependencies (markdown, syntax highlighting, date libraries) out of the browser bundle.\n- Render mostly static or data-driven UI.\n\n**Client Component when you need:**\n- `useState`, `useReducer`, `useEffect`, event handlers like `onClick`, `onChange`.\n- Browser-only APIs, or libraries that use them (maps, charts, rich text editors).\n- Custom hooks that depend on the above.\n\n```tsx\n// app/product/[id]/page.tsx (Server Component)\nexport default async function Page({ params }: PageProps<\"/product/[id]\">) {\n  const { id } = await params;              // params is async in Next 15+\n  const product = await getProduct(id);     // DB call, never shipped to the client\n  return (\n    <article>\n      <h1>{product.name}</h1>\n      <Markdown source={product.description} /> {/* stays on the server */}\n      <AddToCartButton productId={id} />        {/* small client island */}\n    </article>\n  );\n}\n```\n\n```tsx\n// add-to-cart-button.tsx\n\"use client\";\nexport function AddToCartButton({ productId }: { productId: string }) {\n  const [pending, start] = useTransition();\n  return <button disabled={pending} onClick={() => start(() => addToCart(productId))}>Add</button>;\n}\n```\n\n**Remember:** `\"use client\"` marks a boundary. That file and everything it imports join the client bundle, so a boundary high in the tree ships a lot of JS. Client Components still render to HTML on the server for the first load; they just also hydrate.\n\n**Guardrails:** `import \"server-only\"` in data-access modules makes the build fail if a client file imports them. Only `NEXT_PUBLIC_` env vars reach the browser.",
+      "followUps": [
+        "What happens to everything imported by a \"use client\" file?",
+        "How do you keep a big page mostly server-rendered with one interactive button?",
+        "How do you stop server-only code from leaking into a client bundle?"
+      ],
+      "mistakes": [
+        "Putting \"use client\" at the top of a page or layout, turning the whole subtree into client code.",
+        "Thinking Client Components are not server-rendered; they are prerendered to HTML and then hydrated.",
+        "Fetching data in a Client Component with useEffect when a Server Component could fetch it directly."
+      ],
+      "lesson": "next-app-router"
+    },
+    {
+      "id": "nextjs-client-renders-server-component",
+      "level": "mid",
+      "q": "Can a Client Component render a Server Component?",
+      "answer": "**Not by importing it, but yes by composition: a Client Component can receive a Server Component as `children` (or any JSX prop) from a Server Component parent, and render it wherever it likes. If you import a component into a `\"use client\"` file, it becomes client code.**\n\n**Why:** the client module graph cannot include server-only code (database calls, secrets). But JSX passed as a prop is already rendered on the server into the RSC payload; the Client Component just places that output into its tree, like a slot.\n\n```tsx\n// collapsible.tsx\n\"use client\";\nexport function Collapsible({ title, children }: { title: string; children: React.ReactNode }) {\n  const [open, setOpen] = useState(false);\n  return (\n    <section>\n      <button onClick={() => setOpen((o) => !o)}>{title}</button>\n      {open && children}\n    </section>\n  );\n}\n```\n\n```tsx\n// page.tsx (Server Component)\nexport default async function Page() {\n  return (\n    <Collapsible title=\"Order history\">\n      <OrderHistory /> {/* async Server Component: queries the DB on the server */}\n    </Collapsible>\n  );\n}\n```\n\n`OrderHistory` runs on the server; its HTML/RSC output is passed to `Collapsible`, which only controls whether to show it.\n\n**What can cross the boundary as props:** serialisable values (strings, numbers, plain objects, arrays, Dates, Maps/Sets), Promises (unwrap with `use()` on the client), JSX, and Server Functions (`\"use server\"`). Not regular functions, class instances or symbols.\n\n**Common uses:**\n- Context providers: a client `ThemeProvider` wrapping server-rendered `children` in the root layout.\n- Interactive shells (tabs, accordions, modals, carousels) around server-rendered content.\n\n**Gotcha:** the Server Component output is computed once per server render. Toggling client state does not re-run it; to get fresh server output you navigate, call `router.refresh()`, or revalidate after a Server Action.",
+      "followUps": [
+        "Why can't a client file import a server file directly?",
+        "What props can cross from server to client?",
+        "How would you build a client modal whose content is server-rendered?"
+      ],
+      "mistakes": [
+        "Saying \"no, never\"; it can, if the Server Component is passed in as children or another JSX prop.",
+        "Importing a Server Component into a \"use client\" file and expecting it to stay a Server Component.",
+        "Passing functions or class instances from server to client as props."
+      ],
+      "lesson": "next-app-router"
+    },
+    {
+      "id": "nextjs-what-makes-route-dynamic",
+      "level": "mid",
+      "q": "What makes a route dynamic?",
+      "answer": "**A route (or part of it) is dynamic when it needs information that only exists at request time: runtime APIs like `cookies()`, `headers()`, `searchParams`, un-generated dynamic `params`, `connection()`, or uncached data such as a `fetch` or DB query that is not in `use cache`. Everything else can be prerendered.**\n\n**Triggers:**\n- `await cookies()`, `await headers()`, `draftMode()`.\n- Reading `searchParams` in a page.\n- Dynamic `params` not listed in `generateStaticParams`.\n- Uncached I/O: `fetch` (not cached by default since Next 15), DB calls.\n- `await connection()` to explicitly wait for a request, e.g. before `Math.random()` or `Date.now()`.\n\n**Next 16 with Cache Components (`cacheComponents: true`):** dynamic is no longer all-or-nothing per route. Static parts and `use cache` output go into a prerendered static shell; runtime parts stream inside `<Suspense>` boundaries. This is Partial Prerendering (PPR) as the default model. Segment configs like `export const dynamic`, `revalidate` and `fetchCache` are replaced by `use cache`, `cacheLife` and Suspense.\n\n```tsx\nexport default function Page() {\n  return (\n    <>\n      <ProductGrid />                 {/* 'use cache': in the static shell */}\n      <Suspense fallback={<CartSkeleton />}>\n        <Cart />                      {/* reads cookies(): streams per request */}\n      </Suspense>\n    </>\n  );\n}\n\nasync function Cart() {\n  const session = (await cookies()).get(\"session\")?.value;\n  return <CartView items={await getCart(session)} />;\n}\n```\n\nWithout the Suspense boundary, Next 16 shows a \"blocking route\" error in dev telling you to cache the access or wrap it in Suspense.\n\n**Without Cache Components (previous model):** any of those triggers makes the whole route dynamic, rendered on each request; `next build` output marks routes as static or dynamic.\n\n**Tip:** read runtime data as deep in the tree as possible, so more of the page stays in the shell.",
+      "followUps": [
+        "How does this change when Cache Components is enabled?",
+        "How do you know at build time whether a route is static?",
+        "What does `connection()` do?"
+      ],
+      "mistakes": [
+        "Not knowing that reading cookies(), headers() or searchParams is what opts in, not using \"async\".",
+        "Still reaching for export const dynamic = 'force-dynamic' in a Cache Components app; it is replaced by use cache and Suspense.",
+        "Assuming uncached fetch is cached by default; since Next 15 fetch is not cached unless you opt in."
+      ],
+      "lesson": "next-app-router"
+    },
+    {
+      "id": "nextjs-secure-server-action",
+      "level": "mid",
+      "q": "How do you secure a Server Action?",
+      "answer": "**Treat every Server Action as a public API endpoint: inside the action, authenticate the session, authorise the specific operation on the specific resource, validate all inputs with a schema, and return only the data the client needs. Next.js adds CSRF origin checks and unguessable action IDs, but authorisation is your job.**\n\n**Why:** anyone can find the action ID in the client bundle or network tab and POST to it with arbitrary arguments. The page that renders the form being protected does not protect the action.\n\n```ts\n\"use server\";\nimport { z } from \"zod\";\nimport { updateTag } from \"next/cache\";\n\nconst Input = z.object({ postId: z.string().uuid(), title: z.string().min(1).max(200) });\n\nexport async function renamePost(_prev: unknown, formData: FormData) {\n  const session = await requireSession();                // 1. authenticate\n  const parsed = Input.safeParse(Object.fromEntries(formData));\n  if (!parsed.success) return { error: \"Invalid input\" }; // 2. validate\n\n  const post = await db.post.findUnique({ where: { id: parsed.data.postId } });\n  if (!post || post.authorId !== session.userId) {        // 3. authorise this resource\n    return { error: \"Not found\" };\n  }\n  await db.post.update({ where: { id: post.id }, data: { title: parsed.data.title } });\n  updateTag(`post:${post.id}`);\n  return { ok: true };                                    // 4. minimal return value\n}\n```\n\n**Built-in protections to mention:**\n- Only `POST` invokes actions, and Next compares the `Origin` header with `Host`/`X-Forwarded-Host`, rejecting cross-site calls (configure `serverActions.allowedOrigins` behind proxies).\n- Action IDs are encrypted and non-deterministic, and unused actions are removed from the bundle.\n- Variables captured by inline actions are encrypted, but do not rely on that for secrets.\n\n**More hardening:**\n- Put auth checks in a data access layer so every caller is checked, not just this action.\n- Rate-limit sensitive actions (login, email sending) by user or IP.\n- Return errors as values without leaking internals; log server-side.\n- Set `serverActions.bodySizeLimit` appropriately for uploads.",
+      "followUps": [
+        "What does Next.js do for you automatically?",
+        "Why are closure variables in inline actions a concern?",
+        "How would you rate-limit an action?"
+      ],
+      "mistakes": [
+        "Assuming an action is private because it is only used by one button; it is a public POST endpoint.",
+        "Relying on proxy.ts or the page's auth check instead of checking inside the action.",
+        "Trusting IDs and fields from FormData without validating ownership."
+      ],
+      "lesson": "next-app-router"
+    },
+    {
+      "id": "nextjs-dynamic-route-cost",
+      "level": "mid",
+      "q": "What makes a route dynamic and what does it cost?",
+      "answer": "**A route becomes dynamic when it reads request-time data (cookies, headers, searchParams, unknown params) or does uncached I/O. The cost is that the HTML can no longer be served instantly from a CDN: every request runs server code, waits on data, and pays latency, compute and cold-start costs, which shows up as higher TTFB and LCP and a bigger hosting bill.**\n\n**Concrete costs:**\n- **Latency:** TTFB includes the function start plus your slowest awaited query. A static page from the edge is tens of milliseconds; a dynamic one can be hundreds.\n- **Compute and money:** every visit is a function invocation and database load instead of a cached file.\n- **Resilience:** if the database is slow or down, the page is slow or down; static pages keep serving.\n- **Caching downstream:** responses are private and per-request; no shared CDN caching.\n\n**How Next 16 minimises the cost (Cache Components / PPR):**\n- The static shell (layout, nav, cached `use cache` content, Suspense fallbacks) is prerendered and served from the CDN immediately.\n- Only the dynamic holes run at request time and stream in, in parallel.\n\n```tsx\nexport default function ProductPage({ params }: PageProps<\"/p/[id]\">) {\n  return (\n    <>\n      <ProductDetails params={params} />  {/* use cache + cacheTag: static shell */}\n      <Suspense fallback={<PriceSkeleton />}>\n        <PersonalisedPrice params={params} /> {/* cookies(): per request */}\n      </Suspense>\n    </>\n  );\n}\n```\n\n**Other ways to reduce cost:**\n- Cache shared data with `use cache` and `cacheLife`; pass extracted runtime values in as arguments so they become cache keys.\n- Move personalisation to the client after load when SEO does not need it.\n- Pre-generate popular params with `generateStaticParams`.\n- Avoid request waterfalls: start queries in parallel.\n\n**When fully dynamic is right:** dashboards, checkouts, admin tools where every byte is per-user and real-time. Even then, keep the shell static for a fast first paint.",
+      "followUps": [
+        "How does Partial Prerendering reduce that cost?",
+        "How would you measure the difference in production?",
+        "When is fully dynamic the right call?"
+      ],
+      "mistakes": [
+        "Saying dynamic is free on serverless; every request pays function time, data latency and cold starts.",
+        "Making a whole page dynamic because one widget reads a cookie.",
+        "Ignoring that dynamic responses cannot be served from the CDN cache."
+      ],
+      "lesson": "next-data-caching"
+    },
+    {
+      "id": "nextjs-isr-swr",
+      "level": "mid",
+      "q": "Describe ISR / stale-while-revalidate.",
+      "answer": "**Incremental Static Regeneration serves a cached, prerendered page instantly and regenerates it in the background after its revalidation window passes (or on demand), so the next visitor gets fresh content. That is stale-while-revalidate: always respond fast from cache, refresh behind the scenes.**\n\n**Timeline for time-based revalidation (e.g. revalidate after 1 hour):**\n1. Build or first request: page is rendered and cached.\n2. Within the hour: everyone gets the cached page.\n3. First request after the hour: still gets the stale page immediately, and triggers a background regeneration.\n4. Once regeneration succeeds, the cache is replaced; if it fails, the old page keeps serving.\n\n**In Next 16 with Cache Components** you express this with `use cache` and `cacheLife`, which has three knobs: `stale` (how long the client may reuse it), `revalidate` (when the server refreshes in the background), and `expire` (after which requests must wait for fresh data).\n\n```ts\nimport { cacheLife, cacheTag } from \"next/cache\";\n\nexport async function getPost(slug: string) {\n  \"use cache\";\n  cacheLife(\"hours\");          // revalidate hourly, expire after a day\n  cacheTag(`post:${slug}`);\n  return db.post.findUnique({ where: { slug } });\n}\n\n// CMS webhook (route handler): refresh on demand with SWR semantics\nrevalidateTag(`post:${slug}`, \"max\");\n```\n\nIn the previous model you would write `export const revalidate = 3600` or `fetch(url, { next: { revalidate: 3600 } })`.\n\n**Unknown paths:** with `generateStaticParams` you prerender popular paths; other paths are rendered on first visit (Cache Components serve the App Shell immediately) and then cached like the rest.\n\n**Trade-offs:**\n- Users can briefly see stale data; fine for blogs, catalogues and docs, wrong for balances and inventory counts at checkout.\n- Prefer on-demand tags from a webhook over tiny revalidate windows.\n- Self-hosting across instances requires a shared cache handler, otherwise each instance has its own cache.",
+      "followUps": [
+        "What does the first visitor after expiry see?",
+        "How does on-demand revalidation differ from time-based?",
+        "How does ISR work for paths not generated at build time?"
+      ],
+      "mistakes": [
+        "Thinking the first request after the revalidate window blocks until fresh data is ready; it gets the stale page.",
+        "Using a very short revalidate time instead of on-demand revalidation when a webhook is available.",
+        "Forgetting that self-hosted multi-instance setups need a shared cache handler."
+      ],
+      "lesson": "next-data-caching"
+    },
+    {
+      "id": "nextjs-stale-after-mutation",
+      "level": "senior",
+      "q": "Your page shows stale data after a mutation: where do you look?",
+      "answer": "**Walk the cache layers from server to browser: was the data function cached (`use cache`, `fetch` cache, `unstable_cache`) and was the right tag or path invalidated after the write; was the invalidation called in the right place (a Server Action or Route Handler); and is the client router cache showing an old RSC payload. Also check that a CDN or browser `Cache-Control` header is not caching the response.**\n\n**Checklist:**\n1. **Is the read cached?** Find the function: `\"use cache\"` with `cacheLife`, or `fetch` with `next.revalidate`/`force-cache`, or `unstable_cache`. If it is cached, something must invalidate it.\n2. **Does the invalidation match?** `cacheTag(\"posts\")` on the read must match `updateTag(\"posts\")` or `revalidateTag(\"posts\", \"max\")` on the write. Typos and per-id tags (`post:42` vs `posts`) are the most common cause.\n3. **Right API for the UX:**\n   - `updateTag(tag)` (Server Actions only): expires immediately, so the user reads their own write.\n   - `revalidateTag(tag, \"max\")`: stale-while-revalidate, so the next request may still see old data. Great for webhooks, surprising right after a user edit.\n   - `revalidatePath(\"/posts\")`: invalidates a route; with `\"layout\"` type it includes nested routes.\n4. **Client side:** after a Server Action that revalidates, Next sends fresh RSC for the current route. For mutations done elsewhere (Route Handler, external API), call `router.refresh()`, or `refresh()` from `next/cache` inside a Server Action to refresh the router without touching tagged data.\n5. **Client data libraries:** if the widget uses TanStack Query/SWR, invalidate that cache too.\n6. **Infrastructure:** CDN or proxy caching headers; self-hosted instances without a shared cache handler, where one instance invalidated and another did not.\n\n```ts\n\"use server\";\nexport async function addComment(postId: string, text: string) {\n  await requireSession();\n  await db.comment.create({ data: { postId, text } });\n  updateTag(`post:${postId}:comments`); // must match cacheTag in getComments()\n}\n```\n\n**Debugging tools:** `NEXT_PRIVATE_DEBUG_CACHE=1` logs cache hits and misses when self-hosting; on Vercel check the response cache headers and function logs.",
+      "followUps": [
+        "What is the difference between updateTag and revalidateTag?",
+        "Why might revalidatePath not refresh a layout?",
+        "What does refresh() from next/cache do?"
+      ],
+      "mistakes": [
+        "Only looking at the database or React state, not the server cache layers and the client router cache.",
+        "Calling revalidateTag with a tag that the cached function never set with cacheTag.",
+        "Invalidating from a Client Component or forgetting that each deployment has its own cache."
+      ],
+      "lesson": "next-data-caching"
+    },
+    {
+      "id": "nextjs-static-page-personal-widget",
+      "level": "senior",
+      "q": "How would you make a mostly static page with one personalised widget?",
+      "answer": "**Keep the page static and isolate the personalised part behind a `<Suspense>` boundary. With Cache Components in Next 16, that is Partial Prerendering: the static shell (including the widget's fallback) is served instantly from the CDN, and only the widget renders per request and streams in.**\n\n```tsx\n// app/pricing/page.tsx\nimport { Suspense } from \"react\";\nimport { cookies } from \"next/headers\";\n\nexport default function PricingPage() {\n  return (\n    <main>\n      <Hero />          {/* static */}\n      <PlanTable />     {/* 'use cache' + cacheLife('days') */}\n      <Suspense fallback={<div className=\"h-24\" aria-busy=\"true\" />}>\n        <YourPlanBanner />\n      </Suspense>\n    </main>\n  );\n}\n\nasync function YourPlanBanner() {\n  const session = (await cookies()).get(\"session\")?.value;\n  if (!session) return <SignInCta />;\n  const plan = await getPlanFor(session); // per user\n  return <p>You are on {plan.name}.</p>;\n}\n```\n\n**Why it works:**\n- Only the component that reads `cookies()` becomes dynamic; everything above the boundary is prerendered.\n- The fallback is part of the shell, so the page paints immediately and the banner replaces it when ready.\n\n**Options compared:**\n- **PPR / Cache Components:** best of both; one request, fast shell, server-rendered personalisation, no client fetch.\n- **Static page + client fetch:** the widget is a Client Component calling an API after hydration. Works in any setup, but adds a round trip and a loading flash, and is invisible to crawlers (fine for personal data).\n- **Fully dynamic page:** simplest code, slowest for everyone.\n\n**Correctness and UX:**\n- Never put user-specific data in a shared cache without the user in the key. `use cache: private` or passing the session id as an argument scopes it correctly.\n- Give the fallback the same dimensions as the widget to avoid CLS.\n- Keep the personalised query fast; it is now on the critical path for that region only, not the whole page.\n\n**Real-world example:** an e-commerce product page with static details and a \"delivery by Tuesday to your postcode\" widget.",
+      "followUps": [
+        "What goes into the static shell?",
+        "How would you do it without Cache Components?",
+        "How do you avoid layout shift when the widget streams in?"
+      ],
+      "mistakes": [
+        "Reading cookies() at the top of the page, which makes the whole page dynamic.",
+        "Caching the personalised data in a shared cache keyed without the user, leaking one user's data to another.",
+        "Forgetting a sized fallback, causing layout shift when the widget arrives."
+      ],
+      "lesson": "next-data-caching"
+    },
+    {
+      "id": "nextjs-session-cookie-vs-jwt",
+      "level": "mid",
+      "q": "Session cookie vs JWT: trade-offs?",
+      "answer": "**The real choice is stateful vs stateless sessions. A database session stores a random id in an HttpOnly cookie and looks up the session server-side on each request, so revocation is instant but every request hits a store. A stateless session puts signed (often encrypted) claims, usually a JWT, in the cookie; verification needs no lookup, but you cannot revoke it before it expires without adding state back.**\n\n**Database (stateful) sessions:**\n- Revoke instantly: delete the row (logout everywhere, ban, password change).\n- Small cookie, no sensitive claims on the client.\n- Cost: a lookup per request (cache it), and a session store to run.\n\n**Stateless (JWT) sessions:**\n- No lookup; works well across services and at the edge.\n- Revocation needs short expiry plus refresh tokens, or a denylist (which is state again).\n- Claims can be stale (role changed but the token still says admin) and cookies have a ~4 KB limit.\n\n**Where to store it:** in a cookie with `HttpOnly` (not readable by JS), `Secure`, `SameSite=Lax` (or `Strict`), a narrow `Path`, and a sensible `Max-Age`. Avoid `localStorage`: any XSS can steal the token.\n\n```ts\nimport { SignJWT } from \"jose\";\nimport { cookies } from \"next/headers\";\n\nexport async function createSession(userId: string) {\n  const token = await new SignJWT({ sub: userId })\n    .setProtectedHeader({ alg: \"HS256\" })\n    .setIssuedAt()\n    .setExpirationTime(\"7d\")\n    .sign(secretKey);\n  (await cookies()).set(\"session\", token, {\n    httpOnly: true, secure: true, sameSite: \"lax\", path: \"/\", maxAge: 60 * 60 * 24 * 7,\n  });\n}\n```\n\n**How to choose:**\n- Admin panels, banking, anything needing instant revocation: database sessions.\n- Small apps or single-user tools: a signed stateless cookie is simple and fine, with short expiry and a server-side secret rotation plan.\n- Microservices: short-lived JWT access tokens between services, with a stateful session at the edge.\n\n**Either way:** verify on the server next to the data (`requireSession()` in actions and route handlers), and rotate the session id on login to prevent session fixation.",
+      "followUps": [
+        "How do you log out or revoke a stateless JWT?",
+        "Which cookie flags would you set and why?",
+        "Why not store tokens in localStorage?"
+      ],
+      "mistakes": [
+        "Treating \"JWT\" and \"cookie\" as alternatives; a JWT is often stored in a cookie. The real choice is stateful vs stateless sessions.",
+        "Storing tokens in localStorage, where any XSS can read them.",
+        "Ignoring revocation: a stateless token stays valid until it expires."
+      ],
+      "lesson": "next-auth-security"
+    },
+    {
+      "id": "nextjs-middleware-not-enough",
+      "level": "mid",
+      "q": "Why isn't middleware enough for authorisation?",
+      "answer": "**Because middleware (renamed `proxy.ts` in Next.js 16) is a coarse request filter, not a security boundary around your data. It runs before routing based on path matchers, so it can miss routes, can be misconfigured, cannot see which resource an action touches, and has been bypassable before. Authorisation must happen next to the data: in Server Components, Server Actions, Route Handlers and a data access layer.**\n\n**Why proxy alone fails:**\n- **Matchers drift:** add `/api/export` and forget the matcher, and it is public.\n- **Server Actions are POSTs to the page route:** the check has to be inside the action, which can be called directly.\n- **No resource context:** it knows the user is logged in, not whether they own invoice 42 (IDOR).\n- **History:** CVE-2025-29927 let attackers skip middleware entirely by sending an internal `x-middleware-subrequest` header on vulnerable versions. Apps that relied only on middleware were fully exposed.\n- **Performance:** docs explicitly say proxy is not for slow data fetching or full session management.\n\n**What proxy is good for:** optimistic redirects (no session cookie, go to `/login`), headers, rewrites, A/B buckets, locale detection.\n\n```ts\n// proxy.ts (Next 16): optimistic check only\nexport function proxy(req: NextRequest) {\n  if (!req.cookies.has(\"session\")) return NextResponse.redirect(new URL(\"/login\", req.url));\n}\nexport const config = { matcher: [\"/dashboard/:path*\"] };\n```\n\n```ts\n// lib/dal.ts: the real check, used by every page, action and route handler\nimport \"server-only\";\nexport const getInvoice = cache(async (id: string) => {\n  const session = await requireSession();\n  const invoice = await db.invoice.findUnique({ where: { id } });\n  if (!invoice || invoice.ownerId !== session.userId) notFound();\n  return invoice;\n});\n```\n\n**Rule:** defence in depth. Proxy for UX, a data access layer for security, and checks inside every action and API route.",
+      "followUps": [
+        "What is proxy.ts good for then?",
+        "What was CVE-2025-29927?",
+        "Where should the authorisation check live?"
+      ],
+      "mistakes": [
+        "Checking auth only in proxy/middleware and leaving Server Actions and route handlers unprotected.",
+        "Not knowing Next 16 renamed middleware.ts to proxy.ts.",
+        "Doing slow database lookups in proxy on every request, including static assets."
+      ],
+      "lesson": "next-auth-security"
+    },
+    {
+      "id": "nextjs-server-action-csrf",
+      "level": "senior",
+      "q": "How does Next.js defend Server Actions against CSRF?",
+      "answer": "**Server Actions can only be invoked with `POST`, and Next.js compares the request's `Origin` header with the `Host` (or `X-Forwarded-Host`) header and rejects mismatches. Combined with browsers' default `SameSite=Lax` cookies, a malicious site cannot submit a form to your action with the user's session. You do not add CSRF tokens yourself for actions.**\n\n**The layers:**\n- **POST only:** actions never run from a GET, so links, images and prefetches cannot trigger them.\n- **Origin check:** modern browsers send `Origin` on cross-site POSTs; if it does not match the host, Next aborts the request.\n- **SameSite cookies:** `Lax` cookies are not sent on cross-site POSTs, so even a forged request arrives unauthenticated.\n- **Unguessable action IDs:** IDs are encrypted and rotate between builds; not a security boundary, but it raises the bar.\n\n**Behind a reverse proxy or a different public domain,** the Origin and Host may legitimately differ, so allow-list them:\n\n```ts\n// next.config.ts\nconst nextConfig: NextConfig = {\n  experimental: {\n    serverActions: { allowedOrigins: [\"app.example.com\", \"*.example.com\"] },\n  },\n};\n```\n\n**What is not covered automatically:**\n- **Route Handlers** (`app/api/*/route.ts`) are plain HTTP endpoints. For cookie-authenticated POST/PUT/DELETE, check `Origin` yourself, use `SameSite` cookies, or require a custom header or token.\n\n```ts\nexport async function POST(req: Request) {\n  const origin = req.headers.get(\"origin\");\n  if (origin !== process.env.APP_ORIGIN) return new Response(\"Forbidden\", { status: 403 });\n  // ...\n}\n```\n\n- **GET handlers that mutate** (`/api/delete?id=1`) are CSRF-able because `Lax` cookies are sent on top-level GET navigations. Never mutate on GET.\n- **Same-site subdomains:** `SameSite` treats `evil.example.com` as same-site, so a compromised subdomain can still attempt requests; the Origin check helps here.\n\nCSRF protection is not authorisation: actions still need their own auth checks.",
+      "followUps": [
+        "When would you configure serverActions.allowedOrigins?",
+        "Are Route Handlers protected the same way?",
+        "What does SameSite=Lax protect and what not?"
+      ],
+      "mistakes": [
+        "Assuming Route Handlers get the same origin check; they do not, you must protect POST handlers yourself.",
+        "Saying CSRF tokens are required for Server Actions; Next relies on POST-only plus Origin/Host comparison.",
+        "Making state-changing GET endpoints, which bypass SameSite=Lax protections."
+      ],
+      "lesson": "next-auth-security"
+    },
+    {
+      "id": "nextjs-xss-in-react",
+      "level": "mid",
+      "q": "Where can XSS still happen in React?",
+      "answer": "**React escapes values rendered as text, so `{userInput}` is safe. XSS still happens through the escape hatches: `dangerouslySetInnerHTML`, `javascript:` URLs in `href`/`src`, unsanitised markdown-to-HTML, inline JSON in script tags, direct DOM APIs (`innerHTML`, `eval`), and third-party scripts.**\n\n**The main holes:**\n- **`dangerouslySetInnerHTML`:** with any user or LLM content, sanitise with DOMPurify (server-side with a DOM implementation) or avoid HTML entirely.\n- **URLs:** React 19 blocks `javascript:` URLs in `href`, but `data:` and others are still risky, and older code or other attributes may not be covered. Validate the scheme.\n- **Markdown renderers** that allow raw HTML (`rehype-raw`) without a sanitiser.\n- **Serialised state:** inlining `JSON.stringify(data)` into a script tag lets a string containing a closing script tag break out and run code. Escape `<` as `\\u003c` or use framework-provided serialisation.\n- **Refs and DOM APIs:** `ref.current.innerHTML = ...`, `insertAdjacentHTML`, `eval`, `new Function`.\n- **Third-party code:** analytics or widgets loaded without integrity checks.\n\n```tsx\nfunction SafeLink({ url, children }: { url: string; children: React.ReactNode }) {\n  const parsed = URL.canParse(url) ? new URL(url) : null;\n  const ok = parsed && (parsed.protocol === \"https:\" || parsed.protocol === \"http:\");\n  return ok ? <a href={parsed.href} rel=\"noopener noreferrer\">{children}</a> : <span>{children}</span>;\n}\n\n// Markdown: render to React elements, no raw HTML\n<ReactMarkdown skipHtml>{comment.body}</ReactMarkdown>\n```\n\n**Defence in depth:**\n- A strict Content Security Policy with nonces (Next can inject nonces generated in `proxy.ts`), no `unsafe-inline` scripts.\n- HttpOnly session cookies, so XSS cannot read the token directly (it can still act as the user).\n- Treat LLM output as untrusted user input.\n- Lint rules flagging `dangerouslySetInnerHTML`.\n\n**Real-world example:** a support widget rendered ticket HTML from email bodies; an attacker emailed a payload with an `onerror` image attribute. Sanitising on render fixed it.",
+      "followUps": [
+        "How would a Content Security Policy with nonces help?",
+        "How do you safely render user-written markdown?",
+        "Why is inlining JSON into a script tag risky?"
+      ],
+      "mistakes": [
+        "Believing React makes XSS impossible because it escapes text.",
+        "Rendering user-controlled URLs in href without checking the scheme.",
+        "Sanitising on input once and trusting the stored HTML forever, or sanitising with a regex."
+      ],
+      "lesson": "next-auth-security"
+    },
+    {
+      "id": "nextjs-ssr-ssg-isr",
+      "level": "junior",
+      "q": "SSR vs SSG vs ISR: how do you choose?",
+      "answer": "**Choose by how fresh the data must be and whether it is per-user. SSG: same for everyone and changes only on deploy, so prerender at build time. ISR: same for everyone but changes over time, so prerender and refresh in the background or on demand. SSR: depends on the request (user, cookies, real-time data), so render per request.**\n\n**Quick guide:**\n- **SSG:** marketing pages, docs, blog posts. Fastest, served from CDN, cheapest.\n- **ISR:** product catalogues, news, CMS content. CDN speed, data a few minutes or a webhook behind.\n- **SSR:** dashboards, search results, carts, anything personalised or truly real-time.\n- **CSR:** highly interactive, private, SEO-irrelevant widgets fetched after load.\n\n**In the App Router you do not pick an API; you make caching decisions and Next derives the outcome:**\n- No runtime data or uncached I/O: prerendered (SSG).\n- `use cache` + `cacheLife(\"hours\")` or `cacheTag` with `revalidateTag`: ISR behaviour.\n- Reading `cookies()`, `headers()` or `searchParams`, or uncached data: rendered per request (SSR).\n\n```tsx\n// Static shell + ISR-like catalogue + per-request stock\nexport default function Product({ params }: PageProps<\"/p/[id]\">) {\n  return (\n    <>\n      <Details params={params} />                 {/* use cache, cacheTag(`product:${id}`) */}\n      <Suspense fallback={<StockSkeleton />}>\n        <LiveStock params={params} />             {/* uncached: request time */}\n      </Suspense>\n    </>\n  );\n}\nexport async function generateStaticParams() {\n  return (await topProducts(100)).map((p) => ({ id: p.id })); // SSG the popular ones\n}\n```\n\n**Next 16 point:** with Cache Components the choice is per component, not per page (Partial Prerendering), so one page can mix all three.\n\n**Trade-offs:** SSG/ISR can show stale data and build time grows with pages; SSR costs compute and latency on every request.",
+      "followUps": [
+        "How do these map onto the App Router and Cache Components?",
+        "What about client-side rendering?",
+        "Which would you use for a product page with live stock levels?"
+      ],
+      "mistakes": [
+        "Choosing per app rather than per route or per component.",
+        "Using SSR by default for content that changes daily, paying request-time cost for nothing.",
+        "Not knowing that in the App Router these are outcomes of caching decisions, not separate APIs."
+      ],
+      "lesson": "next-rendering-perf"
+    },
+    {
+      "id": "nextjs-improve-lcp",
+      "level": "mid",
+      "q": "How do you improve LCP?",
+      "answer": "**Find the LCP element (usually the hero image or headline) and make it arrive sooner: fast TTFB (static or cached HTML from a CDN), the LCP resource discoverable in the initial HTML and fetched with high priority, small and correctly sized, and not blocked by render-blocking CSS, fonts or client-side JavaScript. Target 2.5 seconds or less at the 75th percentile.**\n\n**Break LCP into its four parts and fix the biggest:**\n1. **TTFB:** prerender or cache the page (static shell, `use cache`), serve from the edge, avoid slow awaited queries before the shell.\n2. **Resource load delay:** the image should be in the HTML, not discovered late by JS or CSS. Preload it.\n3. **Resource load time:** modern formats (AVIF/WebP), correct `sizes`, compression, a CDN.\n4. **Render delay:** no render-blocking scripts, fonts with `display: swap` or a fallback size-adjusted font, and do not hide the content until hydration.\n\n```tsx\nimport Image from \"next/image\";\nimport hero from \"./hero.jpg\";\n\nexport default function Hero() {\n  return (\n    <Image\n      src={hero}               // static import: width, height and blur placeholder known\n      alt=\"Team working\"\n      preload                  // Next 16: replaces the deprecated `priority`\n      sizes=\"100vw\"\n      placeholder=\"blur\"\n    />\n  );\n}\n```\n\n(Or `fetchPriority=\"high\"` with `loading=\"eager\"`, which the docs recommend in most cases.)\n\n**Next.js-specific wins:**\n- `next/image` resizes, serves AVIF/WebP and sets dimensions.\n- `next/font` self-hosts fonts and inlines `@font-face`, removing a third-party round trip.\n- Keep the LCP element in a Server Component so it is in the first HTML; Client Components still SSR, but avoid gating it behind client data fetching.\n- Stream slow parts behind Suspense so they do not hold back the shell.\n\n**Measure:** field data (CrUX, Vercel Speed Insights, `useReportWebVitals`) beats lab scores; use the Chrome Performance panel's LCP breakdown to see which part dominates.",
+      "followUps": [
+        "How do you find which element is the LCP element?",
+        "Why can lazy-loading the hero image hurt?",
+        "How does streaming affect LCP?"
+      ],
+      "mistakes": [
+        "Lazy-loading the hero image or loading it via CSS background, delaying discovery.",
+        "Optimising image bytes while ignoring a slow TTFB from a dynamic, uncached route.",
+        "Rendering the LCP content only on the client after hydration."
+      ],
+      "lesson": "next-rendering-perf"
+    },
+    {
+      "id": "nextjs-cls-causes",
+      "level": "junior",
+      "q": "What causes CLS and how do you fix it?",
+      "answer": "**Cumulative Layout Shift measures unexpected movement of visible content. It is caused by things that change size or appear after first paint without reserved space: images and iframes without dimensions, late-loading ads and embeds, content injected above existing content, web fonts swapping with different metrics, and streamed or client-loaded UI with no correctly-sized placeholder. Fix it by reserving space up front. Target 0.1 or less.**\n\n**Causes and fixes:**\n- **Images/video/iframes without size:** set `width` and `height` or CSS `aspect-ratio`. `next/image` requires dimensions (or `fill` in a sized parent), so it reserves space.\n- **Fonts:** a fallback font with different metrics reflows text when the web font loads. `next/font` self-hosts and generates a size-adjusted fallback, nearly eliminating the shift.\n- **Dynamic content:** cookie banners, promos, \"new posts\" bars inserted at the top. Overlay them (fixed position) or reserve the slot.\n- **Ads and embeds:** give the container a `min-height` based on the most common size.\n- **Suspense fallbacks and skeletons:** make them the same size as the final content.\n- **Animations:** animate `transform` and `opacity`, not layout properties.\n\n```tsx\n// Reserve space for a streamed widget\n<Suspense fallback={<div className=\"h-[120px] rounded bg-muted\" />}>\n  <Recommendations />  {/* final component also renders at 120px */}\n</Suspense>\n\n// Responsive embed with a fixed ratio\n<div style={{ aspectRatio: \"16 / 9\" }}>\n  <iframe src={videoUrl} className=\"h-full w-full\" title=\"Demo\" />\n</div>\n```\n\n**What does not count:** shifts within 500 ms of a user input (clicking \"show more\"), and transform animations.\n\n**Debugging:** the Chrome Performance panel and the Web Vitals extension highlight shifting elements; field data from CrUX or Speed Insights shows real users, including shifts during scrolling and long sessions.",
+      "followUps": [
+        "Which shifts do not count towards CLS?",
+        "How does next/font reduce font-related shifts?",
+        "How do you reserve space for an ad or embed of unknown height?"
+      ],
+      "mistakes": [
+        "Omitting width and height (or aspect-ratio) on images and embeds.",
+        "Inserting banners or consent bars above existing content after load.",
+        "Animating top, left, width or height instead of transform."
+      ],
+      "lesson": "next-rendering-perf"
+    },
+    {
+      "id": "nextjs-partial-prerendering",
+      "level": "senior",
+      "q": "What is partial prerendering?",
+      "answer": "**Partial Prerendering (PPR) lets one route be both static and dynamic: at build time Next prerenders a static shell (static markup, cached `use cache` output, and Suspense fallbacks), serves it instantly from the CDN, and streams the request-time parts into their Suspense holes in the same response. In Next.js 16 it is the default rendering model when you enable Cache Components.**\n\n**How it works:**\n- During prerender, Next renders the tree. Anything that completes (pure code, `use cache` results with a long-enough lifetime) goes into the shell.\n- Anything that needs request data (`cookies()`, `headers()`, `searchParams`, uncached fetches, `connection()`) suspends; the nearest `<Suspense>` fallback goes into the shell instead.\n- At request time the server sends the shell immediately, then renders only the dynamic holes and streams them in.\n\n**Enabling it in Next 16:**\n\n```ts\n// next.config.ts\nconst nextConfig: NextConfig = { cacheComponents: true };\n```\n\nThe old `experimental.ppr` flag and `experimental_ppr` segment export were removed; `cacheComponents` replaces them (and `dynamicIO`/`useCache`).\n\n```tsx\nexport default function Dashboard() {\n  return (\n    <Layout>                                  {/* static */}\n      <Announcements />                       {/* 'use cache': in the shell */}\n      <Suspense fallback={<StatsSkeleton />}>\n        <UserStats />                         {/* cookies(): streamed */}\n      </Suspense>\n    </Layout>\n  );\n}\n```\n\nIf a component reads runtime data outside any Suspense boundary, Next 16 reports a blocking-route error in dev and asks you to cache it, wrap it, or move the access deeper.\n\n**Benefits:** static-site TTFB and LCP for the shell, with server-rendered personalisation, in one request, without making the whole route dynamic.\n\n**Trade-offs:**\n- You must design boundaries deliberately; reading `params` or cookies high in a layout shrinks the shell.\n- Fallbacks need correct sizes to avoid CLS.\n- Bots get a fully rendered page at request time, so the shell's data must also be available at runtime.",
+      "followUps": [
+        "How do you enable it in Next 16?",
+        "What happens to a component that reads cookies without a Suspense boundary?",
+        "How does it interact with client navigations and prefetching?"
+      ],
+      "mistakes": [
+        "Describing it as experimental only; in Next 16 it is the default behaviour with Cache Components.",
+        "Thinking Suspense makes a component dynamic; runtime data access does, Suspense marks where to stream it.",
+        "Still using the removed experimental.ppr flag or experimental_ppr segment export."
+      ],
+      "lesson": "next-rendering-perf"
+    },
+    {
+      "id": "nextjs-hydration-mismatch",
+      "level": "mid",
+      "q": "What is hydration and what causes hydration mismatch errors?",
+      "answer": "**Hydration is React attaching event handlers and state to server-rendered HTML by rendering the same tree on the client and adopting the existing DOM. A hydration mismatch happens when the client's first render produces different markup from the server's HTML; React then warns and re-renders that part on the client, losing the SSR benefit and sometimes showing wrong content.**\n\n**Common causes:**\n- Non-deterministic values in render: `Date.now()`, `new Date().toLocaleString()`, `Math.random()`, generated ids.\n- Environment branches: `typeof window !== \"undefined\" ? A : B`, `localStorage` reads during render.\n- Time zone or locale differences between server and browser.\n- Invalid HTML nesting: `<div>` inside `<p>`, `<a>` inside `<a>`; the browser fixes the DOM and React finds a different tree.\n- Browser extensions injecting attributes or nodes (password managers, translators).\n\n**Fixes:**\n\n```tsx\n\"use client\";\n// Render the same thing on both, then update after hydration\nfunction LocalTime({ iso }: { iso: string }) {\n  const [text, setText] = useState<string | null>(null);\n  useEffect(() => setText(new Date(iso).toLocaleTimeString()), [iso]);\n  return <time dateTime={iso}>{text ?? iso.slice(11, 16) + \" UTC\"}</time>;\n}\n```\n\n- Use `useId()` for ids, never random values.\n- For client-only components, use `dynamic(() => import(\"./map\"), { ssr: false })` from a Client Component.\n- Format dates on the server in a fixed time zone and pass strings down.\n- For theme flashes, set the class with a tiny blocking script before hydration and add `suppressHydrationWarning` on `<html>` only.\n\n**`suppressHydrationWarning`** works one level deep and is for unavoidable differences (a timestamp, the theme attribute). Do not use it to hide real bugs.\n\n**In Next 16 with Cache Components,** `Date.now()` or `Math.random()` during prerender also errors unless you call `await connection()` or cache the value, which pushes you toward deterministic rendering.",
+      "followUps": [
+        "When is suppressHydrationWarning acceptable?",
+        "How do you render something that must differ on the client, like a local time?",
+        "How do browser extensions cause mismatches?"
+      ],
+      "mistakes": [
+        "Using typeof window checks in render to output different markup on server and client.",
+        "Silencing the warning everywhere with suppressHydrationWarning instead of fixing the cause.",
+        "Rendering Date.now(), Math.random() or locale-formatted dates directly during render."
+      ]
+    },
+    {
+      "id": "nextjs-file-conventions",
+      "level": "junior",
+      "q": "Explain the App Router file conventions: layout, page, loading, error and not-found.",
+      "answer": "**Each folder in `app/` is a route segment, and special files define its UI: `page.tsx` makes the segment routable, `layout.tsx` wraps it and its children and persists across navigation, `loading.tsx` is an automatic Suspense fallback, `error.tsx` is an error boundary, and `not-found.tsx` renders when `notFound()` is called or no route matches.**\n\n**How they nest for a segment:**\n\n```tsx\n<Layout>\n  <Template>\n    <ErrorBoundary fallback={<Error />}>\n      <Suspense fallback={<Loading />}>\n        <ErrorBoundary fallback={<NotFound />}>\n          <Page />\n        </ErrorBoundary>\n      </Suspense>\n    </ErrorBoundary>\n  </Template>\n</Layout>\n```\n\n**Details interviewers look for:**\n- **layout.tsx:** shared UI; does not remount on navigation between child routes, so state (a sidebar's scroll, a video) survives. The root layout must render `<html>` and `<body>`.\n- **template.tsx:** like a layout but remounts on every navigation (for enter animations or resetting state).\n- **page.tsx:** receives `params` and `searchParams` as Promises (Next 15+). Use the generated `PageProps<\"/blog/[slug]\">` type.\n- **loading.tsx:** wraps the page in Suspense, so navigation shows the skeleton instantly while the server streams the page.\n- **error.tsx:** must be `\"use client\"` (error boundaries are client-side). Receives `error` and `reset`. It does not catch errors in the same segment's layout; use the parent's `error.tsx` or `global-error.tsx` for the root.\n- **not-found.tsx**, plus `forbidden.tsx` and `unauthorized.tsx` for the `forbidden()` and `unauthorized()` helpers.\n- **route.ts:** an API endpoint; cannot coexist with `page.tsx` in the same segment.\n\n```tsx\n// app/blog/[slug]/page.tsx\nexport default async function Post({ params }: PageProps<\"/blog/[slug]\">) {\n  const { slug } = await params;\n  const post = await getPost(slug);\n  if (!post) notFound();\n  return <Article post={post} />;\n}\n```\n\n**Organisation:** `(group)` folders organise routes or share layouts without affecting the URL; `_private` folders are excluded from routing; `[slug]`, `[...slug]` and `[[...slug]]` are dynamic, catch-all and optional catch-all segments.",
+      "followUps": [
+        "What is the difference between layout and template?",
+        "Why must error.tsx be a Client Component?",
+        "How do route groups and private folders work?"
+      ],
+      "mistakes": [
+        "Thinking layouts re-render or remount on every navigation; they persist and keep state.",
+        "Expecting error.tsx to catch errors in the layout of the same segment.",
+        "Not knowing params and searchParams are Promises in Next 15+."
+      ]
+    },
+    {
+      "id": "nextjs-streaming-suspense",
+      "level": "mid",
+      "q": "How does streaming with Suspense work in the App Router?",
+      "answer": "**Streaming sends the HTML in chunks: the server immediately flushes everything outside pending Suspense boundaries (with their fallbacks), then, as each async Server Component resolves, streams its HTML plus a tiny inline script that swaps it into place. Users see a useful page right away instead of waiting for the slowest query.**\n\n**How it works:**\n- The response uses HTTP chunked transfer. React renders the tree; when a component awaits, the nearest `<Suspense>` fallback is emitted instead and rendering continues elsewhere.\n- Resolved segments arrive out of order; React inserts them and hydrates them selectively, prioritising what the user interacts with.\n- `loading.tsx` is shorthand for a Suspense boundary around the page, so navigations show a skeleton instantly.\n\n```tsx\nexport default function Dashboard() {\n  return (\n    <>\n      <Header />                                   {/* sent immediately */}\n      <Suspense fallback={<RevenueSkeleton />}>\n        <Revenue />                                {/* 300 ms query */}\n      </Suspense>\n      <Suspense fallback={<TicketsSkeleton />}>\n        <Tickets />                                {/* 2 s query, does not block Revenue */}\n      </Suspense>\n    </>\n  );\n}\n```\n\nBoth queries start in parallel because each component starts its own fetch; neither waits for the other.\n\n**Design advice:**\n- Put boundaries around independently slow parts; group related parts under one boundary to avoid many spinners popping in.\n- Sized skeletons prevent CLS.\n- Inside a component, start independent requests together (`Promise.all`) rather than awaiting one by one.\n\n**Gotchas:**\n- Status code and headers go out with the first chunk. If `notFound()` or `redirect()` happens inside a streamed boundary, Next handles it client-side (and adds a noindex meta for not-found), so do critical checks before streaming starts when status matters.\n- Bots get the fully rendered page so SEO is not affected.\n- Proxies that buffer responses (some nginx configs) defeat streaming; disable buffering.",
+      "followUps": [
+        "How does loading.tsx relate to Suspense?",
+        "What happens to the HTTP status code once streaming has started?",
+        "How do you avoid sequential waterfalls inside streamed components?"
+      ],
+      "mistakes": [
+        "Awaiting all data at the top of the page, so nothing streams until the slowest query finishes.",
+        "Not knowing headers and status are sent with the first chunk, so redirects after streaming starts are handled client-side.",
+        "Wrapping every tiny component in Suspense, producing a popcorn of loading spinners."
+      ]
+    },
+    {
+      "id": "nextjs-route-handlers-vs-server-actions",
+      "level": "mid",
+      "q": "Route Handlers vs Server Actions: when do you use each?",
+      "answer": "**Use Server Actions for mutations triggered by your own React UI: forms, buttons, optimistic updates; they integrate with transitions, `useActionState` and revalidation. Use Route Handlers (`app/**/route.ts`) when you need a real HTTP API: webhooks, third-party or mobile clients, file downloads, streaming responses, OAuth callbacks, cron endpoints, or GET endpoints that should be cacheable.**\n\n**Server Actions:**\n- `\"use server\"` functions called like normal functions; Next turns them into POST requests.\n- Progressive enhancement with `<form action>`, built-in Origin checks, and can call `updateTag`, `revalidatePath`, `redirect` and `refresh` so the UI updates in the same round trip.\n- Not for reads: POST only, not cached, and the client queues them one at a time.\n\n**Route Handlers:**\n- Standard Web `Request`/`Response`, any HTTP method, control over status, headers and content types.\n- Stable URLs that other systems can call.\n- With Cache Components, GET handlers can be prerendered or use `use cache`, like pages.\n\n```ts\n// app/api/webhooks/stripe/route.ts\nexport async function POST(req: Request) {\n  const sig = req.headers.get(\"stripe-signature\");\n  const event = stripe.webhooks.constructEvent(await req.text(), sig!, process.env.STRIPE_WEBHOOK_SECRET!);\n  if (event.type === \"product.updated\") revalidateTag(`product:${event.data.object.id}`, \"max\");\n  return Response.json({ received: true });\n}\n```\n\n```ts\n// app/actions.ts\n\"use server\";\nexport async function toggleFavourite(id: string) {\n  const s = await requireSession();\n  await db.favourite.toggle(s.userId, id);\n  updateTag(`favs:${s.userId}`);\n}\n```\n\n**Anti-pattern:** a Server Component doing `fetch(\"http://localhost:3000/api/products\")`. It adds an HTTP hop and breaks at build time; call the data function directly.\n\n**Both are public endpoints:** authenticate and validate inputs in each one. Route Handlers do not get the automatic Origin check, so protect cookie-authenticated mutations yourself.",
+      "followUps": [
+        "Can you call a Server Action from a non-React client?",
+        "Should you fetch your own Route Handler from a Server Component?",
+        "How are GET Route Handlers cached in Next 16?"
+      ],
+      "mistakes": [
+        "Using Server Actions for data fetching; they are POST-only, run sequentially and are not cached.",
+        "Calling your own Route Handler via fetch from a Server Component instead of calling the function directly.",
+        "Exposing a Route Handler for a mutation only your own UI uses, then forgetting to protect it."
+      ]
+    },
+    {
+      "id": "nextjs-proxy-ts",
+      "level": "mid",
+      "q": "What is proxy.ts in Next.js 16 and what should it be used for?",
+      "answer": "**`proxy.ts` is what Next.js 16 calls the file formerly known as `middleware.ts`: a single function at the project root that runs before a request is routed, and can redirect, rewrite, set headers and cookies, or respond directly. It is for lightweight request shaping, not data fetching or real authorisation. It now defaults to the Node.js runtime.**\n\n**Good uses:**\n- Optimistic auth redirects (no session cookie, send to `/login`).\n- Rewrites for A/B tests, feature flags, multi-tenant subdomains, i18n locale detection.\n- Security headers, a CSP with a per-request nonce.\n- Bot or geography-based routing.\n\n```ts\n// proxy.ts\nimport { NextResponse, type NextRequest } from \"next/server\";\n\nexport function proxy(req: NextRequest) {\n  const bucket = req.cookies.get(\"ab\")?.value ?? (Math.random() < 0.5 ? \"a\" : \"b\");\n  const res = NextResponse.rewrite(new URL(`/home/${bucket}`, req.url));\n  res.cookies.set(\"ab\", bucket, { maxAge: 60 * 60 * 24 * 30 });\n  return res;\n}\n\nexport const config = {\n  matcher: [\"/((?!_next/static|_next/image|favicon.ico|.*\\\\.(?:png|jpg|svg)$).*)\"],\n};\n```\n\n**Rules and limits:**\n- One `proxy.ts` per project (root or `src/`); split logic into imported modules.\n- Use `matcher` to skip static assets; otherwise it runs on every request and adds latency.\n- `fetch` caching options have no effect inside proxy.\n- Next 16 runs it on Node.js by default and the `runtime` option is not allowed in the file.\n- Migration: rename the file and the exported function from `middleware` to `proxy` (a codemod exists).\n\n**What not to do:** use it as your only auth check (see CVE-2025-29927, where middleware could be bypassed with a spoofed header), run slow queries, or do redirects that `next.config.ts` `redirects()` can handle statically.",
+      "followUps": [
+        "Which runtime does proxy run on in Next 16?",
+        "How do you avoid running proxy on static assets?",
+        "How would you implement A/B testing with it?"
+      ],
+      "mistakes": [
+        "Calling it middleware.ts in a Next 16 codebase; the old name is deprecated.",
+        "Doing database queries or full session validation in proxy on every request.",
+        "Forgetting the matcher, so proxy runs for _next/static, images and favicon too."
+      ]
+    },
+    {
+      "id": "nextjs-image-font-optimization",
+      "level": "junior",
+      "q": "What do next/image and next/font do for you?",
+      "answer": "**`next/image` serves correctly sized, modern-format images (AVIF/WebP) on demand, lazy-loads offscreen images, and reserves space to prevent layout shift. `next/font` downloads fonts at build time and self-hosts them, inlines the `@font-face` CSS, and generates a metric-matched fallback so text does not shift when the font loads.**\n\n**`next/image`:**\n- Generates a `srcset`; with `sizes` the browser picks the smallest adequate file.\n- Requires `width`/`height` (inferred from static imports) or `fill` inside a positioned parent, so space is reserved (CLS).\n- Lazy by default; mark the LCP image with `preload` (Next 16 deprecates `priority`) or `fetchPriority=\"high\"`.\n- `placeholder=\"blur\"` for static imports.\n- Remote images must be allow-listed in `images.remotePatterns` so your optimiser is not an open proxy.\n\n```tsx\nimport Image from \"next/image\";\nimport { Inter } from \"next/font/google\";\n\nconst inter = Inter({ subsets: [\"latin\"], display: \"swap\", variable: \"--font-inter\" });\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return <html lang=\"en\" className={inter.variable}><body>{children}</body></html>;\n}\n\n<Image\n  src=\"https://cdn.example.com/p/42.jpg\"\n  alt=\"Product photo\"\n  width={800}\n  height={600}\n  sizes=\"(max-width: 768px) 100vw, 50vw\"\n/>\n```\n\n**`next/font`:**\n- No request to Google at runtime: better privacy and no extra DNS/TLS round trip.\n- Automatic `size-adjust` fallback reduces CLS.\n- Subsetting and variable fonts keep files small; `next/font/local` for your own files.\n\n**Next 16 changes:** `priority` deprecated for `preload`, default `qualities` reduced to `[75]`, and local IP images blocked unless explicitly allowed.\n\n**Trade-offs:** image optimisation costs CPU or platform quota; for very high traffic you might pre-generate variants or use an image CDN with a custom loader.",
+      "followUps": [
+        "When would you use the fill prop?",
+        "What changed for images in Next 16?",
+        "Why is self-hosting fonts better than a Google Fonts link?"
+      ],
+      "mistakes": [
+        "Forgetting sizes on responsive images, so the browser downloads the largest variant.",
+        "Lazy-loading or not preloading the LCP image.",
+        "Loading fonts with a link tag to fonts.googleapis.com, adding a render-blocking third-party request."
+      ]
+    },
+    {
+      "id": "nextjs-use-cache-directive",
+      "level": "senior",
+      "q": "How does the `use cache` directive work in Next.js 16?",
+      "answer": "**`\"use cache\"` marks an async function, component or whole file as cacheable: Next stores its serialised return value keyed by the build, the function's identity and its serialisable arguments (plus captured variables), and reuses it until its `cacheLife` says otherwise or a `cacheTag` is invalidated. It replaces `unstable_cache` and the old `fetch` cache options, and is enabled by `cacheComponents: true`.**\n\n**Levels:**\n- Data-level: cache a function like `getProducts()`.\n- UI-level: cache an entire component, layout or page.\n- File-level: `\"use cache\"` at the top caches all exports.\n\n```ts\nimport { cacheLife, cacheTag } from \"next/cache\";\n\nexport async function getProduct(id: string) {\n  \"use cache\";\n  cacheLife(\"hours\");             // stale 5m, revalidate 1h, expire 1d\n  cacheTag(\"products\", `product:${id}`);\n  return db.product.findUnique({ where: { id } });\n}\n\n// after a write in a Server Action\nupdateTag(`product:${id}`);\n```\n\n**Rules:**\n- No runtime APIs inside a shared cache scope: read `cookies()` outside and pass the value in, so it becomes part of the key.\n- Arguments and return values must be serialisable. JSX and children can pass through without becoming part of the key.\n- Pair it with `cacheLife`; short-lived caches (`seconds` profile or `expire` under 5 minutes) are excluded from the prerendered shell and become dynamic holes.\n\n**Variants:**\n- `\"use cache: private\"`: may read cookies and headers, cached only in the browser for that user (for prefetching personalised data).\n- `\"use cache: remote\"`: stores entries in a durable shared cache handler instead of per-instance memory; worth it only at a high hit rate.\n\n**Where it lives:** results prerendered at build go into the static shell. Runtime entries default to in-memory per instance (ephemeral on serverless). All caches are scoped to a deployment.\n\n**Trade-offs:** stale data risk, debugging cache keys, and the need to invalidate correctly. Do not cache per-user data in a shared scope without the user id in the key.",
+      "followUps": [
+        "What becomes part of the cache key?",
+        "What are use cache: private and use cache: remote for?",
+        "Why can't you call cookies() inside a use cache function?"
+      ],
+      "mistakes": [
+        "Reading cookies() or headers() inside a shared use cache scope instead of passing values as arguments.",
+        "Not setting cacheLife, then being surprised by the default profile.",
+        "Assuming in-memory cache entries persist across serverless instances or deployments."
+      ]
+    },
+    {
+      "id": "nextjs-revalidatepath-vs-revalidatetag",
+      "level": "mid",
+      "q": "revalidatePath vs revalidateTag vs updateTag: what is the difference?",
+      "answer": "**All three invalidate cached data on demand. `revalidatePath` targets a route URL and everything cached for it. `revalidateTag` targets every cache entry tagged with `cacheTag` (or `fetch` `next.tags`) anywhere in the app, with stale-while-revalidate semantics. `updateTag` also targets a tag but expires it immediately, for read-your-own-writes, and only works in Server Actions.**\n\n**Comparison:**\n- **`revalidatePath(\"/blog/[slug]\", \"page\")`:** use when you know the page but not its data dependencies. Coarse: re-renders the route's data; `\"layout\"` type covers all nested routes.\n- **`revalidateTag(\"posts\", \"max\")`:** precise: the same data used on the homepage, archive and RSS feed all refresh together. The next request may still get stale content while fresh content is generated. Callable from Server Actions and Route Handlers (webhooks).\n- **`updateTag(\"posts\")`:** Server Actions only; the next read waits for fresh data, so the user who made the change sees it.\n\n```ts\n// data\nexport async function getPosts() {\n  \"use cache\";\n  cacheLife(\"max\");\n  cacheTag(\"posts\");\n  return db.post.findMany();\n}\n\n// user action: show the change right away\n\"use server\";\nexport async function publish(id: string) {\n  await requireSession();\n  await db.post.publish(id);\n  updateTag(\"posts\");\n  updateTag(`post:${id}`);\n}\n\n// CMS webhook: background refresh is fine\nexport async function POST(req: Request) {\n  const { slug } = await req.json();\n  revalidateTag(`post:${slug}`, \"max\");\n  return new Response(null, { status: 204 });\n}\n```\n\n**Next 16 note:** `revalidateTag(tag)` with a single argument is deprecated; pass a `cacheLife` profile (`\"max\"` recommended) or `{ expire: 0 }` for immediate expiry from a Route Handler. There is also `refresh()` in Server Actions to refresh the client router without invalidating any tags.\n\n**Tag design:** collection tags (`posts`) plus entity tags (`post:42`) plus relation tags (`author:7:posts`), so writes invalidate exactly what changed. The docs recommend tags over paths for precision.",
+      "followUps": [
+        "Why does revalidateTag take a second argument in Next 16?",
+        "Which one can you call from a Route Handler?",
+        "How would you design tags for a blog?"
+      ],
+      "mistakes": [
+        "Using revalidatePath('/') for everything, which over-invalidates.",
+        "Calling revalidateTag with one argument in Next 16, which is deprecated.",
+        "Using revalidateTag after a user edit and expecting them to see the change immediately."
+      ]
+    },
+    {
+      "id": "nextjs-parallel-intercepting-routes",
+      "level": "senior",
+      "q": "What are parallel and intercepting routes, and what problem do they solve together?",
+      "answer": "**Parallel routes (`@slot` folders) render multiple independent pages in the same layout, each with its own loading, error and navigation state. Intercepting routes (`(.)`, `(..)`, `(...)` folders) render a different route inside the current layout during client navigation. Together they give you URL-addressable modals: clicking a photo opens it as a modal over the feed with a shareable URL, while a refresh or shared link opens the full photo page.**\n\n**Parallel routes:**\n- `app/@analytics/page.tsx` and `app/@team/page.tsx` become `analytics` and `team` props on `app/layout.tsx`.\n- Slots are not URL segments. Each can stream, error and navigate independently, and you can render them conditionally (e.g. by role).\n- `default.tsx` is the fallback when a slot has no match for the current URL after a hard navigation.\n\n**Intercepting routes:**\n- `(.)photo` matches the same level, `(..)` one segment up, `(...)` from the root (based on route segments, not folders like slots).\n- Interception only happens on soft (client) navigation; a direct visit renders the normal route.\n\n```text\napp/\n  layout.tsx            // renders {children} and {modal}\n  @modal/\n    default.tsx         // returns null when no modal is open\n    (.)photos/[id]/page.tsx  // modal version\n  photos/[id]/page.tsx  // full page version\n  page.tsx              // the feed\n```\n\n```tsx\n// app/layout.tsx\nexport default function Layout({ children, modal }: LayoutProps<\"/\">) {\n  return <html lang=\"en\"><body>{children}{modal}</body></html>;\n}\n\n// app/@modal/(.)photos/[id]/page.tsx\nexport default async function PhotoModal({ params }: PageProps<\"/photos/[id]\">) {\n  const { id } = await params;\n  return <Modal><Photo id={id} /></Modal>; // Modal calls router.back() on close\n}\n```\n\n**Use cases:** login or share modals, product quick views, image galleries, dashboards with independent panels, split views.\n\n**Trade-offs:** more files and conventions to learn, `default.tsx` pitfalls, and you maintain two renderings of the same content.",
+      "followUps": [
+        "What is default.tsx for?",
+        "What happens on a hard refresh of an intercepted URL?",
+        "How do you close the modal and restore the previous URL?"
+      ],
+      "mistakes": [
+        "Forgetting default.tsx, causing 404s for unmatched slots on hard navigation.",
+        "Thinking the intercepting convention (..) follows the file system; it follows route segments, so slots and groups do not count.",
+        "Not providing a full page for the same URL, so shared links or refreshes break."
+      ]
+    },
+    {
+      "id": "nextjs-env-vars-public",
+      "level": "junior",
+      "q": "How do environment variables work in Next.js, and what does NEXT_PUBLIC_ do?",
+      "answer": "**Server code can read any `process.env` variable at runtime. Variables prefixed with `NEXT_PUBLIC_` are also inlined into the client JavaScript bundle at build time, so they are visible to anyone. Never put secrets in a `NEXT_PUBLIC_` variable, and remember public values are frozen at build.**\n\n**How it works:**\n- Next loads `.env`, `.env.local`, `.env.development`, `.env.production` (and `.local` variants), with `.env.local` overriding; real environment variables take precedence over files.\n- During `next build`, every `process.env.NEXT_PUBLIC_X` reference in client code is replaced with the literal string. Dynamic access like `process.env[name]` is not inlined.\n- Non-public variables are undefined in the browser. In Server Components, actions and route handlers they are read at runtime.\n\n```ts\n// lib/env.ts: validate once, fail fast at startup\nimport \"server-only\";\nimport { z } from \"zod\";\n\nexport const env = z.object({\n  DATABASE_URL: z.url(),\n  STRIPE_SECRET_KEY: z.string().startsWith(\"sk_\"),\n  NEXT_PUBLIC_APP_URL: z.url(),\n}).parse(process.env);\n```\n\n**Best practices:**\n- Validate env with a schema so a missing variable fails at boot, not at the first request.\n- Mark server-only modules with `import \"server-only\"` so a client import fails the build.\n- Commit `.env.example` with names only; keep `.env*.local` in `.gitignore`.\n- On Vercel, set per-environment values (Production, Preview, Development).\n\n**Build once, deploy many:** because `NEXT_PUBLIC_` values are baked in, a single Docker image cannot have different public values per environment. Read config on the server at runtime and pass it to Client Components as props, or render it from a Server Component.\n\n**Real-world mistake:** `NEXT_PUBLIC_OPENAI_KEY` used to call an LLM from the browser; the key was scraped from the bundle within days. Move the call to a Server Action or route handler.",
+      "followUps": [
+        "Why does changing a NEXT_PUBLIC_ variable require a rebuild?",
+        "How do you read runtime config in a Docker image built once and deployed to many environments?",
+        "How do you make sure a secret never reaches the client?"
+      ],
+      "mistakes": [
+        "Prefixing a secret with NEXT_PUBLIC_ to \"make it work\" in a Client Component.",
+        "Expecting NEXT_PUBLIC_ values to change at runtime without rebuilding.",
+        "Committing .env.local or real secrets to the repository."
+      ]
+    },
+    {
+      "id": "nextjs-generate-static-params",
+      "level": "mid",
+      "q": "What does generateStaticParams do and how does it interact with dynamic params?",
+      "answer": "**`generateStaticParams` runs at build time and returns the list of dynamic segment values to prerender, for example the slugs of every blog post. Those pages become static HTML. Params not in the list are, by default, rendered on first request and then cached (ISR), or return 404 if you set `dynamicParams = false`.**\n\n```tsx\n// app/blog/[slug]/page.tsx\nexport async function generateStaticParams() {\n  const posts = await getPublishedPosts();\n  return posts.map((p) => ({ slug: p.slug })); // values must be strings\n}\n\nexport default async function Post({ params }: PageProps<\"/blog/[slug]\">) {\n  const { slug } = await params;\n  const post = await getPost(slug); // 'use cache' + cacheTag(`post:${slug}`)\n  if (!post) notFound();\n  return <Article post={post} />;\n}\n```\n\n**Key behaviours:**\n- Runs before layouts and pages at build; `fetch` and `use cache` calls inside are deduplicated with the page's.\n- Nested segments: a child can read the parent's params, or the child can return all combinations (`{ category, product }`).\n- With Cache Components, listed params produce a fully concrete static shell; unlisted ones get the reusable App Shell instantly and are upgraded in the background, then cached for the next visitor.\n- `export const dynamicParams = false` makes unlisted paths 404 (useful for a fixed set like docs versions).\n\n**Scaling strategy:**\n- Prerender only the top N (most visited products, recent posts) and let the long tail render on demand.\n- Invalidate with `cacheTag`/`revalidateTag` when content changes, instead of rebuilding.\n- Returning an empty array prerenders nothing at build but still caches pages after their first visit.\n\n**Trade-offs:** more prerendered pages means longer builds and more storage; on-demand pages make the first visitor wait for a render. Choose the split from traffic data.",
+      "followUps": [
+        "What does dynamicParams = false do?",
+        "How do you handle 100,000 product pages without huge build times?",
+        "How do nested dynamic segments generate params?"
+      ],
+      "mistakes": [
+        "Generating every possible path at build time, making builds slow and brittle.",
+        "Not knowing that unlisted params are rendered on demand by default.",
+        "Returning params with the wrong shape or non-string values."
+      ]
+    }
+  ]
+}

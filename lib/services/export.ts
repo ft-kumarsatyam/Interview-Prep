@@ -5,6 +5,9 @@ import { MockSession } from "@/lib/models/mock";
 import { PlanChange, StudySession } from "@/lib/models/planner";
 import { AptitudeSession, Design, Mastery, PracticeAnswer, PracticeAttempt, Snippet } from "@/lib/models/learning";
 import { ProblemProgress, SubtopicProgress } from "@/lib/models/progress";
+import { Job } from "@/lib/models/jobs";
+import { WebInterviewProgress, WebLessonProgress, WebProjectProgress } from "@/lib/models/webdev";
+import { Resume } from "@/lib/models/resume";
 import { Article, Notification, Settings } from "@/lib/models/system";
 
 export const EXPORT_VERSION = 1;
@@ -16,7 +19,7 @@ export const EXPORT_VERSION = 1;
  */
 export async function exportBackup(now = new Date()) {
   await connectDb();
-  const [settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions] =
+  const [settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress] =
     await Promise.all([
       Settings.find().lean(),
       ProblemProgress.find().lean(),
@@ -37,11 +40,16 @@ export async function exportBackup(now = new Date()) {
       AptitudeSession.find().sort({ createdAt: 1 }).lean(),
       PlanChange.find().sort({ createdAt: 1 }).lean(),
       StudySession.find().sort({ createdAt: 1 }).lean(),
+      Resume.find().sort({ createdAt: 1 }).lean(),
+      Job.find().sort({ createdAt: 1 }).lean(),
+      WebLessonProgress.find().lean(),
+      WebProjectProgress.find().lean(),
+      WebInterviewProgress.find().lean(),
     ]);
   return {
     app: "PrepOS",
     version: EXPORT_VERSION,
     exportedAt: now.toISOString(),
-    collections: { settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions },
+    collections: { settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress },
   };
 }

@@ -3,6 +3,7 @@ import { env } from "@/lib/env";
 import { pace } from "@/lib/domain/pace";
 import { carryOverLine } from "@/lib/domain/recap";
 import { morningDigest, type DigestLink } from "@/lib/domain/reminders";
+import { loadBacklogMail } from "./backlog";
 import { countSolvedMain } from "./dashboard";
 import { listArticles, PREFETCH_CATEGORIES } from "./news";
 import { carryOverFromYesterday } from "./recap";
@@ -19,12 +20,13 @@ const problemLinks = (slugs: readonly (string | null)[]): DigestLink[] =>
 /** Today's morning email, built from the frozen plan, seed content and unread articles. */
 export async function buildMorningDigest(state: Pick<TodayState, "today" | "plan" | "day" | "streak" | "settings">) {
   const { plan, settings, today } = state;
-  const [articles, solvedMain, carried] = await Promise.all([
+  const [articles, solvedMain, carried, backlog] = await Promise.all([
     listArticles({ filter: "unread", categories: PREFETCH_CATEGORIES, limit: READING_LIMIT }),
     countSolvedMain(),
     carryOverFromYesterday(today),
+    loadBacklogMail({ today, plan, settings }),
   ]);
-  return morningDigest({
+  const digest = morningDigest({
     date: today,
     day: state.day,
     streak: state.streak,
@@ -41,6 +43,9 @@ export async function buildMorningDigest(state: Pick<TodayState, "today" | "plan
     })),
     pace: pace(today, solvedMain, mainProblemCount, settings),
     carryOver: carried ? carryOverLine(carried.gap, carried.kind) : null,
+    backlog,
     appUrl: env().APP_URL,
   });
+  // The backlog total rides along so the roast can talk about the real number.
+  return digest ? { ...digest, backlogTotal: backlog.total } : null;
 }

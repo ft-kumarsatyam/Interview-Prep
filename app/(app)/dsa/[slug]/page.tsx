@@ -2,24 +2,21 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Circle, CircleDot, ExternalLink, RefreshCw } from "lucide-react";
-import { LinkCard } from "@/components/shared/link-card";
+import { CheckCircle2, ChevronLeft, ChevronRight, Circle, CircleDot, ExternalLink } from "lucide-react";
 import { ToneBadge } from "@/components/shared/tone-badge";
-import { AskGemini } from "@/components/ai/ask-gemini";
 import { DsaIde } from "@/components/dsa/dsa-ide";
 import { ProblemStatement, ProblemStatementSkeleton } from "@/components/dsa/problem-statement";
 import { ProblemNotes } from "@/components/dsa/problem-notes";
-import { ProblemWorkspace } from "@/components/dsa/problem-workspace";
+import { ScratchIde } from "@/components/dsa/scratch-ide";
+import { SqlIde } from "@/components/dsa/sql-ide";
 import { SolveButton } from "@/components/progress/solve-button";
 import { DifficultyBadge } from "@/components/shared/badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { problemBySlug, problems, testcaseBySlug, type ContentProblem } from "@/lib/content";
-import { dsaPrompt } from "@/lib/domain/ask-prompt";
-import { askSubjectForRef } from "@/lib/quiz/subject";
+import { sqlProblemBySlug } from "@/lib/domain/sql-problems";
 import { formatDate } from "@/lib/plan-clock";
 import { getProblemDetail, type ProblemDetail } from "@/lib/services/problems";
-import { cn } from "@/lib/utils";
 
 export async function generateMetadata({ params }: PageProps<"/dsa/[slug]">): Promise<Metadata> {
   const { slug } = await params;
@@ -33,6 +30,11 @@ function siblingsOf(problem: ContentProblem): ContentProblem[] {
     .toSorted((a, b) => (a.tier === b.tier ? a.order - b.order : a.tier === "core" ? -1 : 1));
 }
 
+/**
+ * Every sheet problem opens in the IDE: problems with generated test cases get the judge (Run/Submit),
+ * SQL-track problems get an in-browser database, and the rest (the JavaScript track included) get a
+ * compiler-style editor and console.
+ */
 export default async function ProblemPage({ params }: PageProps<"/dsa/[slug]">) {
   const { slug } = await params;
   const detail = await getProblemDetail(slug);
@@ -41,6 +43,7 @@ export default async function ProblemPage({ params }: PageProps<"/dsa/[slug]">) 
   const solved = progress?.status === "solved";
   const lastSolved = progress?.solveDates.at(-1);
   const entry = testcaseBySlug.get(slug);
+  const sql = sqlProblemBySlug.get(slug);
 
   const siblings = siblingsOf(problem);
   const position = siblings.findIndex((p) => p.slug === problem.slug);
@@ -48,156 +51,67 @@ export default async function ProblemPage({ params }: PageProps<"/dsa/[slug]">) 
   const next = position >= 0 && position < siblings.length - 1 ? siblings[position + 1] : undefined;
   const backHref = `/dsa?${new URLSearchParams({ ...(problem.track === "main" ? {} : { track: problem.track }), pattern: problem.pattern }).toString()}`;
 
-  if (entry) {
-    return (
-      <div className="space-y-3">
-        <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <Link
-            href={backHref}
-            className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded-md text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-            aria-label={`Back to ${problem.pattern}`}
-          >
-            <ChevronLeft className="size-4" />
-            <span className="hidden max-w-40 truncate sm:inline">{problem.pattern}</span>
-          </Link>
-          <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight">
-            <span className="mr-1.5 font-mono text-sm font-normal text-muted-foreground">{problem.leetcodeId}.</span>
-            {problem.title}
-          </h1>
-          <DifficultyBadge difficulty={problem.difficulty} />
-          <StatusChip progress={progress} lastSolved={lastSolved} />
-          <div className="ml-auto flex shrink-0 items-center gap-1.5">
-            <SolveButton
-              size="sm"
-              target={{ slug: problem.slug, title: problem.title, date: progress?.needsDetails ? lastSolved : undefined }}
-              label={progress?.needsDetails ? "Fill in details" : solved ? "Log re-solve" : "Mark solved"}
-              variant={solved && !progress?.needsDetails ? "secondary" : "outline"}
-            />
-            <Button size="icon" variant="outline" className="size-8" asChild>
-              <a href={problem.url} target="_blank" rel="noreferrer" aria-label="Open on LeetCode" title="Open on LeetCode">
-                <ExternalLink />
-              </a>
-            </Button>
-            {siblings.length > 1 && (
-              <>
-                <span className="tabular hidden font-mono text-xs text-muted-foreground md:inline">
-                  {position + 1}/{siblings.length}
-                </span>
-                <SiblingButton problem={prev} direction="prev" compact />
-                <SiblingButton problem={next} direction="next" compact />
-              </>
-            )}
-          </div>
-        </header>
-        <DsaIde
-          slug={problem.slug}
-          title={problem.title}
-          entry={entry}
-          difficulty={problem.difficulty}
-          pattern={problem.pattern}
-          url={problem.url}
-          revealedCases={progress?.revealedCases ?? []}
-          solveCount={progress?.solveDates.length ?? 0}
-          statement={
-            <Suspense fallback={<ProblemStatementSkeleton />}>
-              <ProblemStatement slug={problem.slug} url={problem.url} plain />
-            </Suspense>
-          }
-          notes={<ProblemNotes slug={problem.slug} initial={progress?.notes ?? ""} />}
-          history={<History progress={progress} solved={solved} />}
-        />
-      </div>
-    );
-  }
+  const shared = {
+    title: problem.title,
+    difficulty: problem.difficulty,
+    pattern: problem.pattern,
+    url: problem.url,
+    solveCount: progress?.solveDates.length ?? 0,
+    statement: (
+      <Suspense fallback={<ProblemStatementSkeleton />}>
+        <ProblemStatement slug={problem.slug} url={problem.url} plain />
+      </Suspense>
+    ),
+    notes: <ProblemNotes slug={problem.slug} initial={progress?.notes ?? ""} />,
+    history: <History progress={progress} solved={solved} />,
+  };
 
   return (
-    <div className="space-y-5">
-      <nav className="flex items-center justify-between gap-2" aria-label="Problem navigation">
-        <Link href={backHref} className="inline-flex min-h-9 min-w-0 items-center gap-1 rounded-md text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-          <ChevronLeft className="size-4 shrink-0" />
-          <span className="shrink-0">DSA</span>
-          <span aria-hidden>/</span>
-          <span className="truncate">{problem.pattern}</span>
+    <div className="space-y-3">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Link
+          href={backHref}
+          className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded-md text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          aria-label={`Back to ${problem.pattern}`}
+        >
+          <ChevronLeft className="size-4" />
+          <span className="hidden max-w-40 truncate sm:inline">{problem.pattern}</span>
         </Link>
-        {siblings.length > 1 && (
-          <div className="flex shrink-0 items-center gap-1">
-            <span className="tabular mr-1 font-mono text-xs text-muted-foreground">
-              {position + 1}/{siblings.length}
-            </span>
-            <SiblingButton problem={prev} direction="prev" />
-            <SiblingButton problem={next} direction="next" />
-          </div>
-        )}
-      </nav>
-
-      <header className="space-y-4">
-        <div>
-          <p className="font-mono text-xs text-muted-foreground">
-            LC #{problem.leetcodeId} · {problem.track === "main" ? `${problem.tier === "core" ? "Core" : "Extended"} · #${problem.order}` : problem.track.toUpperCase()}
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-balance sm:text-3xl">{problem.title}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <DifficultyBadge difficulty={problem.difficulty} />
-            <StatusChip progress={progress} lastSolved={lastSolved} />
-            {progress?.source === "leetcode" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
-                <RefreshCw className="size-3" aria-hidden /> synced from LeetCode
-              </span>
-            )}
-            {progress?.nextReviewAt && (
-              <span className="inline-flex items-center gap-1 text-xs">
-                <CalendarClock className="size-3.5" aria-hidden /> review {formatDate(progress.nextReviewAt)}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap [&>button]:w-full sm:[&>button]:w-auto [&>*:first-child]:col-span-2">
+        <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight">
+          <span className="mr-1.5 font-mono text-sm font-normal text-muted-foreground">{problem.leetcodeId}.</span>
+          {problem.title}
+        </h1>
+        <DifficultyBadge difficulty={problem.difficulty} />
+        <StatusChip progress={progress} lastSolved={lastSolved} />
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <SolveButton
+            size="sm"
             target={{ slug: problem.slug, title: problem.title, date: progress?.needsDetails ? lastSolved : undefined }}
-            label={progress?.needsDetails ? "Fill in details" : solved ? "Log a re-solve" : "Mark solved"}
-            variant={solved && !progress?.needsDetails ? "secondary" : "default"}
+            label={progress?.needsDetails ? "Fill in details" : solved ? "Log re-solve" : "Mark solved"}
+            variant={solved && !progress?.needsDetails ? "secondary" : "outline"}
           />
-          <Button size="lg" variant="outline" asChild>
-            <a href={problem.url} target="_blank" rel="noreferrer">
-              <span className="sm:hidden">LeetCode</span>
-              <span className="hidden sm:inline">Open on LeetCode</span>
+          <Button size="icon" variant="outline" className="size-8" asChild>
+            <a href={problem.url} target="_blank" rel="noreferrer" aria-label="Open on LeetCode" title="Open on LeetCode">
               <ExternalLink />
             </a>
           </Button>
-          <AskGemini
-            subject={askSubjectForRef(problem.slug)}
-            label="Ask Gemini"
-            className="h-9 w-full sm:w-auto"
-            prompt={dsaPrompt({ title: problem.title, difficulty: problem.difficulty, pattern: problem.pattern, code: "(I haven't written anything yet. Walk me through how to think about it.)" })}
-          />
+          {siblings.length > 1 && (
+            <>
+              <span className="tabular hidden font-mono text-xs text-muted-foreground md:inline">
+                {position + 1}/{siblings.length}
+              </span>
+              <SiblingButton problem={prev} direction="prev" />
+              <SiblingButton problem={next} direction="next" />
+            </>
+          )}
         </div>
       </header>
-
-      <ProblemWorkspace
-        solveCount={progress?.solveDates.length ?? 0}
-        statement={
-          <Suspense fallback={<ProblemStatementSkeleton />}>
-            <ProblemStatement slug={problem.slug} url={problem.url} />
-          </Suspense>
-        }
-        notes={
-          <Card>
-            <CardHeader>
-              <CardTitle>Notes</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ProblemNotes slug={problem.slug} initial={progress?.notes ?? ""} />
-            </CardContent>
-          </Card>
-        }
-        history={<History progress={progress} solved={solved} />}
-      />
-
-      {(prev || next) && (
-        <nav className="grid gap-2 border-t pt-5 sm:grid-cols-2" aria-label={`More ${problem.pattern} problems`}>
-          {prev ? <SiblingCard problem={prev} direction="prev" /> : <span className="hidden sm:block" />}
-          {next && <SiblingCard problem={next} direction="next" />}
-        </nav>
+      {entry ? (
+        <DsaIde slug={problem.slug} entry={entry} revealedCases={progress?.revealedCases ?? []} {...shared} />
+      ) : sql ? (
+        <SqlIde problem={sql} {...shared} />
+      ) : (
+        <ScratchIde slug={problem.slug} {...shared} />
       )}
     </div>
   );
@@ -219,38 +133,22 @@ function StatusChip({ progress, lastSolved }: { progress: ProblemDetail["progres
   );
 }
 
-function SiblingButton({ problem, direction, compact }: { problem?: ContentProblem; direction: "prev" | "next"; compact?: boolean }) {
+function SiblingButton({ problem, direction }: { problem?: ContentProblem; direction: "prev" | "next" }) {
   const Icon = direction === "prev" ? ChevronLeft : ChevronRight;
   const label = direction === "prev" ? "Previous problem" : "Next problem";
-  const size = compact ? "icon" : "icon-lg";
-  const cls = compact ? "size-8" : undefined;
   if (!problem) {
     return (
-      <Button variant="outline" size={size} className={cls} disabled aria-label={label}>
+      <Button variant="outline" size="icon" className="size-8" disabled aria-label={label}>
         <Icon />
       </Button>
     );
   }
   return (
-    <Button variant="outline" size={size} className={cls} asChild>
+    <Button variant="outline" size="icon" className="size-8" asChild>
       <Link href={`/dsa/${problem.slug}`} aria-label={`${label}: ${problem.title}`} title={problem.title}>
         <Icon />
       </Link>
     </Button>
-  );
-}
-
-function SiblingCard({ problem, direction }: { problem: ContentProblem; direction: "prev" | "next" }) {
-  const isNext = direction === "next";
-  return (
-    <LinkCard href={`/dsa/${problem.slug}`} className={cn("min-h-16", isNext && "flex-row-reverse text-right sm:col-start-2")}>
-      {isNext ? <ChevronRight className="size-5 shrink-0 text-muted-foreground group-hover:text-primary" /> : <ChevronLeft className="size-5 shrink-0 text-muted-foreground group-hover:text-primary" />}
-      <span className="min-w-0 flex-1">
-        <span className="block text-xs text-muted-foreground">{isNext ? "Next in pattern" : "Previous"}</span>
-        <span className="block truncate font-medium group-hover:text-primary">{problem.title}</span>
-      </span>
-      <DifficultyBadge difficulty={problem.difficulty} />
-    </LinkCard>
   );
 }
 
@@ -278,7 +176,7 @@ function History({ progress, solved }: { progress: ProblemDetail["progress"]; so
               </div>
             </dl>
           ) : (
-            <p className="text-sm text-muted-foreground">Not solved yet. Read the problem, solve it in JavaScript, then tap Mark solved.</p>
+            <p className="text-sm text-muted-foreground">Not solved yet. Solve it here, submit it on LeetCode, then tap Mark solved.</p>
           )}
         </CardContent>
       </Card>

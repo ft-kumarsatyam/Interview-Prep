@@ -1,15 +1,11 @@
 import "server-only";
-import { lookup } from "node:dns/promises";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import { fetchWithPolicy } from "@/lib/http";
-import { isPrivateAddress, isSafeUrl } from "@/lib/domain/article";
+import { fetchSafe, SafeFetchError } from "@/lib/http-safe";
 import { firstImage, htmlToMarkdown } from "./markdown";
 
 const TIMEOUT_MS = 10_000;
 const MAX_BYTES = 3_000_000;
-const MAX_REDIRECTS = 3;
-const USER_AGENT = "Mozilla/5.0 (compatible; PrepOS/1.0; personal reader)";
 
 export interface Extracted {
   markdown: string;
@@ -20,65 +16,15 @@ export type Extractor = (url: string) => Promise<Extracted>;
 
 export class ExtractError extends Error {}
 
-/** Every address the host resolves to must be public; blocks SSRF into the VPC or localhost. */
-async function assertPublicHost(url: URL): Promise<void> {
-  if (!isSafeUrl(url.toString())) throw new ExtractError("Blocked URL");
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  const answers = await lookup(host, { all: true, verbatim: true });
-  if (!answers.length || answers.some((a) => isPrivateAddress(a.address))) throw new ExtractError("Blocked address");
-}
-
-async function readCapped(res: Response): Promise<string> {
-  const declared = Number(res.headers.get("content-length") ?? 0);
-  if (declared > MAX_BYTES) throw new ExtractError("Page too large");
-  if (!res.body) return "";
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > MAX_BYTES) {
-      await reader.cancel();
-      throw new ExtractError("Page too large");
-    }
-    chunks.push(value);
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks));
-}
-
-/** Manual redirects so each hop goes through the SSRF check again. */
+/** Fetches the page through the shared SSRF-safe fetcher and keeps extractor-flavoured errors. */
 async function fetchHtml(start: string): Promise<{ html: string; finalUrl: string }> {
-  let url = new URL(start);
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    await assertPublicHost(url);
-    // Each hop gets its own timeout (it also covers reading that hop's body), so redirects don't eat one shared budget.
-    const res = await fetchWithPolicy(url, {
-      redirect: "manual",
-      timeoutMs: TIMEOUT_MS,
-      retries: 0,
-      headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5" },
-    });
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      await res.body?.cancel();
-      if (!location) throw new ExtractError(`HTTP ${res.status} without Location`);
-      url = new URL(location, url);
-      continue;
-    }
-    if (!res.ok) {
-      await res.body?.cancel();
-      throw new ExtractError(`HTTP ${res.status}`);
-    }
-    const type = res.headers.get("content-type") ?? "";
-    if (!/html/i.test(type)) {
-      await res.body?.cancel();
-      throw new ExtractError(`Not an HTML page (${type.split(";")[0] || "unknown"})`);
-    }
-    return { html: await readCapped(res), finalUrl: url.toString() };
+  try {
+    const res = await fetchSafe(start, { timeoutMs: TIMEOUT_MS, maxBytes: MAX_BYTES, accept: /html/i, headers: { accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5" } });
+    return { html: res.text, finalUrl: res.finalUrl };
+  } catch (err) {
+    if (err instanceof SafeFetchError) throw new ExtractError(err.message.replace("Response too large", "Page too large").replace("Unexpected content type", "Not an HTML page"));
+    throw err;
   }
-  throw new ExtractError("Too many redirects");
 }
 
 function metaImage(document: Document, base: string): string | null {

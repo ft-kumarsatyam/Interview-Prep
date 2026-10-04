@@ -1,0 +1,201 @@
+{
+  "track": {
+    "id": "http",
+    "name": "HTTP & networking",
+    "blurb": "How a request really travels from the browser to your server and back: protocols, caching, cookies, CORS and real-time transports."
+  },
+  "questions": [
+    {
+      "id": "http-type-url-what-happens",
+      "level": "junior",
+      "q": "What happens when you type a URL into the browser and press Enter?",
+      "answer": "**The browser resolves the hostname to an IP with DNS, opens a connection (TCP + TLS, or QUIC for HTTP/3), sends an HTTP request, and then parses the HTML response, fetching CSS, JS and images it references before painting the page.** Caches can short-circuit almost every step.\n\n**1. Parse the input.** The browser decides whether it is a URL or a search. If the domain is on the HSTS list it upgrades `http://` to `https://` before sending anything.\n\n**2. Check caches.** A service worker may answer the request directly. Otherwise the HTTP cache may hold a fresh copy and no network is needed at all.\n\n**3. DNS.** Browser cache, OS cache, then the configured resolver, which walks root, TLD and authoritative servers. The answer (A/AAAA, maybe an HTTPS record advertising HTTP/3) is cached for its TTL.\n\n**4. Connect.**\n- HTTP/1.1 and HTTP/2: TCP three-way handshake, then a TLS 1.3 handshake (one extra round trip). ALPN picks `h2` or `http/1.1`.\n- HTTP/3: QUIC over UDP combines transport and TLS 1.3 into one round trip (zero with 0-RTT resumption).\n\n**5. Request and response.**\n\n```http\nGET / HTTP/2\nHost: example.com\nAccept: text/html\nCookie: session=abc\n\nHTTP/2 200\ncontent-type: text/html; charset=utf-8\ncache-control: no-cache\n```\n\nThe request may pass through a CDN edge, load balancer and reverse proxy before reaching the app server.\n\n**6. Render.** The HTML is parsed incrementally into the DOM. CSS builds the CSSOM (render-blocking), synchronous scripts block parsing, the preload scanner fetches subresources early. Then style, layout, paint and composite produce pixels.\n\n**Real-world note:** on a repeat visit DNS, the connection (if kept alive) and most assets come from caches, which is why first loads and repeat loads perform so differently.",
+      "followUps": [
+        "Where can the browser skip steps on a second visit to the same site?",
+        "How does HTTP/3 change the connection setup part?",
+        "What is the difference between the browser cache and a CDN cache here?"
+      ],
+      "mistakes": [
+        "Skipping DNS or TLS entirely, or saying TLS happens before the TCP connection exists.",
+        "Stopping at \"the server returns HTML\" without mentioning parsing, subresources and rendering.",
+        "Ignoring caches (HSTS, DNS cache, HTTP cache, service worker) that let the browser skip whole steps."
+      ]
+    },
+    {
+      "id": "http-methods-safe-idempotent",
+      "level": "junior",
+      "q": "Which HTTP methods are safe and which are idempotent, and why does it matter?",
+      "answer": "**Safe methods (GET, HEAD, OPTIONS) must not change server state. Idempotent methods (the safe ones plus PUT and DELETE) can be repeated and leave the server in the same state as doing them once. POST and usually PATCH are neither.** This decides what clients, proxies and browsers may retry or prefetch automatically.\n\n**Why it matters:**\n- Browsers, link prefetchers and crawlers will happily issue GETs, so a GET that deletes data will eventually delete data.\n- HTTP clients and proxies retry idempotent requests after a dropped connection. Retrying a POST can double-charge a card.\n- Caches only store responses to safe methods (mainly GET/HEAD).\n\n**Idempotent is about state, not responses.** `DELETE /orders/7` returns 204 the first time and maybe 404 the second, but the order is gone either way, so it is idempotent.\n\n| Method | Safe | Idempotent |\n|---|---|---|\n| GET, HEAD, OPTIONS | yes | yes |\n| PUT, DELETE | no | yes |\n| POST | no | no |\n| PATCH | no | not guaranteed |\n\n**Making POST retry-safe:** use an idempotency key. The client generates a unique key per logical operation and the server stores the result under it.\n\n```http\nPOST /payments HTTP/1.1\nIdempotency-Key: 6f1c2a9e-4b7d-4e0a-9d61-3c0f2b8e9a11\nContent-Type: application/json\n\n{\"amount\": 4999, \"currency\": \"INR\"}\n```\n\nIf the same key arrives again the server returns the stored response instead of charging again. Stripe's API works exactly this way.",
+      "followUps": [
+        "How would you make a POST that creates a payment safe to retry?",
+        "Is DELETE on an already-deleted resource required to return the same status?",
+        "Why should a GET never change server state?"
+      ],
+      "mistakes": [
+        "Thinking idempotent means \"returns the same response\"; it means the server state ends up the same.",
+        "Saying PATCH is always idempotent; it depends on the patch (e.g. \"increment by 1\" is not).",
+        "Using GET for actions like /logout or /delete, which crawlers and prefetchers will trigger."
+      ]
+    },
+    {
+      "id": "http-status-codes-that-matter",
+      "level": "junior",
+      "q": "Walk me through the HTTP status codes you use most and when you pick each one.",
+      "answer": "**The first digit is the category: 2xx success, 3xx redirect, 4xx client error, 5xx server error. Picking the right code lets browsers, caches, monitoring and clients behave correctly without reading the body.**\n\n**Success:**\n- `200 OK`, `201 Created` (with a `Location` header), `204 No Content` for a delete or update with no body.\n\n**Redirects and caching:**\n- `301` permanent / `302` temporary. Browsers may change POST to GET on these; `308` and `307` are the method-preserving versions.\n- `304 Not Modified`: the reply to a conditional request (`If-None-Match`); the cached copy is still valid, no body sent.\n\n**Client errors:**\n- `400` malformed request, `422 Unprocessable Content` well-formed but fails validation.\n- `401 Unauthorized` really means unauthenticated: no or invalid credentials.\n- `403 Forbidden`: we know who you are, you are not allowed.\n- `404` not found (also used to hide that a private resource exists).\n- `409 Conflict`: state conflict, e.g. duplicate email or a stale version in optimistic locking.\n- `429 Too Many Requests`: rate limited, ideally with `Retry-After`.\n\n**Server errors:**\n- `500` unexpected bug, `502` bad gateway (upstream returned garbage), `503` temporarily unavailable or overloaded, `504` upstream timeout.\n\n```http\nHTTP/1.1 429 Too Many Requests\nRetry-After: 30\nContent-Type: application/problem+json\n\n{\"type\":\"about:blank\",\"title\":\"Rate limit exceeded\",\"status\":429}\n```\n\n**Gotcha:** returning `200` with `{\"error\": ...}` means CDNs may cache the error, uptime checks stay green and generic clients treat failures as success. Use a consistent error body like RFC 9457 problem details alongside the right code.",
+      "followUps": [
+        "When would you return 404 instead of 403 for a resource the user cannot access?",
+        "What should a client do when it receives a 503 with Retry-After?",
+        "What is the difference between 307/308 and 301/302?"
+      ],
+      "mistakes": [
+        "Mixing up 401 (not authenticated) and 403 (authenticated but not allowed).",
+        "Returning 200 with an error body, which breaks caching, monitoring and client error handling.",
+        "Using 500 for validation errors that are the client's fault."
+      ]
+    },
+    {
+      "id": "http-versions-1-2-3",
+      "level": "mid",
+      "q": "What are the differences between HTTP/1.1, HTTP/2 and HTTP/3?",
+      "answer": "**All three have the same semantics (methods, headers, status codes); they differ in how bytes travel. HTTP/1.1 is text with one request at a time per connection, HTTP/2 multiplexes many binary streams over one TCP connection, and HTTP/3 does the same over QUIC on UDP, removing TCP head-of-line blocking and speeding up connection setup.**\n\n**HTTP/1.1:**\n- Text protocol, keep-alive connections, but only one outstanding response per connection (pipelining never worked in practice).\n- Browsers open about 6 connections per origin to parallelise, which led to hacks: domain sharding, sprites, bundling everything.\n\n**HTTP/2:**\n- Binary framing, many concurrent streams on one connection, HPACK header compression.\n- Fixes application-level head-of-line blocking, but all streams share one TCP byte stream, so one lost packet stalls every stream until it is retransmitted.\n- Server push existed but was rarely a win and browsers removed it; `103 Early Hints` replaced it.\n\n**HTTP/3:**\n- Runs on QUIC (UDP). Each stream is independently reliable, so a lost packet only stalls its own stream.\n- TLS 1.3 is built in; new connections take 1 RTT and resumed ones can use 0-RTT.\n- Connection IDs survive network changes (Wi-Fi to mobile) without reconnecting.\n- QPACK header compression.\n\n```text\nHTTP/1.1  TCP 1 RTT + TLS 1 RTT + request\nHTTP/2    TCP 1 RTT + TLS 1 RTT + request  (multiplexed)\nHTTP/3    QUIC+TLS 1 RTT + request         (0-RTT on resume)\n```\n\n**Discovery:** browsers learn a server supports HTTP/3 through the `Alt-Svc` header or a DNS HTTPS record, then switch on later requests.\n\n**Trade-offs:** some networks block or throttle UDP, so browsers race and fall back to HTTP/2. QUIC also uses more CPU on servers. The biggest wins are on lossy mobile networks.",
+      "followUps": [
+        "Why did domain sharding and sprite sheets become anti-patterns with HTTP/2?",
+        "Why is HTTP/2 server push no longer used?",
+        "When might HTTP/3 perform worse than HTTP/2?"
+      ],
+      "mistakes": [
+        "Saying HTTP/2 removed head-of-line blocking completely; it still exists at the TCP layer.",
+        "Thinking HTTP/3 changes request semantics; methods, headers and status codes are the same.",
+        "Claiming HTTP/3 runs over TCP or that it is optional to encrypt."
+      ]
+    },
+    {
+      "id": "http-caching-headers",
+      "level": "mid",
+      "q": "Explain HTTP caching: Cache-Control, ETag, max-age vs s-maxage, stale-while-revalidate and immutable.",
+      "answer": "**`Cache-Control` says who may cache a response and for how long; validators like `ETag` let a cache cheaply check whether a stale copy is still good. Fresh responses are served without any request; stale ones are revalidated and come back as `304 Not Modified` if unchanged.**\n\n**Freshness directives:**\n- `max-age=N`: fresh for N seconds in any cache.\n- `s-maxage=N`: overrides max-age for shared caches (CDNs, proxies) only. Common pattern: short browser TTL, longer CDN TTL that you purge on deploy.\n- `stale-while-revalidate=N`: after expiry, serve the stale copy instantly for up to N seconds while refetching in the background.\n- `immutable`: the content at this URL never changes, so do not revalidate even on reload. Use only with hashed filenames.\n\n**Who may store it:**\n- `public` vs `private` (browser only, never a CDN).\n- `no-cache`: may store, must revalidate every time.\n- `no-store`: never write it anywhere (banking pages, sensitive data).\n\n**Validation:**\n\n```http\nHTTP/1.1 200 OK\nCache-Control: max-age=60\nETag: \"v42\"\n\nGET /api/menu HTTP/1.1\nIf-None-Match: \"v42\"\n\nHTTP/1.1 304 Not Modified\n```\n\n`Last-Modified` / `If-Modified-Since` is the older date-based version.\n\n**Typical setup:**\n\n```http\n# /assets/app.3f9a1c.js\nCache-Control: public, max-age=31536000, immutable\n# /index.html\nCache-Control: no-cache\n# /api/me\nCache-Control: private, no-store\n```\n\n**Gotchas:** `Vary: Accept-Encoding` keeps gzip and brotli copies separate; `Vary: Cookie` effectively disables shared caching. Weak ETags (`W/\"...\"`) mean semantically equal, not byte equal.",
+      "followUps": [
+        "What is the difference between no-cache and no-store?",
+        "How would you cache a personalised page safely?",
+        "How does Vary interact with caching?"
+      ],
+      "mistakes": [
+        "Believing no-cache means \"do not cache\"; it means \"always revalidate before use\".",
+        "Putting long max-age on HTML or unhashed URLs, so users get stuck on old versions.",
+        "Forgetting private on per-user responses, letting a shared cache serve one user's data to another."
+      ]
+    },
+    {
+      "id": "http-cdn-cache-keys",
+      "level": "senior",
+      "q": "How does a CDN decide whether it can serve a cached response, and what can go wrong with cache keys?",
+      "answer": "**A CDN looks up the request in its edge cache using a cache key, usually host + path + query string, plus any headers listed in `Vary` or the CDN config. If the stored entry matches and is fresh by `Cache-Control`/`s-maxage`, it is served from the edge; otherwise the edge goes to a shield or the origin.**\n\n**What goes into the key:**\n- By default: scheme, host, path, query string.\n- Optional: specific headers (`Accept-Language`, device type), cookies, geo country.\n- Every extra dimension multiplies the number of variants and lowers the hit ratio.\n\n**Common mistakes:**\n- **Too broad a key:** tracking params like `?utm_source=` create a new cache entry per campaign. Strip or normalise them.\n- **Too narrow a key:** the response varies on something not in the key. A page rendered with the user's cookie and cached publicly shows user A's name to user B.\n- **Cache poisoning:** an unkeyed header (say `X-Forwarded-Host`) changes the response, an attacker sends a malicious value, and the poisoned response is cached for everyone. Fix: never let unkeyed inputs affect output.\n- **Caching errors:** a 500 or 404 cached for an hour. Use short TTLs for error codes.\n\n**Invalidation strategies:**\n- Hashed filenames for static assets, so you never need to purge them.\n- Purge by URL or by surrogate key / cache tag after content changes.\n\n```http\nHTTP/1.1 200 OK\nCache-Control: public, max-age=0, s-maxage=300, stale-while-revalidate=60\nCache-Tag: product-123, category-shoes\nVary: Accept-Encoding\n```\n\nEditing product 123 purges the `product-123` tag, clearing every page that shows it.\n\n**Real-world example:** for per-country pricing, add the CDN's country header to the key (only that, not the full IP or cookies) so there are about 200 variants instead of one per user.",
+      "followUps": [
+        "How do you invalidate content across a CDN after a deploy?",
+        "What is cache poisoning and how do you prevent it?",
+        "How would you cache an API that has per-country pricing?"
+      ],
+      "mistakes": [
+        "Assuming the CDN ignores query strings or headers by default; behaviour differs per provider and per config.",
+        "Caching responses that depend on cookies or auth without including them in the key, leaking private data.",
+        "Only purging HTML after a deploy and forgetting that unhashed assets stay stale."
+      ]
+    },
+    {
+      "id": "http-cors-preflight",
+      "level": "mid",
+      "q": "What is CORS, and when does the browser send a preflight request?",
+      "answer": "**CORS (Cross-Origin Resource Sharing) is how a server tells the browser which other origins may read its responses. The same-origin policy blocks cross-origin reads by default; CORS headers relax it. For non-simple requests the browser first sends an `OPTIONS` preflight to ask permission.**\n\n**Origin** = scheme + host + port. `https://app.example.com` and `https://api.example.com` are different origins.\n\n**Simple requests skip the preflight:** GET, HEAD or POST with only safelisted headers and a `Content-Type` of `text/plain`, `multipart/form-data` or `application/x-www-form-urlencoded`. The request is sent, and the browser hides the response if the CORS headers do not allow it.\n\n**Preflight is triggered by:** PUT/PATCH/DELETE, `Content-Type: application/json`, or custom headers like `Authorization`.\n\n```http\nOPTIONS /orders HTTP/1.1\nOrigin: https://app.example.com\nAccess-Control-Request-Method: PATCH\nAccess-Control-Request-Headers: authorization, content-type\n\nHTTP/1.1 204 No Content\nAccess-Control-Allow-Origin: https://app.example.com\nAccess-Control-Allow-Methods: GET, POST, PATCH\nAccess-Control-Allow-Headers: authorization, content-type\nAccess-Control-Allow-Credentials: true\nAccess-Control-Max-Age: 600\nVary: Origin\n```\n\n**Key rules:**\n- With cookies (`credentials: \"include\"`) the server must echo a specific origin, not `*`, and send `Allow-Credentials: true`.\n- Use an allow-list; never blindly reflect `Origin`.\n- Add `Vary: Origin` so caches do not serve one origin's headers to another.\n- `Access-Control-Max-Age` caches the preflight result.\n\n**Important:** CORS is not access control. Attackers can call your API from a server or curl. It only stops a malicious website from reading responses in a victim's browser. Authentication and authorisation still have to happen on the server.\n\n**Common fix:** serve the API under the same origin (e.g. `/api` via a reverse proxy) and CORS disappears entirely.",
+      "followUps": [
+        "Why can't you use Access-Control-Allow-Origin: * with credentials?",
+        "Does CORS protect your server from attackers calling your API directly?",
+        "How do you reduce the number of preflight requests?"
+      ],
+      "mistakes": [
+        "Thinking CORS is server-side protection; it is the browser relaxing the same-origin policy, and curl ignores it.",
+        "Reflecting any Origin header back with credentials allowed, which opens the API to every site.",
+        "Trying to fix CORS errors on the frontend instead of in the server's response headers."
+      ]
+    },
+    {
+      "id": "http-cookies-attributes",
+      "level": "mid",
+      "q": "What do the cookie attributes HttpOnly, Secure, SameSite, Domain, Path and the __Host- prefix do?",
+      "answer": "**Cookie attributes control who can read a cookie and on which requests the browser sends it. For a session cookie the safe default is `HttpOnly; Secure; SameSite=Lax; Path=/` with the `__Host-` prefix and no `Domain`.**\n\n```http\nSet-Cookie: __Host-session=9f2c...; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=604800\n```\n\n**Attributes:**\n- **HttpOnly:** `document.cookie` cannot read it, so an XSS bug cannot steal the token (it can still make requests as the user, though).\n- **Secure:** only sent over HTTPS.\n- **SameSite:** controls cross-site sending.\n  - `Strict`: never sent on cross-site requests, even when clicking a link from another site (you appear logged out).\n  - `Lax` (browser default): sent on top-level GET navigations, not on cross-site POSTs, iframes or fetches. Blocks classic CSRF.\n  - `None`: always sent; requires `Secure`. Needed for third-party embeds, and increasingly blocked by third-party cookie restrictions.\n- **Domain:** omit it and the cookie is host-only. Setting `Domain=example.com` sends it to every subdomain, so a compromised `blog.example.com` can read or overwrite it.\n- **Path:** limits which paths receive it. Not a security boundary, just scoping.\n- **Max-Age / Expires:** without them it is a session cookie, cleared when the browser session ends.\n\n**Prefixes:**\n- `__Secure-`: must be set with `Secure`.\n- `__Host-`: must be `Secure`, `Path=/` and have no `Domain`. This locks the cookie to the exact host and prevents subdomains from overwriting it.\n\n**Site vs origin:** SameSite uses \"site\" (scheme + registrable domain), so `a.example.com` and `b.example.com` are same-site. That is why SameSite does not protect you from a hostile subdomain.\n\n**Size limits:** about 4 KB per cookie, and every cookie is sent on every matching request, so keep them small.",
+      "followUps": [
+        "What is the difference between SameSite=Lax and Strict in practice?",
+        "When do you need SameSite=None, and what does it require?",
+        "Why is setting Domain on a cookie often a mistake?"
+      ],
+      "mistakes": [
+        "Thinking HttpOnly prevents the cookie from being sent; it only hides it from JavaScript.",
+        "Setting Domain=example.com, which shares the cookie with every subdomain including untrusted ones.",
+        "Treating SameSite as a complete CSRF defence; same-site subdomains and GET side effects still bite."
+      ]
+    },
+    {
+      "id": "http-tls-handshake",
+      "level": "mid",
+      "q": "Explain the TLS 1.3 handshake at a high level. How does the browser know it's talking to the real server?",
+      "answer": "**TLS 1.3 does an ephemeral Diffie-Hellman key exchange in one round trip to agree a shared secret, and the server proves its identity with a certificate chain signed by a CA the browser trusts. After that, all traffic is encrypted with symmetric keys derived from the shared secret.**\n\n```text\nClient                                  Server\nClientHello  (ciphers, key share, SNI, ALPN) -->\n            <-- ServerHello (key share)\n                {EncryptedExtensions, Certificate,\n                 CertificateVerify, Finished}\n{Finished} + first HTTP request -->\n```\n\n**Steps:**\n- **ClientHello** includes supported cipher suites, an ECDHE key share (guessing the group, usually X25519 or a hybrid post-quantum group), SNI (which hostname) and ALPN (`h2`, `http/1.1`).\n- **ServerHello** returns its key share. Both sides now compute the same secret; everything after this is encrypted, including the certificate.\n- **Certificate + CertificateVerify:** the server sends its chain and signs the handshake transcript with its private key, proving it owns the certificate.\n- **Finished** messages confirm nobody tampered with the handshake.\n\n**How the browser trusts the server:**\n- The leaf certificate's name matches the hostname.\n- The chain leads to a root CA in the browser/OS trust store and every signature checks out.\n- It is not expired or revoked, and it appears in Certificate Transparency logs.\n\n**Forward secrecy:** the DH keys are ephemeral, so stealing the server's private key later cannot decrypt recorded traffic. TLS 1.3 removed static RSA key exchange to guarantee this.\n\n**0-RTT resumption:** a returning client can send data in its first flight using a pre-shared key. It is fast but replayable, so only use it for idempotent requests like GET.\n\n**Practical points:** terminate TLS at the CDN or load balancer, use automatic certificates (Let's Encrypt, ACME), and enable HSTS so users never hit plain HTTP.",
+      "followUps": [
+        "What is forward secrecy and why does TLS 1.3 require it?",
+        "What risk does 0-RTT resumption introduce?",
+        "What is certificate transparency?"
+      ],
+      "mistakes": [
+        "Saying the data is encrypted with the server's public key; RSA key transport was removed in TLS 1.3.",
+        "Confusing encryption with authentication; without certificate validation encryption is worthless against MITM.",
+        "Claiming TLS 1.3 takes two round trips; full handshakes take one."
+      ]
+    },
+    {
+      "id": "http-websockets-sse-polling",
+      "level": "mid",
+      "q": "Compare WebSockets, Server-Sent Events and long polling. How do you choose?",
+      "answer": "**Long polling holds an HTTP request open until there is data, then the client immediately asks again. SSE is a single long-lived HTTP response streaming text events from server to client. WebSockets upgrade the connection to a full-duplex message channel. Pick the simplest one that fits the direction and frequency of messages.**\n\n**Long polling:**\n- Works everywhere, plain HTTP.\n- Overhead of a new request per message batch; latency spikes between polls. A fallback today.\n\n**Server-Sent Events:**\n- `EventSource` in the browser, `Content-Type: text/event-stream` on the server.\n- One direction (server to client); the client sends data with normal requests.\n- Built-in automatic reconnect and `Last-Event-ID` so the server can resend missed events.\n- Plays well with HTTP/2 (multiplexed, no 6-connection limit), proxies and auth cookies.\n\n```http\nHTTP/1.1 200 OK\nContent-Type: text/event-stream\nCache-Control: no-cache\n\nid: 41\nevent: job\ndata: {\"title\":\"Backend engineer\"}\n\n```\n\n**WebSockets:**\n- `Upgrade: websocket` handshake, then binary or text frames both ways with tiny overhead.\n- Best for chat, multiplayer, collaborative editing: high-frequency, bidirectional traffic.\n- You implement reconnection, heartbeats (ping/pong), back-pressure and auth yourself.\n\n**How to choose:**\n- Notifications, live feeds, progress, streaming LLM tokens: SSE.\n- Bidirectional, low-latency: WebSockets.\n- Infrequent updates or a very restricted environment: polling.\n\n**Scaling concerns:** every connection is pinned to one server. To broadcast you need a pub/sub layer (Redis, NATS, a managed service) so any instance can fan out messages. Deploys drop all connections, so clients must reconnect with jitter. Serverless functions with short timeouts suit short SSE streams or a managed real-time service rather than long-lived sockets.",
+      "followUps": [
+        "How do you scale WebSockets across multiple server instances?",
+        "How does SSE handle reconnection and missed events?",
+        "Why can serverless platforms struggle with WebSockets?"
+      ],
+      "mistakes": [
+        "Defaulting to WebSockets when updates only flow server to client and SSE would be simpler.",
+        "Forgetting reconnection, heartbeats and resuming from the last event after a dropped connection.",
+        "Ignoring that every open connection is held state on a server, which affects scaling and deploys."
+      ]
+    },
+    {
+      "id": "http-rest-design-pagination",
+      "level": "mid",
+      "q": "How do you design a REST API's resources, and how would you implement pagination?",
+      "answer": "**Model the API as nouns (resources) with HTTP methods as the verbs, use consistent status codes and error bodies, and paginate every list. For large or frequently changing data use cursor (keyset) pagination rather than offset.**\n\n**Resource design:**\n- Collections and items: `GET /orders`, `POST /orders`, `GET /orders/42`, `PATCH /orders/42`, `DELETE /orders/42`.\n- Nest only for clear ownership: `GET /orders/42/items`. Avoid deep nesting.\n- Filtering, sorting and sparse fields in the query string: `?status=paid&sort=-createdAt&fields=id,total`.\n- Actions that do not fit CRUD become sub-resources: `POST /orders/42/refunds`.\n- Consistent errors (RFC 9457 problem details), idempotency keys on creates, and an explicit versioning strategy (`/v1` or a header).\n\n**Offset pagination:** `?limit=20&offset=40`.\n- Simple, supports jumping to page N.\n- `OFFSET 100000` makes the database scan and discard 100k rows, and inserts during browsing shift rows so users see duplicates or miss items.\n\n**Cursor pagination:** return an opaque cursor encoding the last row's sort key.\n\n```http\nGET /orders?limit=20&cursor=eyJjIjoiMjAyNi0xMC0wMVQxMDowMDowMFoiLCJpZCI6OTg3fQ HTTP/1.1\n\nHTTP/1.1 200 OK\n{\"data\":[...], \"nextCursor\":\"eyJjIjoi...\", \"hasMore\":true}\n```\n\n```ts\n// keyset query: tie-break on id so the order is total\ndb.orders.find({ $or: [{ createdAt: { $lt: c } }, { createdAt: c, _id: { $lt: id } }] })\n  .sort({ createdAt: -1, _id: -1 }).limit(21);\n```\n\nFetch `limit + 1` rows to know whether there is a next page. With an index on `(createdAt, _id)` every page is equally fast.\n\n**Trade-offs:** cursors cannot jump to page 37 and are tied to one sort order, which suits infinite scroll and feeds. Admin tables with small datasets can stay on offset. Always cap `limit` on the server.",
+      "followUps": [
+        "How do you handle API versioning?",
+        "When would you choose GraphQL or RPC instead of REST?",
+        "How do you make cursor pagination stable when sorting by a non-unique field?"
+      ],
+      "mistakes": [
+        "Putting verbs in URLs (/getUsers, /createOrder) instead of using methods on nouns.",
+        "Using offset pagination on large, changing tables, causing slow queries and skipped or duplicated rows.",
+        "Returning unbounded lists with no maximum page size."
+      ]
+    },
+    {
+      "id": "http-compression-keepalive",
+      "level": "junior",
+      "q": "How do HTTP compression (gzip, Brotli) and connection keep-alive improve performance?",
+      "answer": "**Compression shrinks text responses (HTML, CSS, JS, JSON, SVG) by 70-90%, so fewer bytes cross the network. Keep-alive reuses one connection for many requests, avoiding a new TCP and TLS handshake each time. Both cut latency for free.**\n\n**Compression negotiation:**\n\n```http\nGET /app.js HTTP/1.1\nAccept-Encoding: gzip, deflate, br, zstd\n\nHTTP/1.1 200 OK\nContent-Encoding: br\nVary: Accept-Encoding\n```\n\n- **gzip:** universally supported, fast.\n- **Brotli (`br`):** typically 15-25% smaller than gzip for text. At high levels it is slow, so pre-compress static assets at build time at max level and use a moderate level for dynamic responses.\n- **zstd:** newer, very fast; supported in recent Chromium and Firefox.\n- Do not compress JPEG, PNG, WebP, video or zip files; they are already compressed.\n- `Vary: Accept-Encoding` keeps caches from mixing up encodings.\n\n**Security gotcha:** compressing responses that contain both a secret (like a CSRF token) and attacker-controlled input can leak the secret through response sizes (BREACH). Mitigate by masking tokens per request or not reflecting user input next to secrets.\n\n**Keep-alive:**\n- HTTP/1.1 connections are persistent by default. Without reuse every request pays a TCP handshake plus a TLS handshake plus TCP slow start.\n- HTTP/2 and HTTP/3 take it further: one connection carries all requests to an origin in parallel.\n- Servers close idle connections after a timeout; load balancers have their own idle timeouts, and a mismatch (backend closes first) causes sporadic 502s.\n\n**Server-to-server too:** in Node, reuse an HTTP agent (`undici` does this by default in `fetch`) when calling other services. Creating a new connection per outgoing request is a common cause of latency and port exhaustion.",
+      "followUps": [
+        "Why shouldn't you compress JPEGs or already-compressed files?",
+        "What is the BREACH attack and how does it relate to compression?",
+        "What happens to keep-alive under HTTP/2?"
+      ],
+      "mistakes": [
+        "Compressing images, video or zip files, wasting CPU for no gain.",
+        "Forgetting Vary: Accept-Encoding, so a cache serves Brotli to a client that cannot decode it.",
+        "Thinking every request opens a new TCP connection in modern browsers."
+      ]
+    }
+  ]
+}

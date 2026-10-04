@@ -15,6 +15,13 @@ describe("leetcodeHtmlToMarkdown", () => {
     expect(out).toContain("2 <= nums.length");
   });
 
+  it("keeps a bare <pre> (an ASCII schema table) as a fenced block with its line breaks", () => {
+    const out = md("<pre>\n+-------------+---------+\n| Column Name | Type    |\n+-------------+---------+\n| personId    | int     |\n</pre><pre><code>x = 1</code></pre>");
+    expect(out).toContain("```\n+-------------+---------+\n| Column Name | Type    |");
+    expect(out).toContain("| personId    | int     |");
+    expect(out).toContain("```\nx = 1\n```");
+  });
+
   it("turns superscripts and subscripts into plain text", () => {
     expect(md("<p>2<sup>31</sup> - 1 and a<sub>i</sub></p>")).toContain("2^31 - 1 and a\\_i"); // `_` is escaped for markdown and renders as _
   });

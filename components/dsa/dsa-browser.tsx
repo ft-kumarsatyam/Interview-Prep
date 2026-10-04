@@ -17,7 +17,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { ContentProblem } from "@/lib/content";
+import type { ContentProblem, ContentSheet } from "@/lib/content";
+import { nextInSheet, sheetProgress, sheetSections, sheetVideos } from "@/lib/domain/dsa-sheets";
 import type { ProgressSummary } from "@/lib/services/problems";
 import { cn } from "@/lib/utils";
 import { DIFFICULTIES, filtersToQuery, isSolved, nextUnsolved, SORTS, STATUSES, TRACKS, VIEWS, type DsaFilters } from "./dsa-filters";
@@ -39,7 +40,7 @@ function isTyping(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 }
 
-export function DsaBrowser({ problems, progress, initial }: { problems: ContentProblem[]; progress: Record<string, ProgressSummary>; initial: DsaFilters }) {
+export function DsaBrowser({ problems, progress, initial, sheets }: { problems: ContentProblem[]; progress: Record<string, ProgressSummary>; initial: DsaFilters; sheets: ContentSheet[] }) {
   const [filters, setFilters] = useState<DsaFilters>(initial);
   /** null = automatic: everything open while filtering, otherwise just the group holding the next problem. */
   const [open, setOpen] = useState<string[] | null>(null);
@@ -72,7 +73,13 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
   const clearAll = () => update({ q: "", difficulty: "all", status: "all", pattern: "", sort: "order" });
 
   const track = TRACKS.find((t) => t.id === filters.track) ?? TRACKS[0];
-  const trackProblems = useMemo(() => problems.filter((p) => p.track === filters.track), [problems, filters.track]);
+  const sheet = filters.track === "main" ? sheets.find((s) => s.id === filters.list) : undefined;
+  const bySlug = useMemo(() => new Map(problems.map((p) => [p.slug, p])), [problems]);
+  const videos = useMemo(() => (sheet ? sheetVideos(sheet) : undefined), [sheet]);
+  const trackProblems = useMemo(() => {
+    const inSheet = sheet ? new Set(sheet.items.map((i) => i.slug)) : null;
+    return problems.filter((p) => p.track === filters.track && (!inSheet || inSheet.has(p.slug)));
+  }, [problems, filters.track, sheet]);
   const patterns = useMemo(() => [...new Set(trackProblems.map((p) => p.pattern))], [trackProblems]);
   const pattern = patterns.includes(filters.pattern) ? filters.pattern : "";
 
@@ -92,10 +99,15 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
 
   const filtersActive = query.trim() !== "" || filters.difficulty !== "all" || filters.status !== "all" || pattern !== "";
   const refineCount = [filters.difficulty !== "all", filters.status !== "all", pattern !== "", filters.sort !== "order"].filter(Boolean).length;
-  const next = nextUnsolved(problems, progress, filters.track);
+  const next = sheet ? nextInSheet(sheet, bySlug, (slug) => isSolved(progress[slug])) : nextUnsolved(problems, progress, filters.track);
   const byRecent = filters.sort === "recent";
 
   const sections = useMemo<Section[]>(() => {
+    if (sheet) {
+      const keep = new Set(filtered.map((p) => p.slug));
+      const groups = sheetSections(sheet, bySlug, (p) => keep.has(p.slug)).map((g) => ({ key: `list:${sheet.id}:${g.section}`, label: g.section, items: g.problems }));
+      return [{ id: `list:${sheet.id}`, groups }];
+    }
     if (filters.track === "main" && filters.view === "sheet") return [{ id: "sheet", groups: stepGroups(filtered) }];
     if (filters.track !== "main") return [{ id: "all", groups: patternGroups(filtered, filters.track) }];
     return (["core", "extended"] as const).map((tier) => ({
@@ -106,7 +118,7 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
         tier,
       ),
     }));
-  }, [filtered, filters.track, filters.view]);
+  }, [filtered, filters.track, filters.view, sheet, bySlug]);
 
   const recent = useMemo(
     () =>
@@ -134,7 +146,7 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
     patterns,
     pattern,
     update,
-    showView: filters.track === "main",
+    showView: filters.track === "main" && !sheet,
   };
 
   return (
@@ -142,7 +154,7 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
       value={filters.track}
       onValueChange={(v) => {
         const t = TRACKS.find((x) => x.id === v);
-        if (t) update({ track: t.id, pattern: "" });
+        if (t) update({ track: t.id, pattern: "", list: "" });
       }}
       className="gap-3"
     >
@@ -163,7 +175,35 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
       </TabsList>
 
       <TabsContent value={filters.track} className="space-y-3">
-        <p className="text-sm text-pretty text-muted-foreground">{track.blurb}</p>
+        <p className="text-sm text-pretty text-muted-foreground">{sheet ? sheet.description : track.blurb}</p>
+
+        {filters.track === "main" && sheets.length > 0 && (
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Problem list">
+            <Chip pressed={!sheet} onClick={() => update({ list: "" })}>
+              All problems
+            </Chip>
+            {sheets.map((sh) => {
+              const { solved, total } = sheetProgress(sh, (slug) => isSolved(progress[slug]));
+              return (
+                <Chip key={sh.id} pressed={sheet?.id === sh.id} onClick={() => update({ list: sh.id })} title={`${sh.name} · ${sh.source}`}>
+                  {sh.name}
+                  <span className="tabular font-mono text-xs opacity-70">
+                    {solved}/{total}
+                  </span>
+                </Chip>
+              );
+            })}
+          </div>
+        )}
+        {sheet && (
+          <p className="text-xs text-muted-foreground">
+            From{" "}
+            <a href={sheet.url} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">
+              {sheet.source}
+            </a>
+            {sheet.omitted > 0 && ` · ${sheet.omitted} premium-only, non-LeetCode or JavaScript-tab ${sheet.omitted === 1 ? "problem is" : "problems are"} left out`}. Problems not already in the plan are added to Pass 2.
+          </p>
+        )}
 
         <div className="sticky top-[calc(3.5rem+env(safe-area-inset-top))] z-20 -mx-4 border-b bg-background/90 px-4 py-2 backdrop-blur lg:-mx-8 lg:px-8">
           <div className="flex items-center gap-2">
@@ -230,7 +270,7 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
           </div>
           {!byRecent && filtered.length > 0 && (
             <div className="flex items-center gap-1">
-              {filters.track === "main" && (
+              {filters.track === "main" && !sheet && (
                 <Segmented label="View" value={filters.view} options={VIEWS} labels={VIEW_LABEL} onChange={(view) => update({ view })} className="hidden sm:flex" />
               )}
               <Button variant="ghost" size="sm" className="h-8" onClick={() => setOpen(allOpen ? [] : allKeys)} aria-label={allOpen ? "Collapse all groups" : "Expand all groups"}>
@@ -271,6 +311,7 @@ export function DsaBrowser({ problems, progress, initial }: { problems: ContentP
                 open={openKeys}
                 onOpenChange={setOpen}
                 nextSlug={next?.slug}
+                videos={videos}
               />
             ))}
           </div>

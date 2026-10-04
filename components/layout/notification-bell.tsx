@@ -1,19 +1,21 @@
 "use client";
 
+import Link from "next/link";
 import { useTransition } from "react";
-import { Bell, CalendarCheck, CheckCheck, ClipboardCheck, Flame, RefreshCw, Trophy, AlarmClock, type LucideIcon } from "lucide-react";
+import { Bell, CalendarCheck, CheckCheck, ClipboardCheck, Flame, Newspaper, RefreshCw, Trophy, AlarmClock, type LucideIcon } from "lucide-react";
 import { markNotificationsReadAction } from "@/app/(app)/notifications/actions";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
 export interface BellItem {
   id: string;
-  kind: "plan" | "reminder" | "recap" | "streak" | "milestone" | "sync";
+  kind: "plan" | "reminder" | "recap" | "streak" | "milestone" | "sync" | "news";
   title: string;
   body: string;
   read: boolean;
   age: string;
+  hasDetail: boolean;
 }
 
 const ICONS: Record<BellItem["kind"], LucideIcon> = {
@@ -23,6 +25,7 @@ const ICONS: Record<BellItem["kind"], LucideIcon> = {
   streak: Flame,
   milestone: Trophy,
   sync: RefreshCw,
+  news: Newspaper,
 };
 
 export function NotificationBell({ items, unread }: { items: BellItem[]; unread: number }) {
@@ -58,7 +61,15 @@ export function NotificationBell({ items, unread }: { items: BellItem[]; unread:
                     <Icon className={cn("mt-0.5 size-4 shrink-0", n.read ? "text-muted-foreground" : "text-primary")} />
                     <div className="min-w-0 flex-1 space-y-1">
                       <p className="flex items-start justify-between gap-2 text-sm font-medium">
-                        <span>{n.title}</span>
+                        {n.hasDetail ? (
+                          <SheetClose asChild>
+                            <Link href={`/notifications/${n.id}`} className="hover:underline">
+                              {n.title}
+                            </Link>
+                          </SheetClose>
+                        ) : (
+                          <span>{n.title}</span>
+                        )}
                         <span className="shrink-0 text-xs font-normal text-muted-foreground">{n.age}</span>
                       </p>
                       {n.body && <p className="text-sm text-muted-foreground">{n.body}</p>}

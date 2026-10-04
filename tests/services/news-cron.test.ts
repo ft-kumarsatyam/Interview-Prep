@@ -4,6 +4,7 @@ import { DayLog } from "@/lib/models/day";
 import { Article, Notification, Settings } from "@/lib/models/system";
 import type { FeedFetcher } from "@/lib/news/fetch";
 import type { NotifyChannel } from "@/lib/notify";
+import { runBriefingTick } from "@/lib/services/briefing";
 import { runEvening, runMorning, runReminder } from "@/lib/services/cron";
 import type { Extractor } from "@/lib/news/extract";
 import {
@@ -18,6 +19,7 @@ import {
   setBookmark,
 } from "@/lib/services/news";
 import { notify } from "@/lib/services/notifications";
+import { invalidateSettings } from "@/lib/services/settings";
 import { getSetupChecklist } from "@/lib/services/setup";
 import { at, resetDb, startDb, stopDb } from "./db";
 
@@ -187,8 +189,9 @@ describe("notifications and cron", () => {
     await runMorning(at("2026-10-06"), { channels: [ch], fetcher, extractor });
     expect(await Notification.countDocuments({ kind: "plan" })).toBe(1);
     expect((await Notification.findOne({ kind: "plan" }).lean())?.title).toBe("Today's plan is ready");
-    expect(ch.sent).toHaveLength(1);
-    expect(ch.sent[0]).toMatch(/^.+ \| Today's targets · 2026-10-06$/);
+    // The daily briefing follows the plan as its own message.
+    expect(ch.sent.filter((t) => t.includes("Today's targets"))).toHaveLength(1);
+    expect(ch.sent[0]).toMatch(/^.+ \| Today's targets · 2026-10-06( · \d+ in backlog)?$/);
     expect(ch.bodies[0]).toMatch(/DSA problems?.*then the daily quiz/);
     expect(ch.bodies[0]).toContain("Daily quiz");
     expect(ch.htmls[0]).toContain("<h2");
@@ -198,7 +201,8 @@ describe("notifications and cron", () => {
     await Settings.updateOne({ _id: "settings" }, { $set: { roastMode: false } });
     const ch = fakeChannel();
     await runMorning(at("2026-10-06"), { channels: [ch], fetcher: fakeFetcher({}), extractor: fakeExtractor() });
-    expect(ch.sent).toEqual(["Today's targets · 2026-10-06"]);
+    expect(ch.sent.filter((t) => t.includes("Today's targets"))).toHaveLength(1);
+    expect(ch.sent[0]).toMatch(/^Today's targets · 2026-10-06( · \d+ in backlog)?$/);
   });
 
   it("morning on a rest day: a day-off note instead of targets", async () => {
@@ -288,5 +292,40 @@ describe("conditional feeds, retry and prefetch", () => {
     const ex = fakeExtractor();
     expect(await prefetchArticleContent({ extractor: ex })).toEqual({ tried: 1, extracted: 1, failed: 0 });
     expect(ex.calls).toHaveLength(1);
+  });
+});
+
+describe("briefing tick", () => {
+  const fresh = (url: string, title: string, hoursAgo: number): RawItem => ({ url, title, publishedAt: new Date(Date.parse("2026-10-06T06:00:00Z") - hoursAgo * 3_600_000), snippet: "s" });
+
+  it("sends the briefing once after 08:00 local, plus a standout alert that the briefing didn't carry", async () => {
+    const ch = fakeChannel();
+    const fetcher = fakeFetcher({ hf: [fresh("https://hf.co/1", "New open model released", 1)], infoq: [fresh("https://www.infoq.com/1", "Designing a rate limiter", 30)] });
+    const res = await runBriefingTick(at("2026-10-06"), [ch], fetcher);
+    expect(res.briefing).toMatchObject({ sent: true });
+    expect(await Notification.countDocuments({ dedupeKey: "briefing:2026-10-06", kind: "news" })).toBe(1);
+    // The fresh AI story is in the briefing already, so it is not alerted a second time.
+    expect(res.alerts).toMatchObject({ alerts: 0 });
+    const again = await runBriefingTick(at("2026-10-06"), [ch], fetcher);
+    expect(again.briefing).toMatchObject({ sent: false });
+    expect(ch.sent.filter((t) => t.includes("Daily briefing"))).toHaveLength(1);
+  });
+
+  it("alerts on a standout story, once, and honours the switch", async () => {
+    const ch = fakeChannel();
+    const fetcher = fakeFetcher({ hf: [fresh("https://hf.co/9", "Big release", 1)] });
+    // Before 08:00 local no briefing is sent, so nothing hides the story from the alert.
+    const early = new Date("2026-10-06T00:30:00Z");
+    const res = await runBriefingTick(early, [ch], fetcher);
+    expect(res.briefing).toMatchObject({ sent: false });
+    expect(res.alerts).toMatchObject({ alerts: 1 });
+    expect(ch.sent.some((t) => t.includes("Top story"))).toBe(true);
+    expect((await runBriefingTick(early, [ch], fetcher)).alerts).toMatchObject({ alerts: 0 });
+    expect(await Notification.countDocuments({ dedupeKey: /^alert:/ })).toBe(1);
+
+    await Notification.deleteMany({});
+    await Settings.updateOne({ _id: "settings" }, { $set: { mailAlerts: false } });
+    invalidateSettings();
+    expect((await runBriefingTick(early, [ch], fetcher)).alerts).toMatchObject({ alerts: 0, skipped: "off" });
   });
 });

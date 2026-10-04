@@ -81,6 +81,8 @@ describe("configuredChannels", () => {
     ADMIN_PASSWORD_HASH_B64: "x".repeat(20),
     TELEGRAM_BOT_TOKEN: "",
     TELEGRAM_CHAT_ID: "",
+    VAPID_PUBLIC_KEY: "",
+    VAPID_PRIVATE_KEY: "",
   };
   const stub = (vars: Record<string, string>) => {
     for (const [k, v] of Object.entries({ ...base, ...vars })) vi.stubEnv(k, v);
@@ -108,6 +110,13 @@ describe("configuredChannels", () => {
     stub({ NOTIFY_EMAIL: "", WHAPI_TOKEN: "tok", WHATSAPP_TO: "919891142251" });
     expect(configuredChannels().map((c) => c.name)).toEqual(["whatsapp"]);
     stub({ NOTIFY_EMAIL: "", WHAPI_TOKEN: "tok", WHATSAPP_TO: "" });
+    expect(configuredChannels()).toEqual([]);
+  });
+
+  it("adds PWA push only when both VAPID keys are set", () => {
+    stub({ NOTIFY_EMAIL: "", VAPID_PUBLIC_KEY: "pub", VAPID_PRIVATE_KEY: "priv" });
+    expect(configuredChannels().map((c) => c.name)).toEqual(["push"]);
+    stub({ NOTIFY_EMAIL: "", VAPID_PUBLIC_KEY: "pub", VAPID_PRIVATE_KEY: "" });
     expect(configuredChannels()).toEqual([]);
   });
 });

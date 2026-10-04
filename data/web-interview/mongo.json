@@ -1,0 +1,330 @@
+{
+  "track": {
+    "id": "mongo",
+    "name": "MongoDB",
+    "blurb": "Document modelling, indexes and aggregation, replication, sharding and consistency as they come up in backend interviews."
+  },
+  "questions": [
+    {
+      "id": "mongo-embed-vs-reference",
+      "level": "mid",
+      "q": "Embed vs reference: how do you decide?",
+      "answer": "**Embed what is read together, owned by the parent and bounded in size; reference what grows without limit, is shared by many parents, or is updated and queried independently. In MongoDB you design from the access patterns, not from the entities.**\n\n**Embed when:**\n- The child is always loaded with the parent (an order and its line items, a user and their addresses).\n- The relationship is one-to-few and bounded.\n- You want atomic updates: a single-document write is atomic without a transaction.\n\n**Reference when:**\n- The array is **unbounded** (a user's events, a product's reviews). Big documents hit the 16 MB limit long before that, but performance suffers much earlier: every read and update moves the whole document, and the working set balloons.\n- The data is **shared** across many parents (a product referenced by many orders) and changes independently; embedding would mean updating thousands of copies.\n- The child is queried on its own (\"all open tickets across customers\").\n\n```js\n// embedded: bounded, read together\n{ _id: 1, customer: \"Ana\", status: \"paid\",\n  items: [{ sku: \"A1\", qty: 2, price: 9.5 }, { sku: \"B7\", qty: 1, price: 20 }] }\n\n// referenced with an extended reference: copy only stable fields you display\n{ _id: 9001, productId: 42, product: { name: \"Desk lamp\" },\n  userId: 7, rating: 5, text: \"Great\" }   // reviews collection, index { productId: 1, _id: -1 }\n```\n\n**Middle grounds:**\n- **Extended reference:** store the foreign id plus a few rarely changing fields you display, avoiding a `$lookup` on hot reads.\n- **Subset pattern:** keep the latest 10 reviews embedded for the product page, all reviews in their own collection.\n\n**Rule of thumb:** list the top queries and their frequency first. Optimize the schema for the most frequent reads, accept a bit of duplication, and have a plan to update duplicated fields when they change.",
+      "followUps": [
+        "What is the 16 MB document limit and when does it bite?",
+        "How do you handle data that is embedded but also needs to be queried on its own?",
+        "What is the extended reference pattern?"
+      ],
+      "mistakes": [
+        "Embedding unbounded arrays (all orders inside a customer) that grow forever.",
+        "Normalizing everything like a relational schema and then needing $lookup on every read.",
+        "Deciding from the entities instead of the application's access patterns."
+      ],
+      "lesson": "mongo-modeling"
+    },
+    {
+      "id": "mongo-model-comments",
+      "level": "mid",
+      "q": "How would you model comments on a post?",
+      "answer": "**Put comments in their own collection keyed by `postId`, with an index on `{ postId: 1, createdAt: -1 }`, keep a denormalized comment count on the post, and optionally embed the latest few comments for the first page. Embedding all comments fails for popular posts because the array is unbounded.**\n\n**Why not embed everything:** comment counts are unbounded, concurrent comment writes all contend on the same post document, and loading the post would pull thousands of comments you do not display.\n\n```js\n// posts\n{ _id: ObjectId(\"...\"), title: \"Hello\", commentCount: 1284,\n  recentComments: [ { _id: ..., author: { id: 7, name: \"Ana\" }, text: \"Nice\", createdAt: ... } ] }\n\n// comments\n{ _id: ObjectId(\"...\"), postId: ObjectId(\"...\"), parentId: null,\n  author: { id: 7, name: \"Ana\" }, text: \"Nice\", createdAt: ISODate(\"2026-10-01\") }\n\ndb.comments.createIndex({ postId: 1, createdAt: -1, _id: -1 });\n\n// keyset pagination: next page after the last comment seen\ndb.comments.find({ postId: p, $or: [\n  { createdAt: { $lt: lastTs } }, { createdAt: lastTs, _id: { $lt: lastId } } ] })\n  .sort({ createdAt: -1, _id: -1 }).limit(20);\n```\n\n**Writing a comment:** insert into `comments`, then `$inc` the post's `commentCount` and `$push` with `$slice: -10` into `recentComments`. If the two must agree exactly, use a transaction; usually a slightly stale count is acceptable and a periodic job reconciles it.\n\n**Author names:** store `author.name` as an extended reference so listing comments needs no `$lookup`; when a user renames, update their comments in the background.\n\n**Nested replies:**\n- **Parent reference** (`parentId`) for one or two levels, loading replies per thread.\n- **Materialized path** (`path: \"c1/c7/c19\"`) or an `ancestors` array for deep threads, so a single indexed query fetches a whole subtree.",
+      "followUps": [
+        "How would you support nested replies?",
+        "How do you show the comment count without counting every time?",
+        "How do you paginate comments efficiently?"
+      ],
+      "mistakes": [
+        "Embedding all comments in the post document, so a viral post grows without limit and every comment rewrites a huge document.",
+        "Using skip/limit pagination, which gets slower as the offset grows."
+      ],
+      "lesson": "mongo-modeling"
+    },
+    {
+      "id": "mongo-bucket-pattern",
+      "level": "mid",
+      "q": "What is the bucket pattern?",
+      "answer": "**The bucket pattern groups many small related records, typically time-series measurements, into one document per time window or per N items. It cuts the number of documents and index entries dramatically and lets you store precomputed aggregates on the bucket.**\n\n**Without buckets:** one document per sensor reading per second means 86,400 documents and index entries per sensor per day. Indexes grow huge and range reads touch many documents.\n\n**With buckets:**\n\n```js\n{ sensorId: 12, start: ISODate(\"2026-10-04T10:00:00Z\"), count: 3,\n  sum: 64.2, min: 21.0, max: 21.8,\n  readings: [ { t: ISODate(\"...:00:01Z\"), v: 21.0 },\n              { t: ISODate(\"...:00:02Z\"), v: 21.4 },\n              { t: ISODate(\"...:00:03Z\"), v: 21.8 } ] }\n\n// append, creating the bucket when the current one is full\ndb.metrics.updateOne(\n  { sensorId: 12, count: { $lt: 200 }, start: hourStart },\n  { $push: { readings: { t: now, v: 21.9 } },\n    $inc: { count: 1, sum: 21.9 }, $min: { min: 21.9 }, $max: { max: 21.9 } },\n  { upsert: true });\n```\n\n**Benefits:**\n- Far fewer documents and index keys, so the indexes fit in RAM.\n- Precomputed `sum/min/max/count` answer dashboards without scanning readings.\n- Reads of a time range fetch a handful of documents.\n\n**Choosing the size:** cap by count (e.g. 200 readings) or by window (one hour), so documents stay small and bounded.\n\n**Use native time series collections first.** Since MongoDB 5.0, `db.createCollection(\"metrics\", { timeseries: { timeField: \"t\", metaField: \"sensorId\", granularity: \"seconds\" } })` applies bucketing internally with columnar compression, and MongoDB 8 improved their performance considerably. Hand-rolled buckets still make sense for non-time groupings, such as paging a large list of followers into documents of 1,000.",
+      "followUps": [
+        "How do time series collections relate to the bucket pattern?",
+        "How do you choose the bucket size?"
+      ],
+      "mistakes": [
+        "Letting buckets grow without a cap, recreating the unbounded array problem.",
+        "Hand-rolling buckets for metrics when native time series collections already do it."
+      ],
+      "lesson": "mongo-modeling"
+    },
+    {
+      "id": "mongo-schema-evolution",
+      "level": "mid",
+      "q": "How do you evolve a schema in MongoDB?",
+      "answer": "**Use the schema versioning pattern: add a `schemaVersion` field, make the app read both old and new shapes, write the new shape, and migrate old documents lazily on read or with a throttled background job. Back it with `$jsonSchema` validation so bad shapes cannot creep in.**\n\n**Why it is still a migration:** MongoDB does not enforce one shape per collection, so documents of different versions coexist. That flexibility avoids downtime, but every reader must handle every live version until old ones are gone.\n\n**Steps for a change such as splitting `name` into `firstName`/`lastName`:**\n1. Deploy code that reads both shapes and writes the new one, setting `schemaVersion: 2`.\n2. Optionally migrate on read: when a v1 document is loaded, upgrade and save it.\n3. Backfill the rest in batches by `_id` range, with pauses and a check on replication lag.\n4. When no v1 documents remain, remove the compatibility code and tighten validation.\n\n```js\n// batch backfill\nlet last = MinKey;\nwhile (true) {\n  const batch = db.users.find({ _id: { $gt: last }, schemaVersion: { $ne: 2 } })\n    .sort({ _id: 1 }).limit(1000).toArray();\n  if (!batch.length) break;\n  db.users.bulkWrite(batch.map(u => ({ updateOne: {\n    filter: { _id: u._id, schemaVersion: { $ne: 2 } },\n    update: [{ $set: { firstName: { $arrayElemAt: [{ $split: [\"$name\", \" \"] }, 0] },\n                       schemaVersion: 2 } }] } })));\n  last = batch.at(-1)._id;\n}\n```\n\n**Validation:** add a `$jsonSchema` validator with `validationLevel: \"moderate\"` (only checks inserts and documents that already match) and `validationAction: \"warn\"` first, watch the logs, then switch to `error`.\n\n**Trade-offs:** lazy migration spreads load but leaves a long tail of old documents and permanent compatibility code; an eager backfill finishes cleanly but must be throttled. Index changes for new fields need their own rolling build.",
+      "followUps": [
+        "How would you backfill a field across 200 million documents?",
+        "What does $jsonSchema validation with validationAction warn do?"
+      ],
+      "mistakes": [
+        "Assuming schemaless means no migrations; the schema just moves into the application code.",
+        "Running one huge updateMany during peak traffic, causing replication lag and cache churn."
+      ],
+      "lesson": "mongo-modeling"
+    },
+    {
+      "id": "mongo-esr-rule",
+      "level": "mid",
+      "q": "What is the ESR rule?",
+      "answer": "**ESR is MongoDB's guideline for compound index field order: Equality fields first, then Sort fields, then Range fields. That order lets the index jump to the exact equality prefix, return documents already sorted, and still bound the scan with the range.**\n\n**Why this order:**\n- **Equality** fields narrow to one contiguous section of the index.\n- **Sort** fields next mean entries within that section are already in the requested order, so there is no blocking in-memory `SORT` stage (which has a 100 MB memory limit before spilling to disk).\n- **Range** fields last are checked while walking the sorted entries. If the range came before the sort field, the matching entries would be ordered by the range field, not the sort field, and MongoDB would have to sort them.\n\n```js\n// query\ndb.orders.find({ status: \"shipped\", total: { $gt: 100 } })\n         .sort({ createdAt: -1 }).limit(20);\n\n// E, S, R\ndb.orders.createIndex({ status: 1, createdAt: -1, total: 1 });\n\n// worse: E, R, S -> SORT stage in the plan\ndb.orders.createIndex({ status: 1, total: 1, createdAt: -1 });\n```\n\n**Details interviewers probe:**\n- An equality match on `$in` with a few values behaves like equality for filtering, but combined with a sort it becomes a merge of several sorted streams (`SORT_MERGE`); with many values treat it like a range.\n- `$ne`, `$nin` and regex without an anchored prefix are effectively ranges or full scans.\n- With a `limit`, ESR means the query can stop after 20 index entries even if millions match.\n\n**Check it:** `explain(\"executionStats\")` should show `IXSCAN` with no `SORT` stage and `totalKeysExamined` close to `nReturned`.",
+      "followUps": [
+        "Where does a $in on an indexed field fit in ESR?",
+        "How do you verify the index order is right?"
+      ],
+      "mistakes": [
+        "Putting the range field before the sort field, which forces an in-memory sort.",
+        "Treating ESR as absolute; very selective ranges can sometimes justify a different order."
+      ],
+      "lesson": "mongo-indexes-aggregation"
+    },
+    {
+      "id": "mongo-query-uses-index",
+      "level": "junior",
+      "q": "How do you know a query is using an index?",
+      "answer": "**Run the query with `.explain(\"executionStats\")` and check the winning plan: you want an `IXSCAN` stage rather than `COLLSCAN`, no in-memory `SORT`, and `totalKeysExamined` and `totalDocsExamined` close to `nReturned`.**\n\n```js\ndb.orders.find({ customerId: 42, status: \"open\" })\n  .sort({ createdAt: -1 }).limit(20)\n  .explain(\"executionStats\");\n```\n\n**What to read:**\n- **`winningPlan` stages:** `IXSCAN` then `FETCH` is normal. `COLLSCAN` means a full collection scan. A `SORT` stage means the index did not provide the order.\n- **`totalKeysExamined` vs `nReturned`:** if the query examines 50,000 keys to return 20, the index is a poor match (wrong field order or low selectivity).\n- **`totalDocsExamined`:** 0 means a covered query; much higher than `nReturned` means documents are fetched and then filtered out.\n- **`executionTimeMillis`** and `rejectedPlans` to see what else the planner considered.\n\n**In production:**\n- **Database profiler** (`db.setProfilingLevel(1, { slowms: 100 })`) or slow query logs show `planSummary: COLLSCAN` and keys/docs examined.\n- **Atlas Query Insights and Performance Advisor** suggest indexes from real workloads.\n- **`$indexStats`** shows how often each index is used, which helps find unused ones to drop.\n- **`notablescan`** can be enabled in test environments to make collection scans fail loudly.\n\n**The plan cache:** MongoDB picks a plan by racing candidates and caches the winner per query shape. If data distribution changes, a cached plan can become bad; `planCacheClear` or a `hint()` are short-term fixes, a better index is the real one.",
+      "followUps": [
+        "What do totalKeysExamined and totalDocsExamined tell you?",
+        "How do you find slow queries in production?"
+      ],
+      "mistakes": [
+        "Seeing IXSCAN and stopping there, without checking whether keys examined is wildly higher than documents returned.",
+        "Using queryPlanner verbosity only, which does not show actual execution numbers."
+      ],
+      "lesson": "mongo-indexes-aggregation"
+    },
+    {
+      "id": "mongo-slow-group",
+      "level": "senior",
+      "q": "How do you speed up a slow $group?",
+      "answer": "**Reduce what reaches `$group`: put a selective `$match` (and `$project`) first so it can use an index, group on as few fields as possible, and for dashboards that run often, precompute the result with an incremental `$merge` or a bucket document instead of aggregating raw data every time.**\n\n**Why `$group` is expensive:** it must consume every input document before emitting anything, holding one accumulator per group in memory. Over 100 MB it spills to disk (the default since MongoDB 6.0), which is much slower.\n\n**Techniques:**\n- **Filter early:** `$match` at the start of the pipeline can use an index; after `$group` it cannot.\n- **Project early:** only carry the fields you aggregate.\n- **Index-assisted grouping:** with `$sort` on the group key backed by an index, and `$group` using `$first`/`$last`, MongoDB can use a `DISTINCT_SCAN` and skip most documents (great for \"latest per user\").\n- **Run on a secondary or analytics node** for reports, so they do not compete with the primary.\n- **Precompute:** roll up daily totals with a scheduled pipeline ending in `$merge`, then dashboards read a few hundred rows.\n\n```js\ndb.orders.aggregate([\n  { $match: { createdAt: { $gte: ISODate(\"2026-10-01\") }, status: \"paid\" } },\n  { $project: { day: { $dateTrunc: { date: \"$createdAt\", unit: \"day\" } }, total: 1 } },\n  { $group: { _id: \"$day\", revenue: { $sum: \"$total\" }, orders: { $sum: 1 } } },\n  { $merge: { into: \"daily_revenue\", whenMatched: \"replace\" } }\n]);\n// index supporting the $match: { status: 1, createdAt: 1 }\n```\n\n**Sharded clusters:** a `$group` runs partially on each shard and merges on one node; grouping on the shard key lets more work happen in parallel.\n\n**When aggregation is the wrong tool:** analytics over the whole history at high frequency belongs in a column store (Atlas Data Federation, ClickHouse, a warehouse), fed by change streams.",
+      "followUps": [
+        "Can $group use an index?",
+        "When would you precompute instead of aggregating on read?",
+        "What does allowDiskUse do?"
+      ],
+      "mistakes": [
+        "Putting $match after $group, so the whole collection is grouped before filtering.",
+        "Not realizing $group is a blocking stage with a 100 MB memory limit before spilling to disk."
+      ],
+      "lesson": "mongo-indexes-aggregation"
+    },
+    {
+      "id": "mongo-covered-query",
+      "level": "mid",
+      "q": "What is a covered query?",
+      "answer": "**A covered query is answered entirely from an index: every filtered field and every returned field is in the index, so MongoDB never fetches the documents. In `explain` you see `totalDocsExamined: 0` and no `FETCH` stage.**\n\n**Requirements:**\n- All fields in the filter are in the index.\n- All fields in the projection are in the index.\n- `_id` is excluded from the projection (it is returned by default) unless it is part of the index.\n- No multikey index on the projected array field, and no fields inside embedded documents that the index does not hold exactly.\n\n```js\ndb.users.createIndex({ email: 1, status: 1, name: 1 });\n\ndb.users.find(\n  { email: \"ana@example.com\" },\n  { _id: 0, status: 1, name: 1 }\n).explain(\"executionStats\");\n// winningPlan: PROJECTION_COVERED <- IXSCAN\n// totalDocsExamined: 0\n```\n\n**Why it is fast:** indexes are smaller than documents and more likely to be in the WiredTiger cache, so covered reads avoid random document fetches and decompression.\n\n**When to use:** hot lookups that need two or three fields (login checks, autocomplete, existence checks), and counts over an indexed range.\n\n**Trade-offs:** adding fields to an index just for coverage makes it larger and every write slower. Cover only a few high-volume queries. Unlike Postgres, there is no separate visibility check, so a covered query really does skip the documents.",
+      "followUps": [
+        "Why does including _id in the projection often break coverage?",
+        "Can a query on an array field be covered?"
+      ],
+      "mistakes": [
+        "Forgetting that _id is returned by default, so the query has to fetch the document.",
+        "Expecting coverage with multikey (array) indexes, which generally cannot cover the array field."
+      ],
+      "lesson": "mongo-indexes-aggregation"
+    },
+    {
+      "id": "mongo-primary-failure",
+      "level": "mid",
+      "q": "What happens on primary failure?",
+      "answer": "**The secondaries stop hearing heartbeats, and after the election timeout (10 s by default) an eligible secondary calls an election. The member with the most recent oplog that gets votes from a majority becomes the new primary, typically within seconds, and drivers rediscover it and retry writes automatically.**\n\n**Step by step:**\n1. Members send heartbeats every 2 s. When the primary is silent for `electionTimeoutMillis`, a secondary starts an election (the protocol is Raft-like, with terms).\n2. Voters grant their vote only to a candidate whose oplog is at least as up to date as their own.\n3. A candidate with a majority of votes becomes primary. Without a majority (e.g. a network partition leaving 2 of 5 nodes), no primary is elected on that side and it stays read-only.\n4. The old primary, if it was just partitioned, steps down when it cannot see a majority.\n\n**Data safety:** writes acknowledged with `w: \"majority\"` (the default since 5.0) survive the failover. Writes acknowledged by the old primary alone (`w: 1`) that never reached a majority are **rolled back** when it rejoins, saved to rollback files for manual inspection.\n\n**What the application sees:**\n- A few seconds of failed or paused writes (`NotWritablePrimary`).\n- **Retryable writes** (on by default) retry a failed write once on the new primary, using a transaction id so it is not applied twice.\n- **Retryable reads** do the same for reads.\n\n```js\nconst client = new MongoClient(uri, {\n  retryWrites: true,\n  writeConcern: { w: \"majority\" },\n  serverSelectionTimeoutMS: 15000,\n});\n```\n\n**Design implications:** run at least three data-bearing members across availability zones, avoid arbiters (they hurt majority write availability), and test failover with `rs.stepDown()` or Atlas \"Test failover\" before you rely on it.",
+      "followUps": [
+        "What happens to writes acknowledged with w:1 that had not replicated?",
+        "How long does a failover usually take?",
+        "What are retryable writes?"
+      ],
+      "mistakes": [
+        "Thinking no data can be lost; w:1 writes not yet on a majority are rolled back.",
+        "Assuming the app needs custom failover code, instead of using the driver with retryable writes."
+      ],
+      "lesson": "mongo-replication-sharding"
+    },
+    {
+      "id": "mongo-write-concern",
+      "level": "mid",
+      "q": "w:1 vs w:majority?",
+      "answer": "**`w:1` acknowledges once the primary has applied the write, so it is fast but can be rolled back if the primary fails before replicating. `w:\"majority\"` waits until a majority of voting members have it, so it survives any failover; it is the default since MongoDB 5.0 and the right choice for data you care about.**\n\n**What each guarantees:**\n- **w:0:** fire and forget, no acknowledgement. Only for disposable metrics.\n- **w:1:** applied on the primary; without `j:true` it is acknowledged before the journal flush (every 100 ms by default). Lost if the primary dies and a secondary without that write is elected; it is rolled back on rejoin.\n- **w:\"majority\":** on a majority of voting members' journals. Any new primary must have it, so it is durable across elections.\n- **j:true:** wait for the on-disk journal on the acknowledging members.\n\n**Cost:** majority adds the latency of the fastest majority of secondaries, usually a millisecond or two within a region, more across regions.\n\n```js\nawait orders.insertOne(order, { writeConcern: { w: \"majority\", wtimeout: 5000 } });\nawait clicks.insertOne(click,  { writeConcern: { w: 1 } }); // losing one is fine\n```\n\n**wtimeout gotcha:** a timeout means \"not confirmed in time\", not \"failed\". The write may already be on the primary and replicate later. Make writes idempotent so they can be retried safely.\n\n**Pairing with reads:** `w:\"majority\"` plus `readConcern: \"majority\"` means readers never see data that could be rolled back. For read-your-own-writes on secondaries, use causally consistent sessions.\n\n**Topology matters:** with a primary-secondary-arbiter set, if the secondary is down, majority writes cannot be acknowledged while the primary still accepts them. Prefer three data-bearing nodes.",
+      "followUps": [
+        "What does j:true add?",
+        "What is wtimeout and what does a timeout really mean?",
+        "Why are arbiters a problem with w:majority?"
+      ],
+      "mistakes": [
+        "Thinking a wtimeout error means the write failed; it may still have been applied and replicate later.",
+        "Using w:1 for important data to save a millisecond, then losing writes on failover rollback."
+      ],
+      "lesson": "mongo-replication-sharding"
+    },
+    {
+      "id": "mongo-shard-key",
+      "level": "senior",
+      "q": "How do you pick a shard key?",
+      "answer": "**Pick a key with high cardinality, low frequency of any single value, non-monotonic writes, and that appears in your most common queries. A good key spreads writes evenly and lets most reads go to one shard; a compound key like `{ tenantId: 1, _id: 1 }` often achieves both.**\n\n**The properties:**\n- **Cardinality:** many distinct values, so data can split into many chunks. `country` with 200 values cannot spread beyond 200 chunks and produces jumbo chunks.\n- **Frequency:** no single value dominates. If one tenant is 40% of the data, a `tenantId`-only key overloads its shard; adding a second field fixes it.\n- **Monotonic growth:** `createdAt` or `ObjectId` sends every insert to the chunk holding the max value, so one shard takes all writes. Use a hashed key or a compound key that leads with something spread out.\n- **Query isolation:** queries that include the shard key prefix are **targeted** to one shard; queries without it are **scatter-gather**, hitting every shard and getting slower as you add shards.\n\n```js\n// multi-tenant SaaS: targeted per-tenant queries, spread within big tenants\nsh.shardCollection(\"app.events\", { tenantId: 1, eventId: 1 });\n\n// write-heavy with no natural key: hashed spreads inserts evenly\nsh.shardCollection(\"app.logs\", { _id: \"hashed\" });\n```\n\n**Hashed vs ranged:** hashed gives even writes but range queries on the key go to all shards. Ranged keeps ranges together but needs a non-monotonic leading field.\n\n**Changing your mind:** since 5.0 you can `reshardCollection` online (expensive: it rewrites the collection) and since 4.4 refine a key by adding suffix fields. Since 8.0, `unshardCollection` and `moveCollection` exist too. It is still the most consequential decision, so model it on real query logs before sharding.",
+      "followUps": [
+        "Why is a monotonically increasing key like a timestamp bad?",
+        "Can you change a shard key later?",
+        "What is a jumbo chunk?"
+      ],
+      "mistakes": [
+        "Choosing an increasing key like createdAt or ObjectId, so every insert lands on one shard.",
+        "Choosing a low-cardinality key like country, which creates huge unsplittable chunks.",
+        "Ignoring query patterns, so most reads become scatter-gather across all shards."
+      ],
+      "lesson": "mongo-replication-sharding"
+    },
+    {
+      "id": "mongo-when-not-shard",
+      "level": "senior",
+      "q": "When should you NOT shard?",
+      "answer": "**Do not shard while a single replica set can handle the data size and write throughput with vertical scaling, good indexes and archiving. Sharding adds permanent complexity, a shard key you must live with, and scatter-gather queries, so it should solve a real limit, not a hypothetical one.**\n\n**Signs you do not need it yet:**\n- The working set (hot data plus indexes) fits in RAM on an instance size you can afford.\n- Writes are well within one primary's capacity. A modern replica set handles tens of thousands of writes per second.\n- Slow queries are explained by `COLLSCAN`s or in-memory sorts, i.e. missing indexes.\n- Data is large mostly because of old, cold records you could archive or TTL away.\n\n**Try these first:**\n- Proper compound indexes (ESR) and removing unused ones.\n- Schema fixes: bounded arrays, buckets, time series collections.\n- Vertical scaling and faster storage.\n- Moving reads such as analytics to secondaries or dedicated analytics nodes.\n- Archiving old data to cheaper storage (Atlas Online Archive) or deleting it with TTL indexes.\n\n**Costs of sharding:**\n- More moving parts: config server replica set, `mongos` routers, balancer and chunk migrations.\n- Queries without the shard key fan out to every shard.\n- Unique indexes must include the shard key prefix.\n- Cross-shard transactions are slower and more failure-prone.\n- Backups and restores need cluster-wide consistency.\n\n**When you should shard:** data or indexes too big for any single machine, sustained write throughput beyond one primary, or data residency requirements (zone sharding to keep EU users' data in the EU). Since MongoDB 8.0 you can start with a single-shard cluster using embedded config servers, which eases a later move.",
+      "followUps": [
+        "What are the operational costs of a sharded cluster?",
+        "What would you try before sharding?"
+      ],
+      "mistakes": [
+        "Sharding early for imagined scale, adding mongos, config servers and chunk migrations without a need.",
+        "Using sharding to fix slow queries that are really missing indexes or poor schema."
+      ],
+      "lesson": "mongo-replication-sharding"
+    },
+    {
+      "id": "mongo-multi-doc-transactions",
+      "level": "mid",
+      "q": "When do you use a multi-document transaction in MongoDB?",
+      "answer": "**Use one when an invariant spans several documents or collections and partial completion would be wrong, such as moving money between two accounts or creating an order while reserving stock. Prefer modelling so that related data lives in one document, because single-document writes are already atomic and much cheaper.**\n\n**Good uses:**\n- Transfers and double-entry ledgers touching two account documents.\n- Creating an order and decrementing inventory in a separate collection.\n- Writing a business record plus an outbox event atomically.\n\n**How they work:** snapshot isolation over a replica set or sharded cluster since 4.0/4.2. Writes are not visible to others until commit. Concurrent writers to the same document produce write conflicts; one transaction aborts and must retry.\n\n```js\nconst session = client.startSession();\ntry {\n  await session.withTransaction(async () => {\n    await accounts.updateOne({ _id: from, balance: { $gte: 100 } },\n                             { $inc: { balance: -100 } }, { session });\n    await accounts.updateOne({ _id: to }, { $inc: { balance: 100 } }, { session });\n    await ledger.insertOne({ from, to, amount: 100, at: new Date() }, { session });\n  }, { writeConcern: { w: \"majority\" }, readConcern: { level: \"snapshot\" } });\n} finally {\n  await session.endSession();\n}\n```\n\n`withTransaction` retries the whole callback on `TransientTransactionError` and retries the commit on `UnknownTransactionCommitResult`, so the callback must be safe to rerun (no side effects like sending emails inside it). Also check the first update matched a document and throw to abort if not.\n\n**Limits and costs:**\n- Default 60 s lifetime (`transactionLifetimeLimitSeconds`); keep them short and small (well under 1,000 documents).\n- Cross-shard transactions use two-phase commit and add latency.\n- Long transactions pin WiredTiger cache history and increase pressure.\n\n**Rule:** if most of your writes need transactions, the schema is probably modelled relationally; revisit embedding.",
+      "followUps": [
+        "What limits do MongoDB transactions have?",
+        "How does the driver's withTransaction handle errors?"
+      ],
+      "mistakes": [
+        "Wrapping everything in transactions as in SQL, instead of modelling so most writes are single-document and atomic.",
+        "Not retrying on TransientTransactionError and UnknownTransactionCommitResult."
+      ],
+      "lesson": "mongo-transactions-consistency"
+    },
+    {
+      "id": "mongo-write-conflict",
+      "level": "senior",
+      "q": "What is a write conflict?",
+      "answer": "**A write conflict happens when two concurrent operations try to modify the same document and one of them would overwrite a change it did not see. Inside a transaction MongoDB aborts it with a `WriteConflict` (labelled `TransientTransactionError`), and the client retries the whole transaction.**\n\n**Mechanism:** WiredTiger uses optimistic concurrency at document level. Each transaction reads from a snapshot. If it tries to write a document that another transaction has modified since that snapshot (committed or not), the write cannot be applied safely.\n\n- **Inside a multi-document transaction:** the transaction aborts immediately rather than waiting; there is no lock queue. The driver's `withTransaction` retries it.\n- **Single-document writes outside a transaction:** the server retries internally, so you normally only notice higher latency under contention.\n\n```text\nT1 start (snapshot S)      T2 start (snapshot S)\nT1 update doc A            \n                           T2 update doc A -> WriteConflict, T2 aborts\nT1 commit                  T2 retries with a new snapshot -> succeeds\n```\n\n**Reducing conflicts:**\n- **Avoid hot documents:** a global counter updated by every request serializes everything. Shard the counter into N documents and sum on read, or aggregate asynchronously.\n- **Keep transactions short:** do reads and computation before starting, and touch hot documents last so the conflict window is small.\n- **Use atomic single-document updates** (`$inc`, `$push`, `findOneAndUpdate`) instead of read-then-write transactions where possible.\n- **Order access consistently** across transactions.\n\n**Monitoring:** `serverStatus().transactions` and `writeConflicts` metrics; rising retries signal a contention hotspot worth remodelling.",
+      "followUps": [
+        "How do you reduce write conflicts on a hot document?",
+        "How do non-transactional writes behave when they conflict?"
+      ],
+      "mistakes": [
+        "Treating WriteConflict as a bug to log instead of a normal retryable outcome.",
+        "Designing a single counter document that every transaction updates, guaranteeing contention."
+      ],
+      "lesson": "mongo-transactions-consistency"
+    },
+    {
+      "id": "mongo-read-your-writes",
+      "level": "senior",
+      "q": "How do you get read-your-own-writes with secondaries?",
+      "answer": "**Use a causally consistent session with `w:\"majority\"` writes and `readConcern: \"majority\"` reads. The driver passes the write's cluster time to the secondary as `afterClusterTime`, and the secondary waits until it has replicated that far before answering.**\n\n**Why plain secondary reads fail:** replication is asynchronous. A user saves their profile on the primary, the next request reads from a lagging secondary, and the old profile comes back.\n\n**How causal consistency works:**\n- Every response carries an `operationTime` (a cluster-wide logical clock).\n- In a causal session, the driver remembers the latest one and attaches `afterClusterTime` to the next read.\n- A secondary that has not yet applied operations up to that time blocks the read until it catches up.\n\n```js\nconst session = client.startSession({ causalConsistency: true });\nconst opts = { session, readPreference: \"secondaryPreferred\",\n               readConcern: { level: \"majority\" } };\n\nawait users.updateOne({ _id: id }, { $set: { name: \"Ana\" } },\n                      { session, writeConcern: { w: \"majority\" } });\nconst me = await users.findOne({ _id: id }, opts); // sees \"Ana\"\n```\n\n**Guarantees you get:** read your own writes, monotonic reads, monotonic writes, and writes follow reads, within that session. With `majority` read and write concerns they hold across failovers.\n\n**Across requests or services:** a session lives in one client. To carry causality across HTTP requests or services, pass the `operationTime` and `clusterTime` along (e.g. in a header or the user session) and call `session.advanceClusterTime()` / `advanceOperationTime()` on the new session.\n\n**Simpler alternatives:** route a user's reads to the primary for a few seconds after they write, or just read from the primary for user-facing pages and use secondaries for analytics. Reading from secondaries rarely improves throughput as much as people expect, since secondaries also apply every write.",
+      "followUps": [
+        "What do afterClusterTime and operationTime do?",
+        "How would you share causal consistency across two backend services?"
+      ],
+      "mistakes": [
+        "Reading from secondaries with default settings and assuming the user's write is visible.",
+        "Using causal sessions with w:1 and read concern local, which does not give the guarantee across failures."
+      ],
+      "lesson": "mongo-transactions-consistency"
+    },
+    {
+      "id": "mongo-outbox-pattern",
+      "level": "senior",
+      "q": "How does the outbox pattern work?",
+      "answer": "**Write the business change and an event document into an `outbox` collection in the same transaction, then a separate relay process reads the outbox and publishes to the broker, marking events as sent. This removes the dual-write problem: the event exists if and only if the change committed.**\n\n**The problem it solves:** \"save order, then publish OrderCreated\" has two independent writes. If the process crashes between them, the order exists but no event was sent; if you publish first and the save fails, consumers act on an order that does not exist.\n\n```js\nawait session.withTransaction(async () => {\n  await orders.insertOne(order, { session });\n  await outbox.insertOne({ _id: new ObjectId(), type: \"OrderCreated\",\n    aggregateId: order._id, payload: { total: order.total },\n    createdAt: new Date(), sentAt: null }, { session });\n});\n\n// relay: tail with a change stream (resumable), publish, then mark sent\nconst cs = outbox.watch([{ $match: { operationType: \"insert\" } }], { resumeAfter: savedToken });\nfor await (const ev of cs) {\n  await producer.send({ topic: \"orders\", key: String(ev.fullDocument.aggregateId),\n                        messages: [{ value: JSON.stringify(ev.fullDocument) }] });\n  await outbox.updateOne({ _id: ev.documentKey._id }, { $set: { sentAt: new Date() } });\n  await saveToken(ev._id);\n}\n```\n\n**Relay options:**\n- **Polling** `{ sentAt: null }` with an index: simple and robust.\n- **Change streams:** low latency and resumable with a stored resume token.\n- **Kafka Connect MongoDB source connector or Debezium:** CDC without custom code.\n\n**Delivery semantics:** the relay can crash after publishing but before marking sent, so events can be sent twice. Consumers dedupe by event `_id` (a processed-events collection with a unique index) or apply idempotent updates.\n\n**Ordering:** use the aggregate id as the partition key so events for one entity stay in order. Clean old sent events with a TTL index on `sentAt`.",
+      "followUps": [
+        "How would you use change streams instead of polling the outbox?",
+        "How do consumers handle duplicates?"
+      ],
+      "mistakes": [
+        "Writing to the database and then publishing to Kafka directly, which loses or duplicates events when one step fails.",
+        "Assuming exactly-once delivery; outbox gives at-least-once, so consumers must be idempotent."
+      ],
+      "lesson": "mongo-transactions-consistency"
+    },
+    {
+      "id": "mongo-vs-relational",
+      "level": "mid",
+      "q": "When would you choose MongoDB over a relational database for a new product?",
+      "answer": "**Choose MongoDB when the data is naturally document-shaped and read as whole aggregates, the shape varies or evolves quickly, and you expect to scale horizontally. Choose a relational database when the data is highly relational, you need many ad hoc joins and reports, or strict multi-entity constraints drive correctness.**\n\n**Where MongoDB fits well:**\n- **Aggregates read as a unit:** product catalogs with varying attributes, user profiles, content management, IoT readings, game state.\n- **Polymorphic or evolving data:** different product types with different fields without sparse columns or an EAV mess.\n- **Horizontal scale built in:** sharding, zone sharding for data residency, and native replica sets with automatic failover.\n- **Developer fit:** documents map to objects; nested data needs no ORM gymnastics.\n- **Built-in extras:** change streams, time series collections, Atlas Search and Vector Search.\n\n**Where relational fits better:**\n- Many-to-many relationships queried from every direction (marketplaces, ERP, billing).\n- Heavy ad hoc reporting and analytics with joins.\n- Invariants across entities enforced by foreign keys, unique and check constraints.\n- Teams that rely on SQL tooling and BI.\n\n**Concrete example:** an e-commerce catalog where a laptop has `ram` and `cpu` and a shirt has `size` and `colour` is a natural document model. The payments ledger in the same company, with double-entry, reconciliation and audit reports, belongs in Postgres.\n\n**On jsonb:** Postgres with `jsonb` and GIN indexes covers many \"flexible attributes\" needs while keeping SQL and constraints, which is why many teams start with Postgres. MongoDB is stronger when documents are the primary model, updates target nested fields in place, and you need sharding without an extension.\n\n**What matters most:** the access patterns, consistency needs, the team's experience and operational tooling, not the label \"SQL vs NoSQL\".",
+      "followUps": [
+        "Which product features would push you to Postgres instead?",
+        "Postgres has jsonb; does that make MongoDB unnecessary?"
+      ],
+      "mistakes": [
+        "Choosing MongoDB because it is schemaless, without considering the access patterns and relationships.",
+        "Claiming MongoDB has no transactions or no joins; it has both, with different trade-offs."
+      ],
+      "lesson": "db-choosing"
+    },
+    {
+      "id": "mongo-change-streams",
+      "level": "mid",
+      "q": "What are change streams and what would you use them for?",
+      "answer": "**Change streams let an application subscribe to inserts, updates, deletes and other changes on a collection, database or whole cluster in real time, built on the replication oplog. They are resumable with a token, ordered, and only show majority-committed changes, which makes them a safe base for event-driven features.**\n\n**Typical uses:**\n- Syncing a search index, cache or analytics store (CDC).\n- Outbox relays to Kafka.\n- Real-time UI updates (notifications, dashboards).\n- Triggers, audit logs and cross-service integration.\n\n```js\nconst pipeline = [{ $match: { operationType: { $in: [\"insert\", \"update\"] },\n                              \"fullDocument.status\": \"paid\" } }];\nconst stream = db.collection(\"orders\").watch(pipeline, {\n  fullDocument: \"updateLookup\",\n  resumeAfter: await loadToken(),\n});\nfor await (const change of stream) {\n  await indexInSearch(change.fullDocument);   // idempotent upsert\n  await saveToken(change._id);\n}\n```\n\n**Mechanics to know:**\n- **Resume tokens:** each event's `_id`. Store it after processing and pass `resumeAfter` or `startAfter` on restart.\n- **Oplog window:** resume only works if the token is still in the oplog. If the consumer is down longer than the window, the stream fails and you need a full resync; size the oplog accordingly.\n- **Full documents:** updates include only the delta by default. `fullDocument: \"updateLookup\"` fetches the current document (which may be newer than the change). Pre- and post-images (`changeStreamPreAndPostImages`) give exact before/after versions.\n- **Sharded clusters:** open the stream through `mongos`; it merges per-shard streams into one globally ordered stream.\n\n**Trade-offs:** each open stream costs server resources, so prefer one consumer per purpose rather than one per user connection, and fan out from your own service. Delivery is at-least-once from your application's perspective, so make handlers idempotent.",
+      "followUps": [
+        "What happens if the consumer is down longer than the oplog window?",
+        "How do you get the full document for an update event?",
+        "How do change streams behave on a sharded cluster?"
+      ],
+      "mistakes": [
+        "Not storing the resume token, so a restart loses or replays events.",
+        "Assuming exactly-once processing; after a crash events can be redelivered, so handlers must be idempotent."
+      ]
+    },
+    {
+      "id": "mongo-ttl-partial-indexes",
+      "level": "junior",
+      "q": "What are TTL indexes and partial indexes, and when do you use them?",
+      "answer": "**A TTL index automatically deletes documents once a date field is older than a set number of seconds, ideal for sessions, tokens and logs. A partial index only indexes documents matching a filter, which keeps it small and enables things like \"unique only among active documents\".**\n\n**TTL indexes:**\n\n```js\n// delete sessions 30 minutes after lastSeen\ndb.sessions.createIndex({ lastSeen: 1 }, { expireAfterSeconds: 1800 });\n\n// expire at an exact per-document time\ndb.tokens.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });\n```\n\n- A background monitor runs roughly every 60 seconds, so deletion is not instant. Your queries should still filter out expired documents if exactness matters.\n- Deletes are normal writes: they replicate, cost I/O, and a burst of expiries can load the cluster. Spread expiry times if possible.\n- The field must be a date (or an array of dates). TTL works on time series collections with `expireAfterSeconds` at the collection level.\n\n**Partial indexes:**\n\n```js\n// unique email only among non-deleted users (soft delete)\ndb.users.createIndex({ email: 1 },\n  { unique: true, partialFilterExpression: { deletedAt: null } });\n\n// index only the small set of open tickets\ndb.tickets.createIndex({ assignee: 1, createdAt: -1 },\n  { partialFilterExpression: { status: \"open\" } });\n```\n\n- Smaller, faster indexes and cheaper writes for documents outside the filter.\n- The query must include a condition implying the filter (e.g. `status: \"open\"`), otherwise the planner cannot use the index.\n- They replace older **sparse** indexes, which only skip documents missing the field.\n\n**Real-world combo:** a partial TTL index can delete only unverified sign-up records after 24 hours while keeping verified ones.",
+      "followUps": [
+        "Why is TTL deletion not exact to the second?",
+        "What does a query need to use a partial index?"
+      ],
+      "mistakes": [
+        "Expecting TTL deletion at the exact expiry time; the background task runs about every 60 seconds and can lag under load.",
+        "Querying without the partial filter condition and wondering why the partial index is not used."
+      ]
+    },
+    {
+      "id": "mongo-lookup-cost",
+      "level": "senior",
+      "q": "How expensive is $lookup, and how do you make it fast?",
+      "answer": "**`$lookup` performs a left outer join by running a query against the foreign collection for each input document, so its cost is roughly input documents times the cost of one lookup. With an index on the foreign field and few input documents it is fine; on large inputs, or without an index, it is one of the slowest things you can do in MongoDB.**\n\n**Make it fast:**\n- **Index the foreign field:** without it, each input document triggers a collection scan. Since 6.0, MongoDB can use a hash join (with `allowDiskUse`) when no index exists, but an index is still the main fix.\n- **Reduce input first:** `$match`, `$sort` and `$limit` before `$lookup`, so you join 20 documents, not 2 million.\n- **Return less:** use the pipeline form to filter and project inside the lookup, and `$limit` the joined array.\n\n```js\ndb.orders.aggregate([\n  { $match: { customerId: 42 } },\n  { $sort: { createdAt: -1 } },\n  { $limit: 20 },\n  { $lookup: {\n      from: \"products\", localField: \"items.productId\", foreignField: \"_id\", as: \"products\",\n      pipeline: [{ $project: { name: 1, price: 1 } }]\n  } }\n]);\n```\n\n**Sharded clusters:** since 5.1, the foreign collection can be sharded. Lookups that cannot be targeted by shard key fan out to every shard per input document, which multiplies the cost.\n\n**When to remodel instead:**\n- If a hot read path always needs the join, embed or keep an **extended reference** (copy the few fields you display, such as product name).\n- For reports joining big collections, precompute with `$merge` into a summary collection, or move analytics to a warehouse.\n\n**Rule of thumb:** `$lookup` is great for occasional, small or admin queries. If your main page load needs several lookups, the document model probably does not match the access pattern.",
+      "followUps": [
+        "How does $lookup behave on a sharded cluster?",
+        "When would you denormalize instead?"
+      ],
+      "mistakes": [
+        "Running $lookup without an index on the foreignField, causing a collection scan per input document.",
+        "Doing $lookup before $match and $limit, joining documents that are later discarded."
+      ]
+    },
+    {
+      "id": "mongo-read-preference-concern",
+      "level": "senior",
+      "q": "Explain read preference and read concern levels.",
+      "answer": "**Read preference decides which member serves the read (primary, secondary, nearest). Read concern decides what consistency the returned data has: `local` (latest on that node, may be rolled back), `majority` (acknowledged by a majority, never rolled back), `linearizable` (reflects all majority writes before the read), and `snapshot` (a consistent point in time).**\n\n**Read preference modes:**\n- **primary** (default): freshest, the only choice for read-after-write without sessions.\n- **primaryPreferred:** primary, falling back to secondaries during failover.\n- **secondary / secondaryPreferred:** offload analytics or reports, accept staleness. Add `maxStalenessSeconds` (at least 90) to skip badly lagging members.\n- **nearest:** lowest latency member, useful for multi-region reads with tag sets (`{ region: \"eu\" }`).\n\n**Read concern levels:**\n- **local:** the node's latest data, including writes that might be rolled back after a failover. Fastest.\n- **available:** like local; on sharded clusters can return orphaned documents.\n- **majority:** only data acknowledged by a majority. Safe from rollback, cheap thanks to majority-committed snapshots.\n- **linearizable:** primary only; confirms with a majority that it is still primary before returning, so you see every write acknowledged before the read began. Slower; use with `maxTimeMS`.\n- **snapshot:** used in transactions and with `atClusterTime` for consistent multi-document reads.\n\n```js\n// analytics: stale but cheap, kept off the primary\ndb.orders.find(q).readPref(\"secondaryPreferred\", [{ workload: \"analytics\" }]);\n\n// balance check that must not show rolled-back data\ndb.accounts.find({ _id: id }).readConcern(\"majority\");\n```\n\n**Common pairing:** `w:\"majority\"` plus `readConcern: \"majority\"` in causally consistent sessions gives read-your-writes even on secondaries. Use `linearizable` sparingly, for things like reading a lock or a uniqueness-critical flag.",
+      "followUps": [
+        "What does readConcern linearizable cost?",
+        "Why can reading from secondaries reduce availability of fresh data?",
+        "What is maxStalenessSeconds?"
+      ],
+      "mistakes": [
+        "Confusing the two: read preference picks which node, read concern decides which version of data is acceptable.",
+        "Assuming secondaryPreferred scales reads for free, ignoring stale reads and that secondaries also apply every write."
+      ]
+    }
+  ]
+}
