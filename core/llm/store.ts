@@ -1,8 +1,8 @@
-import type { AiFeature, ProviderId, ProviderState } from "@/modules/ai/domain/llm-router";
+import type { AiFeature, ProviderState } from "@/modules/ai/domain/llm-router";
 
 export interface UsageDelta {
-  /** A provider, or "cache" for answers served without calling one. */
-  provider: ProviderId | "cache";
+  /** A provider id, or "cache" for answers served without calling one. */
+  provider: string;
   feature: AiFeature;
   calls?: number;
   fails?: number;
@@ -19,12 +19,16 @@ export interface UsageDelta {
 
 /**
  * Everything the chain needs to remember between calls. Serverless instances share no
- * memory, so the real implementation (lib/services/llm-store.ts) keeps it in Mongo.
+ * memory, so the real implementation (modules/ai/services/llm-store.ts) keeps it in Mongo.
+ * States are keyed by slot id (a provider, or `provider#fingerprint` for one of several keys).
  */
 export interface LlmStore {
-  loadStates(): Promise<Partial<Record<ProviderId, ProviderState>>>;
-  saveState(id: ProviderId, state: ProviderState): Promise<void>;
+  loadStates(): Promise<Partial<Record<string, ProviderState>>>;
+  saveState(id: string, state: ProviderState): Promise<void>;
   recordUsage(delta: UsageDelta): Promise<void>;
+  /** Lifetime tokens per key fingerprint. */
+  keyTokens(): Promise<Record<string, number>>;
+  addKeyTokens(fingerprint: string, provider: string, tokens: number): Promise<void>;
   paidUsedToday(): Promise<number>;
   /** Atomically claim one paid call under `cap`. False means the cap was already reached. */
   reservePaid(cap: number): Promise<boolean>;
@@ -36,19 +40,26 @@ export interface LlmStore {
 
 /** In-memory store for tests and scripts. */
 export class MemoryLlmStore implements LlmStore {
-  states: Partial<Record<ProviderId, ProviderState>> = {};
+  states: Partial<Record<string, ProviderState>> = {};
   usage: UsageDelta[] = [];
+  tokens: Record<string, number> = {};
   paidCalls = 0;
   approved = false;
 
   async loadStates() {
     return { ...this.states };
   }
-  async saveState(id: ProviderId, state: ProviderState) {
+  async saveState(id: string, state: ProviderState) {
     this.states[id] = state;
   }
   async recordUsage(delta: UsageDelta) {
     this.usage.push(delta);
+  }
+  async keyTokens() {
+    return { ...this.tokens };
+  }
+  async addKeyTokens(fingerprint: string, _provider: string, tokens: number) {
+    this.tokens[fingerprint] = (this.tokens[fingerprint] ?? 0) + tokens;
   }
   async paidUsedToday() {
     return this.paidCalls;

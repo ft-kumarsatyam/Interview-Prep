@@ -174,8 +174,10 @@ Pick an idea from the bottom of `docs/BUILD_PLAN.md`, check it works, commit.
    | `APP_TIMEZONE` | ✅ | `Asia/Kolkata` |
    | `CRON_SECRET` | ✅ | `openssl rand -hex 32`. Vercel Cron sends it as `Authorization: Bearer …` |
    | `LEETCODE_USERNAME` | optional | seeds the username on first run (e.g. `imksatyam`); later edits happen in */settings*. Set it in Vercel too, or sync stays off until you enter it in Settings |
-   | `GEMINI_API_KEY`, `GROQ_API_KEY` (+ optional `GEMINI_MODEL`, `GROQ_MODEL`) | optional | Free AI providers, tried in order with automatic failover; `LLM_CHAIN` sets the order |
-   | `META_LLAMA_API_KEY`, `META_LLAMA_BASE_URL`, `META_LLAMA_MODEL` | optional | A **paid** last resort. Never used by background jobs and only after you confirm in the app; Settings has a daily call cap |
+   | `NVIDIA_API_KEYS`, `OPENROUTER_API_KEYS`, `GEMINI_API_KEY`, `GROQ_API_KEY` (+ optional `*_MODEL`) | optional | Free AI providers, tried in order with automatic failover; `LLM_CHAIN` sets the order. Each takes a comma-separated list of keys that rotate |
+   | `LLM_KEY_TOKEN_BUDGET` | optional | Lifetime tokens per key before it is skipped (default 100,000,000). Settings warns at 90% so you can add a new key |
+   | `OPENAI_API_KEYS` (+ `OPENAI_MODEL`), `META_LLAMA_API_KEY`, `META_LLAMA_BASE_URL`, `META_LLAMA_MODEL` | optional | **Paid** last resorts. Never used by background jobs or the assistant, and only after you confirm in the app; Settings has a daily call cap |
+   | `LLM_EXTRA_PROVIDERS`, `LLM_EXTRA_<ID>_KEYS` | optional | Extra OpenAI-compatible providers as JSON `[{"id","label","baseUrl","model","paid"}]` (paid unless `"paid": false`); keys go in `LLM_EXTRA_<ID>_KEYS`, never in the JSON |
    | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` | optional | The older single-provider setup, still supported |
    | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional | push reminders to Telegram |
    | `NOTIFY_EMAIL` | optional | where email reminders and the morning digest go |

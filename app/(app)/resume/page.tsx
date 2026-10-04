@@ -6,6 +6,7 @@ import { VersionList } from "@/modules/resume/components/version-list";
 import { Button } from "@/components/ui/button";
 import { ResumeWorkbench } from "@/modules/resume/components/resume-workbench";
 import { PageHeader } from "@/components/shared/page-header";
+import { PageStack } from "@/components/shared/page-stack";
 import { effectiveRoastLevel } from "@/modules/resume/domain/roast";
 import { getBaseResume, listProfiles, listVersions } from "@/modules/resume/services/resume";
 import { getSettings } from "@/modules/settings/services/settings";
@@ -35,9 +36,11 @@ export default async function ResumePage({ searchParams }: PageProps<"/resume">)
           </Button>
         )}
       </PageHeader>
-      <NextStep next={overview.next} />
-      <ResumeWorkbench key={profile?.id ?? "base"} initialText={(profile ?? base)?.text ?? ""} saved={Boolean(profile ?? base)} profileId={profile?.id} roastLevel={effectiveRoastLevel(settings.roastLevel, settings.roastMode)} />
-    <VersionList profiles={profiles.map((p) => ({ id: p.id, label: p.label, updatedAt: p.updatedAt }))} baseId={base?.id ?? null} versions={versions.map((v) => ({ id: v.id, label: v.label, company: v.company, role: v.role, updatedAt: v.updatedAt, score: null }))} />
+      <PageStack>
+        <NextStep next={overview.next} />
+        <ResumeWorkbench key={profile?.id ?? "base"} initialText={(profile ?? base)?.text ?? ""} saved={Boolean(profile ?? base)} profileId={profile?.id} roastLevel={effectiveRoastLevel(settings.roastLevel, settings.roastMode)} />
+        <VersionList profiles={profiles.map((p) => ({ id: p.id, label: p.label, updatedAt: p.updatedAt }))} baseId={base?.id ?? null} versions={versions.map((v) => ({ id: v.id, label: v.label, company: v.company, role: v.role, updatedAt: v.updatedAt, score: null }))} />
+      </PageStack>
     </>
   );
 }

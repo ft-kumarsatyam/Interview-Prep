@@ -6,7 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import sharp from "sharp";
 import { SPLASH_DEVICES, SPLASH_THEMES, splashFile, type SplashTheme } from "@/core/pwa/splash";
 
-const BRAND = "#7c5cff";
+const BRAND = "#4b3fc4";
 const FLAME = "M16 6c1 3.5 5.5 6 5.5 11.2A5.5 5.5 0 0 1 16 23a5.5 5.5 0 0 1-5.5-5.8c0-2.2 1-3.9 2.2-5 .2 1.8 1 3 2.3 3.6-.3-3.6.2-6.8 1-9.8Z";
 
 /** `rounded` matches the favicon; maskable icons need a full-bleed square with the mark inside the 80% safe zone. */

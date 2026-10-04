@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { MOBILE_HUB_IDS, NAV_HUBS, NAV_ITEMS, hubFor, isHubLanding, pageFor, parseOpenHubs, toggleHub } from "@/components/layout/nav-items";
+import { MOBILE_HUB_IDS, MORE_HUB_IDS, NAV_HUBS, NAV_ITEMS, hubFor, isHubLanding, pageFor, parseOpenHubs, toggleHub } from "@/components/layout/nav-items";
 
 describe("nav hubs", () => {
   it("has unique hrefs, so every page belongs to exactly one hub", () => {
     const hrefs = NAV_ITEMS.map((p) => p.href);
     expect(new Set(hrefs).size).toBe(hrefs.length);
-    expect(NAV_HUBS.map((h) => h.id)).toEqual(["today", "practice", "learn", "plan", "settings"]);
+    expect(NAV_HUBS.map((h) => h.id)).toEqual(["today", "plan", "practice", "learn", "career", "settings"]);
+  });
+
+  it("puts Planner, Calendar and Targets first in the Plan hub, and jobs with the resume under Career", () => {
+    expect(NAV_HUBS.find((h) => h.id === "plan")!.pages.map((p) => p.label)).toEqual(["Planner", "Calendar", "Targets", "Stats"]);
+    expect(hubFor("/jobs/tracker")?.id).toBe("career");
+    expect(hubFor("/resume/tailor")?.id).toBe("career");
+    expect(hubFor("/calendar/2026-10-04")?.id).toBe("plan");
   });
 
   it("opens each hub on one of its own pages", () => {
@@ -53,7 +60,7 @@ describe("nav hubs", () => {
   });
 
   it("keeps the mobile bar to four hubs plus More", () => {
-    expect(MOBILE_HUB_IDS).toHaveLength(4);
-    expect(MOBILE_HUB_IDS).not.toContain("settings");
+    expect(MOBILE_HUB_IDS).toEqual(["today", "plan", "practice", "learn"]);
+    expect([...MOBILE_HUB_IDS, ...MORE_HUB_IDS].toSorted()).toEqual(NAV_HUBS.map((h) => h.id).toSorted());
   });
 });

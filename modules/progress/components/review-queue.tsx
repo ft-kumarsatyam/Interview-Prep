@@ -8,6 +8,7 @@ import { markSolved } from "@/app/(app)/dashboard/actions";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { celebrateDayComplete } from "@/components/shared/celebrate";
+import { feedback } from "@/components/shared/feedback";
 import { DifficultyBadge } from "@/components/shared/badges";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
@@ -54,6 +55,7 @@ export function ReviewQueue({ items, today }: { items: ReviewItem[]; today: Date
       setSaved((s) => [...s, { slug: item.slug, title: item.title, confidence }]);
       toast.success(`${item.title}: re-solved (${confidence})`);
       if (res.justCompleted) await celebrateDayComplete();
+      else feedback("tick");
     });
   }
 

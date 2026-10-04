@@ -24,8 +24,8 @@ export const viewport: Viewport = {
   // Lets the page draw under the notch; app chrome pads itself with env(safe-area-inset-*).
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#0b0d12" },
-    { media: "(prefers-color-scheme: light)", color: "#fafafb" },
+    { media: "(prefers-color-scheme: dark)", color: "#13120f" },
+    { media: "(prefers-color-scheme: light)", color: "#f6f4ef" },
   ],
 };
 
@@ -33,7 +33,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" suppressHydrationWarning className={`${inter.variable} ${jetbrains.variable} h-full antialiased`}>
       <body className="min-h-full" suppressHydrationWarning>
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
           <TooltipProvider>{children}</TooltipProvider>
           <Toaster richColors position="top-center" />
         </ThemeProvider>

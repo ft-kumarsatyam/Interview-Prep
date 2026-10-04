@@ -100,7 +100,7 @@ export function openaiCompatible(cfg: LlmConfig): CompleteFn {
       {
         model,
         temperature: 0.7,
-        response_format: { type: "json_object" },
+        ...(cfg.jsonMode === false ? {} : { response_format: { type: "json_object" } }),
         ...(cfg.maxTokens ? { max_tokens: cfg.maxTokens } : {}),
         messages: [{ role: "user", content: prompt }],
       },

@@ -71,6 +71,7 @@ Modules are not equal. Keep imports pointing at the more stable one.
 |---|---|---|
 | **Leaf** (own one feature) | `ai`, `aptitude`, `course`, `design`, `dsa`, `jobs`, `learn`, `mock`, `news`, `quiz`, `resume`, `roadmap`, `settings`, `targets` | Depend on `settings` and small, stable helpers such as `planner/services/plan#todayIn`. Never on another leaf's components if a prop or `components/shared` will do. |
 | **Orchestration** (stitch features together) | `planner`, `progress`, `notifications`, `practice` | May read many leaves. `planner`, `progress` and `notifications` already form a knot (`progress` <-> `planner` <-> `notifications`); the architecture test freezes it so it cannot grow. `practice` (the Practice hub) is a read-only aggregator: it points at leaves and nothing may import it. |
+| **Assistant** (read-only aggregator) | `chat` | Like `practice`: its data tools (`services/chat-tools.ts`) read other modules' services so the assistant can answer from your data; nothing may import it, and it never imports `resume`. |
 
 When you need something from an orchestration module in a leaf, prefer moving the small shared piece **down** (a pure function in the leaf's or `core`'s `domain/`) over adding an upward import.
 
@@ -116,7 +117,7 @@ extension/                  plain-JS Chrome extension (reads only the page you c
 docs/                       this file, ARCHITECTURE, DESIGN, BUILD_PLAN, ROADMAP, GRAPH
 ```
 
-Modules today: `ai, aptitude, course, design, dsa, jobs, learn, mock, news, notifications, planner, practice, progress, quiz, resume, roadmap, settings, targets`.
+Modules today: `ai, aptitude, chat, course, design, dsa, jobs, learn, mock, news, notes, notifications, planner, practice, progress, quiz, resume, roadmap, settings, targets`.
 
 ---
 
@@ -127,15 +128,15 @@ From most reusable to most specific. Put a component in the **lowest** row that 
 | Kind | Where | Rules |
 |---|---|---|
 | **UI primitive** | `components/ui/*` | No app knowledge. Variants through `cva`. Tokens only, no hex. |
-| **Shared building block** | `components/shared/*` | Knows the design system, not a feature (`PageHeader`, `StatTile`, `ToneBadge`, `Chip`, `EmptyState`, `BackLink`). |
+| **Shared building block** | `components/shared/*` | Knows the design system, not a feature (`PageHeader`, `PageStack`, `StatTile`, `ToneBadge`, `Chip`, `EmptyState`, `BackLink`). |
 | **Feature presentational** | `modules/<f>/components/*.tsx` | Props in, markup out. No data fetching, no models, no services. Server Component by default. |
 | **Server section** | `modules/<f>/components/*-section.tsx` | `async` Server Component that loads data through a service and renders a presentational component. **The only components allowed to call services.** Wrap each in `<Suspense>` on the page so slow data never blocks the page. A failure should hide the section, not break the page. |
 | **Client island** | any component with `"use client"` | Only for interactivity (state, effects, browser APIs). Receives plain, serialisable props. Calls Server Actions; never imports a service. Keep it small and push logic into `domain/`. |
-| **Page** | `app/(app)/<route>/page.tsx` | Reads params, calls services or mounts sections, composes `PageHeader` + components. No Mongoose. |
+| **Page** | `app/(app)/<route>/page.tsx` | Reads params, calls services or mounts sections, composes `PageHeader` + `PageStack` + components. No Mongoose. |
 
 Naming: files are `kebab-case.tsx`, components `PascalCase`, named exports only. A route's Server Actions sit beside it in `actions.ts` (`discover-actions.ts` and `practice-actions.ts` when a route has several families).
 
-Styling: Tailwind with the tokens in `app/globals.css` (`--success`, `--warning`, `--destructive`, `--day-done|left|missed|rest|caught`). Never hard-code colours in a component. Lists and cards are mobile-first; tap targets are at least 44px under `pointer-coarse`.
+Styling: Tailwind with the tokens in `app/globals.css` (`--success`, `--warning`, `--destructive`, `--day-done|left|missed|rest|caught`). Never hard-code colours in a component. Lists and cards are mobile-first; tap targets are at least 44px under `pointer-coarse`. Spacing follows one rhythm (DESIGN §1): sections `space-y-6` through `PageStack`, `space-y-3` inside a section, grids `gap-4`, cards `p-4 sm:p-5`, and no outer margins on sections or cards.
 
 ### How a file calls another (the call chain)
 

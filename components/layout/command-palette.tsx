@@ -52,7 +52,7 @@ export function CommandPalette() {
 
   return (
     <>
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="gap-2 text-muted-foreground" aria-label="Search (Command K)">
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="size-9 gap-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none sm:h-8 sm:w-auto sm:border-border sm:px-2.5" aria-label="Search (Command K)">
         <Search />
         <span className="hidden sm:inline">Search</span>
         <kbd className="hidden rounded border bg-muted px-1 font-mono text-2xs sm:inline">⌘K</kbd>

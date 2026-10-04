@@ -8,6 +8,7 @@ import { PostingCard } from "@/modules/jobs/components/posting-card";
 import { PrefsForm } from "@/modules/jobs/components/prefs-form";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { PageStack } from "@/components/shared/page-stack";
 import { Button } from "@/components/ui/button";
 import { tierProfiles } from "@/core/content";
 import { discoverJobs, getJobPrefs, listSources } from "@/modules/jobs/services/job-discovery";
@@ -51,9 +52,8 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
         <RefreshButton />
       </PageHeader>
       <JobsTabs active="discover" trackerCount={tracked.length} />
-      <NextStep next={overview.next} />
-
-      <div className="space-y-5">
+      <PageStack>
+        <NextStep next={overview.next} />
         <LiveJobsBanner />
         <details className="rounded-xl border bg-card" open={!found.hasPrefs}>
           <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
@@ -107,7 +107,7 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
             )}
           </div>
         )}
-      </div>
+      </PageStack>
     </>
   );
 }

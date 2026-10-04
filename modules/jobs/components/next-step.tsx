@@ -8,7 +8,7 @@ export function NextStep({ next }: { next: NextAction }) {
   return (
     <Link
       href={next.href}
-      className={`mb-4 flex min-h-12 items-center gap-3 rounded-xl border p-3 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${clear ? "border-day-done-line bg-day-done" : "border-primary/30 bg-primary/5 hover:bg-primary/10"}`}
+      className={`flex min-h-12 items-center gap-3 rounded-xl border p-3 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${clear ? "border-day-done-line bg-day-done" : "border-primary/30 bg-primary/5 hover:bg-primary/10"}`}
     >
       {clear ? <CheckCircle2 className="size-5 shrink-0 text-day-done-dot" aria-hidden /> : <Compass className="size-5 shrink-0 text-primary" aria-hidden />}
       <span className="min-w-0 flex-1">

@@ -10,6 +10,8 @@ export interface LlmConfig {
   baseUrl?: string;
   /** Output cap per call. Set for the paid provider so one call can't run long. */
   maxTokens?: number;
+  /** OpenAI-compatible only: send `response_format: json_object` (default true). Off for endpoints that reject it. */
+  jsonMode?: boolean;
   /** Overall request deadline: aborts the call when it fires (each call still has its own 30 s timeout). */
   signal?: AbortSignal;
 }

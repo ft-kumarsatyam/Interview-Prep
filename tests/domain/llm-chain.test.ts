@@ -323,3 +323,47 @@ describe("chain: streaming", () => {
     await expect(collect(c.streamText!("p"))).rejects.toBeInstanceOf(AllProvidersFailedError);
   });
 });
+
+describe("chain: several keys per provider", () => {
+  const key = (provider: string, fp: string, keyIndex: number, paid = false): ProviderDef => ({
+    id: `${provider}#${fp}`,
+    provider,
+    label: provider,
+    paid,
+    fingerprint: fp,
+    keyIndex,
+    keyCount: 2,
+    cfg: { provider: "openai-compatible", apiKey: `k-${fp}` },
+  });
+  const KEYS = [key("openrouter", "aaaaaa", 0), key("openrouter", "bbbbbb", 1), def("gemini")];
+
+  it("moves to the next key when one is out of quota, and only cools that key down", async () => {
+    const calls: string[] = [];
+    const { c, store } = chain({ defs: KEYS, calls, feature: "background", script: { "openrouter#aaaaaa": http(429, "quota-day") } });
+    expect(await c.generateJson("p", schema)).toEqual({ ok: true });
+    expect(calls).toEqual(["openrouter#aaaaaa", "openrouter#bbbbbb"]);
+    expect(store.states["openrouter#aaaaaa"]?.status).toBe("cooldown");
+    expect(store.states["openrouter#bbbbbb"]).toBeUndefined();
+    expect(store.usage.at(-1)?.provider).toBe("openrouter");
+  });
+
+  it("counts tokens per key fingerprint and skips a key over its budget", async () => {
+    const store = new MemoryLlmStore();
+    store.tokens.aaaaaa = 100;
+    const calls: string[] = [];
+    const c = createChain({ defs: KEYS, store, feature: "background", paid: DEFAULT_PAID_SETTINGS, timeZone: "Asia/Kolkata", now: () => NOW, make: fake({}, calls), keyBudget: 100 });
+    await c.generateJson("p", schema);
+    expect(calls).toEqual(["openrouter#bbbbbb"]);
+    expect(store.tokens.bbbbbb).toBeGreaterThan(0);
+    expect(store.tokens.aaaaaa).toBe(100);
+  });
+
+  it("keeps a feature's preferred provider first and every paid provider last", async () => {
+    const calls: string[] = [];
+    const defs = [key("openai", "cccccc", 0, true), def("gemini"), def("nvidia")];
+    const { c } = chain({ defs, calls, feature: "chat", script: { nvidia: http(500, "server"), gemini: http(500, "server") } });
+    const err = await c.generateJson("p", schema).catch((e) => e);
+    expect(err).toBeInstanceOf(AllProvidersFailedError);
+    expect(calls).toEqual(["nvidia", "gemini"]);
+  });
+});

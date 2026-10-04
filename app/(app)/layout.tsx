@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { Flame } from "lucide-react";
 import { AiProvider } from "@/modules/ai/components/ai-context";
 import { CaptureListener } from "@/modules/jobs/components/capture-listener";
+import { AskPageButton } from "@/modules/chat/components/ask-page-button";
 import { LiveProvider } from "@/core/components/live/live-provider";
 import { LiveRefresh } from "@/core/components/live/live-refresh";
 import { HubTabs, MobileTabBar, TopBarTitle } from "@/components/layout/app-nav";
@@ -16,6 +17,10 @@ import { NotificationBell, type BellItem } from "@/components/layout/notificatio
 import { RouteProgress } from "@/components/layout/route-progress";
 import { SessionBar } from "@/components/layout/session-bar";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
+import { FocusWidget } from "@/components/layout/focus-widget";
+import { MusicPlayer } from "@/modules/music/components/music-player";
+import { SelectionToolbar } from "@/components/shared/selection-toolbar";
+import { StickyNotesDock } from "@/components/layout/sticky-notes-dock";
 import { requireSession } from "@/core/auth/dal";
 import { timeAgo } from "@/modules/news/domain/news";
 import { env } from "@/core/env";
@@ -25,13 +30,14 @@ import { getNavState } from "@/core/services/nav";
 import { todayIn } from "@/modules/planner/services/plan";
 import { getSettings } from "@/modules/settings/services/settings";
 import { listNotifications } from "@/modules/notifications/services/notifications";
+import { listCapturedNotes } from "@/modules/notes/services/notes";
 import { logout } from "./actions";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await requireSession();
   // If MongoDB is unreachable the shell still renders, so /setup can say what is wrong instead of an opaque error.
-  const loaded = await Promise.all([listNotifications(20), getNavState(), getSettings()]).catch(() => null);
-  const [notes, nav, settings] = loaded ?? [{ items: [], unread: 0 }, { badges: {}, today: null }, null];
+  const loaded = await Promise.all([listNotifications(20), getNavState(), getSettings(), listCapturedNotes()]).catch(() => null);
+  const [notes, nav, settings, capturedNotes] = loaded ?? [{ items: [], unread: 0 }, { badges: {}, today: null }, null, []];
   const aiAvailable = resolveProviders(env()).length > 0;
   const now = new Date();
   const bellItems: BellItem[] = notes.items.map((n) => ({ ...n, age: timeAgo(new Date(n.createdAt), now) }));
@@ -57,7 +63,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <AppSidebar badges={nav.badges} today={nav.today} initialCollapsed={sidebarCollapsed} logout={logout} />
 
       <div className="flex min-w-0 flex-col">
-        <header className="sticky top-0 z-30 flex h-[calc(3.5rem+env(safe-area-inset-top))] items-center gap-3 border-b bg-background/80 px-4 pt-[env(safe-area-inset-top)] backdrop-blur lg:px-8">
+        <header className="sticky top-0 z-30 flex h-[calc(var(--topbar-h)+env(safe-area-inset-top))] items-center gap-2 border-b bg-background/85 pt-[env(safe-area-inset-top)] pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] backdrop-blur sm:gap-3 sm:pr-4 lg:px-8">
           <Link href="/dashboard" aria-label="PrepOS home" className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground lg:hidden">
             <Flame className="size-4" />
           </Link>
@@ -65,19 +71,24 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <TopBarTitle />
             {todayLabel && <span className="hidden text-xs text-muted-foreground md:inline">· {todayLabel}</span>}
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
             <CommandPalette />
+            <AskPageButton />
             <NotificationBell items={bellItems} unread={notes.unread} />
-            <ThemeToggle />
+            <ThemeToggle className="hidden sm:inline-flex" />
           </div>
         </header>
-        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1200px] flex-1 px-4 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] outline-none sm:pt-6 lg:px-8 lg:pb-10 has-[[data-ide]]:max-w-none md:has-[[data-ide]]:pt-3 lg:has-[[data-ide]]:px-4 lg:has-[[data-ide]]:pb-3">
+        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1200px] flex-1 px-4 pt-5 pb-[calc(var(--tabbar-h)+2rem+env(safe-area-inset-bottom))] outline-none sm:pt-6 lg:px-8 lg:pb-10 has-[[data-ide]]:max-w-none md:has-[[data-ide]]:pt-3 lg:has-[[data-ide]]:px-4 lg:has-[[data-ide]]:pb-3">
           <InstallHint />
           <HubTabs badges={nav.badges} />
           <SessionBar today={nav.today} badges={nav.badges} />
           {children}
         </main>
       </div>
+      <FocusWidget timezone={settings?.timezone ?? env().APP_TIMEZONE} />
+      <SelectionToolbar highlights={capturedNotes.map((note) => ({ href: note.source.href, excerpt: note.excerpt, highlightColor: note.highlightColor }))} />
+      <StickyNotesDock notes={capturedNotes.slice(0, 12)} />
+      <MusicPlayer compact />
       <MobileTabBar badges={nav.badges} today={nav.today} logout={logout} />
     </div>
     </LiveProvider>

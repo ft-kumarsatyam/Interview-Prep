@@ -59,6 +59,7 @@ async function deliverEventInner(eventId: string): Promise<DeliverResult> {
 
   const results: Record<string, unknown> = {};
   const errors: string[] = [];
+  let permanent = true;
   let ran = 0;
   for (const h of handlers.get(row.type) ?? []) {
     try {
@@ -73,9 +74,10 @@ async function deliverEventInner(eventId: string): Promise<DeliverResult> {
     } catch (err) {
       await Inbox.deleteOne({ eventId, handler: h.name });
       errors.push(`${h.name}: ${short(err)}`);
+      if ((err as { permanent?: boolean }).permanent !== true) permanent = false;
     }
   }
-  if (errors.length) return { ok: false, permanent: false, error: errors.join("; ") };
-  await Outbox.updateOne({ eventId }, { $set: { status: "done", doneAt: new Date(), lastError: "" } });
+  if (errors.length) return { ok: false, permanent, error: errors.join("; ") };
+  await Outbox.updateOne({ eventId }, { $set: { status: "done", doneAt: new Date(), lastError: "", result: ran ? results : null } });
   return { ok: true, duplicate: ran === 0, results };
 }

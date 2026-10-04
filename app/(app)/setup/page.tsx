@@ -15,12 +15,20 @@ import { OutboxPanel } from "@/core/components/events/outbox-panel";
 import { getBroker } from "@/core/broker";
 import { outboxStats } from "@/core/events/relay";
 import { replayDeadAction } from "@/app/(app)/setup/actions";
+import { env } from "@/core/env";
+import { DeliveryPanel } from "@/modules/notifications/components/delivery-panel";
+import { lastDeliveries } from "@/modules/notifications/services/deliveries";
 
 export const metadata: Metadata = { title: "Setup" };
 
 export default async function SetupPage() {
   const session = await currentSession();
-  const [checklist, events, snapshot] = await Promise.all([getSetupChecklist({ live: true, remember: session.remember }), outboxStats(), getHealthSnapshot()]);
+  const [checklist, events, snapshot, deliveries] = await Promise.all([
+    getSetupChecklist({ live: true, remember: session.remember }),
+    outboxStats(),
+    getHealthSnapshot(),
+    lastDeliveries().catch(() => []),
+  ]);
   const slos = evaluateSlo(snapshot);
   const pct = Math.round((checklist.done / checklist.total) * 100);
   const complete = checklist.requiredLeft === 0;
@@ -89,6 +97,8 @@ export default async function SetupPage() {
       </p>
 
       <HealthPanel results={slos} overall={overall(slos)} />
+
+      <DeliveryPanel rows={deliveries} timezone={env().APP_TIMEZONE} />
 
       <OutboxPanel broker={getBroker().name} stats={events} replay={replayDeadAction} />
 

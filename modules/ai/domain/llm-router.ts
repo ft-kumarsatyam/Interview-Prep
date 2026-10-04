@@ -5,13 +5,16 @@
  * serverless instances share no memory.
  */
 
-export const PROVIDER_IDS = ["gemini", "groq", "anthropic", "custom", "meta"] as const;
+export const PROVIDER_IDS = ["nvidia", "openrouter", "gemini", "groq", "anthropic", "custom", "openai", "meta"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
-/** The only provider that costs money. Always tried last and only with a visible confirmation. */
-export const PAID_PROVIDER: ProviderId = "meta";
+/**
+ * Built-in providers that cost money. Always tried last and only with a visible confirmation.
+ * Extra providers from LLM_EXTRA_PROVIDERS can be marked paid too (ProviderDef.paid).
+ */
+export const PAID_PROVIDERS: readonly string[] = ["openai", "meta"];
 
-export const AI_FEATURES = ["background", "practice", "hint", "explain", "code-review", "answer-feedback", "generate-questions", "mock-grade", "resume-roast", "resume-tailor", "ask", "job-chat", "recruiter-email", "test"] as const;
+export const AI_FEATURES = ["background", "practice", "hint", "explain", "code-review", "answer-feedback", "generate-questions", "mock-grade", "resume-roast", "resume-tailor", "ask", "job-chat", "recruiter-email", "chat", "test"] as const;
 export type AiFeature = (typeof AI_FEATURES)[number];
 
 export type ErrorKind = "rate" | "quota-day" | "auth" | "server" | "timeout" | "network" | "bad-request" | "invalid-output";
@@ -100,16 +103,18 @@ export const FEATURE_POLICY: Record<AiFeature, FeaturePolicy> = {
   // Both read your resume: personal data, so never the paid provider.
   "job-chat": { prefer: ["gemini", "groq"], paid: "never" },
   "recruiter-email": { prefer: ["gemini"], paid: "never" },
+  // The system-wide assistant reads your app data: free providers only.
+  chat: { prefer: ["nvidia", "openrouter", "gemini", "groq"], paid: "never" },
   test: { prefer: [], paid: "never" },
 };
 
-/** Try order: the feature's preferred providers, then the rest of the chain, and the paid provider always last. */
-export function planOrder(chain: readonly ProviderId[], policy: FeaturePolicy): ProviderId[] {
-  const inChain = (id: ProviderId) => chain.includes(id);
-  const free = chain.filter((id) => id !== PAID_PROVIDER);
-  const preferred = policy.prefer.filter((id) => inChain(id) && id !== PAID_PROVIDER);
-  const order = [...preferred, ...free.filter((id) => !preferred.includes(id))];
-  return inChain(PAID_PROVIDER) ? [...order, PAID_PROVIDER] : order;
+/** Try order: the feature's preferred providers, then the rest of the chain, and every paid provider last. */
+export function planOrder(chain: readonly string[], policy: FeaturePolicy, paidIds: readonly string[] = PAID_PROVIDERS): string[] {
+  const isPaid = (id: string) => paidIds.includes(id);
+  const free = chain.filter((id) => !isPaid(id));
+  const preferred = policy.prefer.filter((id) => free.includes(id));
+  const order = [...preferred, ...free.filter((id) => !(preferred as readonly string[]).includes(id))];
+  return [...order, ...chain.filter(isPaid)];
 }
 
 export interface PaidSettings {

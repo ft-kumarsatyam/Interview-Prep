@@ -3,11 +3,12 @@
 import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Check, Code2, ListChecks, LogOut, Menu } from "lucide-react";
+import { BookOpen, Check, ChevronLeft, Code2, ListChecks, LogOut, Menu } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { NavBadges, NavToday } from "@/core/services/nav";
 import { cn } from "@/core/utils";
-import { MOBILE_HUB_IDS, NAV_HUBS, hubFor, isHubLanding, type NavHub } from "./nav-items";
+import { MOBILE_HUB_IDS, MORE_HUB_IDS, NAV_HUBS, hubFor, isHubLanding, pageFor, type NavHub } from "./nav-items";
+import { ThemeSegmented } from "./theme-toggle";
 
 export type Badge = NavBadges[keyof NavBadges];
 
@@ -53,7 +54,11 @@ export function HubTabs({ badges = {} }: { badges?: NavBadges }) {
   if (!hub || hub.pages.length < 2 || !isHubLanding(pathname)) return null;
   const clean = pathname.replace(/\/$/, "");
   return (
-    <nav ref={strip} aria-label={`${hub.label} sections`} className="-mx-4 mb-4 overflow-x-auto px-4 lg:hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <nav
+      ref={strip}
+      aria-label={`${hub.label} sections`}
+      className="-mx-4 mb-4 scroll-px-4 overflow-x-auto px-4 [mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)] scrollbar-none lg:hidden"
+    >
       <ul className="flex w-max gap-1.5">
         {hub.pages.map((p) => {
           const active = p.href === clean;
@@ -138,6 +143,19 @@ export function TodayMiniCard({ today }: { today: NavToday | null }) {
   );
 }
 
+const TAB_CLASS =
+  "relative flex min-h-14 flex-col items-center justify-center gap-0.5 px-0.5 pt-1.5 pb-1 text-2xs font-medium text-muted-foreground transition-colors active:scale-95 focus-visible:outline-none";
+
+/** The icon sits in a pill that fills when the tab is active, so the current hub is clear without relying on colour alone. */
+function TabIcon({ icon: Icon, active, badge }: { icon: NavHub["icon"]; active: boolean; badge?: boolean }) {
+  return (
+    <span className={cn("relative grid h-7 w-14 place-items-center rounded-full transition-colors", active ? "bg-primary/12 text-primary" : "group-focus-visible:ring-2 group-focus-visible:ring-ring")}>
+      <Icon className="size-5" aria-hidden />
+      {badge && <span aria-hidden className="absolute top-0.5 right-3 size-2 rounded-full bg-primary ring-2 ring-card" />}
+    </span>
+  );
+}
+
 export function MobileTabBar({
   badges = {},
   today = null,
@@ -150,15 +168,16 @@ export function MobileTabBar({
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const tabs = MOBILE_HUB_IDS.flatMap((id) => NAV_HUBS.find((h) => h.id === id) ?? []);
-  const more = NAV_HUBS.find((h) => h.id === "settings")!;
+  const moreHubs = MORE_HUB_IDS.flatMap((id) => NAV_HUBS.find((h) => h.id === id) ?? []);
   const current = hubFor(pathname);
-  const moreActive = current?.id === "settings";
+  const moreActive = !!current && MORE_HUB_IDS.includes(current.id);
+  const moreBadge = moreHubs.some((h) => hubBadge(h, badges));
 
   return (
     <>
       <nav
         aria-label="Main"
-        className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
+        className="fixed inset-x-0 bottom-0 z-40 grid h-[calc(var(--tabbar-h)+env(safe-area-inset-bottom))] grid-cols-5 border-t bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
       >
         {tabs.map((hub) => {
           const badge = hubBadge(hub, badges);
@@ -169,17 +188,10 @@ export function MobileTabBar({
               href={hub.href}
               aria-current={active ? "page" : undefined}
               aria-label={badge ? `${hub.label}, ${badgeLabel(badge)}` : hub.label}
-              className={cn(
-                "relative flex min-h-14 flex-col items-center justify-center gap-1 py-2 text-2xs text-muted-foreground transition-colors active:scale-95",
-                active && "text-primary",
-              )}
+              className={cn("group", TAB_CLASS, active && "text-primary")}
             >
-              {active && <span aria-hidden className="absolute top-0 h-0.5 w-8 rounded-full bg-primary" />}
-              <span className="relative">
-                <hub.icon className="size-5" />
-                {badge && <span aria-hidden className="absolute -top-0.5 -right-1 size-2 rounded-full bg-primary ring-2 ring-card" />}
-              </span>
-              {hub.short}
+              <TabIcon icon={hub.icon} active={active} badge={!!badge} />
+              <span className="max-w-full truncate">{hub.short}</span>
               <PendingBar />
             </Link>
           );
@@ -189,38 +201,53 @@ export function MobileTabBar({
           onClick={() => setOpen(true)}
           aria-haspopup="dialog"
           aria-expanded={open}
-          className={cn(
-            "relative flex min-h-14 flex-col items-center justify-center gap-1 py-2 text-2xs text-muted-foreground transition-colors active:scale-95",
-            moreActive && "text-primary",
-          )}
+          aria-label={moreBadge ? "More, ready" : "More"}
+          className={cn("group", TAB_CLASS, moreActive && "text-primary")}
         >
-          {moreActive && <span aria-hidden className="absolute top-0 h-0.5 w-8 rounded-full bg-primary" />}
-          <Menu className="size-5" />
-          More
+          <TabIcon icon={Menu} active={moreActive} badge={moreBadge} />
+          <span>More</span>
         </button>
       </nav>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] overflow-y-auto rounded-t-2xl lg:hidden">
+        <SheetContent side="bottom" className="max-h-[85dvh] overflow-y-auto rounded-t-2xl pb-[env(safe-area-inset-bottom)] lg:hidden">
           <SheetHeader className="pb-0">
             <SheetTitle>More</SheetTitle>
-            <SheetDescription className="sr-only">Settings, setup and sign out</SheetDescription>
+            <SheetDescription className="sr-only">Career, settings, theme and sign out</SheetDescription>
           </SheetHeader>
-          <div className="space-y-4 px-4 pb-4">
+          <div className="space-y-5 px-4 pb-4">
             <TodayMiniCard today={today} />
-            <nav aria-label="Settings and setup" className="grid grid-cols-2 gap-1.5">
-              {more.pages.map((p) => (
-                <Link
-                  key={p.href}
-                  href={p.href}
-                  onClick={() => setOpen(false)}
-                  aria-current={matchesPath(pathname, p.href) ? "page" : undefined}
-                  className="flex min-h-12 items-center gap-3 rounded-lg border bg-card px-3 text-sm hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                >
-                  <p.icon className="size-4 text-muted-foreground" aria-hidden /> {p.label}
-                </Link>
-              ))}
-            </nav>
+            {moreHubs.map((hub) => (
+              <section key={hub.id} aria-labelledby={`more-${hub.id}`} className="space-y-2">
+                <h3 id={`more-${hub.id}`} className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                  {hub.label}
+                </h3>
+                <nav aria-label={hub.label} className="grid grid-cols-2 gap-2">
+                  {hub.pages.map((p) => {
+                    const badge = pageBadge(badges, p.href);
+                    return (
+                      <Link
+                        key={p.href}
+                        href={p.href}
+                        onClick={() => setOpen(false)}
+                        aria-current={matchesPath(pathname, p.href) ? "page" : undefined}
+                        className="flex min-h-12 items-center gap-3 rounded-xl border bg-card px-3 text-sm hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none aria-[current=page]:border-primary/40 aria-[current=page]:bg-primary/10 aria-[current=page]:text-primary"
+                      >
+                        <p.icon className="size-4 shrink-0" aria-hidden />
+                        <span className="min-w-0 flex-1 truncate">{p.label}</span>
+                        <BadgeMark badge={badge} />
+                      </Link>
+                    );
+                  })}
+                </nav>
+              </section>
+            ))}
+            <section aria-labelledby="more-theme" className="space-y-2">
+              <h3 id="more-theme" className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                Theme
+              </h3>
+              <ThemeSegmented />
+            </section>
             <form action={logout} className="border-t pt-3">
               <button
                 type="submit"
@@ -236,14 +263,34 @@ export function MobileTabBar({
   );
 }
 
-/** Header context: the hub you are in. The page's own title lives in its PageHeader, so it is not repeated here. */
+/**
+ * Header context: the hub you are in. On a detail page (a problem, a job, a calendar day) phones get a back link
+ * to the page it belongs to instead, since the hub tab strip is hidden there. The page's own title lives in its
+ * PageHeader, so it is not repeated here.
+ */
 export function TopBarTitle() {
-  const hub = hubFor(usePathname());
+  const pathname = usePathname();
+  const hub = hubFor(pathname);
   if (!hub) return null;
+  const parent = isHubLanding(pathname) ? null : pageFor(pathname);
   return (
-    <span className="flex min-w-0 items-center gap-2 truncate text-sm font-medium">
-      <hub.icon className="size-4 shrink-0 text-primary lg:text-muted-foreground" aria-hidden />
-      <span className="truncate">{hub.label}</span>
-    </span>
+    <>
+      {parent && (
+        <Link
+          href={parent.href}
+          className="-ml-2 flex min-h-10 min-w-0 items-center gap-1 rounded-lg pr-2 pl-1 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none lg:hidden"
+        >
+          <ChevronLeft className="size-5 shrink-0 text-primary" aria-hidden />
+          <span className="truncate">
+            <span className="sr-only">Back to </span>
+            {parent.label}
+          </span>
+        </Link>
+      )}
+      <span className={cn("min-w-0 items-center gap-2 truncate text-sm font-medium", parent ? "hidden lg:flex" : "flex")}>
+        <hub.icon className="size-4 shrink-0 text-primary lg:text-muted-foreground" aria-hidden />
+        <span className="truncate">{hub.label}</span>
+      </span>
+    </>
   );
 }

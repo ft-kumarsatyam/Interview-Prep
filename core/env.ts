@@ -18,6 +18,18 @@ const schema = z.object({
   GEMINI_MODEL: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().optional(),
+  /** Free: NVIDIA (build.nvidia.com) and OpenRouter (":free" models). Comma-separated lists of keys rotate. */
+  NVIDIA_API_KEYS: z.string().optional(),
+  NVIDIA_MODEL: z.string().optional(),
+  OPENROUTER_API_KEYS: z.string().optional(),
+  OPENROUTER_MODEL: z.string().optional(),
+  /** Paid last resort, like Meta: confirmed, capped, never background. */
+  OPENAI_API_KEYS: z.string().optional(),
+  OPENAI_MODEL: z.string().optional(),
+  /** JSON list of extra OpenAI-compatible providers: [{ id, label, baseUrl, model, paid }]. Keys go in LLM_EXTRA_<ID>_KEYS, never in the JSON. */
+  LLM_EXTRA_PROVIDERS: z.string().optional(),
+  /** Lifetime tokens one key may use before it is skipped (default 100,000,000). */
+  LLM_KEY_TOKEN_BUDGET: z.coerce.number().int().min(0).optional(),
   /** Paid last resort. Needs all three: key, an OpenAI-compatible base URL and a model id. */
   META_LLAMA_API_KEY: z.string().optional(),
   META_LLAMA_BASE_URL: z.string().optional(),

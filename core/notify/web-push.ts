@@ -2,6 +2,7 @@ import webpush, { WebPushError } from "web-push";
 import { connectDb } from "@/core/db";
 import { buildPushPayload } from "@/modules/notifications/domain/push-payload";
 import { PushSubscriptionModel } from "@/core/models/system";
+import { PermanentDeliveryError } from "@/core/notify/errors";
 import type { NotifyChannel } from "@/core/notify/index";
 
 export interface VapidKeys {
@@ -24,7 +25,7 @@ export function webPushChannel(keys: VapidKeys): NotifyChannel {
     async send(title, body, _html, meta) {
       await connectDb();
       const subs = (await PushSubscriptionModel.find().lean()).flatMap((s) => (s.keys ? [{ endpoint: s.endpoint, keys: s.keys }] : []));
-      if (subs.length === 0) throw new Error("No device has turned on notifications yet");
+      if (subs.length === 0) throw new PermanentDeliveryError("No device has turned on notifications yet");
 
       const payload = JSON.stringify(
         buildPushPayload(meta?.content ?? { title, body }, { url: meta?.url ?? "/dashboard", tag: meta?.tag ?? "prepos" }),
@@ -54,6 +55,7 @@ export function webPushChannel(keys: VapidKeys): NotifyChannel {
         if (gone.length === subs.length) throw new Error("Every device's subscription had expired; turn notifications on again");
         throw first instanceof WebPushError ? new Error(`HTTP ${first.statusCode}: ${first.body.slice(0, 200)}`) : first;
       }
+      return { provider: "web-push", id: `${ok.length}/${subs.length} devices` };
     },
   };
 }

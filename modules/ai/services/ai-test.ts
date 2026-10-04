@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { afterFailure, afterSuccess, INITIAL_STATE, type ProviderId } from "@/modules/ai/domain/llm-router";
+import { afterFailure, afterSuccess, INITIAL_STATE } from "@/modules/ai/domain/llm-router";
 import { startOfNextLocalDayMs } from "@/core/domain/dates";
 import { env } from "@/core/env";
 import { LlmHttpError } from "@/core/llm/errors";
@@ -12,7 +12,7 @@ const probe = z.object({ question: z.string().min(5).max(300), answer: z.string(
 const PROMPT = 'Write one short interview question about JavaScript closures and its one-line answer. Reply with JSON only: {"question": "...", "answer": "..."}';
 
 export interface ProviderTestResult {
-  id: ProviderId;
+  id: string;
   label: string;
   paid: boolean;
   ok: boolean;
@@ -34,32 +34,34 @@ export async function testProviders(opts: { includePaid: boolean }): Promise<Pro
 
   for (const def of resolveProviders(e)) {
     if (def.paid && !opts.includePaid) continue;
+    const provider = def.provider ?? def.id;
+    const label = (def.keyCount ?? 1) > 1 ? `${def.label} key ${(def.keyIndex ?? 0) + 1}` : def.label;
     const llm = createLlm(def.cfg);
     if (!llm) continue;
     if (def.paid) {
       const settings = await getSettings();
       if (!settings.llmPaid.enabled) {
-        results.push({ id: def.id, label: def.label, paid: true, ok: false, detail: "Paid fallback is switched off in Settings." });
+        results.push({ id: def.id, label, paid: true, ok: false, detail: "Paid fallback is switched off in Settings." });
         continue;
       }
       if (!(await store.reservePaid(settings.llmPaid.dailyCap))) {
-        results.push({ id: def.id, label: def.label, paid: true, ok: false, detail: "Daily paid-call cap reached." });
+        results.push({ id: def.id, label, paid: true, ok: false, detail: "Daily paid-call cap reached." });
         continue;
       }
     }
     try {
       const res = await llm.generateJson(PROMPT, probe);
       await store.saveState(def.id, afterSuccess());
-      await store.recordUsage({ provider: def.id, feature: "test", calls: 1 });
-      results.push({ id: def.id, label: def.label, paid: def.paid, ok: true, detail: `replied: "${res.question.slice(0, 90)}"` });
+      await store.recordUsage({ provider, feature: "test", calls: 1 });
+      results.push({ id: def.id, label, paid: def.paid, ok: true, detail: `replied: "${res.question.slice(0, 90)}"` });
     } catch (err) {
       if (def.paid) await store.releasePaid();
       const kind = err instanceof LlmHttpError ? err.kind : "invalid-output";
       const next = afterFailure(states[def.id] ?? INITIAL_STATE, { kind, retryAfterSec: err instanceof LlmHttpError ? err.retryAfterSec : undefined }, now.getTime(), startOfNextLocalDayMs(now, e.APP_TIMEZONE));
       await store.saveState(def.id, next);
-      await store.recordUsage({ provider: def.id, feature: "test", calls: 1, fails: 1 });
+      await store.recordUsage({ provider, feature: "test", calls: 1, fails: 1 });
       const hint = kind === "auth" ? " (the key was rejected: check it and the model name)" : kind === "quota-day" ? " (quota or prepaid credits used up)" : kind === "rate" ? " (rate limited, try again shortly)" : kind === "bad-request" ? " (the model may have been retired: set GEMINI_MODEL / GROQ_MODEL)" : "";
-      results.push({ id: def.id, label: def.label, paid: def.paid, ok: false, detail: `${err instanceof Error ? err.message.slice(0, 160) : "failed"}${hint}` });
+      results.push({ id: def.id, label, paid: def.paid, ok: false, detail: `${err instanceof Error ? err.message.slice(0, 160) : "failed"}${hint}` });
     }
   }
   return results;

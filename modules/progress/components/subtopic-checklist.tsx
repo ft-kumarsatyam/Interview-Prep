@@ -4,6 +4,7 @@ import { useOptimistic, useTransition } from "react";
 import { toast } from "sonner";
 import { toggleSubtopic } from "@/app/(app)/dashboard/actions";
 import { celebrateDayComplete } from "@/components/shared/celebrate";
+import { feedback } from "@/components/shared/feedback";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/core/utils";
 
@@ -35,6 +36,7 @@ export function SubtopicChecklist({
   );
 
   function onToggle(id: string) {
+    if (!done.has(id)) feedback("tick");
     startTransition(async () => {
       flip(id);
       const res = await toggleSubtopic(id);

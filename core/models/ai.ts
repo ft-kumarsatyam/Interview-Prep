@@ -1,4 +1,5 @@
 import { model, models, Schema, type InferSchemaType, type Model } from "mongoose";
+import { ownerScope } from "@/core/db/owner-scope";
 
 /**
  * Per-provider health for the LLM chain. Kept in Mongo because serverless instances
@@ -79,12 +80,29 @@ const paidApprovalSchema = new Schema(
 );
 paidApprovalSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
+/**
+ * Lifetime tokens per API key, keyed by a short SHA-256 fingerprint (never the key), so a key
+ * that reaches its budget (LLM_KEY_TOKEN_BUDGET) is skipped and Settings asks for a new one.
+ */
+const llmKeyUsageSchema = new Schema(
+  {
+    fingerprint: { type: String, required: true },
+    provider: { type: String, required: true },
+    tokens: { type: Number, default: 0 },
+    lastUsedAt: { type: Date, default: null },
+  },
+  { timestamps: true },
+);
+ownerScope(llmKeyUsageSchema, [{ fields: { fingerprint: 1 } }]);
+
 export type LlmStateDoc = InferSchemaType<typeof llmStateSchema>;
+export type LlmKeyUsageDoc = InferSchemaType<typeof llmKeyUsageSchema>;
 export type AiCacheDoc = InferSchemaType<typeof aiCacheSchema>;
 export type AiUsageDoc = InferSchemaType<typeof aiUsageSchema>;
 
 export const LlmState: Model<LlmStateDoc> = models.LlmState ?? model("LlmState", llmStateSchema);
 export const AiCache: Model<AiCacheDoc> = models.AiCache ?? model("AiCache", aiCacheSchema);
 export const AiUsage: Model<AiUsageDoc> = models.AiUsage ?? model("AiUsage", aiUsageSchema);
+export const LlmKeyUsage: Model<LlmKeyUsageDoc> = models.LlmKeyUsage ?? model("LlmKeyUsage", llmKeyUsageSchema);
 export const PaidCap = models.PaidCap ?? model("PaidCap", paidCapSchema);
 export const PaidApproval = models.PaidApproval ?? model("PaidApproval", paidApprovalSchema);

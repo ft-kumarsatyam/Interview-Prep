@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Briefcase, CheckCheck, CheckCircle2, ChevronLeft, ChevronRight, Circle, CornerDownRight, Info, Timer } from "lucide-react";
+import { ArrowLeft, Briefcase, CalendarRange, CheckCheck, CheckCircle2, ChevronLeft, ChevronRight, Circle, CornerDownRight, Info, Timer } from "lucide-react";
 import { WhyThisPlan } from "@/modules/planner/components/why-this-plan";
+import { PageStack } from "@/components/shared/page-stack";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -126,7 +127,7 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
   const planDay = d.kind === "study" || d.kind === "revision" || d.kind === "sunday";
 
   return (
-    <div className="space-y-4">
+    <PageStack>
       <div className="space-y-3">
         <Link href={`/calendar?m=${date.slice(0, 7)}`} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="size-4" aria-hidden /> {formatDate(date, { month: "long", year: "numeric" })}
@@ -143,6 +144,11 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
               {d.hours != null && ` · planned for ${d.hours} h`}
               {d.estMinutes != null && ` · about ${Math.round(d.estMinutes / 30) / 2} h of work`}
             </p>
+            {d.weekNumber > 0 && (
+              <Link href={`/plan?w=${d.weekNumber}#sprint`} className="mt-1 inline-flex min-h-9 items-center gap-1.5 text-sm text-primary underline-offset-2 hover:underline">
+                <CalendarRange className="size-4" aria-hidden /> Open week {d.weekNumber} in the Planner
+              </Link>
+            )}
           </div>
           <nav aria-label="Other days" className="flex w-full gap-1 sm:w-auto">
             <Button asChild variant="outline" size="sm" className="flex-1 sm:flex-none">
@@ -316,6 +322,6 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
           <Section title="Bonus (optional)" items={d.bonus} showDone={past} />
         </div>
       )}
-    </div>
+    </PageStack>
   );
 }

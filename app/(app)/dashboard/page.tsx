@@ -5,6 +5,7 @@ import { currentSession } from "@/core/auth/dal";
 import { mainProblemCount } from "@/core/content";
 import { planClock } from "@/core/plan-clock";
 import { recordLatency, startTimer } from "@/core/observability/latency";
+import { PageStack } from "@/components/shared/page-stack";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LeetCodeCard } from "@/modules/dsa/components/leetcode/leetcode-card";
 import { syncLeetCode } from "@/modules/dsa/services/leetcode-sync";
@@ -25,9 +26,15 @@ import { StatGrid } from "@/modules/progress/components/dashboard/stat-grid";
 import { TheoryCard } from "@/modules/progress/components/dashboard/theory-card";
 import { TodayCard } from "@/modules/progress/components/dashboard/today-card";
 import { buildRequirements, dayCopy, greetingFor, isWorkday, localHour, nextRequirement } from "@/modules/progress/domain/dashboard-view";
+import { selectNextAction, type StudyActionCandidate } from "@/modules/progress/domain/next-action";
 import { getDashboard } from "@/modules/progress/services/dashboard";
 import { getStreakInsights } from "@/modules/progress/services/streak-insights";
 import { streakRisk } from "@/modules/progress/domain/streak-insights";
+import { getMistakesOverview } from "@/modules/quiz/services/practice";
+import { FixNextCard } from "@/modules/progress/components/dashboard/fix-next-card";
+import { ReadinessStrip } from "@/modules/progress/components/dashboard/readiness-strip";
+import { getTargetsOverview } from "@/modules/targets/services/targets";
+import { studyGuidance } from "@/modules/progress/domain/study-guidance";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -39,12 +46,64 @@ export default async function DashboardPage() {
   await syncLeetCode().catch(() => null);
   const session = await currentSession();
   const data = await getDashboard();
+  const [mistakes, targets] = await Promise.all([getMistakesOverview(5), getTargetsOverview()]);
   const { day, plan, settings, today } = data;
 
   const clock = planClock(settings);
   const hour = localHour(settings.timezone);
   const requirements = buildRequirements(day, READINGS_PER_DAY);
   const next = nextRequirement(requirements, day);
+  const nextAction = selectNextAction({
+    kind: day.kind,
+    candidates: [
+      ...data.problems.map((problem, index): StudyActionCandidate => ({
+        kind: problem.role === "review" ? "review" : "dsa",
+        title: problem.title,
+        href: `/dsa/${problem.slug}`,
+        reason: problem.role === "review" ? "Due spaced-repetition review" : "Today's frozen plan",
+        minutes: problem.difficulty === "Hard" ? 55 : problem.difficulty === "Medium" ? 35 : 20,
+        required: true,
+        done: problem.solvedToday,
+        rank: problem.role === "review" ? 5 + index : 10 + index,
+      })),
+      ...data.theory.map((topic, index): StudyActionCandidate => ({
+        kind: "theory",
+        title: topic.title,
+        href: `/learn/${topic.topicId}`,
+        reason: "Today's theory target",
+        minutes: 25,
+        required: true,
+        done: topic.done,
+        rank: 20 + index,
+      })),
+      {
+        kind: "quiz",
+        title: day.kind === "sunday" ? "Weekly quiz" : "Daily quiz",
+        href: "/quiz",
+        reason: day.quizPassed ? "Already passed" : "Required to complete the day",
+        required: true,
+        done: day.quizPassed,
+        locked: !day.quizUnlocked && !day.quizPassed,
+        rank: 40,
+      },
+      ...(!day.complete
+        ? [{
+            kind: "backlog" as const,
+            title: "Choose an optional backlog item",
+            href: "/backlog",
+            reason: "Optional work after today's required targets",
+            required: false,
+            rank: 100,
+          }]
+        : []),
+    ],
+  });
+  const guidance = studyGuidance({
+    minutesAvailable: Math.round((plan.hours ?? 0) * 60),
+    requiredMinutes: plan.estMinutes ?? 0,
+    backlogMinutes: 0,
+    paceRatio: data.pace.ideal > 0 ? data.pace.solved / data.pace.ideal : 1,
+  });
   const insights = await getStreakInsights(today, data.freezeTokens);
   const risk = streakRisk({ kind: day.kind, complete: day.complete, streak: data.streak, tokens: data.freezeTokens, now: new Date(), timeZone: settings.timezone, left: requirements.filter((r) => !r.done && !r.label.includes("bonus")).map((r) => r.label) });
   const hasBonus = data.bonus.problems.length + data.bonus.theory.length > 0;
@@ -56,8 +115,8 @@ export default async function DashboardPage() {
     : null;
 
   return (
-    <div className="space-y-5 sm:space-y-6">
-      <DashboardHeader greeting={greetingFor(hour)} today={today} clock={clock} next={next} complete={day.complete} />
+    <PageStack>
+      <DashboardHeader greeting={greetingFor(hour)} today={today} clock={clock} next={nextAction} guidance={guidance} complete={day.complete} />
 
       <Suspense fallback={null}>
         <PlanUpdateSection today={today} settings={settings} solved={data.pace.solved} />
@@ -106,6 +165,8 @@ export default async function DashboardPage() {
       <Suspense fallback={<CardSkeleton />}>
         <BacklogSection today={today} plan={plan} settings={settings} />
       </Suspense>
+      <FixNextCard mistakes={mistakes} />
+      <ReadinessStrip targets={targets} />
       <Suspense fallback={<CardSkeleton />}>
         <JobSearchSection today={today} />
       </Suspense>
@@ -121,6 +182,6 @@ export default async function DashboardPage() {
       <Suspense fallback={<CardSkeleton className="h-56" />}>
         <NewsStrip />
       </Suspense>
-    </div>
+    </PageStack>
   );
 }

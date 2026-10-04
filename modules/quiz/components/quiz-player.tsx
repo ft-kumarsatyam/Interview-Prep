@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Check, CircleSlash, Keyboard, ListFilter, PartyPopper, RotateCcw, Send, Target, Trophy, X } from "lucide-react";
 import { toast } from "sonner";
+import { feedback } from "@/components/shared/feedback";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -114,6 +115,7 @@ export function QuizPlayer({ questions, seed, passPct, submit, initial, onRetake
         return;
       }
       setResult(res.outcome);
+      feedback(res.outcome.passed ? "pass" : "fail");
       setWrongOnly(false);
       setAnnounce(`Scored ${res.outcome.pct} percent, ${res.outcome.correct} of ${res.outcome.total} correct. ${res.outcome.passed ? "Passed" : "Not passed yet"}.`);
     } catch {

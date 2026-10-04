@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { CalendarClock, Target as TargetIcon } from "lucide-react";
+import { CalendarClock, CalendarRange, Target as TargetIcon } from "lucide-react";
 import { AddTarget } from "@/modules/targets/components/add-target";
 import { CompanyExplorer } from "@/modules/targets/components/company-explorer";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { PageStack } from "@/components/shared/page-stack";
+import { Button } from "@/components/ui/button";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import type { Tone } from "@/components/shared/stat-tile";
@@ -32,8 +34,14 @@ export default async function TargetsPage() {
         icon={TargetIcon}
         title="Target companies"
         description="Pick the companies you are aiming at. Each gets a prep plan built for the kind of company it is: a DSA set at the right difficulty, the system design cases, and the subjects that round tests."
-      />
-      <div className="space-y-6">
+      >
+        <Button asChild variant="outline" size="sm">
+          <Link href="/plan">
+            <CalendarRange aria-hidden /> Open the Planner
+          </Link>
+        </Button>
+      </PageHeader>
+      <PageStack>
         {targets.length === 0 ? (
           <EmptyState icon={TargetIcon} title="No targets yet" compact>
             <p>Browse the catalogue below and tap + on a company, or type your own.</p>
@@ -41,7 +49,7 @@ export default async function TargetsPage() {
         ) : (
           <>
             {focus && <p className="text-sm text-muted-foreground">Your prep leans toward <span className="font-medium text-foreground">{tierProfiles.find((t) => t.id === focus)?.name}</span> because of your highest-priority target. Their gaps rise to the top of your backlog.</p>}
-            <ul className="grid gap-3 md:grid-cols-2">
+            <ul className="grid gap-4 md:grid-cols-2">
               {targets.map((t) => {
                 const days = t.interviewDate ? diffDays(t.interviewDate, today) : null;
                 const weakest = t.areas.toSorted((a, b) => a.pct - b.pct).slice(0, 2);
@@ -84,7 +92,7 @@ export default async function TargetsPage() {
 
         <section aria-label="Kinds of company" className="space-y-3">
           <SectionHeading title="What each kind of company tests" hint="Typical patterns, not inside knowledge of any one company" />
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {tierProfiles.map((t) => (
               <Card key={t.id} size="sm">
                 <CardHeader>
@@ -101,7 +109,7 @@ export default async function TargetsPage() {
             ))}
           </div>
         </section>
-      </div>
+      </PageStack>
     </>
   );
 }

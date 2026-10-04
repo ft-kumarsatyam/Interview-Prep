@@ -110,7 +110,7 @@ export function renderMail(spec: MailSpec): { text: string; html: string; spec: 
     const t = TONE[s.tone ?? "neutral"];
     const bars = (s.bars ?? []).map((b) => {
       const pct = Math.max(0, Math.min(100, b.pct));
-      return `<li style="margin:8px 0;list-style:none;margin-left:-20px"><div style="font-size:14px"><strong>${escapeHtml(b.label)}</strong> <span style="color:#374151">${pct}%</span>${b.detail ? ` <span style="color:#6b7280">${escapeHtml(b.detail)}</span>` : ""}</div><div style="height:8px;margin-top:3px;background:#e5e7eb;border-radius:4px"><div style="width:${pct}%;height:8px;background:#5b3de0;border-radius:4px"></div></div></li>`;
+      return `<li style="margin:8px 0;list-style:none;margin-left:-20px"><div style="font-size:14px"><strong>${escapeHtml(b.label)}</strong> <span style="color:#374151">${pct}%</span>${b.detail ? ` <span style="color:#6b7280">${escapeHtml(b.detail)}</span>` : ""}</div><div style="height:8px;margin-top:3px;background:#e5e7eb;border-radius:4px"><div style="width:${pct}%;height:8px;background:#4b3fc4;border-radius:4px"></div></div></li>`;
     });
     const rows = [
       ...(s.lines ?? []).map((x) => `<li style="margin:4px 0">${escapeHtml(x)}</li>`),
@@ -141,7 +141,7 @@ export function renderMail(spec: MailSpec): { text: string; html: string; spec: 
     ...spec.sections.map(sectionHtml),
     ...(spec.footer ?? []).map((f) => `<p style="margin:16px 0 0;color:#374151">${escapeHtml(f)}</p>`),
     ...(base
-      ? [`<p style="margin:22px 0 0"><a href="${escapeHtml(`${base}${cta.path}`)}" style="display:inline-block;padding:10px 18px;border-radius:8px;background:#5b3de0;color:#ffffff;text-decoration:none;font-weight:600">${escapeHtml(cta.label)}</a></p>`]
+      ? [`<p style="margin:22px 0 0"><a href="${escapeHtml(`${base}${cta.path}`)}" style="display:inline-block;padding:10px 18px;border-radius:8px;background:#4b3fc4;color:#ffffff;text-decoration:none;font-weight:600">${escapeHtml(cta.label)}</a></p>`]
       : []),
     `</div>`,
   ].join("");

@@ -10,28 +10,46 @@ export interface PushMeta {
   tag: string;
 }
 
+/** What the provider said when it accepted a message: its name and, when it returns one, the message id. */
+export interface DeliveryReceipt {
+  provider: string;
+  id?: string;
+}
+
 export interface NotifyChannel {
   name: "telegram" | "email" | "whatsapp" | "push";
   /** `html` is an optional richer body for email; channels that can't render it use `body`. */
-  send(title: string, body: string, html?: string, meta?: PushMeta): Promise<void>;
+  send(title: string, body: string, html?: string, meta?: PushMeta): Promise<DeliveryReceipt | void>;
 }
+
+export { PermanentDeliveryError } from "@/core/notify/errors";
 
 const TIMEOUT_MS = 10_000;
 
-async function post(url: string, init: RequestInit): Promise<void> {
+async function post(url: string, init: RequestInit): Promise<unknown> {
   // One attempt only: a retried POST could send the same message twice.
   const res = await fetchWithPolicy(url, { headers: init.headers, body: init.body, method: "POST", timeoutMs: TIMEOUT_MS, retries: 0 });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return res.json().catch(() => null);
+}
+
+/** The message id at `path` in a provider's JSON reply (`id`, `messageId`, `result.message_id`), if there is one. */
+function idFrom(reply: unknown, ...path: string[]): string | undefined {
+  let v: unknown = reply;
+  for (const k of path) v = v && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined;
+  return typeof v === "string" || typeof v === "number" ? String(v).slice(0, 120) : undefined;
 }
 
 export function telegramChannel(token: string, chatId: string): NotifyChannel {
   return {
     name: "telegram",
-    send: (title, body) =>
-      post(`https://api.telegram.org/bot${token}/sendMessage`, {
+    send: async (title, body) => {
+      const reply = await post(`https://api.telegram.org/bot${token}/sendMessage`, {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chat_id: chatId, text: `${title}\n${body}`, disable_web_page_preview: true }),
-      }),
+      });
+      return { provider: "telegram", id: idFrom(reply, "result", "message_id") };
+    },
   };
 }
 
@@ -41,8 +59,8 @@ const WHATSAPP_MAX_CHARS = 4096;
 export function emailChannel(apiKey: string, to: string, from: string = RESEND_TEST_SENDER): NotifyChannel {
   return {
     name: "email",
-    send: (title, body, html) =>
-      post("https://api.resend.com/emails", {
+    send: async (title, body, html) => {
+      const reply = await post("https://api.resend.com/emails", {
         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           from: `PrepOS <${from}>`,
@@ -51,7 +69,9 @@ export function emailChannel(apiKey: string, to: string, from: string = RESEND_T
           text: body,
           ...(html ? { html } : {}),
         }),
-      }),
+      });
+      return { provider: "resend", id: idFrom(reply, "id") };
+    },
   };
 }
 
@@ -59,11 +79,13 @@ export function emailChannel(apiKey: string, to: string, from: string = RESEND_T
 export function whatsappChannel(token: string, to: string, baseUrl: string): NotifyChannel {
   return {
     name: "whatsapp",
-    send: (title, body) =>
-      post(`${baseUrl.replace(/\/+$/, "")}/messages/text`, {
+    send: async (title, body) => {
+      const reply = await post(`${baseUrl.replace(/\/+$/, "")}/messages/text`, {
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
         body: JSON.stringify({ to, body: `*${title}*\n${body}`.slice(0, WHATSAPP_MAX_CHARS) }),
-      }),
+      });
+      return { provider: "whapi", id: idFrom(reply, "message", "id") };
+    },
   };
 }
 
@@ -86,8 +108,8 @@ export function brevoChannel(apiKey: string, sender: string, to: string): Notify
   const key = brevoApiKey(apiKey);
   return {
     name: "email",
-    send: (title, body, html) =>
-      post("https://api.brevo.com/v3/smtp/email", {
+    send: async (title, body, html) => {
+      const reply = await post("https://api.brevo.com/v3/smtp/email", {
         headers: { "content-type": "application/json", accept: "application/json", "api-key": key },
         body: JSON.stringify({
           sender: { name: "PrepOS", email: sender },
@@ -96,7 +118,9 @@ export function brevoChannel(apiKey: string, sender: string, to: string): Notify
           textContent: body,
           ...(html ? { htmlContent: html } : {}),
         }),
-      }),
+      });
+      return { provider: "brevo", id: idFrom(reply, "messageId") };
+    },
   };
 }
 

@@ -51,6 +51,16 @@ describe("notify() through the outbox", () => {
     vi.unstubAllGlobals();
   });
 
+  it("stores the provider's message id so /setup can show the last delivery", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { message_id: 777 } }), { status: 200 })));
+    const { notify } = await import("@/modules/notifications/services/notifications");
+    const { lastDeliveries } = await import("@/modules/notifications/services/deliveries");
+    await notify({ kind: "recap", title: "Recap", body: "b", dedupeKey: "recap:2026-01-02" }, { push: true });
+    const rows = await lastDeliveries();
+    expect(rows).toEqual([expect.objectContaining({ channel: "telegram", state: "sent", provider: "telegram", id: "777" })]);
+    vi.unstubAllGlobals();
+  });
+
   it("a repeated dedupeKey creates nothing and queues nothing", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
     const { notify } = await import("@/modules/notifications/services/notifications");

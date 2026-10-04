@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Dumbbell, ListChecks, RotateCcw } from "lucide-react";
 import { chipClass } from "@/components/shared/chip";
 import { PageHeader } from "@/components/shared/page-header";
+import { PageStack } from "@/components/shared/page-stack";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { Button } from "@/components/ui/button";
 import { PracticeEntryCard } from "@/modules/practice/components/entry-card";
@@ -61,8 +62,9 @@ export default async function PracticePage({ searchParams }: PageProps<"/practic
         </Button>
       </PageHeader>
 
+      <PageStack>
       {picks.length > 0 && (
-        <section aria-label="Suggested next" className="mb-6 space-y-2">
+        <section aria-label="Suggested next" className="space-y-3">
           <SectionHeading title="Suggested next" hint={studiedTopics.size > 0 ? "Topics you have studied but not mastered come first." : "Study a topic, then practise it here."} />
           <ul className="grid gap-2 md:grid-cols-2">
             {picks.map((e) => (
@@ -72,7 +74,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/practic
         </section>
       )}
 
-      <div className="mb-5 space-y-3">
+      <div className="space-y-3">
         <div role="group" aria-label="Subject" className="flex flex-wrap gap-1.5">
           <Link href={href({ subject: null })} className={chipClass(!subject)} aria-current={!subject ? "true" : undefined}>
             All subjects
@@ -122,7 +124,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/practic
       ) : (
         <div className="space-y-6">
           {bySubject.map(({ s, items }) => (
-            <section key={s.id} aria-label={SUBJECT_NAME[s.id]} className="space-y-2">
+            <section key={s.id} aria-label={SUBJECT_NAME[s.id]} className="space-y-3">
               <SectionHeading title={`${SUBJECT_NAME[s.id]} (${items.length})`} />
               <ul className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {items.map((e) => (
@@ -133,6 +135,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/practic
           ))}
         </div>
       )}
+      </PageStack>
     </>
   );
 }

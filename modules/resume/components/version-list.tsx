@@ -40,7 +40,7 @@ export function VersionList({ baseId, versions, profiles = [] }: { baseId: strin
 
   if (!baseId && versions.length === 0 && profiles.length === 0) return null;
   return (
-    <Card className="mt-4">
+    <Card>
       <CardHeader>
         <CardTitle>Saved resumes</CardTitle>
         <CardDescription>Your base resume and the versions tailored to each job. Downloads are single-column, text-based files an ATS can read.</CardDescription>

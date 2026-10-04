@@ -2,6 +2,7 @@
 import "@/core/models/ai";
 import "@/core/models/api-token";
 import "@/core/models/backlog";
+import "@/core/models/chat";
 import "@/core/models/content";
 import "@/core/models/course";
 import "@/core/models/day";
@@ -14,6 +15,7 @@ import "@/core/models/lc";
 import "@/core/models/learning";
 import "@/core/models/migration";
 import "@/core/models/mock";
+import "@/core/models/notes";
 import "@/core/models/outbox";
 import "@/core/models/planner";
 import "@/core/models/progress";

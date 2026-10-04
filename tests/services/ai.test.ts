@@ -30,9 +30,18 @@ describe("mongo LLM store", () => {
     expect((await store.loadStates()).gemini?.status).toBe("closed");
   });
 
-  it("ignores state rows for unknown providers", async () => {
-    await LlmState.create({ _id: "mystery", status: "disabled" });
+  it("ignores state rows that are not a provider slot id", async () => {
+    await LlmState.create({ _id: "Not A Slot!", status: "disabled" });
     expect(await mongoLlmStore(TZ).loadStates()).toEqual({});
+  });
+
+  it("keeps per-key slot state and adds up lifetime tokens per fingerprint", async () => {
+    const store = mongoLlmStore(TZ);
+    await store.saveState("openrouter#abc123def0", { status: "disabled", untilMs: 0, fails: 0, lastError: "auth" });
+    expect((await store.loadStates())["openrouter#abc123def0"]?.status).toBe("disabled");
+    await store.addKeyTokens("abc123def0", "openrouter", 1200);
+    await store.addKeyTokens("abc123def0", "openrouter", 300);
+    expect(await store.keyTokens()).toEqual({ abc123def0: 1500 });
   });
 
   it("never lets concurrent callers reserve more paid calls than the cap", async () => {

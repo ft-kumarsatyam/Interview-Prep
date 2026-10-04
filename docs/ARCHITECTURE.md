@@ -2,7 +2,7 @@
 
 PrepOS is a private, single-user web app for a 24-week, zero-to-interview-ready plan for senior backend roles. JavaScript is the main language. It covers DSA in JS, JS/TS and Node.js, DBMS and SQL, OOP and LLD, system design from basic scaling up to big-tech architectures, and AI from fundamentals up. The daily loop is: plan → learn → solve → read → quiz → streak.
 
-**Constraints:** free tiers only (Vercel Hobby, MongoDB Atlas M0, an optional free LLM key; the one opt-in exception is a paid last-resort LLM provider that needs your confirmation), one user, no sign-up, served from `satyam-dev.in` (the `*.vercel.app` URL keeps working).
+**Constraints:** free tiers only (Vercel Hobby, MongoDB Atlas M0, optional free LLM keys; the opt-in exception is paid last-resort LLM providers (OpenAI, Meta Llama, extras marked paid) that need your confirmation), one user, no sign-up, served from `satyam-dev.in` (the `*.vercel.app` URL keeps working).
 
 ---
 
@@ -73,7 +73,7 @@ Dependency direction: `app` -> `modules/*/components` and `modules/*/services` -
                 │                                     adapters (core/llm, core/notify, modules/*/lib) ├──▶ LeetCode GraphQL (public)
                 │                                     (adapters, zod-validated)      └──▶ LLM, Telegram, Resend
                 └─────────────────────────────────────────────────────────────────────┘
-                     ▲ Vercel Cron: ~08:00 IST plan email, ~23:59 IST recap
+                     ▲ Vercel Cron: ~08:00 IST plan email, ~20:30 nudge, ~22:30 recap
 ```
 
 **Layering rule:** pages and actions call `modules/*/services/*` only. Services do I/O and delegate every decision (targets, streaks, scoring, review dates, sync intents, mastery) to pure functions in `modules/*/domain/*`.
@@ -210,8 +210,12 @@ All quiz questions share one shape (`modules/quiz/lib/question.ts`): a prompt, o
 
 ```ts
 interface LlmProvider { generateJson<T>(prompt: string, schema: ZodType<T>): Promise<T> }
-// core/llm/adapters.ts: gemini (default, free tier) · anthropic · openai-compatible (Groq, the paid Meta Llama endpoint, etc.), all over fetch.
-// core/llm/chain.ts composes the configured providers: free ones in order (the feature's preferred provider first), the paid one last.
+// core/llm/adapters.ts: gemini (default, free tier) · anthropic · openai-compatible (NVIDIA, OpenRouter, Groq, OpenAI, the Meta Llama
+// endpoint, extras from LLM_EXTRA_PROVIDERS), all over fetch.
+// core/llm/chain.ts composes the configured providers: free ones in order (the feature's preferred provider first), every paid one last.
+// A provider may have several keys (comma separated); each key is its own slot with its own state (`provider#fingerprint`), and its
+// lifetime tokens are counted per SHA-256 fingerprint in `llmkeyusages` (owner-scoped, never the key). A key at LLM_KEY_TOKEN_BUDGET
+// (default 100M) is skipped and Settings asks for a new one from 90%.
 // modules/ai/domain/llm-router.ts holds the pure rules: a 429 cools a provider down for Retry-After (default 60 s), a daily quota until the next
 // local day, a rejected key disables it, two transient failures in a row pause it 5 min. That state lives in Mongo (`llmstates`) because
 // serverless instances share no memory. Paid use needs a confirmation (Use once / Allow today), never happens for background work, and is
@@ -304,9 +308,9 @@ Feeds with `kind: "sitemap"` (Scale Engineer, its hw.glich.co newsletter and Des
 | Path | Cron (UTC) | IST | Does |
 |---|---|---|---|
 | `/api/cron/morning` | `30 2 * * *` | ~08:00 | `ensureToday` (settle past days, build plan) → "Today's plan" notification + email (with a carry-over note when yesterday left work open) → refresh news (forced) → prefetch article text (§10.1) → LeetCode sync (forced) |
-| `/api/cron/evening` | `29 18 * * *` | ~23:59 | LeetCode sync → `ensureToday` → **day recap** (`modules/progress/domain/recap.ts`, `modules/progress/services/recap.ts`): scorecard, items solved and still open, streak standing, tomorrow's preview (rebuilt from real progress, so open work is already in it), pace and DSA finish forecast, the backlog, plus the **weekly report** after the recap on Sunday nights (`modules/progress/domain/weekly.ts`, `modules/progress/services/weekly.ts`, `dedupeKey weekly:<date>`). In-app notification kind `recap`, email/Telegram push. A run landing after midnight (before 06:00 local) recaps the day that just ended |
+| `/api/cron/evening` | `0 17 * * *` | 22:30 to 23:29 (Hobby fires anywhere in the hour, so the hour is chosen to stay before midnight) | LeetCode sync → `ensureToday` → **day recap** (`modules/progress/domain/recap.ts`, `modules/progress/services/recap.ts`): scorecard, items solved and still open, streak standing, tomorrow's preview (rebuilt from real progress, so open work is already in it), pace and DSA finish forecast, the backlog, plus the **weekly report** after the recap on Sunday nights (`modules/progress/domain/weekly.ts`, `modules/progress/services/weekly.ts`, `dedupeKey weekly:<date>`). In-app notification kind `recap`, email/Telegram push. A run landing after midnight (before 06:00 local) recaps the day that just ended |
 | `/api/cron/briefing` | none on Vercel; `.github/workflows/news-briefing.yml` (03, 06, 09, 12, 15 UTC) or cron-job.org | every ~3 h | the **news tick** (`modules/progress/services/briefing.ts`, `modules/progress/domain/briefing.ts`): refresh stale feeds, send the **daily briefing** the first tick after 08:00 local (also sent by the morning cron after its news refresh; `dedupeKey briefing:<date>`), then **top-news alerts** |
-| `/api/cron/reminder` | none on Vercel; `.github/workflows/evening-nudge.yml` (15:00 UTC) or cron-job.org | ~20:30 | the **evening nudge** (`modules/progress/domain/nudge.ts`, `modules/progress/services/nudge.ts`): if today is unfinished, what is left, the hours left before midnight, the streak at stake and the backlog. Once per day (`dedupeKey reminder:<date>`); silent on finished, rest and outside days |
+| `/api/cron/reminder` | `0 15 * * *` on Vercel, with `.github/workflows/evening-nudge.yml` as a backup | 20:30 to 21:29 | the **evening nudge** (`modules/progress/domain/nudge.ts`, `modules/progress/services/nudge.ts`): if today is unfinished, what is left, the hours left before midnight, the streak at stake and the backlog. Once per day (`dedupeKey reminder:<date>`); silent on finished, rest and outside days |
 
 - **Briefing and alerts.** Articles are scored (`scoreArticle`: category weight + age decay + your interest tags from your targets' kinds of company + bookmark/long-read bonus). The briefing (kind `news`) has three parts: **Top news** (unread AI-labs, AI, tech and engineering stories from the last 72 h, one per source), **System design: study this** (the next open design case from your targets' gaps, else the first case you have not practised, plus unread posts matching its keywords, then the best system-design posts) and **Questions to practise** (your targets' open DSA gaps, else today's backlog queue). An **alert** is a single story scoring at least `ALERT_MIN_SCORE` and at most `ALERT_MAX_AGE_H` hours old; at most `ALERT_DAILY_CAP` (3) per rolling 24 h (counted from `alert:` dedupe keys), one per article (`alert:<articleId>`), never one the day's briefing already carried. Switch each off in Settings (`mailBriefing`, `mailAlerts`). Neither affects the streak.
 - Each step runs independently (one failing step doesn't skip the others), and the JSON response reports every step's outcome. `maxDuration = 60`. Each run stamps `lastMorningRunAt` / `lastEveningRunAt`, which `/setup` uses to show whether the crons are actually firing.
@@ -360,6 +364,7 @@ Feeds with `kind: "sitemap"` (Scale Engineer, its hw.glich.co newsletter and Des
 | `/news/[id]` | in-app reader (§10.1): full text, reading time, tags, bookmark, open original, next unread; marks the article read |
 | `/stats` | solves per day, cumulative vs ideal, difficulty by week, quiz trend, track coverage, LeetCode card, JS mastery radar |
 | `/settings` | plan, quiz and mastery thresholds, rest days, study hours, weekly mock days, news keywords, LeetCode username, notifications test, export, re-seed |
+| `/chat`, `/api/ai/chat` | **Assistant** (`modules/chat`): multi-thread chat that answers from your own data. Threads and messages live in `chatthreads` and `chatmessages` (owner-scoped; list, search by title, rename, delete). Each turn is two LLM calls on the `chat` feature (free providers only, `paid: "never"`): a JSON **planner** picks up to four read-only data tools (`modules/chat/domain/chat-tools.ts`: today, streak, stats, reviews, quizzes, mistakes, notes search, courses, roadmaps, jobs, mocks, targets, settings, app guide), with a keyword fallback when its output is invalid; then the answer streams as newline-delimited JSON (`thread`, `tools`, `token`, `done`, `error`) over the tool results, which go in the prompt as untrusted `<data>` blocks capped by `compactJson` (it drops resume, profile, contact, secret and token fields). Resume and profile text never reaches the assistant (a test forbids `modules/chat` importing `resume`). Answers render as plain text. The header button opens `/chat?page=<route>` ("Ask about this page"). Rate limited to 30 turns per 10 minutes. With no free provider your message and the thread are still saved and the page says how to add a key |
 | `/api/palette` | ⌘K search index (session) |
 | `/api/export` | JSON backup download (session) |
 | `/api/cron/morning`, `/api/cron/evening` | scheduled jobs (`Bearer CRON_SECRET`) |
@@ -409,7 +414,7 @@ Feeds with `kind: "sitemap"` (Scale Engineer, its hw.glich.co newsletter and Des
 `.env.example` lists them all.
 - **Required:** `MONGODB_URI`, `AUTH_SECRET` (≥ 32 chars), `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH_B64`, `ADMIN_NAME`, `APP_TIMEZONE`, `CRON_SECRET` (≥ 16 chars; without it the cron routes reject every request).
 - **Optional:**
-  - LLM: `GEMINI_API_KEY`/`GEMINI_MODEL`, `GROQ_API_KEY`/`GROQ_MODEL`, `LLM_CHAIN`, the paid `META_LLAMA_API_KEY`/`META_LLAMA_BASE_URL`/`META_LLAMA_MODEL`, the older `LLM_PROVIDER`/`LLM_API_KEY`/`LLM_MODEL`/`LLM_BASE_URL`, plus `LLM_DELAY_MS` (bank generator only).
+  - LLM: `NVIDIA_API_KEYS`/`NVIDIA_MODEL`, `OPENROUTER_API_KEYS`/`OPENROUTER_MODEL`, `GEMINI_API_KEY`/`GEMINI_MODEL`, `GROQ_API_KEY`/`GROQ_MODEL` (all free, each a comma-separated key list), `LLM_CHAIN`, `LLM_KEY_TOKEN_BUDGET`, the paid `OPENAI_API_KEYS`/`OPENAI_MODEL` and `META_LLAMA_API_KEY`/`META_LLAMA_BASE_URL`/`META_LLAMA_MODEL`, extra OpenAI-compatible providers in `LLM_EXTRA_PROVIDERS` (JSON, paid unless marked otherwise) with keys in `LLM_EXTRA_<ID>_KEYS`, the older `LLM_PROVIDER`/`LLM_API_KEY`/`LLM_MODEL`/`LLM_BASE_URL`, plus `LLM_DELAY_MS` (bank generator only).
   - LeetCode: `LEETCODE_USERNAME`.
   - Notifications: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NOTIFY_EMAIL`, `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `WHAPI_TOKEN`, `WHATSAPP_TO` (WhatsApp via Whapi.Cloud), `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (PWA Web Push; subscriptions live in the `pushsubscriptions` collection, one row per device), `APP_URL` (links in emails).
 

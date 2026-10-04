@@ -16,7 +16,7 @@ export async function StreakHistorySection({ today, freezeTokens }: { today: str
   const pct = i.next ? Math.round(((i.current - prev) / (i.next.target - prev)) * 100) : 100;
 
   return (
-    <section aria-label="Streak history" className="mt-6">
+    <section aria-label="Streak history">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">

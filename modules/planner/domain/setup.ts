@@ -200,7 +200,7 @@ function llmItem({ llm }: SetupInput): SetupItem {
     status: llm.configured ? "ok" : "warn",
     detail: llm.configured
       ? `${chain || "An AI provider"} write the daily quiz and power hints and explanations, with the question bank as fallback.${paidNote}`
-      : "Optional. Without GEMINI_API_KEY or GROQ_API_KEY the app uses the 5,584-question bank and static explanations, which works fine.",
+      : "Optional. Without a free AI key (NVIDIA_API_KEYS, OPENROUTER_API_KEYS, GEMINI_API_KEY or GROQ_API_KEY) the app uses the 5,584-question bank and static explanations, which works fine.",
     required: false,
     actions: llm.configured ? [{ kind: "button", id: "test-llm", label: "Test" }] : [],
   };

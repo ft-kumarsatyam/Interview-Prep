@@ -2,7 +2,10 @@ import { DEFAULT_HOURS } from "@/modules/planner/domain/time-budget";
 import type { Metadata } from "next";
 import { Settings } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
+import { PageStack } from "@/components/shared/page-stack";
 import { AiPanel } from "@/modules/settings/components/ai-panel";
+import { FeedbackCard } from "@/modules/settings/components/feedback-card";
+import { DesiModeCard } from "@/modules/settings/components/desi-mode-card";
 import { SettingsForm } from "@/modules/settings/components/settings-form";
 import { SettingsNav } from "@/modules/settings/components/settings-nav";
 import { PushCard } from "@/modules/settings/components/push-card";
@@ -27,7 +30,7 @@ export default async function SettingsPage() {
       <PageHeader title="Settings" icon={Settings} description="Plan dates, daily targets, rest days, integrations, notifications and backups." />
       <div className="lg:grid lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-8">
         <SettingsNav />
-        <div className="min-w-0 space-y-4">
+        <PageStack>
           <SettingsForm
             today={todayIn(s)}
             timezone={s.timezone}
@@ -55,7 +58,8 @@ export default async function SettingsPage() {
             }}
           />
           <AiPanel providers={providers} usage={usage} />
-          <h2 className="px-1 pt-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">System</h2>
+          <DesiModeCard />
+          <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">System</h2>
           <SettingsTools
             channels={[
               { name: "Telegram", configured: !!(e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_CHAT_ID), envVars: "TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID" },
@@ -83,7 +87,8 @@ export default async function SettingsPage() {
             name={e.ADMIN_NAME}
           />
           <PushCard publicKey={e.VAPID_PUBLIC_KEY ?? null} devices={pushDevices} />
-        </div>
+          <FeedbackCard />
+        </PageStack>
       </div>
     </>
   );

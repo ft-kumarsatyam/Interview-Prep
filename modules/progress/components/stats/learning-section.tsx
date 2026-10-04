@@ -17,7 +17,7 @@ export async function LearningSection() {
   const joined = roadmaps.filter((r) => r.joinedOn);
 
   return (
-    <section aria-label="Learning" className="mt-6">
+    <section aria-label="Learning">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">

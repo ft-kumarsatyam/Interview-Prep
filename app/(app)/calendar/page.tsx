@@ -5,6 +5,7 @@ import { AgendaList } from "@/modules/planner/components/calendar/agenda-list";
 import { Legend, MonthGrid } from "@/modules/planner/components/calendar/month-grid";
 import { chipClass } from "@/components/shared/chip";
 import { PageHeader } from "@/components/shared/page-header";
+import { PageStack } from "@/components/shared/page-stack";
 import { StatTile } from "@/components/shared/stat-tile";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -79,13 +80,12 @@ export default async function CalendarPage({ searchParams }: PageProps<"/calenda
         </nav>
       </PageHeader>
 
-      <div className="mb-4">
-        <Suspense fallback={null}>
-          <CarrySection today={today.today} plan={today.plan} settings={today.settings} />
-        </Suspense>
-      </div>
+      <PageStack>
+      <Suspense fallback={null}>
+        <CarrySection today={today.today} plan={today.plan} settings={today.settings} />
+      </Suspense>
 
-      <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
         <StatTile icon={CalendarCheck} tone="success" label="Days complete" value={s.elapsed ? `${s.complete}/${s.elapsed}` : "–"} hint={s.elapsed ? `${s.partial} with something left · ${s.missed} missed${s.caughtUp ? ` · ${s.caughtUp} caught up` : ""}` : "No plan days yet this month"}>
           {s.elapsed > 0 && <Progress value={pct(s.complete, s.elapsed)} className="mt-1 h-1 [&>div]:bg-success" aria-label="Days complete" />}
         </StatTile>
@@ -98,7 +98,8 @@ export default async function CalendarPage({ searchParams }: PageProps<"/calenda
         <StatTile icon={Hourglass} tone="warning" label="Still ahead" value={`${s.ahead} day${s.ahead === 1 ? "" : "s"}`} hint={s.ahead ? `About ${s.hoursAhead} h of work${s.rest ? ` · ${s.rest} rest` : ""}` : s.rest ? `${s.rest} rest days` : "Nothing left this month"} />
       </div>
 
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <section aria-label="Days" className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div role="group" aria-label="Calendar view" className="flex gap-1.5">
           <Link href={href({ view: "month" })} aria-current={view === "month" ? "page" : undefined} className={cn(chipClass(view === "month"), view === "auto" && AUTO_MONTH)}>
             <LayoutGrid className="size-4" aria-hidden /> Month
@@ -128,6 +129,8 @@ export default async function CalendarPage({ searchParams }: PageProps<"/calenda
           </div>
         </>
       )}
+      </section>
+      </PageStack>
     </>
   );
 }

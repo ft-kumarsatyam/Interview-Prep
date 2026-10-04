@@ -23,8 +23,8 @@ export const SPLASH_DEVICES: readonly SplashDevice[] = [
 ];
 
 export const SPLASH_THEMES = {
-  dark: { background: "#0b0d12", text: "#e8e8ee" },
-  light: { background: "#fafafb", text: "#16161d" },
+  dark: { background: "#13120f", text: "#ece9e2" },
+  light: { background: "#f6f4ef", text: "#1c1a17" },
 } as const;
 
 export type SplashTheme = keyof typeof SPLASH_THEMES;

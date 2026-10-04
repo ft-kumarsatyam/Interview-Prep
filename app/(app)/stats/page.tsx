@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { BarChart3 } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
+import { PageStack } from "@/components/shared/page-stack";
 import { ensureToday } from "@/modules/planner/services/plan";
 import { CoverageSection } from "@/modules/progress/components/stats/coverage-section";
 import { Suspense } from "react";
@@ -18,16 +19,18 @@ export default async function StatsPage() {
   return (
     <>
       <PageHeader title="Stats" icon={BarChart3} description="Are you on pace? Solves, quiz trend, coverage and mastery in one place." />
-      <StatsSummary stats={stats} streak={today.streak} best={today.best} />
-      <Suspense fallback={null}>
-        <StreakHistorySection today={today.today} freezeTokens={today.freezeTokens} />
-      </Suspense>
-      <PracticePaceSection stats={stats} />
-      <QuizMasterySection stats={stats} />
-      <CoverageSection stats={stats} />
-      <Suspense fallback={null}>
-        <LearningSection />
-      </Suspense>
+      <PageStack>
+        <StatsSummary stats={stats} streak={today.streak} best={today.best} />
+        <Suspense fallback={null}>
+          <StreakHistorySection today={today.today} freezeTokens={today.freezeTokens} />
+        </Suspense>
+        <PracticePaceSection stats={stats} />
+        <QuizMasterySection stats={stats} />
+        <CoverageSection stats={stats} />
+        <Suspense fallback={null}>
+          <LearningSection />
+        </Suspense>
+      </PageStack>
     </>
   );
 }

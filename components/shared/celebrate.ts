@@ -1,9 +1,11 @@
 "use client";
 
 import { toast } from "sonner";
+import { feedback } from "@/components/shared/feedback";
 
-/** Confetti once per day when the day flips to complete. Respects reduced motion. */
+/** Fanfare and confetti (once per day) when the day flips to complete. Respects reduced motion. */
 export async function celebrateDayComplete(): Promise<void> {
+  feedback("complete");
   toast.success("Day complete! Streak extended 🔥");
   const key = `prepos:confetti:${new Intl.DateTimeFormat("en-CA").format(new Date())}`;
   if (typeof window === "undefined" || localStorage.getItem(key)) return;

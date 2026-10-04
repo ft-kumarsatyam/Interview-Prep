@@ -2,11 +2,13 @@ import { connectDb } from "@/core/db";
 import { recordAiUsage } from "@/core/observability/metrics";
 import { toLocalDate } from "@/core/domain/dates";
 import { latencyBucket } from "@/modules/ai/domain/ai-metrics";
-import { PROVIDER_IDS, type ProviderId, type ProviderState } from "@/modules/ai/domain/llm-router";
+import type { ProviderState } from "@/modules/ai/domain/llm-router";
 import type { LlmStore, UsageDelta } from "@/core/llm/store";
-import { AiUsage, LlmState, PaidApproval, PaidCap } from "@/core/models/ai";
+import { AiUsage, LlmKeyUsage, LlmState, PaidApproval, PaidCap } from "@/core/models/ai";
 
 const USAGE_TTL_MS = 90 * 86_400_000;
+/** A provider id, optionally `#fingerprint` for one of several keys. */
+const SLOT_ID = /^[a-z][a-z0-9-]{1,30}(#[0-9a-f]{6,16})?$/;
 const APPROVAL_TTL_MS = 3 * 86_400_000;
 
 /** The counters one call adds: calls, failures, tokens, failovers and its latency histogram buckets. */
@@ -37,13 +39,25 @@ export function mongoLlmStore(timeZone: string, now: () => Date = () => new Date
     async loadStates() {
       await connectDb();
       const rows = await LlmState.find().lean();
-      const out: Partial<Record<ProviderId, ProviderState>> = {};
+      const out: Partial<Record<string, ProviderState>> = {};
       for (const r of rows) {
-        const id = r._id as unknown as ProviderId;
-        if (!(PROVIDER_IDS as readonly string[]).includes(id)) continue;
+        const id = String(r._id);
+        if (!SLOT_ID.test(id)) continue;
         out[id] = { status: r.status ?? "closed", untilMs: r.untilMs ?? 0, fails: r.fails ?? 0, lastError: (r.lastError as ProviderState["lastError"]) ?? null };
       }
       return out;
+    },
+
+    async keyTokens() {
+      await connectDb();
+      const rows = await LlmKeyUsage.find({}, { fingerprint: 1, tokens: 1 }).lean();
+      return Object.fromEntries(rows.map((r) => [r.fingerprint, r.tokens ?? 0]));
+    },
+
+    async addKeyTokens(fingerprint, provider, tokens) {
+      if (tokens <= 0) return;
+      await connectDb();
+      await LlmKeyUsage.updateOne({ fingerprint }, { $inc: { tokens: Math.round(tokens) }, $set: { provider, lastUsedAt: now() } }, { upsert: true });
     },
 
     async saveState(id, state) {

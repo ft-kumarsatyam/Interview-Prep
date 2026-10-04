@@ -6,7 +6,7 @@ import { signIn } from "./helpers";
  * failure unit tests miss: a component imported wrong, a prop missing, a page that throws on an empty database.
  */
 const PAGES = [
-  "/dashboard", "/learn", "/courses", "/roadmaps", "/design", "/web", "/web/interview", "/projects", "/blogs", "/news", "/ask", "/plan", "/calendar",
+  "/dashboard", "/learn", "/courses", "/roadmaps", "/design", "/web", "/web/interview", "/projects", "/blogs", "/news", "/ask", "/chat", "/plan", "/calendar",
   "/quiz", "/quiz/history", "/quiz/mistakes", "/review", "/backlog", "/stats", "/targets", "/mock", "/jobs", "/jobs/tracker", "/jobs/sources", "/jobs/links",
   "/resume", "/resume/tailor", "/practice", "/dsa", "/aptitude", "/playground", "/setup", "/settings", "/settings/api-tokens",
 ];

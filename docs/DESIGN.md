@@ -1,8 +1,8 @@
 # Design — PrepOS
 
-**Feel:** a focused training cockpit. It is calm, dark-first and data-dense without clutter, and one glance at the dashboard answers *"what do I do today, and am I on track?"* The app is also a portfolio piece, so the craft should be visible: consistent spacing, real empty states and smooth micro-interactions.
+**Feel:** a focused training cockpit. It is calm, warm and data-dense without clutter, and one glance at the dashboard answers *"what do I do today, and am I on track?"* The app is also a portfolio piece, so the craft should be visible: consistent spacing, real empty states and smooth micro-interactions.
 
-Built with Tailwind v4 + shadcn/ui (New York style) + lucide-react icons. Light theme supported, dark is the default.
+Built with Tailwind v4 + shadcn/ui (New York style) + lucide-react icons. Light (warm off-white) is the default; dark is one tap away in the theme toggle.
 
 ---
 
@@ -10,20 +10,23 @@ Built with Tailwind v4 + shadcn/ui (New York style) + lucide-react icons. Light 
 
 ### Colour tokens (CSS variables in `app/globals.css`, consumed by shadcn)
 
+The palette is **warm paper and deep indigo**: an off-white page with slightly lighter cards and warm borders in light mode, a warm charcoal (not blue-black) in dark mode. The app icon, PWA splash screens (`core/pwa/splash.ts`, `npm run icons`), manifest and `viewport.themeColor` use the same background and indigo.
+
 | Token | Dark | Light | Use |
 |---|---|---|---|
-| `--background` | `#0B0D12` | `#FAFAFB` | Page |
-| `--card` | `#12151C` | `#FFFFFF` | Cards, sidebar |
-| `--muted` | `#1A1E27` | `#F1F2F5` | Inputs, hover rows |
-| `--border` | `#232836` | `#E4E6EB` | 1px borders |
-| `--foreground` | `#E7E9EE` | `#11131A` | Text |
-| `--muted-foreground` | `#8A90A2` | `#5B6172` | Secondary text |
-| `--primary` / `--primary-foreground` | `#8B6FFF` / `#0B0D12` | `#5B3DE0` / `#FFFFFF` | Primary actions, progress, links |
-| `--success` | `#22C55E` | `#137A38` | Done, Easy |
-| `--warning` | `#F59E0B` | `#A8490A` | Medium, due reviews |
-| `--info` | `#60A5FA` | `#1D4ED8` | Neutral highlights, tips |
-| `--destructive` | `#F87171` | `#C81E1E` | Hard, errors, broken streak |
-| `--streak` | `#FF7A1A` | `#C2410C` | Flame, streak counters |
+| `--background` | `#13120F` | `#F6F4EF` | Page |
+| `--card` | `#1B1A16` | `#FDFCF9` | Cards |
+| `--sidebar` | `#171612` | `#FBFAF6` | Sidebar |
+| `--muted` | `#24221D` | `#EEEBE4` | Inputs, hover rows |
+| `--border` | `#2C2A24` | `#E5E0D6` | 1px borders |
+| `--foreground` | `#ECE9E2` | `#1C1A17` | Text |
+| `--muted-foreground` | `#A39D91` | `#625D54` | Secondary text |
+| `--primary` / `--primary-foreground` | `#9B8CFF` / `#13120F` | `#4B3FC4` / `#FFFFFF` | Primary actions, progress, links |
+| `--success` | `#4CC47A` | `#12703A` | Done, Easy |
+| `--warning` | `#F0A43A` | `#9A4A07` | Medium, due reviews |
+| `--info` | `#7FB0F5` | `#1F4FBF` | Neutral highlights, tips |
+| `--destructive` | `#F2897B` | `#B42318` | Hard, errors, broken streak |
+| `--streak` | `#FF8A3D` | `#B23A0A` | Flame, streak counters |
 
 Every pair above is at least 4.5:1 for text on its own background and on a 10% tint of itself (checked by computing WCAG ratios, not by eye). **Soft tint = `bg-<tone>/10 text-<tone>`**; do not invent other alphas. Use the `Tone` type and `ToneBadge`/`StatTile` instead of typing the classes by hand.
 
@@ -38,6 +41,7 @@ Difficulty badges: Easy = success, Medium = warning, Hard = destructive, all as 
 
 ### Spacing, shape, depth
 - 4px base grid. Card padding 20–24px. Grid gaps of 16px on mobile and 24px on desktop.
+- **One page rhythm.** Every page is `PageHeader` then `PageStack` (`space-y-6` between top-level sections). Inside a section: `SectionHeading` then content at `space-y-3`; card grids use `gap-4`; cards pad `p-4 sm:p-5`. Sections and cards never add their own outer `mt-*`/`mb-*`; the stack spaces them, so a section that renders nothing leaves no gap.
 - Radius: `rounded-xl` for cards and panels, `rounded-lg` for inputs and buttons, `rounded-full` for chips.
 - Touch targets: on touch devices (`pointer-coarse:`) buttons, inputs and tabs grow to 40-44px automatically; do not override heights per call site.
 - No heavy shadows. Use a 1px border, plus a subtle ring (`ring-1 ring-foreground/5`, visible in both themes) on cards. The only gradient is the hero progress ring (violet → pink).
@@ -45,19 +49,21 @@ Difficulty badges: Easy = success, Medium = warning, Hard = destructive, all as 
 ### Motion
 - 150–200 ms ease-out on hover and press. Checklist items strike through and fade when ticked.
 - Completing the day shows a **confetti burst** (canvas-confetti, once per day) and the flame icon plays a 600 ms scale-bounce.
+- **Sound and haptics** (`components/shared/feedback.ts`): short Web Audio tones, no audio files, for a ticked task, a passed or missed quiz and the day-complete fanfare, plus `navigator.vibrate` (Android) or the iOS 18 switch haptic. Key moments only, never on ordinary taps; muted per device in Settings > Sound and haptics.
 - Respect `prefers-reduced-motion`.
 
 ## 2. Layout and navigation
 
-- **Five hubs, not seventeen pages.** `components/layout/nav-items.ts` is the source of truth:
-  - **Today**: Overview (`/dashboard`), Daily quiz (`/quiz`), Review (`/review`)
-  - **Practice**: DSA, Problems, Mock interviews, Aptitude, Playground, DB Lab
-  - **Learn**: Syllabus (`/learn`), System Design (`/design`), Reading (`/news`)
-  - **Plan**: Planner, Calendar, Stats
+- **Six hubs, ordered like a study day.** `components/layout/nav-items.ts` is the source of truth:
+  - **Today**: Overview (`/dashboard`), Daily quiz, Review, Backlog, Assistant
+  - **Plan**: Planner, Calendar, Targets, Stats
+  - **Practice**: Practice hub, DSA, Problems, Mock interviews, Aptitude, Playground, DB Lab
+  - **Learn**: Syllabus, Courses, Roadmaps, System Design, Web & AI, Interview bank, Projects, Eng blogs, Ask notes, Reading
+  - **Career**: Jobs, Resume
   - **Settings**: Settings, Setup
   Every old URL still works; only the grouping changed. `pageFor()` matches the longest prefix, so `/playground/db` is DB Lab.
-- **Desktop (≥1024px):** a 240px sidebar of the five hubs (`AppSidebar`). Each hub has its own expand button: the current hub opens by itself, and hubs you open by hand stay open on this device. `⌘/Ctrl + B` or the footer button collapses it to a 64px icon rail where each hub opens a flyout of its pages and today's progress shrinks to a chip; the choice is kept in a cookie so the server renders the right width. The top bar shows the hub name, today's date, the palette (`⌘K`), notifications and the theme toggle. The page's own title is the `PageHeader` h1, never repeated in the top bar.
-- **Mobile:** a bottom bar of Today · Practice · Learn · Plan · More (Settings, Setup, sign out). Inside a hub, a scrollable tab strip (`HubTabs`) switches pages; it shows only on a hub's own pages, not on detail pages such as `/dsa/two-sum`.
+- **Desktop (≥1024px):** a 240px sidebar of the six hubs (`AppSidebar`). Each hub has its own expand button: the current hub opens by itself, and hubs you open by hand stay open on this device. `⌘/Ctrl + B` or the footer button collapses it to a 64px icon rail where each hub opens a flyout of its pages and today's progress shrinks to a chip; the choice is kept in a cookie so the server renders the right width. The top bar shows the hub name, today's date, the palette (`⌘K`), notifications and the theme toggle. The page's own title is the `PageHeader` h1, never repeated in the top bar.
+- **Mobile (PWA first):** a bottom bar of Today · Plan · Practice · Learn · More, each tab at least 56px tall with the active icon in a filled pill. **More** is a sheet grouped as Career, Settings, Theme (Light / Dark / Device) and Sign out. The header keeps only the hub (or a back link), search, Ask, and the bell; the theme toggle moves into More below `sm`. Inside a hub, a scrollable tab strip (`HubTabs`, edge fades, current tab scrolled into view) switches pages on a hub's own pages; on detail pages such as `/dsa/two-sum`, `/jobs/[id]` or `/calendar/[date]` the header shows a back link to the page they belong to instead. Shell sizes are the `--topbar-h` and `--tabbar-h` variables, and every edge pads with `env(safe-area-inset-*)`.
 - **Today's session:** `SessionBar` (Quiz and Review pages) shows Solve → Theory → Review → Quiz with a "Next" button. The logic is `core/domain/session.ts`; the quiz stays locked until its unlock rule is met.
 - Content max-width 1200px, centred; IDE pages go full width.
 
@@ -176,6 +182,7 @@ Shared primitives in `components/shared/` (use these before writing a new card, 
 | Component | Use |
 |---|---|
 | `PageHeader` | The one page title, description and actions |
+| `PageStack` | The page body under `PageHeader`: `space-y-6` between sections |
 | `SectionHeading` | Section titles (h2/h3, optional eyebrow, hint and action) |
 | `StatTile` | A labelled number or panel; `tone` picks the icon colour |
 | `LinkCard` | A card that is a link: one hover, focus ring and touch height |

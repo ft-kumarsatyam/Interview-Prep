@@ -1,4 +1,4 @@
-import { configuredChannels } from "@/core/notify";
+import { configuredChannels, PermanentDeliveryError } from "@/core/notify";
 import { registerHandler } from "@/core/events/deliver";
 import type { PushContent } from "@/modules/resume/domain/roast";
 
@@ -14,7 +14,13 @@ export function registerNotificationHandlers(): void {
     const channel = configuredChannels().find((c) => c.name === p.channel);
     if (!channel) return { sent: false, reason: "channel not configured" };
     const content = p.content as unknown as PushContent;
-    await channel.send(p.title, p.body, content.html, { content, url: p.url, tag: p.tag });
-    return { sent: true };
+    try {
+      const receipt = await channel.send(p.title, p.body, content.html, { content, url: p.url, tag: p.tag });
+      return { sent: true, ...(receipt ?? {}) };
+    } catch (err) {
+      // Nothing to deliver to (no device subscribed): record it as skipped rather than retrying every day.
+      if (err instanceof PermanentDeliveryError) return { sent: false, reason: err.message };
+      throw err;
+    }
   });
 }

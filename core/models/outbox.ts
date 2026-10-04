@@ -20,6 +20,8 @@ const outboxSchema = new Schema(
     lastError: { type: String, default: "" },
     occurredAt: { type: Date, default: () => new Date() },
     doneAt: { type: Date, default: null },
+    /** What the handlers returned on success (for a notification: the provider and its message id). */
+    result: { type: Schema.Types.Mixed, default: null },
   },
   { timestamps: true, minimize: false },
 );

@@ -69,7 +69,7 @@ export async function runMorning(
 }
 
 /**
- * 23:59 (the job may land up to half an hour either side): email the day's
+ * 22:30 to 23:29 local (Hobby fires anywhere in the hour): email the day's
  * recap. What was done, what is left, the streak standing and tomorrow's
  * adjusted plan. Once per day; a retry or a second scheduler is silent.
  */

@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { markSolved } from "@/app/(app)/dashboard/actions";
 import { celebrateDayComplete } from "@/components/shared/celebrate";
+import { feedback } from "@/components/shared/feedback";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -59,6 +60,7 @@ export function SolveSheet({
       }
       toast.success(`${target.title} logged`);
       if (res.justCompleted) await celebrateDayComplete();
+      else feedback("tick");
     });
   }
 

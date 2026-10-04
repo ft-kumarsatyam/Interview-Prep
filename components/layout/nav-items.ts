@@ -1,6 +1,7 @@
 import {
   BarChart3,
   BookOpen,
+  Bot,
   Brain,
   CalendarDays,
   Briefcase,
@@ -10,6 +11,7 @@ import {
   Dumbbell,
   Globe,
   Hammer,
+  Headphones,
   FileText,
   GraduationCap,
   Inbox,
@@ -21,6 +23,7 @@ import {
   PenLine,
   Route,
   Sparkles,
+  StickyNote,
   Newspaper,
   RotateCcw,
   Settings,
@@ -40,10 +43,11 @@ export interface NavPage {
 
 /**
  * A hub is one sidebar entry and one mobile tab. Its pages share a tab strip (mobile) or an expanded
- * sidebar list (desktop), so the app has 5 destinations instead of 17.
+ * sidebar list (desktop), so the app has 6 destinations instead of 30. Order follows a study day:
+ * what to do today, how the plan is going, then practice, learning and the job search.
  */
 export interface NavHub {
-  id: "today" | "practice" | "learn" | "plan" | "settings";
+  id: "today" | "plan" | "practice" | "learn" | "career" | "settings";
   label: string;
   /** Label in the mobile tab bar, where width is tight. */
   short: string;
@@ -65,6 +69,23 @@ export const NAV_HUBS: NavHub[] = [
       { href: "/quiz", label: "Daily quiz", icon: ListChecks },
       { href: "/review", label: "Review", icon: RotateCcw },
       { href: "/backlog", label: "Backlog", icon: Inbox },
+      { href: "/chat", label: "Assistant", icon: Bot },
+      { href: "/fun", label: "Break room", icon: Sparkles },
+      { href: "/music", label: "Music dock", icon: Headphones },
+    ],
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    short: "Plan",
+    icon: CalendarRange,
+    href: "/plan",
+    pages: [
+      { href: "/plan", label: "Planner", icon: CalendarRange },
+      { href: "/calendar", label: "Calendar", icon: CalendarDays },
+      { href: "/targets", label: "Targets", icon: Target },
+      { href: "/stats", label: "Stats", icon: BarChart3 },
+      { href: "/focus", label: "Focus history", icon: Timer },
     ],
   },
   {
@@ -99,22 +120,19 @@ export const NAV_HUBS: NavHub[] = [
       { href: "/projects", label: "Projects", icon: Hammer },
       { href: "/blogs", label: "Eng blogs", icon: PenLine },
       { href: "/ask", label: "Ask notes", icon: Sparkles },
+      { href: "/notes", label: "Notes inbox", icon: StickyNote },
       { href: "/news", label: "Reading", icon: Newspaper },
     ],
   },
   {
-    id: "plan",
-    label: "Plan",
-    short: "Plan",
-    icon: CalendarRange,
-    href: "/plan",
+    id: "career",
+    label: "Career",
+    short: "Career",
+    icon: Briefcase,
+    href: "/jobs",
     pages: [
-      { href: "/plan", label: "Planner", icon: CalendarRange },
-      { href: "/targets", label: "Targets", icon: Target },
-      { href: "/resume", label: "Resume", icon: FileText },
       { href: "/jobs", label: "Jobs", icon: Briefcase },
-      { href: "/calendar", label: "Calendar", icon: CalendarDays },
-      { href: "/stats", label: "Stats", icon: BarChart3 },
+      { href: "/resume", label: "Resume", icon: FileText },
     ],
   },
   {
@@ -130,8 +148,11 @@ export const NAV_HUBS: NavHub[] = [
   },
 ];
 
-/** Hubs shown as mobile tabs. Settings lives behind the trailing "More" tab. */
-export const MOBILE_HUB_IDS: NavHub["id"][] = ["today", "practice", "learn", "plan"];
+/** Hubs shown as mobile tabs. Career and Settings live behind the trailing "More" tab. */
+export const MOBILE_HUB_IDS: NavHub["id"][] = ["today", "plan", "practice", "learn"];
+
+/** Hubs reached through the mobile "More" sheet, in order. */
+export const MORE_HUB_IDS: NavHub["id"][] = ["career", "settings"];
 
 /** Every page, flattened with its hub (used by the command palette). */
 export const NAV_ITEMS: Array<NavPage & { hub: NavHub["id"] }> = NAV_HUBS.flatMap((h) => h.pages.map((p) => ({ ...p, hub: h.id })));

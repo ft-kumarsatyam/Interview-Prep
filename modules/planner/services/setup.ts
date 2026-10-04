@@ -70,12 +70,13 @@ export async function getSetupChecklist(opts: SetupOptions): Promise<SetupCheckl
 
 function llmStatus(e: ReturnType<typeof env>): SetupInput["llm"] {
   const defs = resolveProviders(e);
-  const free = defs.filter((d) => !d.paid).map((d) => d.label);
-  const paid = describeProviders(e).find((p) => p.id === "meta");
+  const free = [...new Set(defs.filter((d) => !d.paid).map((d) => d.label))];
+  const paidRows = describeProviders(e).filter((p) => p.paid);
+  const ready = paidRows.filter((p) => p.configured);
   return {
     configured: free.length > 0,
     provider: free[0] ?? null,
     free,
-    paid: { label: "Meta Llama (paid)", ready: !!paid?.configured, missing: paid?.missing ?? [] },
+    paid: { label: ready.map((p) => p.label).join(", ") || "Meta Llama (paid)", ready: ready.length > 0, missing: ready.length ? [] : (paidRows.find((p) => p.id === "openai")?.missing ?? []) },
   };
 }

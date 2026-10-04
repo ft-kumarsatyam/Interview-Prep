@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bell, Bot, CalendarDays, CalendarOff, Clock, Code2, Database, Gauge, Newspaper, Sparkles, Timer, Wallet, type LucideIcon } from "lucide-react";
+import { Bell, Bot, CalendarDays, CalendarOff, Clock, Code2, Database, Gauge, Newspaper, Sparkles, Timer, Volume2, Wallet, type LucideIcon } from "lucide-react";
 import { cn } from "@/core/utils";
 
 export interface SettingsSection {
@@ -36,6 +36,7 @@ export const SETTINGS_GROUPS: Array<{ label: string; sections: SettingsSection[]
     sections: [
       { id: "notifications", label: "Notifications", icon: Bell },
       { id: "data", label: "Data and backup", icon: Database },
+      { id: "sound", label: "Sound and haptics", icon: Volume2 },
     ],
   },
 ];

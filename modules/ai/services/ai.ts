@@ -1,10 +1,11 @@
 import { connectDb } from "@/core/db";
 import { LATENCY_BUCKETS, percentileMs } from "@/modules/ai/domain/ai-metrics";
-import { PAID_PROVIDER, type AiFeature } from "@/modules/ai/domain/llm-router";
+import type { AiFeature, ProviderState } from "@/modules/ai/domain/llm-router";
+import { budgetLevel, budgetNote, type BudgetLevel } from "@/modules/ai/domain/key-rotation";
 import { env } from "@/core/env";
 import { createChain } from "@/core/llm/chain";
 import { AllProvidersFailedError, PaidConfirmRequiredError } from "@/core/llm/errors";
-import { describeProviders, resolveProviders } from "@/core/llm/providers";
+import { describeProviders, keyTokenBudget, resolveProviders } from "@/core/llm/providers";
 import type { LlmProvider } from "@/core/llm/types";
 import { mongoLlmStore } from "@/modules/ai/services/llm-store";
 import { getSettings } from "@/modules/settings/services/settings";
@@ -15,7 +16,7 @@ export async function getAiFor(feature: AiFeature, opts: { paidOnce?: boolean } 
   const defs = resolveProviders(e);
   if (defs.length === 0) return null;
   const settings = await getSettings();
-  return createChain({ defs, store: mongoLlmStore(e.APP_TIMEZONE), feature, paid: settings.llmPaid, timeZone: e.APP_TIMEZONE, paidOnce: opts.paidOnce });
+  return createChain({ defs, store: mongoLlmStore(e.APP_TIMEZONE), feature, paid: settings.llmPaid, timeZone: e.APP_TIMEZONE, paidOnce: opts.paidOnce, keyBudget: keyTokenBudget(e) });
 }
 
 export type AiResult<T> =
@@ -102,39 +103,73 @@ export async function aiMetricsToday(now = new Date()): Promise<AiMetricsRow[]> 
   });
 }
 
+export type ProviderHealth = "ok" | "cooldown" | "disabled";
+
+/** One API key of a provider, identified only by its fingerprint. */
+export interface KeyRow {
+  fingerprint: string;
+  index: number;
+  health: ProviderHealth;
+  tokens: number;
+  budget: number;
+  level: BudgetLevel;
+  note: string | null;
+}
+
 export interface ProviderRow {
   id: string;
   label: string;
   paid: boolean;
   configured: boolean;
   missing: string[];
-  /** Health from the chain's remembered state. */
-  health: "ok" | "cooldown" | "disabled";
+  /** Health from the chain's remembered state (ok while at least one key is usable). */
+  health: ProviderHealth;
   note: string | null;
+  /** Per-key health and token use, when the provider is configured. */
+  keys?: KeyRow[];
 }
 
 const clock = (ms: number, timeZone: string) => new Intl.DateTimeFormat("en-IN", { hour: "2-digit", minute: "2-digit", timeZone }).format(new Date(ms));
 
-/** What the Settings panel shows per provider: configured or not, and whether the chain is currently skipping it. */
+function healthOf(st: ProviderState | undefined, nowMs: number): ProviderHealth {
+  if (st?.status === "disabled") return "disabled";
+  return st?.status === "cooldown" && st.untilMs > nowMs ? "cooldown" : "ok";
+}
+
+/** What the Settings panel shows per provider: configured or not, whether the chain is skipping it, and each key's token use. */
 export async function providerRows(now = new Date()): Promise<ProviderRow[]> {
   const e = env();
-  const states = await mongoLlmStore(e.APP_TIMEZONE).loadStates();
+  const store = mongoLlmStore(e.APP_TIMEZONE);
+  const [states, tokens] = await Promise.all([store.loadStates(), store.keyTokens()]);
+  const budget = keyTokenBudget(e);
+  const defs = resolveProviders(e);
+  const nowMs = now.getTime();
   return describeProviders(e).map((p) => {
-    const st = states[p.id];
-    const cooling = st?.status === "cooldown" && st.untilMs > now.getTime();
-    const disabled = st?.status === "disabled";
-    return {
-      id: p.id,
-      label: p.label,
-      paid: p.id === PAID_PROVIDER,
-      configured: p.configured,
-      missing: p.missing,
-      health: disabled ? "disabled" : cooling ? "cooldown" : "ok",
-      note: disabled
+    const slots = defs.filter((d) => (d.provider ?? d.id) === p.id);
+    const keys: KeyRow[] = slots.map((d) => {
+        const used = tokens[d.fingerprint ?? ""] ?? 0;
+        const health = healthOf(states[d.id], nowMs);
+        const level = budgetLevel(used, budget);
+        const stateNote =
+          health === "disabled"
+            ? "Key rejected: fix or replace it, then run the test."
+            : health === "cooldown"
+              ? `Out of quota or rate limited until about ${clock(states[d.id]!.untilMs, e.APP_TIMEZONE)}.`
+              : null;
+        const note = budgetNote({ label: p.label, keyIndex: d.keyIndex ?? 0, keyCount: d.keyCount ?? 1, envVar: d.envVar ?? p.id, tokensUsed: used, budget }) ?? stateNote;
+        return { fingerprint: d.fingerprint ?? "", index: d.keyIndex ?? 0, health, tokens: used, budget, level, note };
+      });
+    const usable = keys.filter((k) => k.health === "ok" && k.level !== "spent");
+    const health: ProviderHealth = keys.length === 0 || usable.length > 0 ? "ok" : keys.every((k) => k.health === "disabled") ? "disabled" : "cooldown";
+    const soonest = Math.min(...slots.map((d) => (healthOf(states[d.id], nowMs) === "cooldown" ? states[d.id]!.untilMs : Infinity)));
+    const note =
+      health === "disabled"
         ? "The key was rejected, so this provider is switched off. Fix the key, then run the test."
-        : cooling
-          ? `Out of quota or rate limited: skipped until about ${clock(st!.untilMs, e.APP_TIMEZONE)}.`
-          : null,
-    };
+        : health === "cooldown"
+          ? Number.isFinite(soonest)
+            ? `Out of quota or rate limited: skipped until about ${clock(soonest, e.APP_TIMEZONE)}.`
+            : "Every key is used up or rate limited. Add a new key."
+          : (keys.find((k) => k.level !== "ok")?.note ?? null);
+    return { id: p.id, label: p.label, paid: p.paid, configured: p.configured, missing: p.missing, health, note, ...(keys.length ? { keys } : {}) };
   });
 }

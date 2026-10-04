@@ -9,6 +9,7 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ProviderRow } from "@/modules/ai/services/ai";
 import { cn } from "@/core/utils";
+import { formatTokens } from "@/modules/ai/domain/key-rotation";
 
 export interface UsageSummary {
   provider: string;
@@ -44,7 +45,7 @@ export function AiPanel({ providers, usage }: { providers: ProviderRow[]; usage:
   const free = providers.filter((p) => !p.paid);
   const readyFree = free.filter((p) => p.configured && p.health === "ok").length;
   const anyFree = free.some((p) => p.configured);
-  const paid = providers.find((p) => p.paid);
+  const paidConfigured = providers.some((p) => p.paid && p.configured);
 
   return (
     <Card id="ai" className="scroll-mt-32 lg:scroll-mt-20">
@@ -53,7 +54,7 @@ export function AiPanel({ providers, usage }: { providers: ProviderRow[]; usage:
           <Bot className="size-4 text-muted-foreground" aria-hidden /> AI providers
         </CardTitle>
         <CardDescription className="text-pretty">
-          Free providers are tried in order, and a provider that hits its limit is skipped for a while. The paid one is only a last resort and never runs without your confirmation. Keys live in your environment, not here.
+          Free providers are tried in order, and a provider that hits its limit is skipped for a while. Paid ones are only a last resort and never run without your confirmation. A provider can have several keys (comma separated); each key has its own token budget. Keys live in your environment, not here.
         </CardDescription>
         <CardAction>
           <span
@@ -86,6 +87,24 @@ export function AiPanel({ providers, usage }: { providers: ProviderRow[]; usage:
                       (p.note ?? "Ready to answer.")
                     )}
                   </p>
+                  {p.keys && p.keys.length > 1 && (
+                    <ul className="mt-2 space-y-1">
+                      {p.keys.map((k) => (
+                        <li key={k.fingerprint} className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                          <span className="font-mono">key {k.index + 1} · {k.fingerprint.slice(0, 6)}</span>
+                          <span className={cn("tabular font-mono", k.level === "spent" ? "text-destructive" : k.level === "warn" ? "text-warning" : "")}>
+                            {formatTokens(k.tokens)} / {formatTokens(k.budget)} tokens
+                          </span>
+                          {k.health !== "ok" && <span className="text-warning">{STATUS[k.health].label.toLowerCase()}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {p.keys?.length === 1 && p.keys[0]!.tokens > 0 && (
+                    <p className="tabular mt-1 font-mono text-xs text-muted-foreground">
+                      {formatTokens(p.keys[0]!.tokens)} / {formatTokens(p.keys[0]!.budget)} tokens on this key
+                    </p>
+                  )}
                 </div>
               </li>
             );
@@ -119,14 +138,14 @@ export function AiPanel({ providers, usage }: { providers: ProviderRow[]; usage:
               {running === "free" && <Loader2 className="animate-spin" aria-hidden />}
               {running === "free" ? "Testing…" : "Test free providers"}
             </Button>
-            {paid?.configured && (
+            {paidConfigured && (
               <Button type="button" variant="outline" className="h-9" disabled={pending} onClick={() => setConfirmPaid(true)}>
                 {running === "paid" && <Loader2 className="animate-spin" aria-hidden />}
                 {running === "paid" ? "Testing…" : "Test paid provider (costs money)"}
               </Button>
             )}
           </div>
-          {!anyFree && <p className="text-xs text-muted-foreground">Set GEMINI_API_KEY or GROQ_API_KEY to turn on AI. Without one, quizzes use the built-in question bank.</p>}
+          {!anyFree && <p className="text-xs text-muted-foreground">Set NVIDIA_API_KEYS, OPENROUTER_API_KEYS, GEMINI_API_KEY or GROQ_API_KEY to turn on AI. Without one, quizzes use the built-in question bank.</p>}
         </div>
 
         {last && (

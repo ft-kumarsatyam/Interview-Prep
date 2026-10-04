@@ -12,7 +12,7 @@ export function SprintCard({ sprint }: { sprint: SprintView }) {
   const { summary } = sprint;
   const [statusLabel, statusClass] = STATUS[summary.status];
   return (
-    <Card>
+    <Card id="sprint" className="scroll-mt-20">
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -28,7 +28,7 @@ export function SprintCard({ sprint }: { sprint: SprintView }) {
           <div className="flex items-center gap-1">
             <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", statusClass)}>{statusLabel}</span>
             <Link
-              href={`/plan?w=${sprint.week - 1}`}
+              href={`/plan?w=${sprint.week - 1}#sprint`}
               aria-label="Previous week"
               aria-disabled={sprint.week <= 1}
               className={cn("grid size-8 place-items-center rounded-md hover:bg-muted", sprint.week <= 1 && "pointer-events-none opacity-40")}
@@ -36,7 +36,7 @@ export function SprintCard({ sprint }: { sprint: SprintView }) {
               <ArrowLeft className="size-4" />
             </Link>
             <Link
-              href={`/plan?w=${sprint.week + 1}`}
+              href={`/plan?w=${sprint.week + 1}#sprint`}
               aria-label="Next week"
               aria-disabled={sprint.week >= sprint.totalWeeks}
               className={cn("grid size-8 place-items-center rounded-md hover:bg-muted", sprint.week >= sprint.totalWeeks && "pointer-events-none opacity-40")}

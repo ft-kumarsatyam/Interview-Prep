@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { CalendarRange } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
+import { PageStack } from "@/components/shared/page-stack";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDate } from "@/core/plan-clock";
 import { FeasibilityCard } from "@/modules/planner/components/intake-wizard";
@@ -56,8 +57,8 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
     <>
       <PageHeader icon={CalendarRange} title="Planner" description="Your goals, this week's sprint, the measures that matter, and a log of every change to the plan. Built around you." />
 
-      <div className="grid gap-5 lg:grid-cols-[1fr_22rem]">
-        <div className="min-w-0 space-y-5">
+      <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
+        <PageStack>
           {proposal?.status === "pending" && <ProposalCard lines={proposal.lines} />}
           <Card>
             <CardHeader>
@@ -94,7 +95,7 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
           <IndicatorsCard indicators={indicators} />
           <StrengthsCard strengths={strengths} />
           <ChangeLogCard changes={changes} />
-        </div>
+        </PageStack>
 
         <PlanSidebar setupCompleted={personal.completed} snapshots={snapshots} sessions={todaySessions} settings={settings} hours={hours} />
       </div>
