@@ -60,7 +60,8 @@ export async function testProviders(opts: { includePaid: boolean }): Promise<Pro
       const next = afterFailure(states[def.id] ?? INITIAL_STATE, { kind, retryAfterSec: err instanceof LlmHttpError ? err.retryAfterSec : undefined }, now.getTime(), startOfNextLocalDayMs(now, e.APP_TIMEZONE));
       await store.saveState(def.id, next);
       await store.recordUsage({ provider, feature: "test", calls: 1, fails: 1 });
-      const hint = kind === "auth" ? " (the key was rejected: check it and the model name)" : kind === "quota-day" ? " (quota or prepaid credits used up)" : kind === "rate" ? " (rate limited, try again shortly)" : kind === "bad-request" ? " (the model may have been retired: set GEMINI_MODEL / GROQ_MODEL)" : "";
+      const modelEnv = provider === "nvidia" ? "NVIDIA_MODEL" : provider === "openrouter" ? "OPENROUTER_MODEL" : provider === "gemini" ? "GEMINI_MODEL" : provider === "groq" ? "GROQ_MODEL" : "the provider model setting";
+      const hint = kind === "auth" ? " (the key was rejected: check it and the model name)" : kind === "quota-day" ? " (quota or prepaid credits used up)" : kind === "rate" ? " (rate limited, try again shortly)" : kind === "bad-request" ? ` (the model may be unavailable: set ${modelEnv})` : "";
       results.push({ id: def.id, label, paid: def.paid, ok: false, detail: `${err instanceof Error ? err.message.slice(0, 160) : "failed"}${hint}` });
     }
   }

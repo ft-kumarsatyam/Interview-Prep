@@ -51,8 +51,10 @@ export const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 export const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
-export const DEFAULT_NVIDIA_MODEL = "meta/llama-3.3-70b-instruct";
-export const DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+/** Current free NVIDIA API Catalog model; the former Llama 3.3 endpoint is retired. */
+export const DEFAULT_NVIDIA_MODEL = "meta/muse-glimmer-30b";
+/** Current free OpenRouter model; the former Llama 3.3 free variant is no longer available. */
+export const DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
 export const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
 export const DEFAULT_CHAIN: readonly ProviderId[] = ["nvidia", "openrouter", "gemini", "groq", "openai", "meta"];
 /** Output cap per paid call, so one call can't run long. */
