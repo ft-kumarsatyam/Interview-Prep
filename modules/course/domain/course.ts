@@ -12,6 +12,46 @@ const https = z.string().url().refine((u) => u.startsWith("https://"), "Use an h
 export const COURSE_LANGS = ["js", "ts", "python", "java", "cpp", "go", "sql", "bash", "yaml", "dockerfile", "hcl"] as const;
 export const LANG_LABEL: Record<(typeof COURSE_LANGS)[number], string> = { js: "JavaScript", ts: "TypeScript", python: "Python", java: "Java", cpp: "C++", go: "Go", sql: "SQL", bash: "Shell", yaml: "YAML", dockerfile: "Dockerfile", hcl: "Terraform" };
 
+const masteryProblemSchema = z.object({
+  id,
+  level: z.enum(["Easy", "Medium", "Hard"]),
+  pattern: text(80, 2),
+  prompt: text(240, 10),
+  slug: id.optional(),
+});
+
+const masteryRecognitionSchema = z.object({
+  signal: text(180, 10),
+  pattern: text(80, 2),
+  tools: z.array(text(80, 1)).min(1).max(5),
+});
+
+const masteryPhaseSchema = z.object({
+  id,
+  title: text(80, 2),
+  focus: text(240, 10),
+  problemIds: z.array(id).min(1).max(60),
+});
+
+const masteryRerunSchema = z.object({
+  after: text(120, 3),
+  problemIds: z.array(id).min(1).max(20),
+  objective: text(240, 10),
+});
+
+export const masteryRoadmapSchema = z.object({
+  goal: text(500, 20),
+  doneWhen: z.array(text(240, 10)).min(4).max(8),
+  recognitionMap: z.array(masteryRecognitionSchema).min(1).max(12),
+  phases: z.array(masteryPhaseSchema).min(1).max(8),
+  problems: z.array(masteryProblemSchema).min(1).max(60),
+  reruns: z.array(masteryRerunSchema).min(1).max(8),
+  interviewChecklist: z.array(text(240, 10)).min(3).max(8),
+});
+
+export type MasteryProblem = z.infer<typeof masteryProblemSchema>;
+export type MasteryRoadmap = z.infer<typeof masteryRoadmapSchema>;
+
 export const courseCheckSchema = z
   .object({ q: text(300, 10), options: z.array(text(200)).min(3).max(4), answer: z.number().int().min(0).max(3), why: text(400, 10) })
   .refine((c) => c.answer < c.options.length, "answer must index an option");
@@ -35,6 +75,7 @@ export const courseLessonSchema = z.object({
   problems: z.array(z.string()).max(10).default([]),
   /** A syllabus topic or subtopic id whose practice quiz backs this lesson (optional). */
   practiceRef: z.string().optional(),
+  mastery: masteryRoadmapSchema.optional(),
   check: z.array(courseCheckSchema).length(3),
   sources: z.array(z.object({ title: text(120), url: https })).max(6).default([]),
 });
@@ -80,9 +121,37 @@ export function courseProblems(courses: readonly Course[], problemSlugs: Readonl
         partIds.forEach((x, i) => partIds.indexOf(x) !== i && out.push(`${key}: duplicate part ${x}`));
         for (const p of l.parts) if (/<\/?(script|iframe|style|img)\b/i.test(proseOnly(p.body))) out.push(`${key}: raw HTML in ${p.id}`);
         if (new Set(l.check.map((q) => q.q)).size !== l.check.length) out.push(`${key}: repeated check question`);
+        if (l.mastery) {
+          const problemIds = new Set<string>();
+          for (const p of l.mastery.problems) {
+            if (problemIds.has(p.id)) out.push(`${key}: duplicate mastery problem ${p.id}`);
+            problemIds.add(p.id);
+            if (p.slug && !problemSlugs.has(p.slug)) out.push(`${key}: unknown mastery problem ${p.slug}`);
+          }
+          const known = new Set(l.mastery.problems.map((p) => p.id));
+          for (const phase of l.mastery.phases)
+            for (const problemId of phase.problemIds)
+              if (!known.has(problemId)) out.push(`${key}: phase ${phase.id} references unknown mastery problem ${problemId}`);
+          for (const rerun of l.mastery.reruns)
+            for (const problemId of rerun.problemIds)
+              if (!known.has(problemId)) out.push(`${key}: rerun references unknown mastery problem ${problemId}`);
+        }
       }
   }
   return out;
+}
+
+export function masteryPhaseProgress(roadmap: MasteryRoadmap, solved: ReadonlySet<string>): Array<{ id: string; title: string; done: number; total: number }> {
+  return roadmap.phases.map((phase) => ({
+    id: phase.id,
+    title: phase.title,
+    done: phase.problemIds.filter((problemId) => solved.has(problemId)).length,
+    total: phase.problemIds.length,
+  }));
+}
+
+export function masteryProblemById(roadmap: MasteryRoadmap, problemId: string): MasteryProblem | undefined {
+  return roadmap.problems.find((problem) => problem.id === problemId);
 }
 
 /* --------------------------------- progress --------------------------------- */

@@ -9,6 +9,7 @@ import { problemBySlug } from "@/core/content";
 import { roadmapNodesByLesson } from "@/core/roadmaps";
 import { CodeTabs } from "@/modules/course/components/code-tabs";
 import { CourseCheck } from "@/modules/course/components/course-check";
+import { MasteryRoadmap } from "@/modules/course/components/mastery-roadmap";
 import { PartTabs } from "@/modules/course/components/part-tabs";
 import { courseNeighbours } from "@/modules/course/domain/course";
 import { getDoneLessons } from "@/modules/course/services/progress";
@@ -118,6 +119,8 @@ export default async function CourseLessonPage({ params }: PageProps<"/courses/[
           ))}
         </ul>
       </section>
+
+      {lesson.mastery && <MasteryRoadmap roadmap={lesson.mastery} />}
 
       {(problems.length > 0 || lesson.practiceRef) && (
         <section aria-label="Practice" className="space-y-2 rounded-xl border bg-card p-4">

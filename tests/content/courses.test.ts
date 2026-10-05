@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { problemBySlug, subtopicById, topicById } from "@/core/content";
 import { courseById, courses } from "@/core/courses";
-import { courseMetaSchema, courseProblems, courseLessonSchema, courseProgress, courseNeighbours, flatLessons, nextCourseLesson } from "@/modules/course/domain/course";
+import { courseMetaSchema, courseProblems, courseLessonSchema, courseProgress, courseNeighbours, flatLessons, masteryPhaseProgress, masteryProblemById, nextCourseLesson } from "@/modules/course/domain/course";
 
 describe("data/courses", () => {
   it("has valid course metadata", () => {
@@ -27,6 +27,20 @@ describe("data/courses", () => {
     const answers = courses.flatMap((c) => flatLessons(c).flatMap((l) => l.check.map((q) => q.answer)));
     expect(new Set(answers).size).toBeGreaterThan(1);
     expect(answers.filter((a) => a === 0).length / answers.length).toBeLessThan(0.5);
+  });
+
+  it("includes the pattern mastery roadmaps with ordered phases", () => {
+    const masteryLessons = flatLessons(courseById.get("dsa")!).filter((lesson) => lesson.mastery);
+    expect(masteryLessons.length).toBeGreaterThanOrEqual(12);
+    const arrays = masteryLessons.find((lesson) => lesson.id === "arrays")?.mastery;
+    expect(arrays?.problems).toHaveLength(45);
+    expect(arrays?.phases.map((phase) => phase.title)).toEqual([
+      "Foundation mechanics",
+      "Core interview patterns",
+      "Pattern mixing",
+    ]);
+    expect(arrays ? masteryProblemById(arrays, "c5")?.slug : undefined).toBe("minimum-window-substring");
+    expect(arrays ? masteryPhaseProgress(arrays, new Set(["a1", "b6", "b14"])).map((p) => p.done) : []).toEqual([1, 2, 0]);
   });
 });
 

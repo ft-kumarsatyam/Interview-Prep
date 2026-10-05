@@ -19,6 +19,7 @@ import dsa13 from "@/data/courses/dsa/13-stack-queue-list-patterns.json";
 import dsa14 from "@/data/courses/dsa/14-trees-and-ranges.json";
 import dsa15 from "@/data/courses/dsa/15-search-heap-grid-patterns.json";
 import dsa16 from "@/data/courses/dsa/16-dp-design-math.json";
+import { dsaMasteryRoadmaps } from "@/data/courses/dsa/mastery-roadmaps";
 import sd01 from "@/data/courses/system-design/01-scaling-building-blocks.json";
 import sd02 from "@/data/courses/system-design/02-data-and-messaging.json";
 import sd03 from "@/data/courses/system-design/03-reliability-and-scale.json";
@@ -67,7 +68,13 @@ const CHAPTER_FILES: Record<string, CourseChapterFile[]> = {
 
 export const courses: Course[] = (coursesJson.courses as CourseMeta[]).map((meta) => ({
   ...meta,
-  chapters: (CHAPTER_FILES[meta.id] ?? []).map((f) => ({ ...f.chapter, lessons: f.lessons })),
+  chapters: (CHAPTER_FILES[meta.id] ?? []).map((f) => ({
+    ...f.chapter,
+    lessons: f.lessons.map((lesson) => {
+      const mastery = meta.id === "dsa" ? dsaMasteryRoadmaps.get(lesson.id) : undefined;
+      return mastery ? { ...lesson, mastery } : lesson;
+    }),
+  })),
 }));
 export const courseById = new Map(courses.map((c) => [c.id, c]));
 
