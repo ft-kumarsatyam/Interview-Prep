@@ -8,7 +8,7 @@ describe("output drills", () => {
     expect(DRILLS.length).toBeGreaterThanOrEqual(22);
   });
 
-  it.each(DRILLS.map((d) => [d.id, d] as const))("%s runs cleanly and prints something to predict", async (_id, drill) => {
+  it.each(DRILLS.filter((d) => d.runnable !== false).map((d) => [d.id, d] as const))("%s runs cleanly and prints something to predict", async (_id, drill) => {
     const ms = await runWorker(drill.code, 40);
     const lines = ms.filter((m) => m.type === "log");
     expect(lines.length).toBeGreaterThan(0);

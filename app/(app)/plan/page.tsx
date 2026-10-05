@@ -30,6 +30,8 @@ import { getFeasibility } from "@/modules/planner/services/planner-intake";
 import { listSnapshots } from "@/modules/planner/services/planner-snapshot";
 import { proposeRebalance } from "@/modules/planner/services/rebalance";
 import { listStudySessions } from "@/modules/planner/services/study";
+import { MocksSection } from "@/modules/progress/components/dashboard/mocks-section";
+import { Suspense } from "react";
 
 export const metadata: Metadata = { title: "Planner" };
 
@@ -74,6 +76,9 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
               <RemedyActions remedies={feasibility.remedies} />
             </CardContent>
           </Card>
+          <Suspense fallback={null}>
+            <MocksSection today={state.today} schedule={settings.mockSchedule} />
+          </Suspense>
           <Card>
             <CardHeader>
               <CardTitle>Today</CardTitle>

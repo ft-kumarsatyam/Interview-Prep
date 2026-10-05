@@ -63,7 +63,7 @@ export function AiPanel({ providers, usage }: { providers: ProviderRow[]; usage:
               readyFree > 0 ? "bg-success/12 text-success" : "bg-warning/15 text-warning",
             )}
           >
-            {readyFree}/{free.length} free ready
+            {readyFree}/{free.length} free providers ready
           </span>
         </CardAction>
       </CardHeader>

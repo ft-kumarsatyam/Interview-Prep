@@ -136,6 +136,26 @@ function healthOf(st: ProviderState | undefined, nowMs: number): ProviderHealth 
   return st?.status === "cooldown" && st.untilMs > nowMs ? "cooldown" : "ok";
 }
 
+function cooldownNote(state: ProviderState, timeZone: string): string {
+  const until = `until about ${clock(state.untilMs, timeZone)}`;
+  switch (state.lastError) {
+    case "quota-day":
+      return `The provider reported its daily quota was used; skipped ${until}.`;
+    case "rate":
+      return `The provider rate-limited this key; skipped ${until}.`;
+    case "bad-request":
+      return `The provider rejected the request; skipped ${until}. Check the model name and endpoint.`;
+    case "server":
+      return `The provider returned a server error; skipped ${until}.`;
+    case "timeout":
+      return `The provider timed out twice; skipped ${until}.`;
+    case "network":
+      return `The provider was unreachable twice; skipped ${until}.`;
+    default:
+      return `The provider is temporarily unavailable; skipped ${until}.`;
+  }
+}
+
 /** What the Settings panel shows per provider: configured or not, whether the chain is skipping it, and each key's token use. */
 export async function providerRows(now = new Date()): Promise<ProviderRow[]> {
   const e = env();
@@ -154,7 +174,7 @@ export async function providerRows(now = new Date()): Promise<ProviderRow[]> {
           health === "disabled"
             ? "Key rejected: fix or replace it, then run the test."
             : health === "cooldown"
-              ? `Out of quota or rate limited until about ${clock(states[d.id]!.untilMs, e.APP_TIMEZONE)}.`
+              ? cooldownNote(states[d.id]!, e.APP_TIMEZONE)
               : null;
         const note = budgetNote({ label: p.label, keyIndex: d.keyIndex ?? 0, keyCount: d.keyCount ?? 1, envVar: d.envVar ?? p.id, tokensUsed: used, budget }) ?? stateNote;
         return { fingerprint: d.fingerprint ?? "", index: d.keyIndex ?? 0, health, tokens: used, budget, level, note };
@@ -167,7 +187,7 @@ export async function providerRows(now = new Date()): Promise<ProviderRow[]> {
         ? "The key was rejected, so this provider is switched off. Fix the key, then run the test."
         : health === "cooldown"
           ? Number.isFinite(soonest)
-            ? `Out of quota or rate limited: skipped until about ${clock(soonest, e.APP_TIMEZONE)}.`
+            ? "One or more keys are temporarily unavailable. See the key details below."
             : "Every key is used up or rate limited. Add a new key."
           : (keys.find((k) => k.level !== "ok")?.note ?? null);
     return { id: p.id, label: p.label, paid: p.paid, configured: p.configured, missing: p.missing, health, note, ...(keys.length ? { keys } : {}) };

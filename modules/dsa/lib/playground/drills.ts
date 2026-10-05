@@ -6,6 +6,7 @@ export interface Drill {
   track?: "javascript" | "dsa" | "dbms" | "sql";
   difficulty?: "easy" | "medium" | "hard";
   expected?: string;
+  runnable?: boolean;
   explanation?: string;
   hints?: string[];
   followUp?: string;
@@ -339,6 +340,7 @@ console.log(out);`,
     topic: "DBMS · Transactions",
     track: "dbms",
     difficulty: "medium",
+    runnable: false,
     code: `-- T1                         -- T2
 BEGIN;                       BEGIN;
 UPDATE accounts SET balance = balance - 10 WHERE id = 1;
@@ -355,6 +357,7 @@ COMMIT;`,
     topic: "SQL · Joins",
     track: "sql",
     difficulty: "medium",
+    runnable: false,
     code: `customers
 id | name
 1  | Ada

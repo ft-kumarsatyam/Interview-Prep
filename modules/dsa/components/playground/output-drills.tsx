@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, Code2, Eye, Lightbulb, Loader2, MessageCircle, Play, RotateCcw, XCircle } from "lucide-react";
 import { ToneBadge } from "@/components/shared/tone-badge";
@@ -20,7 +20,25 @@ export function OutputDrills({ onOpenInEditor, modKey }: { onOpenInEditor: (dril
   const [track, setTrack] = useState<string | null>(null);
   const [topic, setTopic] = useState<string | null>(null);
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({});
-  const visible = DRILLS.filter((d) => (!track || (d.track ?? "javascript") === track) && (!topic || d.topic === topic));
+  const [historyReady, setHistoryReady] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem("prepos:output-drills") ?? "{}") as Record<string, Outcome>;
+        setOutcomes(saved);
+      } catch {
+        // A broken local history should not block practice.
+      }
+      setHistoryReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    if (historyReady) window.localStorage.setItem("prepos:output-drills", JSON.stringify(outcomes));
+  }, [historyReady, outcomes]);
+  const visible = DRILLS
+    .filter((d) => (!track || (d.track ?? "javascript") === track) && (!topic || d.topic === topic))
+    .toSorted((a, b) => (outcomes[a.id] ? 1 : 0) - (outcomes[b.id] ? 1 : 0));
   const correct = Object.values(outcomes).filter((o) => o === "correct").length;
   const attempted = Object.keys(outcomes).length;
 
