@@ -4,6 +4,8 @@ import { stableName } from "@/core/domain/cache";
 import { connectDb } from "@/core/db";
 import { termsIn } from "@/modules/jobs/domain/ats";
 import type { DateStr } from "@/core/domain/dates";
+import { matchProfile } from "@/modules/jobs/domain/job-profile";
+import { getProfile } from "@/modules/jobs/services/job-profiles";
 import { DEFAULT_PREFS, jobPrefsSchema, matchPosting, type JobPrefs, type Match } from "@/modules/jobs/domain/job-match";
 import { BOARD_ATS, detectBoard, postingKey, type BoardAts } from "@/modules/jobs/domain/job-postings";
 import { healthLabel, selectPostings, type HealthLabel } from "@/modules/jobs/domain/job-sync";
@@ -44,6 +46,8 @@ export interface DiscoverFilter {
   /** Minimum match score. */
   min?: number;
   sourceId?: string;
+  /** Score and filter with this saved profile instead of your general preferences. */
+  profileId?: string;
   showDismissed?: boolean;
   limit?: number;
 }
@@ -93,6 +97,8 @@ export async function discoverJobs(filter: DiscoverFilter = {}, now?: Date): Pro
 async function computeDiscover(filter: DiscoverFilter, now: Date): Promise<DiscoverResult> {
   await connectDb();
   const ctx = await matchContext(now);
+  const profile = filter.profileId ? await getProfile(filter.profileId) : null;
+  if (profile) ctx.prefs = profile;
   const where: Record<string, unknown> = { closedAt: null };
   if (!filter.showDismissed) where.dismissed = false;
   if (filter.sourceId) where.sourceId = filter.sourceId;
@@ -112,7 +118,8 @@ async function computeDiscover(filter: DiscoverFilter, now: Date): Promise<Disco
   const rows = await JobPosting.find(where, { jd: 0 }).sort({ postedAt: -1, firstSeenAt: -1 }).limit(SCAN_LIMIT).lean();
   const scored = rows
     .map((r) => {
-      const m: Match = matchPosting({ title: r.title, company: r.company, location: r.location ?? "", remote: r.remote ?? null, postedAt: r.postedAt ?? null, tier: r.tier ?? "", terms: r.terms ?? [] }, ctx);
+      const scorable = { title: r.title, company: r.company, location: r.location ?? "", remote: r.remote ?? null, postedAt: r.postedAt ?? null, tier: r.tier ?? "", terms: r.terms ?? [], department: r.department ?? "", yearsMin: r.yearsMin ?? null };
+      const m: Match = profile ? matchProfile(scorable, ctx, profile) : matchPosting(scorable, ctx);
       return { r, m };
     })
     .filter(({ m }) => !m.excluded && m.score >= (filter.min ?? 0));

@@ -1,0 +1,349 @@
+{
+  "chapter": {
+    "id": "async-javascript",
+    "title": "Asynchronous JavaScript",
+    "summary": "Callbacks to promises to async/await, the event loop in the browser, error handling, concurrency patterns, and generators and iterators."
+  },
+  "lessons": [
+    {
+      "id": "event-loop-promises",
+      "title": "The event loop, microtasks and promises",
+      "minutes": 45,
+      "summary": "How the call stack, task queue and microtask queue interact, how promises are built and chained, and how to predict the order of asynchronous output.",
+      "parts": [
+        {
+          "id": "loop",
+          "label": "The event loop",
+          "body": "## JavaScript is single-threaded, the environment is not\n\nThe language runs your code on **one thread**: one call stack, one thing at a time. Yet pages stay responsive while waiting for the network, timers and clicks, because the **host environment** (browser or Node) does that waiting off-thread and hands results back through queues.\n\nFour pieces:\n\n1. **Call stack**: the currently running functions (LIFO). When it's empty, the loop may run the next job.\n2. **Web APIs / host**: timers, `fetch`, DOM events, I/O. They run outside your JS.\n3. **Task queue (macrotasks)**: completed timers, UI events, message events, I/O callbacks waiting to run.\n4. **Microtask queue**: promise reactions (`.then`, `.catch`, `.finally`), `await` continuations, `queueMicrotask`, `MutationObserver`.\n\n## The loop, precisely\n\n1. Run one **task** (a macrotask) to completion: for example the main script, or one timer callback.\n2. **Drain the entire microtask queue**, including any microtasks queued by microtasks, until empty.\n3. In a browser, if it is time, **render** (style, layout, paint); `requestAnimationFrame` callbacks run just before painting.\n4. Pick the next task. Repeat.\n\nConsequences:\n\n- A task **runs to completion**: nothing interrupts a running function (no preemption), so a long synchronous loop freezes the page; it can't even repaint.\n- Microtasks run **before the next task and before rendering**, so a promise chain always finishes before any pending `setTimeout(…, 0)`.\n- `setTimeout(fn, 0)` means \"run after at least ~0 ms, as a later task\", not \"now\". Browsers clamp nested timers to ≥ 4 ms.\n- An infinite microtask loop starves rendering and timers (just like `nextTick` in Node).\n\n## Predicting order: a worked example\n\n```js\nconsole.log(\"1\");\nsetTimeout(() => console.log(\"2 timeout\"), 0);\nPromise.resolve().then(() => console.log(\"3 microtask\"));\n(async () => { console.log(\"4 async start\"); await null; console.log(\"5 after await\"); })();\nconsole.log(\"6\");\n```\n\nOutput: `1, 4 async start, 6, 3 microtask, 5 after await, 2 timeout`.\n\nStep by step: sync code logs 1, schedules the timer (task), schedules a `.then` microtask, calls the async function which runs **synchronously until its first `await`** (logs 4) and queues the continuation as a microtask, then logs 6. The stack empties, so microtasks drain in FIFO order: 3, then 5. Then the timer task runs: 2.\n\nAn `async` function runs synchronously up to the first `await`; everything after it is a microtask continuation.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "promises",
+          "label": "Promises",
+          "body": "## What a promise is\n\nA **Promise** is an object representing the eventual result of an asynchronous operation. It is in one of three states: **pending**, **fulfilled** (with a value) or **rejected** (with a reason). Once settled it never changes. Consumers register reactions with `.then`.\n\n```js\nconst p = new Promise((resolve, reject) => {\n  // executor runs synchronously\n  setTimeout(() => resolve(42), 100);\n});\np.then((v) => v + 1).then(console.log).catch(console.error).finally(() => cleanup());\n```\n\nKey behaviours:\n\n- `.then(onFulfilled, onRejected)` returns a **new promise**; the value you return becomes its result. Returning a promise makes the chain wait for it (\"flattening\"). **Throwing** (or returning a rejected promise) rejects the next promise.\n- A rejection **propagates down the chain** until a `.catch` or a `then` with a rejection handler handles it. After `.catch`, the chain continues with the handler's return value.\n- `.finally(fn)` runs on both outcomes, doesn't receive the value and passes the result through.\n- Handlers always run **asynchronously**, as microtasks, even if the promise is already settled. That guarantees consistent ordering.\n- An unhandled rejection is reported (`unhandledrejection` event; Node terminates the process by default in modern versions). Always handle errors.\n\n## Combinators\n\n| method | resolves when | rejects when |\n|---|---|---|\n| `Promise.all([...])` | **all** fulfil (array of results, in input order) | **any** rejects (fail-fast) |\n| `Promise.allSettled([...])` | all settle (array of `{status, value/reason}`) | never |\n| `Promise.race([...])` | the **first** settles (either way) | the first settles with a rejection |\n| `Promise.any([...])` | the **first fulfilment** | all reject (`AggregateError`) |\n\nUse `all` for independent calls you need together, `allSettled` to collect partial results, `race` for timeouts, `any` for redundant sources (first success wins).\n\n## Callback hell and why promises exist\n\nNested callbacks (`getUser(id, (u) => getOrders(u, (o) => ...))`) get unreadable, make error handling repetitive (each level checks `err`), and lose control flow (loops and conditionals are painful). Promises give a flat chain, uniform error propagation and composition. **Thenables** (any object with a `then` method) are adopted by promise resolution, so libraries interoperate. Convert callback APIs with `util.promisify` or by wrapping: `new Promise((res, rej) => fs.readFile(f, (e, d) => (e ? rej(e) : res(d))))`.\n\n## Common mistakes\n\n- Forgetting to `return` inside `.then`, so the next step runs before the work finishes.\n- Creating a promise with `new Promise` around something that already returns a promise (**the explicit construction anti-pattern**).\n- Putting `async` work inside `forEach` (it doesn't await): use `for...of` with `await`, or `Promise.all(items.map(...))`.\n- Swallowing errors with empty `.catch(() => {})`.\n- Unhandled rejections from fire-and-forget calls.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "js",
+              "source": "// Implement a minimal Promise.all and a timeout wrapper to prove you understand settling and microtasks\nfunction promiseAll(promises) {\n  return new Promise((resolve, reject) => {\n    const results = new Array(promises.length);\n    let remaining = promises.length;\n    if (remaining === 0) return resolve(results);\n    promises.forEach((p, i) => {\n      Promise.resolve(p).then((v) => {          // Promise.resolve adopts plain values and thenables\n        results[i] = v;                          // keep INPUT order, not completion order\n        if (--remaining === 0) resolve(results);\n      }, reject);                                // first rejection wins (fail-fast)\n    });\n  });\n}\n\nconst withTimeout = (p, ms) =>\n  Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${ms}ms`)), ms))]);\n\n// Output order puzzle\nconsole.log(\"A\");\nsetTimeout(() => console.log(\"B\"), 0);\nPromise.resolve().then(() => console.log(\"C\")).then(() => console.log(\"D\"));\nconsole.log(\"E\");\n// A E C D B"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nThe event loop is *the* JavaScript depth question. They'll show a snippet and ask for the output, then ask **why**. Always narrate: sync code, then microtasks, then the next task.\n\n## Questions with model answers\n\n### 1. Explain the event loop.\n\n**Model answer.** JavaScript has one call stack. Asynchronous work such as timers, network and I/O is done by the host environment, which queues callbacks. When the stack is empty the event loop takes one task from the task queue and runs it to completion, then drains the whole microtask queue (promise reactions and `await` continuations), then may render, then picks the next task. So microtasks always run before the next timer or event, and a long synchronous task blocks everything, including rendering.\n\n### 2. Microtask vs macrotask?\n\n**Model answer.** Macrotasks (tasks) include timers, UI and network events, `MessageChannel` messages and the initial script; the loop runs one per turn. Microtasks are promise callbacks, `await` continuations, `queueMicrotask` and `MutationObserver`; the entire microtask queue is drained after each task and before rendering. That's why `Promise.resolve().then(...)` beats `setTimeout(..., 0)`.\n\n### 3. What does `await` actually do?\n\n**Model answer.** `await expr` converts `expr` to a promise, suspends the async function, returns control to the caller, and schedules the rest of the function as a microtask when the promise settles. The function's synchronous part before the first `await` runs immediately. It doesn't block the thread; other code runs while it waits.\n\n### 4. `Promise.all` vs `allSettled` vs `race` vs `any`?\n\n**Model answer.** `all` waits for every promise and rejects as soon as one rejects. `allSettled` waits for all and reports each outcome, never rejecting. `race` settles with the first promise to settle, either way, which is useful for timeouts. `any` fulfils with the first fulfilment and rejects with an AggregateError only if all reject, suitable for trying redundant sources.\n\n### 5. How does error handling work in a promise chain?\n\n**Model answer.** Throwing in a `.then` handler or returning a rejected promise rejects the derived promise, and the rejection skips fulfilment handlers until a `.catch` or a rejection handler. After a catch, the chain resumes in the fulfilled state with whatever the handler returned, so re-throw if you can't really recover. `.finally` runs for cleanup in both cases. Unhandled rejections should be treated as bugs and monitored.\n\n### 6. What's the output?\n\n```js\nsetTimeout(() => console.log(1), 0);\nPromise.resolve().then(() => console.log(2));\nconsole.log(3);\n```\n\n**Model answer.** `3, 2, 1`. Synchronous code logs 3, then the microtask runs (2), then the timer task runs (1).\n\n### 7. Why shouldn't you use `forEach` with async callbacks?\n\n**Model answer.** `forEach` ignores the returned promises, so it neither waits for them nor propagates their errors; code after it runs before the work completes. Use `for...of` with `await` for sequential work, or `await Promise.all(items.map(async ...))` for parallel work.\n\n## Rapid-fire\n\n- **Is a promise executor sync or async?** Synchronous.\n- **Do `.then` callbacks ever run synchronously?** No, always as microtasks.\n- **What blocks the loop?** Long synchronous code.\n- **`setTimeout(fn, 0)` runs when?** As a later task, after current microtasks.\n- **Fire-and-forget async function error?** Becomes an unhandled rejection unless caught.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Microtask enqueue",
+          "time": "O(1)",
+          "space": "O(pending microtasks)"
+        },
+        {
+          "op": "Promise.all(n)",
+          "time": "O(n)",
+          "space": "O(n) results"
+        },
+        {
+          "op": "Timer scheduling",
+          "time": "O(log n) in engines",
+          "space": "O(timers)"
+        }
+      ],
+      "keyPoints": [
+        "One thread runs JavaScript; the host performs waiting and queues callbacks for the event loop.",
+        "Each turn: run one task to completion, drain all microtasks, optionally render, then take the next task.",
+        "Promises settle once; .then always runs as a microtask and returns a new promise; rejections propagate until caught.",
+        "An async function runs synchronously until its first await; the rest are microtask continuations.",
+        "Use Promise.all for parallel, allSettled for partial results, race for timeouts and any for first success; never use forEach with await."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "A B C D",
+            "A D C B",
+            "A C D B",
+            "D A C B"
+          ],
+          "q": "What is logged? console.log('A'); setTimeout(()=>console.log('B'),0); Promise.resolve().then(()=>console.log('C')); console.log('D');",
+          "answer": 1,
+          "why": "Sync logs A and D, then the microtask logs C, then the timer task logs B."
+        },
+        {
+          "options": [
+            "Browsers disable rendering permanently",
+            "A running task is never interrupted, so the event loop cannot render or process events until it finishes",
+            "setTimeout is blocked",
+            "Promises are cancelled"
+          ],
+          "q": "Why does a long synchronous loop freeze a web page?",
+          "answer": 1,
+          "why": "Tasks run to completion; rendering and event handling happen between tasks, so a long task blocks them."
+        },
+        {
+          "options": [
+            "Promise.all",
+            "Promise.race",
+            "Promise.allSettled",
+            "Promise.any"
+          ],
+          "q": "Which combinator tolerates some rejections and gives every outcome?",
+          "answer": 2,
+          "why": "allSettled waits for all promises and returns each one's status and value or reason without rejecting."
+        }
+      ],
+      "sources": [
+        {
+          "title": "MDN: Event loop",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Event_loop"
+        },
+        {
+          "title": "Jake Archibald: Tasks, microtasks, queues and schedules",
+          "url": "https://jakearchibald.com/2015/tasks-microtasks-queues-and-schedules/"
+        },
+        {
+          "title": "javascript.info: Promises",
+          "url": "https://javascript.info/promise-basics"
+        }
+      ],
+      "practiceRef": "js-async"
+    },
+    {
+      "id": "async-await-concurrency",
+      "title": "async/await, error handling and concurrency patterns",
+      "minutes": 40,
+      "summary": "Write clear async code, handle errors, run work in parallel with limits, cancel with AbortController, retry with backoff, and avoid the classic async bugs.",
+      "parts": [
+        {
+          "id": "asyncawait",
+          "label": "async/await in practice",
+          "body": "## Syntax sugar over promises\n\nAn `async` function always returns a promise. `await` pauses it until a promise settles, giving asynchronous code the shape of synchronous code, with ordinary `try/catch`.\n\n```js\nasync function loadDashboard(userId) {\n  try {\n    const user = await getUser(userId);\n    const orders = await getOrders(user.id);\n    return { user, orders };\n  } catch (err) {\n    if (err instanceof NotFoundError) return null;   // handle what you can\n    throw err;                                         // rethrow what you can't\n  }\n}\n```\n\nA `return` value is wrapped in a resolved promise; a `throw` becomes a rejection. Top-level `await` works in ES modules.\n\n## Sequential vs parallel\n\nThe most common performance bug: awaiting independent calls one after another.\n\n```js\n// Slow: 300ms + 200ms = 500ms\nconst a = await fetchA();\nconst b = await fetchB();\n\n// Fast: start both, then wait together = ~300ms\nconst [a, b] = await Promise.all([fetchA(), fetchB()]);\n```\n\nRule: **start independent promises first, await them together.** Only await sequentially when a later call needs an earlier result.\n\nFor a list: `await Promise.all(ids.map((id) => load(id)))` fires **all** requests at once. With thousands of items that overwhelms the server, the network and memory. Use a **concurrency limit** (below).\n\n## Error handling\n\n- `try/catch` around `await` catches rejections; without it, the async function's promise rejects and the caller must handle it.\n- `Promise.all` is fail-fast: the first rejection rejects the whole thing, but the other promises **keep running**. If you need all outcomes, use `allSettled`.\n- Always attach handlers to promises you start but don't await immediately; a rejection that occurs before you await it can trigger an unhandled rejection.\n- Wrap library boundaries in custom errors with a `cause`: `throw new Error(\"load failed\", { cause: err })`.\n- `finally` for cleanup (close handles, release locks, stop spinners).\n\n## Cancellation and timeouts\n\nPromises can't be cancelled, but **operations** can be aborted with an `AbortController`:\n\n```js\nconst ctrl = new AbortController();\nconst t = setTimeout(() => ctrl.abort(), 3000);\ntry {\n  const res = await fetch(url, { signal: ctrl.signal });\n  return await res.json();\n} catch (e) {\n  if (e.name === \"AbortError\") return null;           // timed out or cancelled\n  throw e;\n} finally { clearTimeout(t); }\n// shorthand: fetch(url, { signal: AbortSignal.timeout(3000) })\n```\n\nUse it to cancel stale requests (user typed a new search), on component unmount, and for timeouts. Pass `signal` down through your own async functions and check `signal.aborted` in long loops.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "patterns",
+          "label": "Concurrency patterns",
+          "body": "## Concurrency limit (pool)\n\nRun at most `N` tasks at a time: a small worker-pool.\n\n```js\nasync function mapLimit(items, limit, fn) {\n  const results = new Array(items.length);\n  let next = 0;\n  async function worker() {\n    while (next < items.length) {\n      const i = next++;                       // safe: no await between read and increment\n      results[i] = await fn(items[i], i);\n    }\n  }\n  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));\n  return results;\n}\n```\n\n## Retry with exponential backoff and jitter\n\n```js\nasync function retry(fn, { retries = 4, base = 200, shouldRetry = () => true } = {}) {\n  for (let attempt = 0; ; attempt++) {\n    try { return await fn(attempt); }\n    catch (e) {\n      if (attempt >= retries || !shouldRetry(e)) throw e;\n      const delay = Math.random() * base * 2 ** attempt;   // \"full jitter\"\n      await new Promise((r) => setTimeout(r, delay));\n    }\n  }\n}\n```\n\nRetry only **idempotent** operations and **transient** failures (network errors, 429, 503), never validation errors.\n\n## Debounce, throttle, and deduplicating in-flight requests\n\n- **Debounce**: wait until calls stop for N ms, then run once (search-as-you-type).\n- **Throttle**: run at most once every N ms (scroll handlers).\n- **Request deduplication**: keep a `Map<key, Promise>` of in-flight calls and return the same promise to concurrent callers; delete on settle. This prevents thundering herds for the same resource and is the core of libraries like SWR and React Query.\n- **Latest-wins**: for search, track a request counter or use AbortController so a slow earlier response can't overwrite a newer one (a **race condition** in UIs).\n\n## Sequencing and queues\n\nTo process items strictly one at a time, chain on a promise: `queue = queue.then(() => task())` (remember to catch so one failure doesn't poison the chain). For async mutual exclusion, implement a tiny mutex with a promise chain.\n\n## Streams and async iteration\n\n`for await (const chunk of stream)` consumes async iterables (readable streams, paginated APIs implemented as async generators) with backpressure. Handy: an async generator that fetches pages lazily and yields items, so consumers stop early without fetching everything.\n\n```js\nasync function* paginate(url) {\n  let next = url;\n  while (next) {\n    const res = await fetch(next);\n    const { items, nextUrl } = await res.json();\n    yield* items;                       // consumers pull; we fetch the next page only when needed\n    next = nextUrl;\n  }\n}\nfor await (const item of paginate(\"/api/items\")) { if (item.id === target) break; }\n```\n\n## Classic async bugs\n\n| bug | fix |\n|---|---|\n| missing `await` (a promise is truthy: `if (isAdmin(user))` always true) | lint rule `no-floating-promises` / `require-await` |\n| `await` in a loop where parallel was possible | `Promise.all` with a limit |\n| unhandled rejection in fire-and-forget | `void p.catch(log)` |\n| stale response overwrites newer UI state | AbortController / request id |\n| shared mutable state across awaits (read-modify-write) | keep updates synchronous, or queue them |\n| swallowed errors in `catch {}` | log or rethrow |\n| creating many timers/listeners without cleanup | AbortSignal, return disposers |",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// Typed retry + limit helpers (copy into any project)\nexport async function retry<T>(\n  fn: (attempt: number) => Promise<T>,\n  opts: { retries?: number; baseMs?: number; shouldRetry?: (e: unknown) => boolean; signal?: AbortSignal } = {},\n): Promise<T> {\n  const { retries = 4, baseMs = 200, shouldRetry = () => true, signal } = opts;\n  for (let attempt = 0; ; attempt++) {\n    try { signal?.throwIfAborted(); return await fn(attempt); }\n    catch (e) {\n      if (attempt >= retries || !shouldRetry(e) || signal?.aborted) throw e;\n      await new Promise((r) => setTimeout(r, Math.random() * baseMs * 2 ** attempt)); // full jitter\n    }\n  }\n}\n\nexport async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {\n  const out = new Array<R>(items.length);\n  let next = 0;\n  const worker = async () => { for (let i = next++; i < items.length; i = next++) out[i] = await fn(items[i], i); };\n  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));\n  return out;\n}\n\n// In-flight de-duplication\nconst inflight = new Map<string, Promise<unknown>>();\nexport function dedupe<T>(key: string, load: () => Promise<T>): Promise<T> {\n  const existing = inflight.get(key) as Promise<T> | undefined;\n  if (existing) return existing;\n  const p = load().finally(() => inflight.delete(key));\n  inflight.set(key, p);\n  return p;\n}"
+            },
+            {
+              "lang": "python",
+              "source": "# The same ideas in Python asyncio: gather vs sequential, semaphore limit, timeout\nimport asyncio\n\nasync def fetch(i):\n    await asyncio.sleep(0.2)\n    return i * 2\n\nasync def main():\n    # parallel\n    results = await asyncio.gather(*(fetch(i) for i in range(5)))\n\n    # parallel with a limit of 2\n    sem = asyncio.Semaphore(2)\n    async def limited(i):\n        async with sem:\n            return await fetch(i)\n    limited_results = await asyncio.gather(*(limited(i) for i in range(10)))\n\n    # timeout\n    try:\n        await asyncio.wait_for(fetch(1), timeout=0.05)\n    except asyncio.TimeoutError:\n        print(\"timed out\")\n\nasyncio.run(main())"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nPractical async judgement: parallelism with limits, cancellation, retries, and spotting race conditions. They often ask you to **implement** a helper live.\n\n## Questions with model answers\n\n### 1. How do you run requests in parallel but limit concurrency to N?\n\n**Model answer.** Start N workers, each looping over a shared index: take the next item, await its task, store the result. All workers run under `Promise.all`. The index increment is safe because JavaScript is single-threaded and there is no `await` between reading and incrementing it. This avoids overwhelming the server compared to mapping everything into `Promise.all` at once.\n\n### 2. How do you cancel a fetch?\n\n**Model answer.** Create an `AbortController`, pass its `signal` to `fetch`, and call `abort()` when the user navigates away, a newer search begins, or a timeout expires; the promise rejects with an `AbortError` which I handle. `AbortSignal.timeout(ms)` builds a timeout signal. Promises themselves are not cancellable; the underlying operation must support a signal.\n\n### 3. Explain a race condition in front-end async code and how to prevent it.\n\n**Model answer.** A user types in a search box; request 1 for \"ab\" is slow and request 2 for \"abc\" is fast. If request 1 resolves last, its stale results overwrite the newer ones. Prevent it by aborting the previous request, or tagging each request with an id and ignoring responses that aren't the latest, or using a library that handles it (React Query, SWR), plus debouncing input.\n\n### 4. What's wrong with `await` inside `Array.prototype.map` and `forEach`?\n\n**Model answer.** `forEach` ignores returned promises, so the surrounding code continues without waiting and errors become unhandled. `map` with an async callback returns an array of promises; without `Promise.all` they're not awaited. Choose `for...of` with `await` for sequential execution, or `await Promise.all(arr.map(async ...))` for concurrent execution.\n\n### 5. How would you implement retry with backoff? What should and shouldn't be retried?\n\n**Model answer.** Loop up to N attempts, wait `random(0, base * 2^attempt)` between them (exponential backoff with jitter to avoid synchronised retries), and rethrow after the last. Retry transient and idempotent failures: network errors, timeouts, HTTP 429/503 honouring `Retry-After`. Don't retry client errors like 400/401/403/404 or non-idempotent writes without an idempotency key.\n\n### 6. If `Promise.all` rejects, do the other promises stop?\n\n**Model answer.** No. `Promise.all` rejects as soon as one input rejects, but the other operations continue running and their results are ignored. To stop them you need cancellation (AbortController) or design them to check a shared flag. Use `allSettled` if you need each outcome.\n\n### 7. What is an async generator and when would you use one?\n\n**Model answer.** An `async function*` yields values over time and is consumed with `for await...of`. It's ideal for paginated APIs, streaming data and event sequences because consumption is pull-based: the next page is fetched only when the consumer asks, and `break` stops the generator and its work, giving natural backpressure.\n\n## Rapid-fire\n\n- **Does an async function always return a promise?** Yes.\n- **How to wait for a delay?** `await new Promise(r => setTimeout(r, ms))`.\n- **Which handles partial failure?** `Promise.allSettled`.\n- **What makes `await` in a loop a smell?** Independent work done sequentially.\n- **Top-level await works where?** ES modules.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Sequential awaits (n calls)",
+          "time": "O(sum of latencies)",
+          "space": "-"
+        },
+        {
+          "op": "Parallel with Promise.all",
+          "time": "O(max latency)",
+          "space": "O(n) in flight"
+        },
+        {
+          "op": "Concurrency pool (limit L)",
+          "time": "≈ ceil(n / L) × avg latency",
+          "space": "O(L) in flight"
+        },
+        {
+          "op": "Backoff retry",
+          "time": "up to base · 2^n wait",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "async/await is promise sugar: sync until the first await, then microtask continuations; errors use ordinary try/catch.",
+        "Start independent work together and await it with Promise.all; add a concurrency limit for large lists.",
+        "Cancel operations with AbortController and signals; promises themselves cannot be cancelled.",
+        "Retry only transient, idempotent failures with exponential backoff and jitter.",
+        "Beware stale responses (race conditions), forEach with await, floating promises and swallowed errors."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "It throws an error",
+            "Total latency becomes the sum instead of the maximum",
+            "It uses more memory",
+            "It cancels the first request"
+          ],
+          "q": "What is the problem with awaiting two independent requests one after the other?",
+          "answer": 1,
+          "why": "The second request does not start until the first finishes; starting both and awaiting with Promise.all overlaps the waiting."
+        },
+        {
+          "options": [
+            "A 503 Service Unavailable GET",
+            "A network timeout on an idempotent PUT",
+            "A 400 Bad Request validation failure",
+            "A 429 with Retry-After"
+          ],
+          "q": "Which should NOT be retried automatically?",
+          "answer": 2,
+          "why": "A 400 is deterministic; retrying cannot succeed without changing the request."
+        },
+        {
+          "options": [
+            "Use setTimeout",
+            "Abort the previous request or ignore responses that are not the latest",
+            "Use var instead of let",
+            "Increase the server timeout"
+          ],
+          "q": "A search box shows results for an older query after a newer one. What is the best fix?",
+          "answer": 1,
+          "why": "The slower earlier response resolves last and overwrites newer state. Cancelling or discarding stale responses removes the race."
+        }
+      ],
+      "sources": [
+        {
+          "title": "MDN: async function",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function"
+        },
+        {
+          "title": "MDN: AbortController",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/AbortController"
+        },
+        {
+          "title": "AWS Architecture Blog: Exponential backoff and jitter",
+          "url": "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
+        }
+      ],
+      "practiceRef": "js-async"
+    },
+    {
+      "id": "iterators-generators-modules",
+      "title": "Iterators, generators, modules and modern syntax",
+      "minutes": 35,
+      "summary": "The iteration protocols, generators as pausable functions, lazy sequences, ES modules versus CommonJS, and the modern features worth knowing.",
+      "parts": [
+        {
+          "id": "iter",
+          "label": "Iterators and generators",
+          "body": "## The iteration protocol\n\n`for...of`, spread, destructuring and `Array.from` all work on **iterables**. An object is iterable if it has a `[Symbol.iterator]()` method returning an **iterator**: an object with `next()` returning `{ value, done }`.\n\n```js\nconst range = {\n  from: 1, to: 4,\n  [Symbol.iterator]() {\n    let cur = this.from, end = this.to;\n    return { next: () => (cur <= end ? { value: cur++, done: false } : { value: undefined, done: true }) };\n  },\n};\nconsole.log([...range]);          // [1, 2, 3, 4]\n```\n\nArrays, strings, Maps, Sets, `arguments`, NodeLists and generators are iterable. Plain objects are not (use `Object.entries(obj)`).\n\n## Generators: functions you can pause\n\nA function declared `function*` returns a **generator object** (an iterator). `yield` pauses the function and hands out a value; calling `next()` resumes it where it stopped. Local variables are kept between pauses.\n\n```js\nfunction* idGenerator(prefix) {\n  let n = 0;\n  while (true) yield `${prefix}-${++n}`;     // infinite, but lazy: nothing is computed until requested\n}\nconst ids = idGenerator(\"user\");\nids.next().value;   // \"user-1\"\nids.next().value;   // \"user-2\"\n```\n\nPowerful properties:\n\n- **Lazy evaluation**: compute only what's consumed. Infinite sequences become possible; pipelines (`filter`, `map`, `take`) process one item at a time without intermediate arrays.\n- **Two-way communication**: `next(x)` sends a value in (becomes the result of the `yield` expression); `throw()` injects an error; `return()` finishes early (running `finally` blocks, so cleanup is reliable).\n- **`yield*`** delegates to another iterable (flattening, recursion such as tree traversal).\n- Generators were the original basis for `async/await` (coroutine runners like `co`) and for libraries like redux-saga.\n\n```js\nfunction* inorder(node) {            // tree traversal with no explicit stack\n  if (!node) return;\n  yield* inorder(node.left);\n  yield node.value;\n  yield* inorder(node.right);\n}\nfunction* take(it, n) { let i = 0; for (const x of it) { if (i++ >= n) return; yield x; } }\nfunction* map(it, f) { for (const x of it) yield f(x); }\nconst firstSquares = [...take(map(idGenerator(\"x\"), (s) => s.length), 3)];\n```\n\n**Iterator helpers** (`iterator.map().filter().take().toArray()`) are arriving natively in modern engines for exactly this style.\n\n## Async iterators\n\n`Symbol.asyncIterator` and `async function*` produce values via promises, consumed by `for await...of` (streams, paginated APIs, server-sent events). See the async lesson.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "modules",
+          "label": "Modules and modern syntax",
+          "body": "## ES modules versus CommonJS\n\n| | ES modules (ESM) | CommonJS (CJS) |\n|---|---|---|\n| syntax | `import x from \"./x.js\"`, `export const a` | `const x = require(\"./x\")`, `module.exports` |\n| loading | **static**: imports analysed before running, enabling tree-shaking | dynamic: `require` runs at call time, can be conditional |\n| bindings | **live read-only bindings** to the exporting module's variables | a copy of `module.exports` at require time |\n| async | supports top-level `await`; loaded asynchronously | synchronous |\n| `this` at top level | `undefined` | `module.exports` |\n| strict mode | always | optional |\n| environments | browsers, Node (`.mjs` or `\"type\": \"module\"`), Deno, bundlers | classic Node |\n\nDetails that matter:\n\n- **Live bindings**: if module A exports `let count` and later increments it, importers see the new value. With CJS you'd have copied the old number.\n- **Circular imports** work in ESM as long as bindings aren't used before initialisation (TDZ errors otherwise); in CJS you get a partially filled `exports` object.\n- Each module runs **once** and is cached.\n- **Named vs default exports**: prefer named exports (better refactoring, auto-imports, tree-shaking, consistent names).\n- **Dynamic `import()`** returns a promise and enables code splitting and lazy loading: `const { chart } = await import(\"./chart.js\")`.\n- Tree-shaking works because imports are static and (ideally) modules are side-effect free; mark packages with `\"sideEffects\": false`.\n- Interop between ESM and CJS is the source of many headaches (`default` export shape, `__dirname` missing in ESM: use `import.meta.url`).\n\n## Modern syntax worth knowing\n\n- **Destructuring, spread, rest, default parameters, template literals, optional chaining, nullish coalescing** (see the previous lessons).\n- **Private class fields** (`#x`) and **static blocks**.\n- **`Array` methods**: `flat`, `flatMap`, `at`, `findLast`, `toSorted`, `toReversed`, `with`; `Object.fromEntries`, `Object.groupBy`.\n- **Tagged templates**: `` sql`SELECT * FROM t WHERE id = ${id}` `` can safely parameterise values (used by SQL and GraphQL libraries).\n- **`Proxy` and `Reflect`**: intercept property access (validation, reactivity systems like Vue's).\n- **`WeakRef`** and `FinalizationRegistry`: advanced memory management; avoid unless needed.\n- **Decorators** (stage 3 / TypeScript), **`using`** declarations for deterministic cleanup (`Symbol.dispose`).\n- **Temporal API**: modern date and time to replace the confusing `Date`.\n- **Intl**: `Intl.DateTimeFormat`, `Intl.NumberFormat`, `Intl.Collator` handle locale correctly; don't hand-format.\n\n## Practical module design\n\nKeep modules small with a clear public surface (an `index.js` re-exporting), avoid circular dependencies (extract the shared piece), avoid side effects at import time (so tree-shaking and tests work), and prefer dependency injection over importing singletons deep inside logic.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "js",
+              "source": "// Lazy pipeline with generators + a paginated async generator\nfunction* naturals() { let n = 1; while (true) yield n++; }\nfunction* filter(it, p) { for (const x of it) if (p(x)) yield x; }\nfunction* map(it, f) { for (const x of it) yield f(x); }\nfunction* take(it, n) { if (n <= 0) return; let i = 0; for (const x of it) { yield x; if (++i >= n) return; } }\n\nconst firstFiveEvenSquares = [...take(map(filter(naturals(), (n) => n % 2 === 0), (n) => n * n), 5)];\nconsole.log(firstFiveEvenSquares);   // [4, 16, 36, 64, 100] : only as many numbers as needed were generated\n\n// Cleanup is guaranteed with try/finally, even on early break\nfunction* withResource() {\n  console.log(\"open\");\n  try { yield 1; yield 2; yield 3; } finally { console.log(\"close\"); }\n}\nfor (const x of withResource()) { if (x === 2) break; }   // open, close\n\n// Dynamic import for code splitting\nasync function showChart(el) {\n  const { renderChart } = await import(\"./chart.js\");     // only fetched when needed\n  renderChart(el);\n}"
+            },
+            {
+              "lang": "ts",
+              "source": "// Typed generator and iterable class\nclass Matrix implements Iterable<number> {\n  constructor(private readonly rows: number[][]) {}\n  *[Symbol.iterator](): Generator<number, void, undefined> {\n    for (const r of this.rows) yield* r;      // row-major order\n  }\n}\nconsole.log(Math.max(...new Matrix([[1, 9], [4, 2]])));  // 9"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nWhether you understand JavaScript's **protocols** (iteration, modules) rather than just syntax, and can explain lazy evaluation and live bindings.\n\n## Questions with model answers\n\n### 1. What is the iterator protocol?\n\n**Model answer.** An iterable is an object with a `[Symbol.iterator]()` method that returns an iterator; an iterator has `next()` returning `{ value, done }`. `for...of`, spread, destructuring, `Array.from`, `Map`/`Set` constructors and `Promise.all` consume iterables through this protocol, so any object that implements it works with them.\n\n### 2. What is a generator and why is it useful?\n\n**Model answer.** A function that can pause at `yield` and resume later, keeping its local state. It produces values lazily, which allows infinite or very large sequences without allocating arrays, makes pipelines memory-efficient, and enables tree traversal without an explicit stack. Because `return()` triggers `finally`, cleanup runs even when the consumer stops early. Async generators extend this to asynchronous data.\n\n### 3. How do ES modules differ from CommonJS?\n\n**Model answer.** ESM is static, so imports are resolved before execution, which enables tree-shaking and cycles with live read-only bindings; it supports top-level await and is asynchronous. CommonJS loads synchronously at runtime with `require` and exports a value copy via `module.exports`. Mixing them requires care (default-export interop, no `__dirname` in ESM).\n\n### 4. What are live bindings?\n\n**Model answer.** An import is a read-only view of the exporter's variable, not a copy. If the exporting module changes an exported `let`, importers see the update. It differs from CommonJS where `require` returns the object as it was at that moment.\n\n### 5. How do you code-split in JavaScript?\n\n**Model answer.** Use dynamic `import()` at boundaries such as routes or rarely used features; bundlers emit separate chunks loaded on demand. Combine with preloading hints for likely next navigations, and keep shared dependencies in common chunks.\n\n### 6. Implement a lazy `take(n)` for any iterable.\n\n**Model answer.** A generator that iterates the source with `for...of`, yields each value, counts, and returns after `n`, so the source is never advanced further and its cleanup runs via the automatic `return()` call. Tell the interviewer that edge cases matter: `n <= 0` should not pull a value from the source.\n\n## Rapid-fire\n\n- **Is a plain object iterable?** No; use `Object.entries`.\n- **What does `yield*` do?** Delegates to another iterable.\n- **What does `generator.return()` do?** Ends it and runs finally blocks.\n- **ESM static analysis enables?** Tree-shaking.\n- **Replace `__dirname` in ESM?** `import.meta.url`.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Generator next()",
+          "time": "O(1) plus the work between yields",
+          "space": "O(1) frame"
+        },
+        {
+          "op": "Spread of an iterable",
+          "time": "O(n)",
+          "space": "O(n)"
+        },
+        {
+          "op": "Lazy pipeline of k stages",
+          "time": "O(n · k) for items consumed",
+          "space": "O(1) intermediate"
+        }
+      ],
+      "keyPoints": [
+        "An iterable exposes [Symbol.iterator]() returning an iterator with next(); for...of, spread and destructuring all use it.",
+        "Generators pause at yield and keep local state, giving lazy, memory-friendly sequences and guaranteed cleanup through return().",
+        "ES modules are static with live read-only bindings, tree-shaking and top-level await; CommonJS is dynamic and exports a copy.",
+        "Dynamic import() enables code splitting; avoid import-time side effects and circular dependencies.",
+        "Modern features (private fields, tagged templates, Proxy, Intl, Temporal) replace many hand-rolled patterns."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Its first yielded value",
+            "A generator (iterator) object, without running the body yet",
+            "A promise",
+            "An array of all values"
+          ],
+          "q": "What does a generator function return when called?",
+          "answer": 1,
+          "why": "Calling function* creates a generator object; the body runs only as next() is called."
+        },
+        {
+          "options": [
+            "The original value forever",
+            "The updated value (live binding)",
+            "An error",
+            "undefined"
+          ],
+          "q": "In ES modules, if the exporter increments an exported let, what do importers see?",
+          "answer": 1,
+          "why": "ESM exports are live bindings, unlike CommonJS which returns a value copy of module.exports."
+        },
+        {
+          "options": [
+            "require() inside functions",
+            "Static named ES module imports from side-effect-free modules",
+            "Using eval",
+            "Default-exporting giant objects"
+          ],
+          "q": "Which helps tree-shaking most?",
+          "answer": 1,
+          "why": "Static imports allow bundlers to determine unused exports at build time and drop them."
+        }
+      ],
+      "sources": [
+        {
+          "title": "MDN: Iteration protocols",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols"
+        },
+        {
+          "title": "MDN: JavaScript modules",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules"
+        },
+        {
+          "title": "javascript.info: Generators",
+          "url": "https://javascript.info/generators"
+        }
+      ],
+      "practiceRef": "js-advanced"
+    }
+  ]
+}

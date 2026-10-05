@@ -1,0 +1,233 @@
+{
+  "chapter": {
+    "id": "containers",
+    "title": "Containers and orchestration",
+    "summary": "Packaging software with Docker and running it at scale with Kubernetes."
+  },
+  "lessons": [
+    {
+      "id": "docker-in-depth",
+      "title": "Docker: images, layers, networking and production Dockerfiles",
+      "minutes": 45,
+      "summary": "What containers really are (namespaces and cgroups), how image layers and caching work, writing small secure Dockerfiles, volumes, networking and Compose.",
+      "parts": [
+        {
+          "id": "what",
+          "label": "What a container is",
+          "body": "## Containers are isolated processes\n\nA container is **not** a lightweight virtual machine. A VM runs a full guest operating system on virtualised hardware. A container is an ordinary Linux **process** (or group of processes) that the kernel isolates using two features:\n\n- **Namespaces** limit what a process can **see**: its own process tree (PID 1 inside), network stack, mount points (its own root filesystem), hostname, users and IPC.\n- **cgroups** (control groups) limit what it can **use**: CPU shares, memory limit, I/O, number of processes. Exceed the memory limit and the kernel OOM-kills the process (\"OOMKilled\").\n\nAll containers on a host share **one kernel**. That makes them start in milliseconds and use little memory, but isolation is weaker than a VM: a kernel exploit can break out, so use non-root users, drop capabilities, read-only filesystems and, for untrusted code, stronger sandboxes (gVisor, Firecracker microVMs).\n\n| | VM | container |\n|---|---|---|\n| isolation | hardware-level (hypervisor) | kernel-level (namespaces, cgroups) |\n| size | GBs | MBs |\n| start | tens of seconds | milliseconds to seconds |\n| OS | each has its own kernel | shares the host kernel |\n| density | tens per host | hundreds per host |\n\n## Images and layers\n\nAn **image** is a read-only template: a stack of **layers** (filesystem diffs) plus metadata (default command, environment, exposed ports). A **container** is a running instance: the image layers plus a thin writable layer on top (copy-on-write; changes vanish when the container is removed unless stored in a **volume**).\n\nEach Dockerfile instruction (`RUN`, `COPY`, `ADD`) creates a layer, identified by a content hash. Layers are **shared and cached**: two images built from the same base store the base once, and rebuilds reuse every layer up to the first changed instruction. Therefore **order instructions from least to most frequently changing**:\n\n```dockerfile\nCOPY package.json package-lock.json ./   # changes rarely -> cached layer\nRUN npm ci                               # expensive, cached until the lockfile changes\nCOPY . .                                 # changes on every commit -> keep it last\n```\n\nImages are stored in **registries** (Docker Hub, GHCR, ECR) and referenced as `registry/name:tag` or, immutably, by digest `name@sha256:...`. **Tags are mutable** (`latest` moves), so pin versions or digests in production.\n\n## Core commands\n\n```bash\ndocker build -t myapp:1.4.0 .\ndocker run -d --name web -p 8080:3000 -e NODE_ENV=production --memory=512m --cpus=1 myapp:1.4.0\ndocker ps; docker logs -f web; docker exec -it web sh\ndocker stop web; docker rm web; docker image prune\ndocker compose up -d; docker compose logs -f; docker compose down\n```\n\n`-p host:container` publishes a port. `ENTRYPOINT` is the fixed executable, `CMD` the default arguments. Use the **exec form** (`CMD [\"node\",\"server.js\"]`) so the process is PID 1 and receives `SIGTERM`; the shell form wraps it in `sh -c` and swallows signals.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "dockerfile",
+          "label": "Production Dockerfiles",
+          "body": "## Build small, safe images\n\n1. **Small base image**: `-slim`, `alpine` (musl libc can cause surprises), or **distroless** images with only your app and its runtime (no shell, tiny attack surface).\n2. **Multi-stage builds**: compile in a heavy \"build\" stage, copy only the artifacts into a minimal \"runtime\" stage. Build tools, source and caches never ship.\n3. **Order for caching** (as above), and use a `.dockerignore` (`node_modules`, `.git`, `.env`, `*.log`) so the build context is small and secrets don't enter layers.\n4. **Run as non-root**: `USER node` (or create a user). Never run production containers as root.\n5. **One process per container**, logging to stdout/stderr.\n6. **No secrets in the image**: they remain in layers and history even if deleted later. Inject at runtime (env vars, mounted secrets) or use BuildKit secret mounts (`RUN --mount=type=secret`).\n7. **Pin base image versions** (and scan: Trivy, Grype, Docker Scout); rebuild regularly for security patches.\n8. **Healthcheck** and graceful shutdown handling.\n9. **Reproducible installs**: `npm ci`, `pip install -r requirements.txt` with hashes, lockfiles.\n10. Combine `RUN` commands that create and delete files in the same layer (a file deleted in a later layer still occupies the earlier layer): `RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*`.\n\n## Storage\n\n- **Volumes** (`-v data:/var/lib/postgresql/data`): managed by Docker, persist beyond the container, best for databases.\n- **Bind mounts** (`-v $(pwd):/app`): map a host directory; great for development hot reload, less portable.\n- **tmpfs**: in-memory, for secrets or scratch.\n- Containers should be **stateless and disposable**; state lives in volumes or external services.\n\n## Networking\n\n- **bridge** (default): containers on a private virtual network get IPs; user-defined bridges provide **DNS by container name** (`http://db:5432`). Ports are only reachable from the host if published with `-p`.\n- **host**: shares the host's network stack (no isolation, no port mapping).\n- **none**, and **overlay** networks for multi-host (Swarm/Kubernetes use CNI plugins instead).\n- `localhost` inside a container means that container itself, a classic mistake when pointing an app at a database that lives in another container (use the service name).\n\n## Docker Compose\n\nDefines a multi-container application declaratively, ideal for local development and CI:\n\n```yaml\nservices:\n  api:\n    build: .\n    ports: [\"3000:3000\"]\n    environment:\n      DATABASE_URL: postgres://app:secret@db:5432/app\n    depends_on:\n      db: { condition: service_healthy }\n  db:\n    image: postgres:16\n    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: secret, POSTGRES_DB: app }\n    volumes: [pgdata:/var/lib/postgresql/data]\n    healthcheck: { test: [\"CMD-SHELL\", \"pg_isready -U app\"], interval: 5s, retries: 10 }\nvolumes:\n  pgdata:\n```\n\n`depends_on` with `service_healthy` waits for readiness, not just startup. For production use an orchestrator, not Compose on one box.\n\n## Debugging containers\n\n`docker logs`, `docker exec -it <c> sh`, `docker inspect`, `docker stats`, `docker top`, `docker events`; when the image has no shell (distroless) use `docker debug` or an ephemeral debug container. Exit code 137 = killed (usually OOM or `SIGKILL`); 143 = `SIGTERM`.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "dockerfile",
+              "source": "# syntax=docker/dockerfile:1\n# ---- build stage: full toolchain, never shipped ----\nFROM node:22-slim AS build\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN --mount=type=cache,target=/root/.npm npm ci          # cache dir persists between builds\nCOPY . .\nRUN npm run build && npm prune --omit=dev                # keep only production dependencies\n\n# ---- runtime stage: minimal, non-root ----\nFROM gcr.io/distroless/nodejs22-debian12 AS runtime\nWORKDIR /app\nENV NODE_ENV=production\nCOPY --from=build --chown=nonroot:nonroot /app/node_modules ./node_modules\nCOPY --from=build --chown=nonroot:nonroot /app/dist ./dist\nUSER nonroot\nEXPOSE 3000\n# exec form: node is PID 1 and receives SIGTERM for graceful shutdown\nCMD [\"dist/server.js\"]"
+            },
+            {
+              "lang": "yaml",
+              "source": "# docker-compose.yml for local development: API with hot reload, Postgres, Redis\nservices:\n  api:\n    build: { context: ., target: build }\n    command: npm run dev\n    ports: [\"3000:3000\"]\n    volumes: [\".:/app\", \"/app/node_modules\"]     # bind mount source, keep container's node_modules\n    environment:\n      DATABASE_URL: postgres://app:secret@db:5432/app\n      REDIS_URL: redis://cache:6379\n    depends_on:\n      db: { condition: service_healthy }\n      cache: { condition: service_started }\n  db:\n    image: postgres:16-alpine\n    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: secret, POSTGRES_DB: app }\n    volumes: [pgdata:/var/lib/postgresql/data]\n    healthcheck: { test: [\"CMD-SHELL\", \"pg_isready -U app\"], interval: 5s, retries: 10 }\n  cache:\n    image: redis:7-alpine\nvolumes:\n  pgdata:"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nWhether you understand what a container **is** (not \"a small VM\"), how images and caching work, and how to build and run them securely.\n\n## Questions with model answers\n\n### 1. Containers vs virtual machines?\n\n**Model answer.** A VM virtualises hardware and runs a full guest OS with its own kernel under a hypervisor, giving strong isolation at the cost of size and startup time. A container is a process isolated by kernel namespaces and limited by cgroups, sharing the host kernel, so it starts in milliseconds and is far lighter, but isolation is weaker because the kernel is shared. Containers are ideal for packaging and density; VMs or microVMs are chosen when stronger isolation is required.\n\n### 2. How do image layers and the build cache work?\n\n**Model answer.** Each filesystem-changing instruction creates a read-only layer identified by a content hash; layers are shared between images and cached across builds. The cache is invalidated at the first instruction whose inputs changed, and everything after it is rebuilt. So I order instructions from stable to volatile: copy dependency manifests and install dependencies first, then copy source code.\n\n### 3. How would you make a Docker image smaller and more secure?\n\n**Model answer.** Use a minimal or distroless base, multi-stage builds so compilers and source stay out of the final image, a `.dockerignore`, a non-root user, pinned versions, no secrets in layers, cleanup within the same `RUN` layer, and vulnerability scanning in CI. Also drop capabilities and use a read-only root filesystem at runtime.\n\n### 4. A container exits with code 137. What happened?\n\n**Model answer.** It received SIGKILL (128 + 9). Usually the kernel OOM killer terminated it for exceeding its memory limit; it could also be a forced stop after the grace period. I check `docker inspect` for `OOMKilled`, memory usage trends and limits, and fix leaks or raise limits. Exit code 143 is a graceful SIGTERM.\n\n### 5. Where does data go when a container is deleted?\n\n**Model answer.** The writable layer is destroyed with the container, so anything not stored in a volume or external service is lost. Persistent data belongs in named volumes or managed services, and containers should be treated as disposable.\n\n### 6. Why does `localhost` not work to reach another container?\n\n**Model answer.** Each container has its own network namespace, so `localhost` is that container's own loopback interface. Containers on a user-defined network reach each other by service name via Docker's embedded DNS, for example `db:5432`. From the host you use the published port.\n\n### 7. `CMD` vs `ENTRYPOINT`, shell form vs exec form?\n\n**Model answer.** ENTRYPOINT defines the executable; CMD provides default arguments that can be overridden at `docker run`. The exec form (JSON array) runs the process directly as PID 1 so it receives signals like SIGTERM; the shell form runs through `/bin/sh -c`, which doesn't forward signals, breaking graceful shutdown.\n\n## Rapid-fire\n\n- **What limits a container's memory?** cgroups.\n- **What isolates its process tree and network?** Namespaces.\n- **Mutable tag to avoid in production?** `latest`.\n- **Persist database files?** A volume.\n- **Why `.dockerignore`?** Smaller context and no secrets.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Container start",
+          "time": "~100 ms to seconds",
+          "space": "MBs"
+        },
+        {
+          "op": "VM start",
+          "time": "10 s to minutes",
+          "space": "GBs"
+        },
+        {
+          "op": "Layer cache hit",
+          "time": "skip rebuild of that step",
+          "space": "shared layers stored once"
+        }
+      ],
+      "keyPoints": [
+        "A container is an isolated Linux process: namespaces limit what it sees, cgroups limit what it uses, and all containers share the host kernel.",
+        "Images are stacked content-addressed layers; order Dockerfile steps from stable to volatile for cache hits, and use multi-stage builds.",
+        "Run non-root, with pinned minimal base images, no baked-in secrets, exec-form CMD and a .dockerignore; scan images.",
+        "Containers are disposable: persist state in volumes or external services, log to stdout.",
+        "Containers on a user-defined network find each other by name; localhost means the container itself."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "It makes the image smaller",
+            "Dependency layers stay cached until the manifest changes, so code changes rebuild quickly",
+            "Docker requires this order",
+            "To avoid using a registry"
+          ],
+          "q": "Why copy package.json and install dependencies before copying the rest of the source in a Dockerfile?",
+          "answer": 1,
+          "why": "The cache invalidates from the first changed instruction; source changes more often than dependencies, so it should come later."
+        },
+        {
+          "options": [
+            "Success",
+            "The process was killed by SIGKILL, often due to an out-of-memory condition",
+            "A syntax error",
+            "A graceful shutdown"
+          ],
+          "q": "What does an exit code of 137 usually indicate?",
+          "answer": 1,
+          "why": "128 plus signal 9; the OOM killer or a force-stop after the grace period sends SIGKILL."
+        },
+        {
+          "options": [
+            "Namespaces",
+            "cgroups",
+            "The registry",
+            "Dockerfile comments"
+          ],
+          "q": "What actually provides a container's resource limits?",
+          "answer": 1,
+          "why": "Control groups cap CPU, memory, I/O and process counts; namespaces provide isolation of views."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Docker docs: Best practices for building images",
+          "url": "https://docs.docker.com/build/building/best-practices/"
+        },
+        {
+          "title": "Docker docs: Multi-stage builds",
+          "url": "https://docs.docker.com/build/building/multi-stage/"
+        },
+        {
+          "title": "Open Container Initiative specs",
+          "url": "https://opencontainers.org/about/overview/"
+        }
+      ]
+    },
+    {
+      "id": "kubernetes-fundamentals",
+      "title": "Kubernetes: pods, deployments, services, config and scaling",
+      "minutes": 50,
+      "summary": "The control plane and nodes, pods, ReplicaSets and Deployments with rolling updates, Services and Ingress, ConfigMaps and Secrets, probes, resources, autoscaling and debugging.",
+      "parts": [
+        {
+          "id": "arch",
+          "label": "Architecture and core objects",
+          "body": "## What Kubernetes does\n\nRunning one container is easy. Running hundreds across many machines, keeping them healthy, updating them without downtime, scaling with load and wiring them together is the job of an **orchestrator**. Kubernetes (K8s) is a **declarative** system: you describe the **desired state** (\"run 3 replicas of this image, exposed on port 80\"), and controllers continuously compare it to the **actual state** and act to reconcile the difference (restart failed pods, reschedule from dead nodes). This **control loop** is the core idea.\n\n## Architecture\n\n- **Control plane**: the **API server** (the front door; everything talks to it, backed by **etcd**, a consistent key-value store holding all cluster state), the **scheduler** (decides which node each new pod runs on, from resource requests, constraints and affinity), and the **controller manager** (runs the reconciliation loops).\n- **Worker nodes**: the **kubelet** (agent that runs pods via a container runtime such as containerd and reports status), **kube-proxy** (implements Service networking) and the CNI network plugin.\n- Managed offerings (EKS, GKE, AKS) run the control plane for you.\n\n## Core objects\n\n| object | purpose |\n|---|---|\n| **Pod** | the smallest deployable unit: one or more containers sharing a network namespace (one IP) and volumes. Ephemeral: when it dies it is replaced by a **new** pod with a new IP. |\n| **ReplicaSet** | keeps N identical pods running |\n| **Deployment** | manages ReplicaSets to give **declarative updates**: rolling update, rollback, scaling. The object you usually create for stateless apps. |\n| **StatefulSet** | pods with stable identity and storage (databases, Kafka) |\n| **DaemonSet** | one pod per node (log shippers, agents) |\n| **Job / CronJob** | run-to-completion and scheduled tasks |\n| **Service** | a stable virtual IP and DNS name that load-balances to a set of pods selected by labels |\n| **Ingress / Gateway** | HTTP(S) routing from outside the cluster to Services (host/path rules, TLS) |\n| **ConfigMap / Secret** | configuration and sensitive values injected as env vars or files |\n| **Namespace** | logical partition for teams and environments, with quotas and RBAC |\n| **PersistentVolume(Claim)** | storage requests independent of pod lifetime |\n| **HorizontalPodAutoscaler** | scale replicas on CPU or custom metrics |\n\nEverything is described in YAML manifests and applied with `kubectl apply -f`. **Labels** (key-value tags) and **selectors** connect objects: a Service finds its pods by label, a Deployment owns pods by label.\n\n## A Deployment, annotated\n\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata: { name: api }\nspec:\n  replicas: 3\n  selector: { matchLabels: { app: api } }\n  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }\n  template:\n    metadata: { labels: { app: api } }\n    spec:\n      containers:\n        - name: api\n          image: registry.example.com/api:1.4.0     # pinned tag or digest\n          ports: [{ containerPort: 3000 }]\n          envFrom: [{ configMapRef: { name: api-config } }, { secretRef: { name: api-secrets } }]\n          resources:\n            requests: { cpu: \"250m\", memory: \"256Mi\" }     # used for scheduling\n            limits:   { memory: \"512Mi\" }                   # exceeded -> OOMKilled\n          readinessProbe: { httpGet: { path: /readyz, port: 3000 }, periodSeconds: 5 }\n          livenessProbe:  { httpGet: { path: /healthz, port: 3000 }, initialDelaySeconds: 10 }\n```",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "running",
+          "label": "Running it well",
+          "body": "## Probes: how Kubernetes knows an app is healthy\n\n- **Readiness probe**: is the pod ready to receive traffic? Failing it removes the pod from Service endpoints without restarting it. Use it for startup warm-up and dependency checks.\n- **Liveness probe**: is the process stuck? Failing it **restarts** the container. Keep it cheap and independent of downstream dependencies (otherwise a database outage restarts every pod in a cascade).\n- **Startup probe**: gives slow-starting apps time before liveness begins.\n\n## Resources: requests and limits\n\n- **Requests** are what the scheduler reserves; the pod is placed only on a node with that much free. **Limits** are enforced at runtime. CPU over its limit is throttled; memory over its limit is OOM-killed.\n- Pods are classed QoS **Guaranteed** (requests = limits), **Burstable**, or **BestEffort** (none; first to be evicted).\n- Missing requests make scheduling guesswork; missing memory limits let one pod take down a node. A common practice: set memory request = limit and a CPU request without a tight CPU limit.\n\n## Services and networking\n\nPods get ephemeral IPs, so clients talk to a **Service**: a stable ClusterIP and DNS name (`api.default.svc.cluster.local`) that load-balances across the ready pods matching its selector. Types:\n\n- **ClusterIP** (default): internal only.\n- **NodePort**: exposes a port on every node.\n- **LoadBalancer**: provisions a cloud load balancer.\n- **ExternalName**: DNS alias.\n\nAn **Ingress** (with an ingress controller such as nginx or Traefik, or the Gateway API) routes HTTP by host and path and terminates TLS (cert-manager automates certificates). Network Policies restrict which pods can talk to which. A **service mesh** (Istio, Linkerd) adds mTLS, retries and telemetry between services.\n\n## Configuration and secrets\n\n`ConfigMap` holds non-sensitive settings; `Secret` holds sensitive ones but is only **base64-encoded, not encrypted**, by default. Enable encryption at rest, restrict access with RBAC, and prefer external secret managers (External Secrets Operator, Vault, cloud KMS). Changing a ConfigMap does not restart pods that consumed it as env vars; roll the Deployment or mount as files.\n\n## Updates, rollbacks and scaling\n\n- **Rolling update** replaces pods gradually, honouring `maxUnavailable` and `maxSurge`, and only shifting traffic to pods that pass readiness. `kubectl rollout status|history|undo deployment/api`.\n- **PodDisruptionBudgets** keep a minimum number of pods up during voluntary disruptions (node drains). Spread replicas across zones with topology spread constraints and anti-affinity.\n- **HPA** scales replicas based on metrics (`kubectl autoscale deployment api --cpu-percent=70 --min=3 --max=20`); **VPA** adjusts requests; the **cluster autoscaler** or Karpenter adds nodes when pods can't be scheduled. Scale on a meaningful signal (queue depth, requests per second), not just CPU.\n- Graceful shutdown: on termination Kubernetes sends `SIGTERM` and waits `terminationGracePeriodSeconds` (default 30) before `SIGKILL`; handle the signal, stop accepting new work, and use a `preStop` hook/sleep so load balancers drain.\n\n## Debugging checklist\n\n```bash\nkubectl get pods -o wide; kubectl describe pod api-7d9f-x2   # events: scheduling failures, probe failures, OOM\nkubectl logs api-7d9f-x2 --previous                          # logs of the crashed container\nkubectl exec -it api-7d9f-x2 -- sh\nkubectl get events --sort-by=.lastTimestamp\nkubectl top pods; kubectl port-forward svc/api 8080:80\n```\n\n| status | meaning and first move |\n|---|---|\n| `Pending` | can't be scheduled: insufficient CPU/memory, unmatched node selector, unbound volume → `describe` events |\n| `ImagePullBackOff` | wrong image name/tag or missing registry credentials |\n| `CrashLoopBackOff` | the container keeps exiting → `logs --previous`, check config/secrets/probes |\n| `OOMKilled` | memory limit too low or a leak |\n| `Running` but no traffic | readiness failing, Service selector doesn't match pod labels, wrong port |\n\nManage manifests with **Helm** (templating and packaging) or **Kustomize** (overlays), and deploy with **GitOps** (Argo CD, Flux): the Git repo is the source of truth and the cluster continuously syncs to it.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "yaml",
+              "source": "# Service + Ingress + HPA to go with the Deployment above\napiVersion: v1\nkind: Service\nmetadata: { name: api }\nspec:\n  selector: { app: api }                  # matches the pods' labels\n  ports: [{ port: 80, targetPort: 3000 }]\n---\napiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: api\n  annotations: { cert-manager.io/cluster-issuer: letsencrypt }\nspec:\n  tls: [{ hosts: [api.example.com], secretName: api-tls }]\n  rules:\n    - host: api.example.com\n      http:\n        paths:\n          - { path: /, pathType: Prefix, backend: { service: { name: api, port: { number: 80 } } } }\n---\napiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata: { name: api }\nspec:\n  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: api }\n  minReplicas: 3\n  maxReplicas: 20\n  metrics:\n    - type: Resource\n      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }"
+            },
+            {
+              "lang": "bash",
+              "source": "# Everyday kubectl\nkubectl apply -f k8s/ && kubectl rollout status deployment/api --timeout=120s\nkubectl set image deployment/api api=registry.example.com/api:1.4.1     # trigger a rolling update\nkubectl rollout undo deployment/api                                     # roll back\nkubectl get pods -l app=api -w                                          # watch pods by label\nkubectl describe pod -l app=api | grep -A5 Events\nkubectl scale deployment/api --replicas=5\nkubectl drain node-1 --ignore-daemonsets --delete-emptydir-data         # maintenance, honours PDBs"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nKubernetes depth is judged by **mental model and debugging**: the reconciliation loop, what happens when a pod dies, how traffic reaches pods, and what the failure statuses mean.\n\n## Questions with model answers\n\n### 1. How does Kubernetes work at a high level?\n\n**Model answer.** You declare desired state through the API server, which stores it in etcd. Controllers watch for differences between desired and actual state and act: the Deployment controller creates ReplicaSets and pods, the scheduler assigns pods to nodes based on resource requests and constraints, the kubelet on each node runs the containers and reports status, and kube-proxy plus the CNI wire up networking. If a node dies, controllers notice missing pods and create replacements elsewhere. It's a set of continuous reconciliation loops.\n\n### 2. What happens when you run `kubectl apply` on a Deployment with a new image?\n\n**Model answer.** The API server records the new spec; the Deployment controller creates a new ReplicaSet and scales it up while scaling the old one down according to maxSurge and maxUnavailable. Each new pod is scheduled, started, and only receives traffic after its readiness probe passes. If the new pods never become ready, the rollout stalls and the old pods keep serving; `kubectl rollout undo` reverts.\n\n### 3. Readiness vs liveness probes?\n\n**Model answer.** Readiness decides whether a pod gets traffic: failing removes it from Service endpoints but does not restart it. Liveness decides whether the container is hung: failing causes a restart. Liveness should check only the process itself, not downstream dependencies, to avoid restart storms; readiness can include dependency checks and warm-up.\n\n### 4. How does a Service route to pods when pods are ephemeral?\n\n**Model answer.** A Service has a stable virtual IP and DNS name and a label selector. The endpoints controller tracks the IPs of ready pods matching the selector, and kube-proxy (or the CNI's eBPF dataplane) programs rules that load-balance connections to those endpoints. As pods come and go, the endpoint list updates while the Service address stays the same.\n\n### 5. A pod is in CrashLoopBackOff. How do you debug?\n\n**Model answer.** `kubectl describe pod` for events and last state (exit code, OOMKilled), `kubectl logs --previous` for the crashed container's output, then check common causes: bad config or missing secret, failing dependency at startup, wrong command, liveness probe too aggressive, or memory limits too low. I reproduce locally with the same image and environment if needed.\n\n### 6. Requests vs limits?\n\n**Model answer.** Requests are the amount the scheduler reserves and the basis for QoS and autoscaling; limits are runtime ceilings. Exceeding the CPU limit throttles the container; exceeding the memory limit kills it. I set realistic requests from observed usage and memory limits to protect nodes, and avoid tight CPU limits that cause throttling latency.\n\n### 7. How do you achieve zero-downtime deploys?\n\n**Model answer.** Rolling updates with `maxUnavailable: 0`, accurate readiness probes, multiple replicas spread across zones with a PodDisruptionBudget, graceful shutdown handling (SIGTERM, drain connections, a preStop delay so the load balancer deregisters the pod), backward-compatible schema and API changes, and fast rollback.\n\n## Rapid-fire\n\n- **Smallest deployable unit?** A pod.\n- **Stores cluster state?** etcd.\n- **Stateless workload object?** Deployment; stateful: StatefulSet.\n- **Is a Secret encrypted by default?** No, only base64.\n- **Pod stuck in Pending?** Look at scheduling events (resources, selectors, volumes).",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Scheduling decision",
+          "time": "O(nodes) filter and score",
+          "space": "-"
+        },
+        {
+          "op": "Rolling update of N pods",
+          "time": "N / surge batches",
+          "space": "surge capacity"
+        },
+        {
+          "op": "etcd write",
+          "time": "needs quorum (majority)",
+          "space": "all cluster state"
+        }
+      ],
+      "keyPoints": [
+        "Kubernetes is declarative: controllers reconcile actual state to desired state stored via the API server in etcd.",
+        "A Pod is the unit; Deployments manage ReplicaSets for rolling updates and rollbacks; Services give stable names and load balancing over label-selected pods; Ingress routes HTTP.",
+        "Readiness gates traffic, liveness restarts hung containers (keep it dependency-free), requests drive scheduling and limits are enforced.",
+        "Scale with HPA on meaningful metrics, protect availability with PodDisruptionBudgets, handle SIGTERM gracefully.",
+        "Debug with describe, logs --previous and events; know Pending, ImagePullBackOff, CrashLoopBackOff and OOMKilled."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Restarts the container",
+            "Removes it from Service endpoints so it gets no traffic",
+            "Deletes the Deployment",
+            "Scales the cluster"
+          ],
+          "q": "A pod fails its readiness probe. What does Kubernetes do?",
+          "answer": 1,
+          "why": "Readiness controls traffic eligibility; only the liveness probe triggers restarts."
+        },
+        {
+          "options": [
+            "CPU request",
+            "CPU limit",
+            "Memory limit",
+            "Replica count"
+          ],
+          "q": "Which resource setting causes a container to be OOMKilled when exceeded?",
+          "answer": 2,
+          "why": "CPU over its limit is throttled, but exceeding the memory limit makes the kernel kill the process."
+        },
+        {
+          "options": [
+            "A static list",
+            "Ready pods whose labels match the Service selector",
+            "Node IP addresses",
+            "The Ingress"
+          ],
+          "q": "Where do the Service's endpoints come from?",
+          "answer": 1,
+          "why": "The endpoints controller tracks ready pods that match the selector and keeps the list current as pods change."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Kubernetes documentation: Concepts",
+          "url": "https://kubernetes.io/docs/concepts/"
+        },
+        {
+          "title": "Kubernetes: Configure liveness, readiness and startup probes",
+          "url": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/"
+        },
+        {
+          "title": "Kubernetes the Hard Way",
+          "url": "https://github.com/kelseyhightower/kubernetes-the-hard-way"
+        }
+      ]
+    }
+  ]
+}

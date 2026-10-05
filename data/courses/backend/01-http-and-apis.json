@@ -1,0 +1,380 @@
+{
+  "chapter": {
+    "id": "http-and-apis",
+    "title": "HTTP and API design",
+    "summary": "What actually travels over the wire, how to design APIs other people enjoy using, and how to prove who the caller is."
+  },
+  "lessons": [
+    {
+      "id": "http-in-depth",
+      "title": "HTTP in depth: requests, caching and connections",
+      "minutes": 35,
+      "summary": "What an HTTP request and response really contain, methods and status codes, headers, caching with ETags, and how HTTP/1.1, HTTP/2 and HTTP/3 move bytes.",
+      "parts": [
+        {
+          "id": "wire",
+          "label": "On the wire",
+          "body": "## HTTP is just text with rules\n\nHTTP (HyperText Transfer Protocol) is a **request/response** protocol. A client sends a request; a server sends back one response. The server never speaks first. Everything else (REST, GraphQL, webhooks, browsers) is built on that one exchange.\n\nA request on the wire (HTTP/1.1 is literally this text):\n\n```\nPOST /api/orders HTTP/1.1\nHost: shop.example.com\nContent-Type: application/json\nAuthorization: Bearer eyJhbGciOi...\nContent-Length: 41\n\n{\"sku\":\"A-17\",\"qty\":2,\"coupon\":\"SPRING\"}\n```\n\nand a response:\n\n```\nHTTP/1.1 201 Created\nContent-Type: application/json\nLocation: /api/orders/9812\nCache-Control: no-store\n\n{\"id\":9812,\"status\":\"pending\"}\n```\n\nFour parts, every time: **start line** (method + path + version, or version + status), **headers** (key: value metadata), a **blank line**, and an optional **body**.\n\n## Methods and what they promise\n\nMethods are not decoration; they carry guarantees that caches, proxies and retry logic depend on.\n\n| method | meaning | safe | idempotent | has body |\n|---|---|---|---|---|\n| GET | read a resource | yes | yes | no |\n| HEAD | GET without the body | yes | yes | no |\n| POST | create / run an action | no | **no** | yes |\n| PUT | replace the whole resource at this URL | no | yes | yes |\n| PATCH | change part of a resource | no | not guaranteed | yes |\n| DELETE | remove | no | yes | rarely |\n| OPTIONS | ask what is allowed (CORS preflight) | yes | yes | no |\n\n- **Safe** means it must not change server state. A crawler is allowed to call every GET link. A GET that deletes data is a bug waiting for a prefetching browser.\n- **Idempotent** means doing it N times has the same effect as once. This is what lets a client **retry** after a timeout. `PUT /users/7` with the same body twice leaves one state. `POST /orders` twice may create two orders. That is why payment APIs add an `Idempotency-Key` header: the server remembers the key and returns the original result on a retry.\n\n## Status codes you must know\n\n| range | meaning | examples |\n|---|---|---|\n| 1xx | informational | 101 Switching Protocols (WebSocket upgrade) |\n| 2xx | success | 200 OK, **201 Created**, 202 Accepted (queued), 204 No Content |\n| 3xx | redirect / cache | 301 Moved Permanently, 302 Found, **304 Not Modified**, 307/308 (keep the method) |\n| 4xx | **client** mistake | 400 Bad Request, **401 Unauthorized** (not authenticated), **403 Forbidden** (authenticated, not allowed), 404, 409 Conflict, 410 Gone, 422 Unprocessable, 429 Too Many Requests |\n| 5xx | **server** failure | 500, 502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout |\n\nTwo classics: **401 means \"I don't know who you are\"** (despite its name), **403 means \"I know who you are and the answer is no\"**. And use `404` rather than `403` when you don't want to reveal that a private resource exists.\n\n## Headers that matter in real systems\n\n- **Content-Type / Accept**: the format of the body you send / the formats you can handle (content negotiation).\n- **Authorization**: credentials (`Bearer <token>`, `Basic <base64>`).\n- **Cookie / Set-Cookie**: browser state (sessions).\n- **Cache-Control, ETag, Last-Modified**: caching (next part).\n- **Host**: which site, so one IP can serve many domains.\n- **User-Agent, Referer, Origin**: who is asking, from where. `Origin` drives CORS.\n- **X-Forwarded-For / Forwarded**: the original client IP when a proxy or load balancer sits in between. Trust it **only** from your own proxies; it is trivially forgeable.\n- **Retry-After**: how long to wait after a 429 or 503.\n\n## CORS in one paragraph\n\nBrowsers block a page on `a.com` from *reading* a response from `b.com` unless `b.com` opts in with `Access-Control-Allow-Origin`. For \"non-simple\" requests (JSON with `Authorization`, `PUT`, `DELETE`) the browser first sends an `OPTIONS` **preflight**; the server answers with allowed methods and headers, and the browser caches that for `Access-Control-Max-Age`. CORS is a **browser** protection: curl and servers ignore it, so it is never an authorization mechanism. Never reflect arbitrary origins together with `Access-Control-Allow-Credentials: true`.",
+          "diagrams": [
+            {
+              "title": "One request through the layers",
+              "code": "flowchart LR\n  C[\"Client\"] -->|\"1. DNS + TCP + TLS\"| LB[\"Load balancer / CDN\"]\n  LB -->|\"2. HTTP request\"| S[\"App server\"]\n  S -->|\"3. query\"| DB[(\"Database\")]\n  DB --> S\n  S -->|\"4. HTTP response\"| LB\n  LB --> C"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "caching",
+          "label": "Caching and revalidation",
+          "body": "## Why HTTP caching is the cheapest performance win\n\nThe fastest request is the one that never leaves the browser; the second fastest never reaches your origin server. HTTP has caching built in; you only have to **describe** your responses correctly.\n\n## Cache-Control\n\nThe response header `Cache-Control` tells every cache (browser, CDN, proxy) what it may do:\n\n- `max-age=3600`: fresh for one hour; serve from cache without asking.\n- `s-maxage=600`: same, but only for **shared** caches (CDN); overrides `max-age` there.\n- `no-cache`: you may store it, but **must revalidate** with the server before using it. (The name is misleading.)\n- `no-store`: never store it at all (bank pages, tokens).\n- `private`: only the user's browser may cache (it contains user-specific data). `public`: shared caches may too.\n- `immutable`: this URL's content will never change; do not even revalidate on reload.\n- `stale-while-revalidate=60`: serve the stale copy instantly while refreshing in the background.\n\n**The standard recipe for a web app:**\n\n| asset | header |\n|---|---|\n| fingerprinted JS/CSS (`app.3f9a1c.js`) | `public, max-age=31536000, immutable` |\n| HTML page | `no-cache` (always revalidate) |\n| API responses with user data | `private, no-cache` or `no-store` |\n| public JSON that tolerates delay | `public, max-age=60, stale-while-revalidate=300` |\n\nContent-hashed filenames are the trick: when the file changes, the **URL** changes, so you can cache the old URL forever and never serve stale code.\n\n## Revalidation with ETag\n\nWhen a cached copy is stale, the cache does not have to download it again. The server labels a response with an **ETag** (a fingerprint, often a hash of the body). Next time the client asks conditionally:\n\n```\nGET /api/profile\nIf-None-Match: \"v42-9fd1\"\n```\n\nIf nothing changed, the server replies `304 Not Modified` with **no body**: a few hundred bytes instead of the full payload. `Last-Modified` / `If-Modified-Since` is the older, timestamp-based version of the same idea.\n\nThe same mechanism protects writes: `PUT` with `If-Match: \"v42-9fd1\"` fails with `412 Precondition Failed` if someone else changed the resource first. That is **optimistic concurrency** without locks.\n\n## The Vary header\n\nIf the same URL returns different bodies depending on a request header (`Accept-Language`, `Accept-Encoding`, `Authorization`), the response must say `Vary: Accept-Language` so a cache stores one copy per variant. Forgetting `Vary` is how users get served each other's content in a shared cache.\n\n## Compression\n\n`Accept-Encoding: gzip, br` lets the server answer with `Content-Encoding: br` (Brotli). Text (JSON, HTML, JS, CSS) shrinks by 70 to 90 percent. Don't compress already-compressed formats (JPEG, PNG, video).",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// Express: conditional GET with an ETag computed from the data\nimport express from \"express\";\nimport { createHash } from \"node:crypto\";\n\nconst app = express();\n\napp.get(\"/api/profile/:id\", async (req, res) => {\n  const profile = await loadProfile(req.params.id);\n  if (!profile) return res.status(404).json({ error: \"not_found\" });\n\n  const body = JSON.stringify(profile);\n  const etag = `\"${createHash(\"sha1\").update(body).digest(\"hex\").slice(0, 16)}\"`;\n\n  res.setHeader(\"ETag\", etag);\n  res.setHeader(\"Cache-Control\", \"private, no-cache\"); // store, but always revalidate\n  res.setHeader(\"Vary\", \"Authorization\");\n\n  if (req.headers[\"if-none-match\"] === etag) return res.status(304).end(); // no body\n  res.type(\"application/json\").send(body);\n});"
+            },
+            {
+              "lang": "python",
+              "source": "# Flask: same idea, built in via make_conditional\nfrom flask import Flask, jsonify, request\nimport hashlib, json\n\napp = Flask(__name__)\n\n@app.get(\"/api/profile/<pid>\")\ndef profile(pid):\n    data = load_profile(pid)\n    if data is None:\n        return jsonify(error=\"not_found\"), 404\n    resp = jsonify(data)\n    resp.set_etag(hashlib.sha1(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16])\n    resp.headers[\"Cache-Control\"] = \"private, no-cache\"\n    return resp.make_conditional(request)   # returns 304 when If-None-Match matches"
+            }
+          ]
+        },
+        {
+          "id": "transport",
+          "label": "Connections and versions",
+          "body": "## What happens before the first byte\n\nFor `https://shop.example.com/` a browser does, in order:\n\n1. **DNS lookup**: name → IP address (cached at several levels).\n2. **TCP handshake**: SYN, SYN-ACK, ACK. One round trip.\n3. **TLS handshake**: agree on encryption and verify the server certificate. One more round trip on TLS 1.3.\n4. **HTTP request / response**.\n\nEach round trip over a 100 ms network costs 100 ms, so setup alone can cost 200 to 300 ms before any data. This is why **connection reuse** matters so much.\n\n## HTTP/1.1: keep-alive but head-of-line blocking\n\n- A single TCP connection can serve many requests in sequence (**keep-alive**), saving the handshakes.\n- But requests on one connection are answered **in order**. One slow response blocks everything behind it (**head-of-line blocking at the HTTP layer**).\n- Browsers worked around it by opening about six connections per host, and sites by **sharding** assets across hostnames and bundling files.\n\n## HTTP/2: multiplexing\n\n- One TCP connection carries many interleaved **streams**; a slow response no longer blocks the others at the HTTP layer.\n- **Binary framing** instead of text, and **HPACK header compression** (repeated headers like cookies cost almost nothing).\n- Server push existed but is effectively dead; use `103 Early Hints` / preload.\n- It removes the need for the old tricks (sprite sheets, domain sharding) and can even make them harmful.\n- Remaining weakness: it still runs on **TCP**, so one lost packet stalls **all** streams (head-of-line blocking at the TCP layer).\n\n## HTTP/3: QUIC over UDP\n\n- Runs on **QUIC**, built on UDP, with encryption mandatory and streams that are independent **at the transport layer**: a lost packet delays only its own stream.\n- Faster setup (1 round trip, or 0 for returning clients) and **connection migration** (your phone switches from Wi-Fi to 5G without dropping the connection, because the connection ID is not the IP address).\n- Servers advertise it via the `Alt-Svc` header; clients fall back to HTTP/2 if UDP is blocked.\n\n## Long-lived patterns on top of HTTP\n\n| need | tool | notes |\n|---|---|---|\n| server pushes occasional updates | **Server-Sent Events** | one-way, plain HTTP, auto-reconnect, works through most proxies |\n| two-way low-latency | **WebSocket** | starts as HTTP (`101 Switching Protocols`), then a raw duplex channel; you must handle reconnect, auth and scaling |\n| client wants updates without a persistent connection | **Long polling** | request hangs until data exists; simple but wasteful |\n| server-to-server events | **Webhooks** | the provider POSTs to your URL; verify a signature and be idempotent |\n\n## Timeouts and retries\n\nA request can fail in many places; treat the network as unreliable:\n\n- Set **connect**, **read** and **overall** timeouts on every outbound call. The default in many libraries is \"wait forever\".\n- Retry only **idempotent** operations (or ones with an idempotency key), with **exponential backoff and jitter**, and cap the attempts.\n- A retry storm (everyone retrying at once against a struggling service) turns a blip into an outage; honour `Retry-After`.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nHTTP questions check whether you understand the platform your code runs on: semantics (idempotency, status codes), performance (caching, connection reuse) and failure (timeouts, retries). Candidates who only know \"GET reads, POST writes\" stall quickly.\n\n## Questions with model answers\n\n### 1. What is the difference between PUT, POST and PATCH?\n\n**Model answer.** `POST` sends data to a collection or triggers an action; it is not idempotent, so a retry may create a duplicate. `PUT` replaces the entire resource at a known URL; sending it twice gives the same final state, so it is idempotent and safe to retry. `PATCH` applies a partial change; it may or may not be idempotent depending on the operation (`set name = X` is, `increment counter` is not). For non-idempotent writes I add an `Idempotency-Key` so retries are safe.\n\n### 2. 401 or 403?\n\n**Model answer.** 401 means the request lacks valid authentication (no or bad credentials); the client should authenticate and try again. 403 means the server knows who you are but you lack permission; re-authenticating won't help. For resources the caller should not even know exist, return 404.\n\n### 3. Explain how browser caching works and how you would cache a single-page app.\n\n**Model answer.** Responses carry `Cache-Control`, `ETag` and `Last-Modified`. Fresh entries are served without a request; stale ones are revalidated with `If-None-Match`, and the server answers `304` with no body if nothing changed. For an SPA I give hashed JS/CSS bundles `max-age=31536000, immutable` because a change produces a new filename, and I serve `index.html` with `no-cache` so users always discover the newest bundle names. API responses holding user data are `private` or `no-store`.\n\n### 4. What does `no-cache` mean versus `no-store`?\n\n**Model answer.** `no-cache` allows storing but requires revalidation before every reuse. `no-store` forbids writing the response to any cache. Use `no-store` for secrets and sensitive pages, `no-cache` for content that must always be current but benefits from cheap 304s.\n\n### 5. Why is HTTP/2 faster than HTTP/1.1, and what does HTTP/3 fix?\n\n**Model answer.** HTTP/2 multiplexes many streams on one connection, compresses headers, and removes the need for six parallel connections and bundling hacks. But all streams share one TCP connection, so one lost packet stalls them all. HTTP/3 uses QUIC over UDP with per-stream loss recovery, faster handshakes and connection migration across networks.\n\n### 6. A client times out on `POST /payments`. What should it do?\n\n**Model answer.** It cannot know whether the server processed the request. Blindly retrying could charge twice. The client should send an `Idempotency-Key` generated before the first attempt and reuse it on retries; the server stores the key with the result and returns the stored result on a duplicate. Without that, the client should query the payment status endpoint before retrying.\n\n### 7. What is CORS and why does curl not care?\n\n**Model answer.** CORS is a browser policy that stops a page from one origin reading responses from another unless the server opts in with `Access-Control-Allow-*` headers; non-simple requests are preceded by an `OPTIONS` preflight. It exists to protect users' browser sessions, so non-browser clients like curl or other servers are not subject to it. Therefore CORS is not authentication and must never be the only protection of an endpoint.\n\n## Rapid-fire\n\n- **Safe vs idempotent?** Safe = no state change; idempotent = repeating has the same effect.\n- **What status for a successful POST that created something?** `201` with a `Location` header.\n- **Accepted but processed later?** `202 Accepted`.\n- **Rate limited?** `429` plus `Retry-After`.\n- **Which header carries the client IP behind a proxy?** `X-Forwarded-For` (trust only your own proxy).",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Warm connection request",
+          "time": "1 round trip",
+          "space": "-"
+        },
+        {
+          "op": "New HTTPS connection (TLS 1.3)",
+          "time": "3 round trips (TCP, TLS, request)",
+          "space": "-"
+        },
+        {
+          "op": "304 revalidation",
+          "time": "1 round trip, no body",
+          "space": "-"
+        },
+        {
+          "op": "Cache hit (fresh)",
+          "time": "0 round trips",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "A request and response are start line, headers, blank line, body; methods carry guarantees (safe, idempotent) that caches and retries rely on.",
+        "401 means unauthenticated, 403 means authenticated but forbidden; 4xx is the client's fault, 5xx the server's.",
+        "Cache hashed assets forever with immutable, revalidate HTML, and use ETag with If-None-Match for cheap 304s.",
+        "HTTP/2 multiplexes streams over one TCP connection; HTTP/3 moves to QUIC over UDP to remove TCP head-of-line blocking.",
+        "Always set timeouts, retry only idempotent calls with backoff and jitter, and use idempotency keys for payments.",
+        "CORS is a browser rule, not security for your API."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Switch the endpoint to GET",
+            "Require an Idempotency-Key and return the stored result for a repeated key",
+            "Disable retries everywhere",
+            "Return 500 on every duplicate"
+          ],
+          "q": "A client retries POST /orders after a timeout and the customer is charged twice. What is the right fix?",
+          "answer": 1,
+          "why": "POST is not idempotent. An idempotency key lets the server recognise the retry and return the original outcome instead of repeating the side effect."
+        },
+        {
+          "options": [
+            "no-store",
+            "no-cache",
+            "public, max-age=31536000, immutable",
+            "private, max-age=0"
+          ],
+          "q": "Which Cache-Control value is best for a fingerprinted bundle like app.3f9a1c.js?",
+          "answer": 2,
+          "why": "The filename changes whenever the content changes, so the old URL can be cached for a year without ever serving stale code."
+        },
+        {
+          "options": [
+            "200 with the full body",
+            "304 Not Modified with no body",
+            "204 No Content",
+            "412 Precondition Failed"
+          ],
+          "q": "What does a server return when If-None-Match matches the current ETag?",
+          "answer": 1,
+          "why": "304 tells the client its cached copy is still valid, saving the bandwidth of resending the body."
+        }
+      ],
+      "sources": [
+        {
+          "title": "MDN: HTTP caching",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching"
+        },
+        {
+          "title": "MDN: CORS",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS"
+        },
+        {
+          "title": "RFC 9110: HTTP semantics",
+          "url": "https://www.rfc-editor.org/rfc/rfc9110"
+        }
+      ],
+      "practiceRef": "net-basics"
+    },
+    {
+      "id": "rest-api-design",
+      "title": "Designing REST APIs people enjoy using",
+      "minutes": 40,
+      "summary": "Resource modelling, URLs, pagination, filtering, versioning, error formats, idempotency and evolving an API without breaking clients.",
+      "parts": [
+        {
+          "id": "resources",
+          "label": "Resources and contracts",
+          "body": "## What REST really asks of you\n\nREST is an architectural style: model your system as **resources** (nouns) identified by URLs, manipulate them with a small uniform set of HTTP methods, and keep the server **stateless** between requests (every request carries all it needs, such as an auth token). In practice, \"RESTful\" means: nouns in URLs, HTTP methods and status codes used correctly, JSON bodies, and predictable conventions.\n\nAn API is a **product** whose users are developers. The design goal is that someone can guess the next endpoint correctly.\n\n## Modelling resources\n\nStart from the domain, not from database tables or screens.\n\n- Collections are plural nouns: `/orders`, `/users`, `/products`.\n- A single item: `/orders/9812`.\n- A sub-resource when the child cannot exist without the parent: `/orders/9812/items`, `/orders/9812/items/3`. Stop at two levels; deeper nesting is painful (`/items/3` can be a top-level route if ids are globally unique).\n- Actions that don't fit CRUD are still nouns when possible: `POST /orders/9812/cancellation` (creates a cancellation) or `POST /payments/refunds`. As a last resort, a verb sub-path is fine: `POST /orders/9812/cancel`. Consistency beats purity.\n\n| operation | request | success |\n|---|---|---|\n| list | `GET /orders?status=open` | 200 + page of orders |\n| create | `POST /orders` | **201** + `Location` header + the new resource |\n| read | `GET /orders/9812` | 200 |\n| replace | `PUT /orders/9812` | 200 or 204 |\n| partial update | `PATCH /orders/9812` | 200 |\n| delete | `DELETE /orders/9812` | **204** |\n\n## URL and naming rules that avoid arguments\n\n- Lowercase, hyphens for word breaks (`/order-items`), never verbs like `/getOrders`.\n- Same names everywhere: if the JSON field is `createdAt` in one place, do not use `created_at` in another. Pick one case style and keep it.\n- IDs: opaque strings or UUIDs, never sequential integers if guessing them leaks information or lets people enumerate your data.\n- Money as **integer minor units plus currency** (`{\"amount\": 1999, \"currency\": \"USD\"}`), never floats. Times as **ISO 8601 in UTC** (`2026-10-05T11:30:00Z`).\n\n## Request and response shapes\n\n- Return the **created or updated resource**, so the client does not need a second GET.\n- Use a stable envelope only where it adds value. A plain object for one item and `{ \"data\": [...], \"nextCursor\": \"...\" }` for lists is a common, clean choice.\n- Never return a bare top-level array: you can't add fields (like pagination metadata) later without breaking clients.\n- Ship only what clients need: support `?fields=id,status` or sub-resource expansion `?expand=customer` when payloads get heavy.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "lists",
+          "label": "Pagination, filtering, errors",
+          "body": "## Pagination: offset vs cursor\n\nNever return an unbounded list. Two designs:\n\n| | offset / limit (`?page=3&limit=20`) | cursor / keyset (`?after=ord_9812&limit=20`) |\n|---|---|---|\n| ease | trivial; supports \"jump to page 7\" | needs an opaque cursor token |\n| cost | `OFFSET 100000` makes the database scan and discard 100,000 rows | `WHERE id < :cursor ORDER BY id DESC LIMIT 20` uses the index: constant cost |\n| correctness | rows inserted during browsing cause **skipped or repeated** items | stable under inserts and deletes |\n| use | small admin tables | feeds, timelines, big datasets, public APIs |\n\nCursor pagination in SQL (sorted by `created_at DESC, id DESC`):\n\n```\nSELECT * FROM orders\nWHERE (created_at, id) < (:lastCreatedAt, :lastId)\nORDER BY created_at DESC, id DESC\nLIMIT 21;   -- ask for limit+1 to know whether there is a next page\n```\n\nEncode `(lastCreatedAt, lastId)` as an opaque base64 cursor so clients don't depend on its structure. Always include a **unique tie-breaker** (`id`) in the sort, otherwise rows with equal timestamps are skipped or repeated.\n\n## Filtering, sorting, searching\n\n- Filter with query params that mirror field names: `GET /orders?status=open&customerId=42&createdAfter=2026-01-01`.\n- Sorting: `?sort=-createdAt,total` (leading minus = descending). **Whitelist** sortable fields; sorting on an unindexed column is a self-inflicted denial of service.\n- Full-text search is its own endpoint or `?q=`; back it with a real search index, not `LIKE '%term%'`.\n- Validate every parameter and return `400` with a clear message for unknown or malformed values rather than silently ignoring them.\n\n## A good error format\n\nClients write code against errors, so make them machine-readable and human-readable. A widely adopted shape is RFC 9457 \"problem details\":\n\n```\nHTTP/1.1 422 Unprocessable Content\nContent-Type: application/problem+json\n\n{\n  \"type\": \"https://api.example.com/errors/validation\",\n  \"title\": \"Validation failed\",\n  \"status\": 422,\n  \"detail\": \"quantity must be at least 1\",\n  \"errors\": [{ \"field\": \"items[0].qty\", \"code\": \"min\", \"message\": \"must be >= 1\" }],\n  \"requestId\": \"req_8f3a2c\"\n}\n```\n\nRules:\n\n1. A **stable error code** the client can switch on (`insufficient_stock`), separate from the text, which you can reword freely.\n2. The **right status code**: 400 malformed, 401/403 auth, 404 missing, 409 conflict (duplicate, version mismatch), 422 semantically invalid, 429 throttled.\n3. A **request id** in the body and a response header, so a user can quote it and you can find the logs.\n4. **Never leak internals**: no stack traces, SQL, file paths or dependency versions in production responses.\n\n## Idempotency and concurrency\n\n- `PUT` and `DELETE` are idempotent by definition; make `POST` safe to retry with an `Idempotency-Key` (store key, request hash and response for 24 hours; same key + different payload → `422`).\n- Prevent lost updates with **optimistic concurrency**: return an `ETag` or `version` field; the client sends `If-Match`/the version on update; a mismatch returns `409` or `412`.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "evolution",
+          "label": "Versioning and evolution",
+          "body": "## APIs live longer than their authors\n\nOnce an external client depends on a field, removing it breaks them. The art is **adding without breaking**.\n\n**Safe (non-breaking) changes:** adding an optional request field, adding a response field, adding a new endpoint, adding a new enum value *if clients were told to ignore unknown values*.\n\n**Breaking changes:** removing or renaming a field, changing a type or meaning, making an optional parameter required, tightening validation, changing a default, changing error codes people handle.\n\nDesign rules that make evolution cheap:\n\n- Clients must **ignore unknown fields** (tolerant reader); servers should accept unknown fields in a PATCH deliberately or reject them deliberately, never accidentally.\n- Prefer **additive** change plus **deprecation**: keep the old field, add the new one, mark the old as deprecated in docs and with a `Deprecation`/`Sunset` header, measure usage, remove after a published date.\n- Define enums as open sets (documented \"may grow\").\n\n## Versioning strategies\n\n| strategy | example | trade-off |\n|---|---|---|\n| URL version | `/v1/orders` | obvious, easy to route and cache; whole API moves together |\n| Header / media type | `Accept: application/vnd.shop.v2+json` | clean URLs; harder to test in a browser |\n| Date version | `Stripe-Version: 2026-03-01` | per-account pinning, many small changes; needs infrastructure to translate |\n| No version, only additive | none | works for internal APIs; fails when you must break something |\n\nFor most teams: URL major version (`/v1`), additive changes inside it, and a new major only for genuine rewrites.\n\n## Rate limiting and quotas\n\nProtect yourself and be fair. Return `429 Too Many Requests` with `Retry-After`, and expose `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` headers. Limit per API key (not per IP, which punishes shared NATs), with a burst allowance (token bucket).\n\n## Documentation and contracts\n\n- Describe the API in **OpenAPI** (YAML/JSON): it generates docs, client SDKs, mock servers and request validation. Treat the spec as the source of truth, and test the implementation against it (contract tests).\n- Give copy-paste curl examples for each endpoint, plus the error cases.\n- Provide a **sandbox** and test keys.\n\n## REST vs GraphQL vs gRPC, briefly\n\n| | REST | GraphQL | gRPC |\n|---|---|---|---|\n| shape | many resource endpoints | one endpoint, client picks fields | typed RPC over HTTP/2 + protobuf |\n| strengths | caching, simplicity, tooling | avoids over/under-fetching, one round trip for nested data | speed, streaming, strict contracts, code generation |\n| costs | multiple round trips; fixed payloads | caching harder, N+1 on the server, query-cost limits needed | not browser-native, binary debugging |\n| best for | public APIs, CRUD | many client types with varied needs | internal service-to-service |",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// Express + zod: validated, paginated, consistently-erroring list endpoint\nimport express from \"express\";\nimport { z } from \"zod\";\n\nconst q = z.object({\n  status: z.enum([\"open\", \"paid\", \"cancelled\"]).optional(),\n  limit: z.coerce.number().int().min(1).max(100).default(20),\n  after: z.string().optional(), // opaque cursor\n});\n\nconst encode = (o: object) => Buffer.from(JSON.stringify(o)).toString(\"base64url\");\nconst decode = (s: string) => JSON.parse(Buffer.from(s, \"base64url\").toString());\n\napp.get(\"/v1/orders\", async (req, res) => {\n  const parsed = q.safeParse(req.query);\n  if (!parsed.success) {\n    return res.status(400).type(\"application/problem+json\").json({\n      title: \"Invalid query\", status: 400, errors: parsed.error.issues.map((i) => ({ field: i.path.join(\".\"), message: i.message })),\n      requestId: req.id,\n    });\n  }\n  const { status, limit, after } = parsed.data;\n  const cursor = after ? decode(after) : null;               // { createdAt, id }\n  const rows = await db.orders.list({ status, cursor, take: limit + 1 }); // limit+1 probe\n  const hasMore = rows.length > limit;\n  const page = hasMore ? rows.slice(0, limit) : rows;\n  const last = page.at(-1);\n  res.json({ data: page, nextCursor: hasMore && last ? encode({ createdAt: last.createdAt, id: last.id }) : null });\n});"
+            },
+            {
+              "lang": "python",
+              "source": "# FastAPI: pydantic validates query + body and documents the API in OpenAPI automatically\nfrom fastapi import FastAPI, Header, HTTPException, Query\nfrom pydantic import BaseModel, Field\n\napp = FastAPI()\n\nclass OrderIn(BaseModel):\n    sku: str\n    qty: int = Field(ge=1, le=100)\n\n@app.post(\"/v1/orders\", status_code=201)\ndef create_order(body: OrderIn, idempotency_key: str = Header(...)):\n    existing = store.get(idempotency_key)\n    if existing:                                  # retry: return the original result\n        return existing\n    order = orders.create(body.sku, body.qty)\n    store.put(idempotency_key, order)\n    return order"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nAPI-design questions test judgement about **consumers**: can you model resources cleanly, paginate without breaking under load, make writes safe to retry, and change an API without breaking anyone?\n\n## Questions with model answers\n\n### 1. How would you design the API for an e-commerce order system?\n\n**Model answer.** Resources: `/orders`, `/orders/{id}`, `/orders/{id}/items`, `/payments`. Create with `POST /orders` returning `201`, `Location`, and the order, with an `Idempotency-Key` so a retry cannot create two. List with filters and **cursor pagination**. State changes that are not plain CRUD become sub-resources or action endpoints (`POST /orders/{id}/cancellation`) that return the new state, and the order carries a `status` and a `version` for optimistic concurrency. Errors use a consistent problem-details body with stable codes and a request id. I would write the OpenAPI spec first and version the API at `/v1`.\n\n### 2. Offset or cursor pagination?\n\n**Model answer.** Offset is simple and allows jumping to a page, but `OFFSET N` still scans N rows and inserts between requests cause duplicates or gaps. Cursor (keyset) pagination filters with `WHERE (sort_key, id) < (:last_key, :last_id)` using an index, so it costs the same on page 1 and page 10,000 and stays correct under writes. I use cursors for feeds and large or public collections, and offset only for small admin lists.\n\n### 3. How do you make a POST safe to retry?\n\n**Model answer.** Clients send a unique `Idempotency-Key`. The server stores the key, a hash of the request, and the response in a unique-keyed table (or Redis with a TTL), written atomically with the side effect. A repeat returns the stored response. The same key with a different payload is a client bug and returns 422. In-flight duplicates are handled with a lock or by the unique constraint: the second request waits or receives 409.\n\n### 4. What changes are breaking, and how do you evolve an API?\n\n**Model answer.** Removing or renaming fields, changing types or meanings, tightening validation, adding required inputs, or changing defaults. Adding optional fields or endpoints is safe if clients ignore unknown fields. I evolve by adding the new field next to the old, documenting the deprecation with a sunset date and headers, monitoring which clients still use the old one, and removing it only after usage drops. A new major version is reserved for genuine redesigns.\n\n### 5. Where do you put authorisation checks, and what status codes do you return?\n\n**Model answer.** In the service layer next to the data access, on every request, checking both the caller's identity and ownership of the specific resource (to prevent broken object-level authorisation, the number-one API vulnerability). Missing credentials give 401, insufficient rights 403, and for resources the caller should not know exist, 404.\n\n### 6. When would you choose GraphQL or gRPC over REST?\n\n**Model answer.** GraphQL when many client types (web, mobile, partners) need different slices of nested data and round trips are a problem; I accept harder caching and the need for depth/cost limits and dataloaders to avoid N+1. gRPC for internal service-to-service calls where strict schemas, generated clients, streaming and low latency matter. REST for public, cache-friendly, CRUD-shaped APIs.\n\n## Rapid-fire\n\n- **Status for validation errors?** 400 or 422, with field-level details.\n- **Where do you put the API version?** Major in the URL; additive changes inside.\n- **Money in JSON?** Integer minor units plus currency code.\n- **Never return?** A bare top-level array, stack traces, sequential guessable ids for private data.\n- **Concurrent edit protection?** ETag/If-Match or a version field.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Offset pagination at page N",
+          "time": "O(offset + limit)",
+          "space": "-"
+        },
+        {
+          "op": "Cursor pagination at any page",
+          "time": "O(limit) with an index",
+          "space": "-"
+        },
+        {
+          "op": "Idempotency key lookup",
+          "time": "O(1) with a unique index",
+          "space": "O(keys retained)"
+        }
+      ],
+      "keyPoints": [
+        "Model nouns (resources) not verbs, keep names consistent, use plural collections, ISO 8601 UTC times and integer minor-unit money.",
+        "Create returns 201 with Location and the resource; delete returns 204; errors use a stable code plus a request id in one consistent format.",
+        "Use cursor (keyset) pagination for large or changing data: constant cost and no skipped or repeated items.",
+        "Make POST retry-safe with an Idempotency-Key; prevent lost updates with ETag/If-Match or a version field.",
+        "Evolve additively, deprecate with notice, and bump a major version only for real breaks; define the contract in OpenAPI."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "It lets users jump to page 50",
+            "It stays fast at any depth and does not skip or repeat items when new rows arrive",
+            "It needs no index",
+            "It returns all rows at once"
+          ],
+          "q": "Why is cursor pagination preferred over offset for a busy feed?",
+          "answer": 1,
+          "why": "Keyset pagination seeks directly using an index and anchors to the last seen row, so concurrent inserts cannot shift the window the way OFFSET does."
+        },
+        {
+          "options": [
+            "Adding a new optional response field",
+            "Adding a new endpoint",
+            "Renaming a response field from total to amount",
+            "Adding a new optional query parameter"
+          ],
+          "q": "Which change is breaking for existing clients?",
+          "answer": 2,
+          "why": "Clients reading `total` will find nothing after a rename. Additions are safe; renames and removals are not."
+        },
+        {
+          "options": [
+            "401 Unauthorized",
+            "403 Forbidden (or 404 to hide existence)",
+            "200 with empty data",
+            "500"
+          ],
+          "q": "What should a request with a valid token but no permission on that order return?",
+          "answer": 1,
+          "why": "The caller is authenticated, so 401 is wrong; they are not allowed, so 403, or 404 when the resource's existence is itself private."
+        }
+      ],
+      "sources": [
+        {
+          "title": "RFC 9457: Problem Details for HTTP APIs",
+          "url": "https://www.rfc-editor.org/rfc/rfc9457"
+        },
+        {
+          "title": "Microsoft REST API guidelines",
+          "url": "https://github.com/microsoft/api-guidelines"
+        },
+        {
+          "title": "OpenAPI specification",
+          "url": "https://spec.openapis.org/oas/latest.html"
+        }
+      ],
+      "practiceRef": "api-design"
+    },
+    {
+      "id": "authn-authz-sessions-jwt",
+      "title": "Authentication, sessions, JWT and OAuth",
+      "minutes": 40,
+      "summary": "How a server knows who you are: password hashing, cookie sessions versus JWTs, OAuth 2.0 and OpenID Connect, and how to authorise every request.",
+      "parts": [
+        {
+          "id": "basics",
+          "label": "Authn vs authz and passwords",
+          "body": "## Two different questions\n\n- **Authentication (authn)**: *who are you?* Proving identity (password, passkey, one-time code, a token from an identity provider).\n- **Authorisation (authz)**: *what may you do?* Deciding if this identity can perform this action on this resource.\n\nMost real breaches are authz bugs (broken object-level access: changing `/orders/123` to `/orders/124` returns someone else's order), not clever cryptography attacks.\n\n## Storing passwords\n\nNever store passwords, never encrypt them reversibly, never use a fast hash (MD5, SHA-256 alone). Use a **slow, salted, memory-hard password hash**: **Argon2id** (preferred), **scrypt**, or **bcrypt**.\n\n- A **salt** is a random value per user mixed into the hash, so identical passwords produce different hashes and precomputed rainbow tables are useless. Modern libraries generate and store it for you inside the hash string.\n- Slowness is a feature: the attacker with a stolen database must pay the same cost per guess (~100 ms) that you pay once per login.\n- A **pepper** (a server-side secret mixed in, kept outside the database) adds defence if only the DB leaks.\n- Compare hashes with the library's constant-time verify function.\n- Support password hash **upgrades**: on a successful login, rehash if the parameters are outdated.\n\nLogin hygiene: rate limit per account and per IP, generic error messages (\"invalid email or password\", never \"no such user\"), lockout or progressive delays, breach-password checks, and **MFA** (TOTP, WebAuthn passkeys) for sensitive accounts. Passkeys (WebAuthn) remove shared secrets entirely and resist phishing.\n\n## Secure password reset\n\n1. Generate a long random single-use token; store only its hash with an expiry (15 to 60 minutes).\n2. Email a link with the token; respond identically whether or not the email exists.\n3. On use: verify hash and expiry, set the new password, **invalidate** the token and all existing sessions.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "sessions",
+          "label": "Sessions versus tokens",
+          "body": "## Cookie sessions (stateful)\n\n1. User logs in; server creates a random **session id** and stores `{userId, createdAt, ...}` in a session store (Redis, database).\n2. Server sends it in a cookie: `Set-Cookie: sid=...; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=...`.\n3. The browser attaches the cookie to each request; the server looks the id up.\n\nCookie flags are your defence:\n\n- **HttpOnly**: JavaScript cannot read it, so XSS cannot steal it.\n- **Secure**: only sent over HTTPS.\n- **SameSite=Lax/Strict**: the browser withholds the cookie on cross-site requests, which blocks most **CSRF** (cross-site request forgery). Add CSRF tokens for sensitive state-changing forms and for `SameSite=None` use cases.\n\nStrengths: **instant revocation** (delete the session row), small cookie, secrets stay on the server. Cost: a store lookup per request and shared storage when scaling to many servers.\n\n## JWT (stateless tokens)\n\nA JSON Web Token has three base64url parts: `header.payload.signature`. The payload carries **claims** (`sub` user id, `exp` expiry, `iat`, `aud`, `iss`, roles). The server signs it (HS256 with a shared secret, or RS256/ES256/EdDSA with a private key) and later **verifies the signature and claims** without a database lookup.\n\n```\neyJhbGciOiJFUzI1NiJ9 . eyJzdWIiOiJ1XzQyIiwiZXhwIjoxNzAwMDAwMDAwfQ . <signature>\n```\n\nThe payload is **encoded, not encrypted**: anyone can read it. Never put secrets in it.\n\nVerify **every** time: signature, `exp`, `iss`, `aud`, and pin the algorithm yourself. Classic vulnerabilities: accepting `alg: none`, or accepting an RS256 token verified as HS256 using the public key as the secret (\"algorithm confusion\").\n\n## The real trade-off\n\n| | server session | JWT |\n|---|---|---|\n| revoke a user now | easy | hard (valid until expiry) |\n| scale across servers | needs shared store | any server verifies alone |\n| size | tiny cookie | larger header on every request |\n| good for | web apps with one backend | service-to-service, short-lived API tokens, third-party access |\n\nThe common production pattern: a **short-lived access token** (5 to 15 minutes, JWT) plus a **long-lived refresh token** (days, stored hashed in the database, **rotated** on every use, with reuse detection: if an already-used refresh token appears, revoke the whole family). Keep tokens in `HttpOnly` cookies for browsers; storing JWTs in `localStorage` exposes them to any XSS.\n\n\"JWTs are better than sessions\" is a myth. For a typical single-backend web app, a plain cookie session is simpler and safer.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "oauth",
+          "label": "OAuth, OIDC and authz",
+          "body": "## OAuth 2.0: delegated access\n\nOAuth lets a user give an app **limited access to their data on another service without sharing their password**. Roles: **resource owner** (the user), **client** (the app), **authorisation server** (issues tokens), **resource server** (the API).\n\nThe flow you should know cold is **Authorization Code with PKCE**, used by browsers, mobile and server apps:\n\n1. The app creates a random `code_verifier`, hashes it to a `code_challenge`, and redirects the user to the provider's authorize URL with `client_id`, `redirect_uri`, `scope`, `state`, `code_challenge`.\n2. The user logs in at the provider and consents.\n3. The provider redirects back to `redirect_uri?code=...&state=...`. The app checks that `state` matches (CSRF protection).\n4. The app exchanges the `code` plus the original `code_verifier` for tokens at the token endpoint. An attacker who steals the code cannot use it without the verifier.\n5. The app calls the API with the **access token**; a **refresh token** gets new access tokens.\n\nThe Implicit flow and the password grant are obsolete. Client credentials (no user, machine-to-machine) is for backend services.\n\n**OpenID Connect (OIDC)** adds *authentication* on top: alongside the access token you get an **ID token** (a JWT about the user: `sub`, `email`, `iss`, `aud`, `nonce`). \"Sign in with Google\" is OIDC. OAuth alone says \"this app may access X\", not \"this user is Alice\".\n\n## Authorisation models\n\n- **RBAC**: users have roles; roles have permissions (`admin`, `editor`, `viewer`). Simple, but role explosion happens.\n- **ABAC / policy-based**: decisions use attributes of the user, resource and context (\"a manager may approve expenses under $5,000 in their department\"). Use a policy engine (OPA, Cedar) or well-tested policy functions.\n- **ReBAC**: relationships (Google Zanzibar style): \"viewer of folder → viewer of documents inside it\". Fits sharing models.\n\nRules of thumb:\n\n1. **Deny by default.**\n2. Check on the **server, on every request**, against the **specific resource** (ownership/tenant), not just \"is logged in\". Hidden buttons are not security.\n3. Centralise authz in one layer; do not sprinkle `if (user.role === ...)`.\n4. Put the **tenant id** into every query in multi-tenant systems (a WHERE clause you can't forget, ideally enforced by the data layer).\n5. Log authentication events and denials; alert on anomalies.\n\n## Common attacks and defences\n\n| attack | defence |\n|---|---|\n| credential stuffing | rate limits, MFA, breached-password checks |\n| session fixation | issue a new session id on login |\n| CSRF | SameSite cookies, CSRF tokens, check Origin |\n| XSS stealing tokens | HttpOnly cookies, CSP, output escaping |\n| IDOR / BOLA | ownership checks on every object access |\n| JWT forgery | pin algorithms, verify `iss`/`aud`/`exp`, rotate keys (JWKS `kid`) |\n| open redirect on OAuth | exact-match redirect URIs |",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// Cookie session + argon2 in Express (conceptual, trimmed)\nimport argon2 from \"argon2\";\nimport { randomBytes, createHash } from \"node:crypto\";\n\nconst sha = (s: string) => createHash(\"sha256\").update(s).digest(\"hex\");\n\napp.post(\"/auth/login\", rateLimit({ windowMs: 60_000, max: 10 }), async (req, res) => {\n  const { email, password } = loginSchema.parse(req.body);\n  const user = await users.findByEmail(email);\n  // Always do the hash work, even for unknown emails, so timing doesn't reveal which exist\n  const ok = user ? await argon2.verify(user.passwordHash, password) : (await argon2.verify(DUMMY_HASH, password), false);\n  if (!ok) return res.status(401).json({ error: \"invalid_credentials\" });\n\n  const sid = randomBytes(32).toString(\"base64url\");                  // 256-bit random id\n  await sessions.create({ idHash: sha(sid), userId: user.id, expiresAt: Date.now() + 7 * 864e5 });\n  res.cookie(\"sid\", sid, { httpOnly: true, secure: true, sameSite: \"lax\", maxAge: 7 * 864e5, path: \"/\" });\n  res.status(204).end();\n});\n\n// Every protected route: authenticate THEN authorise the specific resource\napp.get(\"/orders/:id\", requireSession, async (req, res) => {\n  const order = await orders.get(req.params.id);\n  if (!order || order.ownerId !== req.user.id) return res.status(404).json({ error: \"not_found\" });\n  res.json(order);\n});"
+            },
+            {
+              "lang": "ts",
+              "source": "// Verifying a JWT safely with jose: pin algorithm, issuer, audience\nimport { jwtVerify, createRemoteJWKSet } from \"jose\";\n\nconst jwks = createRemoteJWKSet(new URL(\"https://auth.example.com/.well-known/jwks.json\"));\n\nexport async function verifyAccessToken(token: string) {\n  const { payload } = await jwtVerify(token, jwks, {\n    issuer: \"https://auth.example.com/\",\n    audience: \"https://api.example.com\",\n    algorithms: [\"ES256\"],          // never trust the token's own \"alg\" header\n    clockTolerance: 5,              // seconds of allowed clock skew\n  });\n  return payload;                   // payload.sub, payload.scope, payload.exp ...\n}"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nSecurity questions test layered thinking: password storage, session design, token trade-offs, and above all **authorisation on every object**. Candidates should avoid cargo-cult answers like \"use JWT for everything\".\n\n## Questions with model answers\n\n### 1. How should passwords be stored?\n\n**Model answer.** As the output of a slow, salted, memory-hard hash such as Argon2id (or bcrypt/scrypt), with parameters tuned so one verification takes around 100 ms. Each user gets a unique random salt stored inside the hash string, an optional server-side pepper adds protection against database-only leaks, and I rehash when parameters are outdated. I compare with the library's constant-time verify and add rate limiting and MFA at the login layer.\n\n### 2. Sessions or JWT?\n\n**Model answer.** For a web app with its own backend, server-side sessions in an `HttpOnly; Secure; SameSite` cookie are simpler and revocable immediately. JWTs shine when many independent services must verify identity without a shared store, and for third-party API tokens. If I use JWTs I keep access tokens short-lived and pair them with rotating, revocable refresh tokens, since a stateless token can't be invalidated before expiry.\n\n### 3. What is wrong with storing a JWT in localStorage?\n\n**Model answer.** Any script running on the page, including injected XSS or a compromised dependency, can read localStorage and exfiltrate the token. An `HttpOnly` cookie is invisible to JavaScript; combined with `SameSite` and CSRF protections it removes that theft route. The trade-off is that cookies need CSRF defences.\n\n### 4. Explain the OAuth Authorization Code flow with PKCE.\n\n**Model answer.** The client generates a random verifier and sends its hash (the challenge) when redirecting the user to the provider. After the user consents, the provider redirects back with a one-time code and the `state` value, which the client verifies. The client exchanges the code plus the verifier for tokens; the provider checks that the verifier hashes to the original challenge. So a stolen authorization code is useless without the verifier, which never travelled through the browser redirect. OIDC adds an ID token for authentication.\n\n### 5. What is an IDOR/BOLA vulnerability and how do you prevent it?\n\n**Model answer.** Insecure direct object reference: the API trusts an identifier from the request (`/orders/124`) and returns the object without checking that the caller may access it. Prevent it by authorising on the server for every object: look up by id **and** owner/tenant (`WHERE id = ? AND owner_id = ?`), centralise policy checks, use unguessable ids as defence in depth (not as the defence), and write tests that try cross-user access.\n\n### 6. How do you log a user out of everywhere with JWTs?\n\n**Model answer.** Pure stateless JWTs can't be revoked, so you add state back where needed: keep a per-user `tokenVersion` or \"valid-after\" timestamp checked on verification, a denylist of token ids until their expiry, or short access tokens with refresh tokens stored server-side so revoking the refresh family ends access within minutes.\n\n## Rapid-fire\n\n- **What does the `SameSite` cookie attribute do?** Limits sending cookies on cross-site requests, mitigating CSRF.\n- **Is a JWT encrypted?** No, it is signed; the payload is readable.\n- **Authn vs authz?** Who you are vs what you may do.\n- **What does `state` in OAuth protect against?** CSRF on the redirect.\n- **Which error for wrong password vs unknown email?** The same generic message.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Argon2id verify (tuned)",
+          "time": "~100 ms by design",
+          "space": "tens of MB"
+        },
+        {
+          "op": "Session lookup (Redis)",
+          "time": "O(1), ~1 ms",
+          "space": "O(active sessions)"
+        },
+        {
+          "op": "JWT verify (ES256)",
+          "time": "O(1), no I/O after key cached",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Authentication proves identity; authorisation decides access on every request for the specific resource. Most breaches are authz bugs (IDOR/BOLA).",
+        "Store passwords with Argon2id/bcrypt/scrypt (salted, slow); add rate limits, MFA and generic error messages.",
+        "Cookie sessions are simple and instantly revocable; use HttpOnly, Secure and SameSite; JWTs trade revocability for stateless verification.",
+        "Pair short-lived access tokens with rotating refresh tokens; pin JWT algorithm, issuer and audience when verifying.",
+        "OAuth 2.0 with PKCE delegates access; OIDC adds the ID token for sign-in. Deny by default and centralise policy checks."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Header values are encrypted",
+            "Attackers can set alg to none or switch RS256 to HS256 to forge tokens",
+            "It makes tokens smaller",
+            "Pinning speeds up verification"
+          ],
+          "q": "Why must a JWT verifier pin the expected algorithm instead of trusting the token header?",
+          "answer": 1,
+          "why": "If the verifier honours whatever alg the token claims, a forged token can pick a weaker algorithm (algorithm confusion) and pass verification."
+        },
+        {
+          "options": [
+            "CSRF",
+            "Broken object-level authorisation (IDOR)",
+            "SQL injection",
+            "Clickjacking"
+          ],
+          "q": "A user changes /orders/123 to /orders/124 and sees another customer's order. What is this?",
+          "answer": 1,
+          "why": "The server authenticated the user but never checked that they own order 124. Fix with an ownership check on every object access."
+        },
+        {
+          "options": [
+            "They cannot carry user ids",
+            "They cannot be revoked before they expire without adding state",
+            "They require cookies",
+            "They are always encrypted"
+          ],
+          "q": "What is the main drawback of purely stateless JWT sessions?",
+          "answer": 1,
+          "why": "The server holds no record to delete, so a stolen valid token works until expiry unless you add a denylist, version check or short lifetime plus server-side refresh tokens."
+        }
+      ],
+      "sources": [
+        {
+          "title": "OWASP Authentication Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html"
+        },
+        {
+          "title": "OWASP Password Storage Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html"
+        },
+        {
+          "title": "OAuth 2.0 for browser-based apps",
+          "url": "https://oauth.net/2/browser-based-apps/"
+        }
+      ],
+      "practiceRef": "security"
+    }
+  ]
+}

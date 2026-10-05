@@ -1,0 +1,453 @@
+{
+  "chapter": {
+    "id": "backend-production",
+    "title": "Running backends in production",
+    "summary": "Queues and workers, tests you can trust, security that survives contact with attackers, and operating the system."
+  },
+  "lessons": [
+    {
+      "id": "queues-background-jobs",
+      "title": "Queues, background jobs and reliable messaging",
+      "minutes": 40,
+      "summary": "Move slow work off the request path, deliver at-least-once safely with idempotent consumers, retries and dead-letter queues, and avoid dual-write bugs with the outbox pattern.",
+      "parts": [
+        {
+          "id": "why",
+          "label": "Why queues",
+          "body": "## The request path should be short\n\nA user clicks \"place order\". The server must: save the order, charge the card, send a confirmation email, update analytics, notify the warehouse, and resize a receipt image. Doing all of that before responding makes the request slow, and any failing step (the email provider is down) fails the entire request.\n\nA **queue** splits the work: the request does the **essential, fast** part (validate, write the order, enqueue a message) and responds in milliseconds. **Workers** pick messages up later and do the slow or unreliable work.\n\nBenefits:\n\n- **Latency**: respond immediately (`202 Accepted` for long jobs).\n- **Reliability**: if the email service is down, the job waits and retries; the order is not lost.\n- **Smoothing**: absorb a traffic spike by letting the queue grow, then drain at the speed workers can sustain (load levelling).\n- **Decoupling**: producer and consumer deploy, scale and fail independently.\n- **Scaling**: add more workers to process faster.\n\nCosts: eventual consistency (the email arrives a few seconds later), more moving parts, and the hard problems below. Don't queue something the user needs the result of immediately.\n\n## Queue or log or pub/sub?\n\n| model | semantics | examples |\n|---|---|---|\n| **Work queue** | each message goes to **one** consumer, deleted after ack | SQS, RabbitMQ, BullMQ (Redis), Cloud Tasks |\n| **Pub/sub** | each message goes to **every** subscriber | SNS, Redis Pub/Sub, Google Pub/Sub |\n| **Log (stream)** | ordered, durable, replayable; consumers track an offset | Kafka, Kinesis, Redis Streams |\n\nUse a **work queue** for tasks (\"send this email\"). Use a **log** when many independent consumers need the same events, you need replay, or ordering per key matters (all events of one order, in order).\n\n## Delivery guarantees\n\n- **At-most-once**: send and forget; may lose messages. Fine for metrics sampling.\n- **At-least-once**: retry until acknowledged; **may deliver duplicates**. The practical default.\n- **Exactly-once**: effectively the combination of at-least-once delivery and an **idempotent consumer**, or transactional features within one system (Kafka transactions). End-to-end exactly-once across systems does not exist magically; you build it with idempotency.\n\nA consumer: receive → process → **ack**. If the worker crashes before acking, the broker redelivers after the **visibility timeout** (SQS) or ack timeout. So the same message may run twice, and your handler must tolerate that.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "reliability",
+          "label": "Making it reliable",
+          "body": "## Idempotent consumers\n\nMake processing a message twice equal to once.\n\n- **Natural idempotency**: \"set status = shipped\" is safe; \"add 1 to the counter\" is not.\n- **Deduplication table**: store the message id (or a business key like `order_id + step`) with a unique constraint **in the same transaction** as the side effect; if the insert conflicts, skip.\n- **Idempotency keys for external calls**: pass a stable key (`charge-ord_9812`) to the payment provider so a retry does not charge twice.\n- **Conditional writes**: `UPDATE ... WHERE status = 'pending'`.\n\n## Retries, backoff and dead letters\n\n- Retry **transient** failures (timeouts, 503, deadlocks) with **exponential backoff plus jitter** (1 s, 2 s, 4 s, 8 s...), capped.\n- Do **not** retry **permanent** failures (validation errors, 4xx): they will never succeed. Fail them fast.\n- After N attempts, move the message to a **dead-letter queue (DLQ)** so one poison message cannot block or loop forever. Alert on DLQ depth, inspect, fix the bug, and **redrive**.\n- Set a **timeout** for each job and make handlers cancel cleanly.\n\n## Ordering and concurrency\n\nWork queues give **no strict ordering** with several workers. If order matters per entity (all updates of account 17 in order), use a **partitioned log** keyed by the entity id (Kafka partitions, SQS FIFO message groups): same key → same partition → one consumer at a time. Global ordering is expensive and rarely needed; design handlers to be order-tolerant (carry a version number and ignore stale updates).\n\n## The dual-write problem and the outbox pattern\n\n```\nBEGIN; INSERT INTO orders ...; COMMIT;   -- succeeds\nqueue.publish(OrderPlaced)               -- crash here: the order exists, but no event is ever sent\n```\n\nWriting to the database and a broker are two systems; you can't make them atomic. Reversing the order loses data differently (event sent, order insert fails). The fix is the **transactional outbox**:\n\n1. In **one database transaction** write the order **and** an `outbox` row `{id, type, payload}`.\n2. A **relay** process (polling, or CDC like Debezium) reads unsent outbox rows, publishes them, and marks them sent.\n3. Delivery is **at-least-once**, so consumers are idempotent.\n\nThe mirror problem on the consumer side is handled by an **inbox** table (dedupe by message id).\n\n## Scheduled and recurring work\n\nCron-style jobs (nightly reports, expiring trials) need care: with several app instances you'd run each job N times. Use a scheduler with a **lock/leader** (a unique-job row, Redis lock, or the platform's scheduler such as Cloud Scheduler, EventBridge, Kubernetes CronJob), keep jobs idempotent and record last-run state.\n\n## Backpressure and monitoring\n\nWatch **queue depth**, **age of the oldest message**, processing time, failure rate and DLQ size. Rising age means workers cannot keep up: scale workers, fix a slow dependency or shed load. Bound the queue or rate-limit producers so a flood cannot exhaust memory or budget.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// BullMQ (Redis): producer with retries, a worker with concurrency, idempotent handler, DLQ-like failed set\nimport { Queue, Worker } from \"bullmq\";\nconst connection = { host: \"localhost\", port: 6379 };\n\nexport const emails = new Queue(\"emails\", { connection, defaultJobOptions: {\n  attempts: 5,\n  backoff: { type: \"exponential\", delay: 2000 },       // 2s, 4s, 8s ...\n  removeOnComplete: 1000,\n  removeOnFail: false,                                   // keep failures for inspection / redrive\n}});\n\n// Producer: deterministic jobId = built-in dedupe (a second add with the same id is ignored)\nawait emails.add(\"order-confirmation\", { orderId: \"ord_9812\" }, { jobId: \"confirm:ord_9812\" });\n\nnew Worker(\"emails\", async (job) => {\n  const { orderId } = job.data;\n  const sent = await db.emailLog.insertIfAbsent({ key: `confirm:${orderId}` }); // unique constraint = idempotency\n  if (!sent) return;                                                              // duplicate delivery -> no-op\n  await mailer.send(await buildConfirmation(orderId));                            // may throw -> retry with backoff\n}, { connection, concurrency: 10 });"
+            },
+            {
+              "lang": "ts",
+              "source": "// Transactional outbox: order + event in ONE transaction, then a relay publishes\nawait db.tx(async (t) => {\n  const order = await t.orders.insert(input);\n  await t.outbox.insert({ id: crypto.randomUUID(), type: \"OrderPlaced\", payload: { orderId: order.id }, sentAt: null });\n});\n\n// Relay (loop or cron): at-least-once publish, safe under concurrency with SKIP LOCKED\nasync function relay() {\n  const batch = await db.query(\n    \"SELECT id, type, payload FROM outbox WHERE sent_at IS NULL ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED\",\n  );\n  for (const m of batch.rows) {\n    await broker.publish(m.type, m.payload, { messageId: m.id }); // consumers dedupe by messageId\n    await db.query(\"UPDATE outbox SET sent_at = now() WHERE id = $1\", [m.id]);\n  }\n}"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nQueue questions test whether you understand **failure**: duplicates, ordering, poison messages and partial writes. \"Just use Kafka\" without discussing idempotency is a weak answer.\n\n## Questions with model answers\n\n### 1. Why use a queue, and what do you give up?\n\n**Model answer.** A queue takes slow or unreliable work off the request path, smooths spikes, isolates failures and lets producers and consumers scale independently. I give up immediacy and simplicity: results are eventually consistent, there are more components to operate, and I have to handle duplicates, retries, ordering and poison messages. I only queue work the caller does not need to wait for.\n\n### 2. What delivery guarantee does a queue give and how do you cope?\n\n**Model answer.** Practically at-least-once: a message is redelivered if not acknowledged, so duplicates happen after crashes or timeouts. I make consumers idempotent, using natural idempotency where possible, otherwise a dedupe record with a unique constraint written in the same transaction as the side effect, and idempotency keys when calling external APIs. That yields effectively-once outcomes.\n\n### 3. What is a dead-letter queue?\n\n**Model answer.** A parking place for messages that failed repeatedly. After a configured number of attempts, the broker moves the message there so a poison message cannot block the queue or retry forever. I alert on its size, investigate the cause, fix the bug or data, and redrive the messages once the handler is healthy.\n\n### 4. Explain the transactional outbox.\n\n**Model answer.** It solves the dual-write problem. In the same database transaction as the business change, I insert an event row into an outbox table. A separate relay reads unsent rows, publishes them to the broker and marks them sent, either by polling or via change data capture. Because the relay can crash between publish and mark, delivery is at-least-once, so consumers dedupe. This guarantees that an event is published if and only if the state change committed.\n\n### 5. How do you preserve ordering?\n\n**Model answer.** I only require ordering per entity, not globally. A partitioned log or FIFO message group keyed by the entity id routes all its messages to one consumer in order. Handlers also carry a version or sequence number and ignore stale or duplicate updates, which makes them robust to reordering anyway.\n\n### 6. Queue depth is growing and message age is rising. What do you do?\n\n**Model answer.** Check whether producers surged or consumers slowed. Look at worker error rates, a slow downstream dependency, or a poison message causing retries. Scale out workers if the work is parallelisable and the dependency can take it, otherwise fix the bottleneck, apply rate limits or load shedding upstream, and ensure retries use backoff so they do not amplify the problem.\n\n## Rapid-fire\n\n- **Queue vs log?** Queue deletes after ack for one consumer; a log retains events for many consumers and replay.\n- **Exactly-once?** At-least-once plus idempotency.\n- **Retry 400 validation errors?** No, permanent failure.\n- **Where do cron jobs risk duplicates?** Multiple instances without a lock or single scheduler.\n- **What to alert on?** Oldest message age and DLQ size.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Enqueue",
+          "time": "O(1)",
+          "space": "O(messages)"
+        },
+        {
+          "op": "Consumer with dedupe table",
+          "time": "O(1) indexed lookup",
+          "space": "O(ids retained)"
+        },
+        {
+          "op": "Exponential backoff (n attempts)",
+          "time": "wait ≈ base · 2ⁿ",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Queues move slow or flaky work off the request path, smooth spikes and decouple services, at the price of eventual consistency.",
+        "Delivery is at-least-once, so consumers must be idempotent: dedupe tables with unique constraints, conditional writes and idempotency keys.",
+        "Retry transient errors with exponential backoff and jitter; send repeated failures to a dead-letter queue and alert on it.",
+        "Use a keyed, partitioned log for per-entity ordering; make handlers tolerate reordering with versions.",
+        "The transactional outbox makes state change and event publication atomic; monitor queue depth and oldest-message age."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "The message is lost; nothing to do",
+            "The message is redelivered; use an idempotency key so the second attempt does not charge again",
+            "The broker guarantees exactly-once",
+            "The message moves to the dead-letter queue immediately"
+          ],
+          "q": "A worker crashes after charging a card but before acknowledging the message. What happens and how do you stay safe?",
+          "answer": 1,
+          "why": "Unacked messages are redelivered under at-least-once delivery. A stable idempotency key makes the duplicate charge attempt a no-op."
+        },
+        {
+          "options": [
+            "Slow queries",
+            "Writing to the database and broker atomically (the dual-write problem)",
+            "Cache stampedes",
+            "Message ordering across partitions"
+          ],
+          "q": "What problem does the transactional outbox solve?",
+          "answer": 1,
+          "why": "Persisting the event in the same transaction as the state change guarantees it is published if and only if the change committed."
+        },
+        {
+          "options": [
+            "A 503 from a downstream service",
+            "A database deadlock",
+            "A message that fails schema validation",
+            "A network timeout"
+          ],
+          "q": "Which failure should NOT be retried?",
+          "answer": 2,
+          "why": "Validation failures are permanent; retrying cannot fix them and wastes capacity. Send them to the DLQ or reject them."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Microservices.io: Transactional outbox",
+          "url": "https://microservices.io/patterns/data/transactional-outbox.html"
+        },
+        {
+          "title": "AWS: Using dead-letter queues in SQS",
+          "url": "https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html"
+        },
+        {
+          "title": "BullMQ docs",
+          "url": "https://docs.bullmq.io/"
+        }
+      ],
+      "practiceRef": "hld-messaging"
+    },
+    {
+      "id": "testing-backend",
+      "title": "Testing backends: pyramid, integration tests, contracts",
+      "minutes": 35,
+      "summary": "What to test at each level, how to test with real databases, test doubles, contract tests, flaky tests, and a practical testing strategy for services.",
+      "parts": [
+        {
+          "id": "strategy",
+          "label": "Strategy",
+          "body": "## Why we test\n\nTests are not a ritual; they let you change code with confidence, document behaviour and catch regressions before users do. The best test suite is the one you **trust enough to deploy on a Friday afternoon**.\n\n## The test pyramid (and trophy)\n\n| level | what it covers | speed | count |\n|---|---|---|---|\n| **Unit** | one function or class, no I/O (pure business rules) | milliseconds | many |\n| **Integration** | your code with a **real** database / queue / cache in a container | 100 ms to seconds | a good number |\n| **Contract** | an API agrees with its consumers | fast | per integration |\n| **End-to-end** | the deployed system through its public interface | slow, flaky | few, critical flows only |\n\nFor backend services, the highest value per test is often the **integration test**: it exercises routing, validation, SQL, transactions and serialisation together, so it catches real bugs that mocked unit tests miss (\"the SQL has a typo\", \"the migration does not match the model\"). Don't assert implementation details; assert **observable behaviour** (HTTP response, database state, messages sent).\n\n## Unit tests: put logic where it is cheap to test\n\nDesign so the interesting rules are **pure functions** (pricing, validation, state machines). Test them with many small cases, including edge cases and property-based tests (fast-check / Hypothesis) that generate inputs and assert invariants (\"sorting twice equals sorting once\", \"total never negative\").\n\n## Test doubles: use the right kind\n\n- **Stub**: returns canned data (`getExchangeRate → 1.1`).\n- **Fake**: a working lightweight implementation (in-memory repository, fake clock).\n- **Mock/spy**: records calls so you can assert them (`emailSender.send` called once).\n- **Dummy**: placeholder argument.\n\nPrefer **fakes and real dependencies** over heavy mocking. Tests that mock every collaborator pass when the code is broken and fail when you refactor. Mock only at **boundaries you don't own** (third-party HTTP APIs, payment gateways, the clock, randomness).",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "integration",
+          "label": "Integration tests",
+          "body": "## Real database, isolated\n\nUse a real database matching production (Postgres, MongoDB) started with **Testcontainers** or docker compose; an in-memory SQLite substitute hides dialect differences. For isolation:\n\n1. Run migrations once for the suite.\n2. Per test: wrap in a **transaction and roll back**, or truncate tables, or use a unique schema/database per worker.\n3. Build data with **factories/builders** (`makeOrder({ status: \"paid\" })`) instead of giant fixtures, so each test states only the fields it cares about.\n\n```ts\ndescribe(\"POST /v1/orders\", () => {\n  it(\"creates an order and returns 201 with Location\", async () => {\n    const user = await factory.user();\n    const res = await request(app).post(\"/v1/orders\").set(auth(user)).send({ sku: \"A-17\", qty: 2 });\n\n    expect(res.status).toBe(201);\n    expect(res.headers.location).toMatch(/\\/v1\\/orders\\/\\w+/);\n    expect(await db.orders.count({ userId: user.id })).toBe(1);   // verify state, not internals\n  });\n\n  it(\"is idempotent for a repeated Idempotency-Key\", async () => { /* send twice, expect same id, one row */ });\n  it(\"returns 404 for another user's order\", async () => { /* authorisation test */ });\n});\n```\n\nMust-have cases for every endpoint: success, validation failure, unauthenticated (401), unauthorised (403/404), not found, conflict/duplicate, and a boundary case.\n\n## Testing time, randomness and async\n\n- Inject a **clock** and an **id generator**; never call `Date.now()` deep in logic if tests need to control it. Fake timers for retry/backoff logic.\n- For queues, test the **handler** directly with a message (fast), and have a smaller number of tests that run the real worker against a real broker.\n- Await events rather than `sleep(1000)`: poll with a timeout for a condition.\n\n## Contract tests\n\nWhen service A calls service B, a mocked B in A's tests can drift from the real B. **Consumer-driven contracts** (Pact) fix this: A records the requests it makes and responses it needs, B verifies in its CI that it still satisfies them. Alternatively, test both sides against the shared **OpenAPI** schema. This lets teams deploy independently without a slow full end-to-end environment.\n\n## Flaky tests\n\nA test that sometimes fails destroys trust: people rerun and ignore red. Common causes: shared state between tests, order dependence, real time and randomness, concurrency races, tests depending on the network or on `sleep`. Fixes: isolate data per test, inject clocks, wait on conditions, run tests in random order locally, quarantine and fix (never leave them \"temporarily\" disabled), and track flake rate.\n\n## Beyond correctness\n\n- **Load tests** (k6, Gatling, Locust) before launch: find the breaking point, p99 latency, and the bottleneck (database? connection pool?).\n- **Security tests**: dependency scanning, SAST, tests for authorisation boundaries.\n- **Migration tests**: run migrations on a copy of production-shaped data.\n- **Chaos / failure tests**: kill a dependency and verify timeouts, retries and degradation behave.\n- **Coverage** is a smoke detector, not a goal: 100 percent line coverage with no assertions proves nothing. Look at **mutation testing** to check tests actually detect changes.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// Vitest + supertest + Testcontainers: real Postgres, transaction-per-test isolation\nimport { PostgreSqlContainer } from \"@testcontainers/postgresql\";\nimport request from \"supertest\";\nimport { beforeAll, afterAll, beforeEach, afterEach, describe, it, expect } from \"vitest\";\n\nlet container, app, db;\nbeforeAll(async () => {\n  container = await new PostgreSqlContainer(\"postgres:16\").start();\n  db = await connect(container.getConnectionUri());\n  await migrate(db);\n  app = buildApp({ orders: makeOrderService({ repo: makeRepo(db), payments: fakePayments(), clock: () => new Date(\"2026-10-05T10:00:00Z\") }) });\n}, 60_000);\nafterAll(async () => { await db.end(); await container.stop(); });\nbeforeEach(() => db.query(\"BEGIN\"));\nafterEach(() => db.query(\"ROLLBACK\"));     // every test starts from a clean slate\n\ndescribe(\"orders\", () => {\n  it(\"rejects qty 0 with 422 and a field error\", async () => {\n    const res = await request(app).post(\"/v1/orders\").send({ sku: \"A-17\", qty: 0 });\n    expect(res.status).toBe(422);\n    expect(res.body.errors[0].path).toContain(\"qty\");\n  });\n});"
+            },
+            {
+              "lang": "python",
+              "source": "# pytest + FastAPI TestClient with a fixture that rolls back the transaction\nimport pytest\nfrom fastapi.testclient import TestClient\n\n@pytest.fixture\ndef db(engine):\n    conn = engine.connect(); tx = conn.begin()\n    yield conn\n    tx.rollback(); conn.close()           # isolation without truncating tables\n\ndef test_create_order_is_idempotent(db, client: TestClient):\n    h = {\"Idempotency-Key\": \"k1\"}\n    a = client.post(\"/v1/orders\", json={\"sku\": \"A-17\", \"qty\": 2}, headers=h)\n    b = client.post(\"/v1/orders\", json={\"sku\": \"A-17\", \"qty\": 2}, headers=h)\n    assert a.status_code == 201 and a.json()[\"id\"] == b.json()[\"id\"]"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nThey look for **pragmatic judgement**: tests that give confidence cheaply, not dogma about 100 percent coverage or TDD rituals.\n\n## Questions with model answers\n\n### 1. How do you decide what to test at each level?\n\n**Model answer.** Business rules that are pure go to fast unit tests with many cases. Anything involving SQL, transactions, serialisation or framework wiring gets integration tests against a real database, because mocks cannot catch those bugs. A thin end-to-end layer checks the few critical user journeys on a deployed environment. Contracts cover boundaries between services. I prefer fewer, behaviour-focused tests over mirroring the code structure.\n\n### 2. Mocks versus fakes versus real dependencies?\n\n**Model answer.** I use real dependencies for things I own and can run cheaply, like the database in a container, because that tests actual behaviour. Fakes (an in-memory repository, a fixed clock) give fast deterministic tests for logic. Mocks are for boundaries I don't control, like third-party HTTP APIs, and to assert a side effect happened. Over-mocking couples tests to implementation, so they break on refactors and miss real defects.\n\n### 3. How do you deal with flaky tests?\n\n**Model answer.** First treat them as bugs: find the nondeterminism, usually shared state, time, randomness, ordering, or `sleep`-based waits. Isolate data per test, inject clocks and ids, wait for conditions with timeouts, run in random order to expose coupling, quarantine while fixing with an owner and deadline, and track flake rates. Ignoring flakes trains the team to ignore failures.\n\n### 4. What is a contract test and why is it better than a mock?\n\n**Model answer.** It verifies that two independently deployed services still agree on their API. In a consumer-driven contract the consumer publishes the exact requests and responses it relies on, and the provider's CI replays them against the real implementation. A hand-written mock only reflects what the consumer's author believed, and silently drifts from reality; a contract fails the provider's build when it breaks a consumer.\n\n### 5. Is 100 percent coverage a good goal?\n\n**Model answer.** No. Coverage shows which lines never ran, not whether anything was verified. It is useful for spotting untested areas, but chasing a number leads to assertion-free tests and tests of trivial code. I focus on risk: critical paths, edge cases and bugs we have actually shipped, and I consider mutation testing to measure whether tests detect changes.\n\n### 6. How would you test code that uses the current time and random IDs?\n\n**Model answer.** Inject them as dependencies: a clock function and an id generator. Production passes the real ones; tests pass fixed or sequential values, so assertions are exact, and fake timers can fast-forward retry delays without waiting.\n\n## Rapid-fire\n\n- **Biggest integration-test benefit?** Catches wiring, SQL and serialisation bugs mocks miss.\n- **Isolation trick for DB tests?** Transaction rollback per test.\n- **What to assert?** Observable behaviour, not private calls.\n- **Replace `sleep(1000)` with?** Polling for a condition with a timeout.\n- **Pact tests are?** Consumer-driven contract tests.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Unit test",
+          "time": "~1 ms",
+          "space": "-"
+        },
+        {
+          "op": "Integration test (real DB)",
+          "time": "50 to 500 ms",
+          "space": "container startup once per suite"
+        },
+        {
+          "op": "End-to-end test",
+          "time": "seconds",
+          "space": "full environment"
+        }
+      ],
+      "keyPoints": [
+        "Test pure business logic with many fast unit tests; give SQL, transactions and wiring real-database integration tests.",
+        "Assert observable behaviour (response, database state, messages) rather than implementation details.",
+        "Prefer fakes and real dependencies; mock only boundaries you do not own; inject the clock and id generator.",
+        "Use contract tests (Pact or OpenAPI) so services deploy independently without a full end-to-end environment.",
+        "Fix flaky tests as bugs; coverage is a smoke detector, not a target."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "They are faster than unit tests",
+            "They catch SQL, migration and serialisation bugs that mocks cannot",
+            "They remove the need for validation",
+            "They replace production monitoring"
+          ],
+          "q": "Why are integration tests against a real database valuable for a backend?",
+          "answer": 1,
+          "why": "Mocked repositories never execute the real SQL or constraints, so typos and schema mismatches only show up when a real database is involved."
+        },
+        {
+          "options": [
+            "The assertion library is broken",
+            "Shared mutable state or data between tests",
+            "The code is too fast",
+            "Missing coverage"
+          ],
+          "q": "A test passes only when run after another test. What is the likely cause?",
+          "answer": 1,
+          "why": "Order dependence indicates leaked state. Isolate data per test (rollback or fresh fixtures) and run tests in random order to expose it."
+        },
+        {
+          "options": [
+            "Slow queries",
+            "A provider changing its API in a way that breaks a consumer without anyone noticing",
+            "Memory leaks",
+            "Flaky browsers"
+          ],
+          "q": "What does a consumer-driven contract test prevent?",
+          "answer": 1,
+          "why": "The provider's pipeline verifies the consumers' recorded expectations, failing the build before a breaking change is released."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Martin Fowler: Test pyramid",
+          "url": "https://martinfowler.com/articles/practical-test-pyramid.html"
+        },
+        {
+          "title": "Testcontainers",
+          "url": "https://testcontainers.com/"
+        },
+        {
+          "title": "Pact: consumer-driven contracts",
+          "url": "https://docs.pact.io/"
+        }
+      ],
+      "practiceRef": "node-production"
+    },
+    {
+      "id": "web-security-owasp",
+      "title": "Web security for backend engineers: the OWASP top risks",
+      "minutes": 40,
+      "summary": "Injection, broken access control, SSRF, XSS, CSRF, secrets and dependencies: how each attack works and the concrete defences a backend must have.",
+      "parts": [
+        {
+          "id": "injection",
+          "label": "Injection and input",
+          "body": "## The mindset\n\nSecurity is a property of the whole system, assembled from many small correct decisions. Assume **all input is hostile**, **every dependency can be compromised**, and **every secret will eventually leak**; design so one mistake does not equal total failure (defence in depth, least privilege).\n\nThe OWASP Top 10 is the common checklist. The items below are the ones that appear in real incidents and interviews.\n\n## SQL and NoSQL injection\n\nAttacker input becomes part of the query's **code**:\n\n```js\nconst q = \"SELECT * FROM users WHERE email = '\" + email + \"' AND pw = '\" + pw + \"'\";\n// email = ' OR 1=1 --   → returns every user, bypassing the password check\n```\n\nDefence: **parameterised queries / prepared statements** everywhere (the driver sends code and data separately, so data can never become code). ORMs do this by default but have raw-query escape hatches that reintroduce the risk. Allow-list identifiers you must interpolate (sort column names). Run the app's database user with **least privilege** (no `DROP`, no access to other schemas).\n\nNoSQL injection: passing `req.body` straight into a MongoDB filter lets `{\"password\": {\"$ne\": null}}` match any user. Validate types (a string, not an object), strip `$`-operators, use schemas.\n\nSame class: **command injection** (`exec(\"convert \" + filename)`; use `execFile` with an argument array and no shell), **path traversal** (`../../etc/passwd`; resolve and verify the path stays within the base directory), **template injection**, **LDAP/XPath injection**, **header injection** (CR/LF in values).\n\n## XSS (cross-site scripting)\n\nAttacker-controlled text is rendered as HTML/JS in another user's browser, giving the attacker that user's session and powers. Types: stored, reflected, DOM-based.\n\nDefences: **output encoding** for the correct context (HTML body, attribute, JavaScript, URL); modern frameworks (React, Vue) escape by default, so avoid `dangerouslySetInnerHTML` / `v-html` with untrusted data, and sanitise rich text with a vetted library (DOMPurify). Add a **Content-Security-Policy** (no inline scripts, allow-listed sources) as a second layer, and `HttpOnly` cookies so XSS cannot read sessions.\n\n## CSRF\n\nA malicious site makes the victim's browser send a state-changing request to your site, and the browser attaches the victim's cookies. Defences: `SameSite=Lax/Strict` cookies, anti-CSRF tokens for cookie-authenticated forms, verifying `Origin`/`Referer`, and requiring a custom header or `Authorization` bearer token (cross-site pages can't set them without CORS approval). GET requests must never change state.\n\n## SSRF (server-side request forgery)\n\nYour server fetches a URL supplied by a user (image preview, webhook, URL import). The attacker points it at `http://169.254.169.254/` (the cloud metadata service that returns instance credentials), at `localhost` admin ports, or at internal services. Defences: allow-list schemes and hosts when possible; resolve DNS and **block private, loopback and link-local ranges after resolution** (defeating DNS rebinding by connecting to the validated IP); don't follow redirects blindly; use a separate egress proxy with network rules; enforce IMDSv2 on AWS; set timeouts and response size caps.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "access",
+          "label": "Access control and secrets",
+          "body": "## Broken access control (the #1 risk)\n\nCovered by authentication lessons, restated as a checklist:\n\n- **Object-level (IDOR/BOLA)**: every query for a resource includes the caller's ownership or tenant condition.\n- **Function-level**: admin endpoints require admin on the server; do not rely on hidden UI.\n- **Property-level / mass assignment**: allow-list writable fields; hide sensitive fields in responses (return DTOs, not raw database rows).\n- **Deny by default**; centralise policy; test authorisation for every role/endpoint pair, including negative tests.\n- Re-check authorisation on every request. A UUID is not authorisation.\n\n## Secrets and configuration\n\n- No secrets in git, container images, logs, error messages or front-end bundles. Scan commits (gitleaks, GitHub secret scanning); if a secret leaks, **rotate it**, deleting the commit is not enough.\n- Load secrets from a secret manager or injected environment, scoped per service and environment; rotate regularly; use short-lived credentials (IAM roles, workload identity) over long-lived keys.\n- **Redact** sensitive fields in logs and error trackers (`Authorization`, `Cookie`, passwords, tokens, card numbers, personal data).\n- Debug modes and verbose errors off in production.\n\n## Cryptography rules of thumb\n\n- Use TLS everywhere (HSTS), modern versions only; certificates automated (ACME).\n- Do not invent cryptography. Use vetted libraries and high-level APIs (libsodium, `crypto.subtle`, KMS) with authenticated encryption (AES-GCM, ChaCha20-Poly1305).\n- Random values for tokens come from a CSPRNG (`crypto.randomBytes`), never `Math.random()`.\n- Passwords: Argon2id/bcrypt (see the authentication lesson). Hash tokens before storing; encrypt sensitive columns at rest where required.\n\n## Supply chain and dependencies\n\nMost of your code is other people's code. Pin versions with a lockfile and install with `npm ci`; run `npm audit`/Dependabot/Renovate and act on alerts; be wary of typosquatted names, install scripts, and abandoned packages; prefer fewer dependencies; verify provenance and review updates for critical packages; build in CI from clean checkouts and sign artifacts where you can. Scan container images and keep base images minimal.\n\n## Security headers and platform hardening\n\n| header | purpose |\n|---|---|\n| `Strict-Transport-Security` | force HTTPS |\n| `Content-Security-Policy` | restrict script/style/frame sources |\n| `X-Content-Type-Options: nosniff` | stop MIME sniffing |\n| `Frame-Options` / `frame-ancestors` | prevent clickjacking |\n| `Referrer-Policy` | limit leaked URLs |\n| `Permissions-Policy` | disable unused browser features |\n\nAlso: rate limit and cap request sizes, set timeouts, run containers as non-root with read-only filesystems, drop capabilities, segment networks, and keep the database off the public internet.\n\n## Logging, detection and response\n\nYou cannot respond to what you cannot see. Log authentication events, authorisation failures, input validation spikes and admin actions with request ids; alert on anomalies (many 401s, a surge of 404s on sequential ids); keep an **incident runbook** (who is called, how to revoke keys, how to roll back); practise it.\n\n## Threat modelling in five minutes\n\nFor any feature ask: *What are we protecting? Who might attack and how (STRIDE: spoofing, tampering, repudiation, information disclosure, denial of service, elevation of privilege)? What is the trust boundary? What happens if this component is compromised?* Write down the top three risks and the mitigations before writing code.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// Concrete defences in a Node/Express backend\nimport helmet from \"helmet\";\nimport { execFile } from \"node:child_process\";\nimport path from \"node:path\";\nimport dns from \"node:dns/promises\";\nimport net from \"node:net\";\n\napp.use(helmet());                                  // sane security headers (HSTS, nosniff, frame options...)\napp.use(express.json({ limit: \"100kb\" }));\n\n// 1) Parameterised SQL: data never becomes code\nconst user = await pool.query(\"SELECT id FROM users WHERE email = $1\", [email]);\n\n// 2) No shell: arguments are passed as an array\nexecFile(\"convert\", [inputPath, \"-resize\", \"200x200\", outPath], cb);\n\n// 3) Path traversal guard\nconst BASE = path.resolve(\"/srv/uploads\");\nexport function safePath(name: string) {\n  const p = path.resolve(BASE, name);\n  if (!p.startsWith(BASE + path.sep)) throw new Error(\"bad path\");\n  return p;\n}\n\n// 4) SSRF guard: resolve first, reject private ranges, then connect to the VALIDATED address\nconst isPrivate = (ip: string) =>\n  net.isIP(ip) === 4\n    ? /^(10\\.|127\\.|169\\.254\\.|192\\.168\\.|172\\.(1[6-9]|2\\d|3[01])\\.|0\\.)/.test(ip)\n    : /^(::1|fc|fd|fe80)/i.test(ip);\n\nexport async function assertPublicUrl(raw: string) {\n  const u = new URL(raw);\n  if (u.protocol !== \"https:\") throw new Error(\"https only\");\n  const addrs = await dns.lookup(u.hostname, { all: true });\n  if (addrs.some((a) => isPrivate(a.address))) throw new Error(\"blocked address\");\n  return addrs[0].address; // connect to this IP to avoid DNS rebinding\n}"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nNot memorised acronyms, but whether you can **recognise a vulnerable pattern in code** and name the specific control that fixes it.\n\n## Questions with model answers\n\n### 1. How do you prevent SQL injection?\n\n**Model answer.** Use parameterised queries or prepared statements so user input is always sent as data, never concatenated into SQL; ORMs do this but raw-query helpers need the same care. Allow-list anything that must be interpolated, such as column names for sorting. Use a least-privilege database account and validate inputs. Escaping strings by hand is fragile and not the primary defence.\n\n### 2. What is SSRF and why is it dangerous in the cloud?\n\n**Model answer.** The server is tricked into making requests to a destination the attacker chooses. In cloud environments the metadata endpoint (169.254.169.254) can return temporary credentials for the instance role, so SSRF can become full account compromise. Mitigations: allow-list destinations, resolve DNS and block private/loopback/link-local addresses before connecting to the validated IP, limit redirects, use an egress proxy and firewall rules, enforce IMDSv2, and give the instance a minimal IAM role.\n\n### 3. XSS versus CSRF?\n\n**Model answer.** XSS runs attacker script inside your site's origin in the victim's browser, so it can do anything the user can, including reading data and bypassing CSRF defences. CSRF makes the victim's browser send an unwanted request to your site from another origin, using the victim's ambient cookies but without reading the response. XSS is stopped by output encoding, sanitisation and CSP; CSRF by SameSite cookies, anti-CSRF tokens and origin checks.\n\n### 4. A developer committed an AWS key to GitHub. What now?\n\n**Model answer.** Assume it is compromised. Revoke and rotate the key immediately, review CloudTrail for use of that key and for anything created with it, check for persistence (new users, roles, keys, instances), remove the secret from history for hygiene but not as the fix, and prevent recurrence with pre-commit secret scanning, short-lived credentials via roles, and least-privilege policies.\n\n### 5. How do you secure file uploads?\n\n**Model answer.** Enforce size limits and a content-type allow-list verified by sniffing magic bytes, not just the extension or header. Store files outside the web root or in object storage under generated names, never user-supplied paths; serve them from a separate domain with `Content-Disposition: attachment` and `nosniff`; scan for malware if relevant; resize or re-encode images to strip payloads; and restrict who can access each file.\n\n### 6. What is defence in depth? Give an example.\n\n**Model answer.** Layering independent controls so a single failure does not cause a breach. For XSS: framework auto-escaping, sanitisation of rich text, a strict CSP, and HttpOnly cookies so even if script runs it cannot steal the session. For the database: parameterised queries, least-privilege accounts, network isolation and auditing.\n\n## Rapid-fire\n\n- **Number one OWASP risk?** Broken access control.\n- **How to store secrets?** Secret manager or injected env, rotated, never in git.\n- **Safe random for tokens?** CSPRNG (`crypto.randomBytes`).\n- **Run a shell with user input?** No; `execFile` with an args array.\n- **SameSite=Lax does what?** Blocks cookies on most cross-site subrequests.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Parameterised query",
+          "time": "same as unparameterised",
+          "space": "-"
+        },
+        {
+          "op": "Argon2id verify",
+          "time": "~100 ms by design",
+          "space": "tens of MB"
+        },
+        {
+          "op": "SSRF DNS resolve + check",
+          "time": "one extra lookup",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Treat all input as hostile: parameterised queries, no shell strings, path checks and strict validation stop injection classes.",
+        "XSS needs output encoding, sanitisation, CSP and HttpOnly cookies; CSRF needs SameSite cookies, tokens and origin checks.",
+        "SSRF is blocked by resolving and rejecting private/metadata addresses, allow-lists and egress controls.",
+        "Broken access control is the top risk: authorise every object and function on the server, allow-list writable fields, deny by default.",
+        "Keep secrets out of code and logs, rotate on leak, pin and scan dependencies, and log security events with an incident runbook."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "It encrypts the input",
+            "The driver sends the SQL text and the values separately, so values are never parsed as SQL",
+            "It rejects all quotes",
+            "It runs faster than plain queries"
+          ],
+          "q": "Why does a parameterised query stop SQL injection?",
+          "answer": 1,
+          "why": "With bound parameters the query structure is fixed before the data is supplied, so malicious input cannot change the statement."
+        },
+        {
+          "options": [
+            "The public homepage",
+            "The instance metadata service at 169.254.169.254",
+            "The CDN",
+            "The browser cache"
+          ],
+          "q": "Which target is a classic SSRF goal in cloud environments?",
+          "answer": 1,
+          "why": "It can return temporary credentials for the instance's IAM role, turning a fetch bug into a credential theft."
+        },
+        {
+          "options": [
+            "Nothing; it is deleted",
+            "Rotate the key because history and forks still contain it",
+            "Make the repo private only",
+            "Wait for an alert"
+          ],
+          "q": "A secret key was committed to a public repo and then deleted in a later commit. What is the correct response?",
+          "answer": 1,
+          "why": "Git history, forks and caches retain the secret; the only safe action is to revoke and rotate it."
+        }
+      ],
+      "sources": [
+        {
+          "title": "OWASP Top 10",
+          "url": "https://owasp.org/www-project-top-ten/"
+        },
+        {
+          "title": "OWASP API Security Top 10",
+          "url": "https://owasp.org/API-Security/"
+        },
+        {
+          "title": "OWASP Cheat Sheet Series",
+          "url": "https://cheatsheetseries.owasp.org/"
+        }
+      ],
+      "practiceRef": "security"
+    },
+    {
+      "id": "deploy-observability",
+      "title": "Shipping and operating: twelve factors, containers, health, logs, metrics, traces",
+      "minutes": 40,
+      "summary": "Deploy safely with containers and rollouts, configure with the twelve-factor model, and see inside the running system with structured logs, metrics, traces and SLOs.",
+      "parts": [
+        {
+          "id": "deploy",
+          "label": "Deploying safely",
+          "body": "## What changes when code leaves your laptop\n\nIn production there are many instances, rolling restarts, flaky networks, secrets, traffic you did not predict, and people depending on uptime. The job is no longer \"make it work\" but \"keep it working while it changes\".\n\n## The twelve-factor app, the useful parts\n\n1. **Codebase**: one repo per service, many deploys.\n2. **Dependencies** explicitly declared (lockfile); nothing assumed on the host.\n3. **Config in the environment**, strictly separated from code.\n4. **Backing services** (database, queue, cache) are attached resources reached by URL; swappable without code change.\n5. **Build, release, run** are separate stages; releases are immutable and versioned.\n6. **Stateless processes**: no local session state or files that matter; state lives in backing services. This is what makes horizontal scaling and restarts safe.\n7. **Port binding**: the app is self-contained and exports HTTP on a port.\n8. **Concurrency** by running more processes.\n9. **Disposability**: fast startup, graceful shutdown, robust to sudden death.\n10. **Dev/prod parity**: same services and versions.\n11. **Logs** as event streams to stdout.\n12. **Admin processes** (migrations, one-off scripts) run as one-off commands in the same environment.\n\n## Containers in one page\n\nA **container image** packages your app with its runtime and libraries; the same image runs on your laptop, CI and production. A good Dockerfile for Node:\n\n```dockerfile\nFROM node:22-slim AS build\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci                      # exact versions from the lockfile\nCOPY . .\nRUN npm run build && npm prune --omit=dev\n\nFROM node:22-slim\nENV NODE_ENV=production\nWORKDIR /app\nCOPY --from=build /app/node_modules ./node_modules\nCOPY --from=build /app/dist ./dist\nUSER node                       # never run as root\nEXPOSE 3000\nHEALTHCHECK CMD node -e \"fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1))\"\nCMD [\"node\", \"dist/server.js\"]  # exec form so SIGTERM reaches Node\n```\n\nMulti-stage builds keep images small; copy `package*.json` first so dependency layers cache; pin base image versions; don't bake secrets into layers; `.dockerignore` keeps `node_modules`, `.git` and `.env` out.\n\n## Release strategies\n\n| strategy | how | risk | rollback |\n|---|---|---|---|\n| **Rolling** | replace instances gradually | mixed versions run together | roll forward/back gradually |\n| **Blue-green** | full new environment, switch traffic | needs double capacity | flip back instantly |\n| **Canary** | send 1 to 5 percent to the new version, watch metrics, widen | small blast radius | route traffic away |\n| **Feature flags** | deploy code dark, enable per user/percentage | flag debt | switch off without a deploy |\n\nBecause old and new versions overlap, every change must be **backward compatible** with the other version and the database schema (expand/contract migrations). Automate: CI runs tests, builds the image once, scans it, and promotes the **same artifact** through staging to production. Make rollback a one-command, practised operation.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "observe",
+          "label": "Observability",
+          "body": "## Monitoring versus observability\n\nMonitoring tells you **that** something is wrong (a dashboard is red). Observability lets you ask **why**, including questions you did not anticipate, from the data the system emits. The three pillars:\n\n### 1. Logs: discrete events\n\nStructured JSON, one event per line, with a **request id / trace id**, level, service, version and relevant ids. Don't log secrets or personal data. Sample noisy debug logs, set retention, and centralise (Loki, Elasticsearch, CloudWatch). Logs are rich but expensive and hard to aggregate.\n\n### 2. Metrics: numbers over time\n\nCheap, aggregatable, great for alerting and trends. Use the standard methods:\n\n- **RED** for services: **R**ate (requests/s), **E**rrors (error ratio), **D**uration (latency percentiles).\n- **USE** for resources: **U**tilisation, **S**aturation, **E**rrors (CPU, memory, disk, connection pool).\n- Report latency as **percentiles (p50, p95, p99)** from histograms, never just the average, which hides the slow tail. If a page calls 10 services, the user's experience is dominated by the slowest.\n- Beware **high-cardinality labels** (user id, request id) on metrics; they explode storage. Put those in logs/traces.\n\n### 3. Traces: the path of one request\n\nA **trace** follows a request across services as a tree of **spans** (each with timing and attributes), linked by a propagated trace id (W3C `traceparent` header). It answers \"which of the 14 hops made this request take 3 seconds?\" **OpenTelemetry** is the vendor-neutral standard for emitting all three signals.\n\n## SLIs, SLOs, alerts\n\n- **SLI** (indicator): a measurement, e.g. the fraction of requests that succeed in under 300 ms.\n- **SLO** (objective): the target, e.g. 99.9 percent over 30 days.\n- **Error budget**: the allowed failure (0.1 percent = about 43 minutes a month). If the budget is spent, slow feature releases and fix reliability.\n- Alert on **symptoms users feel** (error rate, latency, SLO burn rate), not on every cause (CPU 80 percent). Every alert must be actionable, linked to a runbook, and tuned to avoid fatigue.\n\n## Debugging an incident\n\n1. **Stabilise**: roll back the last change or fail over; restore service first.\n2. **Triage**: what changed (deploy, config, traffic, dependency)? Check RED dashboards, then traces for slow spans, then logs for errors by request id.\n3. **Communicate** status early and regularly.\n4. **Write a blameless post-mortem**: timeline, root causes (plural), what detection and response did well or badly, and tracked follow-up actions.\n\n## Capacity and resilience basics\n\nSet resource requests/limits; use autoscaling on a meaningful signal (queue depth, requests per instance) with sensible minimums; set timeouts and circuit breakers on all outbound calls; use bulkheads (separate pools per dependency); rehearse failure (game days); and keep backups with **tested restores**. An untested backup is a hope, not a backup.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// OpenTelemetry + structured logs: every log line carries the trace id\nimport { trace } from \"@opentelemetry/api\";\nimport pino from \"pino\";\n\nconst log = pino({ base: { service: \"orders-api\", version: process.env.GIT_SHA } });\n\nexport function withTrace() {\n  const span = trace.getActiveSpan();\n  const ctx = span?.spanContext();\n  return ctx ? { traceId: ctx.traceId, spanId: ctx.spanId } : {};\n}\n\napp.post(\"/v1/orders\", async (req, res) => {\n  const t = trace.getTracer(\"orders\");\n  await t.startActiveSpan(\"place-order\", async (span) => {\n    try {\n      span.setAttribute(\"order.items\", req.body.items?.length ?? 0);   // attributes, NOT secrets\n      const order = await orders.place(req.body);\n      log.info({ ...withTrace(), orderId: order.id }, \"order placed\");\n      res.status(201).json(order);\n    } catch (e) {\n      span.recordException(e as Error);\n      log.error({ ...withTrace(), err: e }, \"order failed\");\n      throw e;\n    } finally { span.end(); }\n  });\n});\n\n// RED metrics with prom-client: a latency histogram labelled by route (low cardinality!) and status class\nimport client from \"prom-client\";\nconst latency = new client.Histogram({ name: \"http_request_duration_seconds\", help: \"latency\", labelNames: [\"route\", \"status\"], buckets: [0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5] });\napp.use((req, res, next) => {\n  const end = latency.startTimer();\n  res.on(\"finish\", () => end({ route: req.route?.path ?? \"unmatched\", status: String(res.statusCode) }));\n  next();\n});"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nSeniority shows in operational thinking: how you roll out safely, detect problems before users report them, and debug a live system under pressure.\n\n## Questions with model answers\n\n### 1. How do you deploy a change with minimal risk?\n\n**Model answer.** CI runs tests and builds one immutable image. I deploy to staging, then to production via canary or rolling release, watching error rate and latency against the previous version, with automatic rollback if SLO burn exceeds a threshold. Database changes are backward compatible (expand/contract) because versions overlap. Risky features ship behind a feature flag so I can turn them off without a deploy, and rollback is a practised one-step operation.\n\n### 2. What is the difference between logs, metrics and traces?\n\n**Model answer.** Logs are detailed discrete events, best for the context of a specific failure. Metrics are cheap numeric aggregates over time, best for dashboards and alerts. Traces show one request's path and timing across services, best for locating latency and failure in a distributed call chain. They connect through a shared request or trace id: an alert fires from a metric, a trace points to the slow span, and logs for that trace id explain it.\n\n### 3. Why p99 latency instead of the average?\n\n**Model answer.** Averages hide the tail. If 1 percent of requests take 5 seconds, the mean barely moves but real users are suffering, and in a fan-out where each page makes many calls, most pages hit at least one slow call. Percentiles from histograms show what the worst-served users experience. Averages of percentiles are also invalid; aggregate the histograms instead.\n\n### 4. What are SLOs and error budgets used for?\n\n**Model answer.** An SLO sets a measurable reliability target for what users care about, such as 99.9 percent of requests succeed under 300 ms. The remainder is the error budget, the unreliability we can afford. When the budget is healthy the team ships quickly; when it is exhausted we prioritise reliability work. It turns \"how reliable should we be?\" into a shared, quantitative decision, and alerts on burn rate catch problems early without noise.\n\n### 5. The service is slow in production only. How do you investigate?\n\n**Model answer.** Check what changed first (deploy, config, traffic, dependency). Look at RED metrics to see whether latency rose globally or for one route, then USE metrics for saturation: CPU, event-loop lag, database connections, queue depth. Use traces to find the slow span, then logs by trace id. Compare with staging for differences in data volume, configuration or dependencies. If customers are affected, roll back first and investigate afterwards.\n\n### 6. Why must processes be stateless?\n\n**Model answer.** Because instances come and go (deploys, autoscaling, crashes) and requests may hit any instance. State held in memory or local disk is lost or inconsistent. Moving sessions, uploads and caches to backing services (database, Redis, object storage) lets us scale horizontally, restart freely and run zero-downtime deploys.\n\n## Rapid-fire\n\n- **RED vs USE?** Services: rate/errors/duration; resources: utilisation/saturation/errors.\n- **High-cardinality label on a metric?** Don't; use logs or traces.\n- **Liveness failing means?** Restart the container.\n- **Where do secrets go?** Secret manager or injected env, never the image.\n- **Backups?** Only valid if restores are tested.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Metric increment",
+          "time": "O(1)",
+          "space": "O(label combinations)"
+        },
+        {
+          "op": "Trace span overhead",
+          "time": "microseconds, sampled",
+          "space": "-"
+        },
+        {
+          "op": "Rolling deploy of N instances",
+          "time": "O(N) batches",
+          "space": "surge capacity"
+        }
+      ],
+      "keyPoints": [
+        "Twelve-factor essentials: config in env, stateless disposable processes, backing services by URL, immutable releases, logs to stdout.",
+        "Build one container image, scan it, promote the same artifact; use rolling, blue-green or canary releases with feature flags and fast rollback.",
+        "Because versions overlap, schema and API changes must be backward compatible (expand/contract).",
+        "Observe with structured logs, RED/USE metrics with percentiles, and distributed traces linked by trace id (OpenTelemetry).",
+        "Define SLIs/SLOs and error budgets, alert on user-facing symptoms with runbooks, and write blameless post-mortems."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Percentiles are cheaper to compute",
+            "The mean hides slow tail requests that real users experience",
+            "The mean is always higher",
+            "Percentiles are required by HTTP"
+          ],
+          "q": "Why report p99 latency instead of the mean?",
+          "answer": 1,
+          "why": "A small fraction of very slow requests barely changes the average but dominates the experience in fan-out systems."
+        },
+        {
+          "options": [
+            "Databases cannot change",
+            "Old and new application versions run at the same time",
+            "It reduces image size",
+            "CI requires it"
+          ],
+          "q": "Why must releases be backward compatible with the previous database schema during a rolling deploy?",
+          "answer": 1,
+          "why": "During the rollout both versions serve traffic, so each must work with the schema the other expects; use expand and contract migrations."
+        },
+        {
+          "options": [
+            "CPU above 70 percent for one minute",
+            "Error-budget burn rate high for a user-facing SLO, with a runbook",
+            "Any log line containing the word error",
+            "Disk used above 10 percent"
+          ],
+          "q": "Which is a good alert?",
+          "answer": 1,
+          "why": "Alerting on user-visible symptoms tied to SLOs is actionable and low-noise; raw resource thresholds and log keywords generate fatigue."
+        }
+      ],
+      "sources": [
+        {
+          "title": "The Twelve-Factor App",
+          "url": "https://12factor.net/"
+        },
+        {
+          "title": "Google SRE book: Service level objectives",
+          "url": "https://sre.google/sre-book/service-level-objectives/"
+        },
+        {
+          "title": "OpenTelemetry docs",
+          "url": "https://opentelemetry.io/docs/"
+        }
+      ],
+      "practiceRef": "node-production"
+    }
+  ]
+}

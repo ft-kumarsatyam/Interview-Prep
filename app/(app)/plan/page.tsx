@@ -15,7 +15,10 @@ import { SprintCard } from "@/modules/planner/components/plan/sprint-card";
 import { StrengthsCard } from "@/modules/planner/components/plan/strengths-card";
 import { ProposalCard } from "@/modules/planner/components/proposal-card";
 import { RemedyActions } from "@/modules/planner/components/remedy-actions";
+import { RolePath } from "@/modules/planner/components/role-path";
 import { WhyThisPlan } from "@/modules/planner/components/why-this-plan";
+import { rolePathView } from "@/modules/planner/domain/role-path";
+import { roleById } from "@/modules/planner/lib/roles";
 import { futureRestCount } from "@/modules/planner/domain/pause";
 import { DEFAULT_HOURS } from "@/modules/planner/domain/time-budget";
 import { getDayExplanation } from "@/modules/planner/services/explain-day";
@@ -51,6 +54,7 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
   const strengths = [...personal.weights.values()].sort((a, b) => a.strength - b.strength).slice(0, 12);
   const todaySessions = await listStudySessions(sprint.today, sprint.today);
   const hours = settings.hoursByDow?.length === 7 ? [...settings.hoursByDow] : [...DEFAULT_HOURS];
+  const role = roleById.get(personal.roleId);
   const isWorkDay = state.plan.kind === "study" || state.plan.kind === "revision";
 
   return (
@@ -91,6 +95,17 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
               <PauseCard pausedAhead={futureRestCount(settings.restDays, state.today)} status={feasibility.status} coveragePct={Math.round(feasibility.coverage * 100)} />
             </CardContent>
           </Card>
+          {role && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Your study path: {role.title}</CardTitle>
+                <CardDescription>{role.blurb} Change it in Plan setup.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <RolePath path={rolePathView(role)} />
+              </CardContent>
+            </Card>
+          )}
           <SprintCard sprint={sprint} />
           <IndicatorsCard indicators={indicators} />
           <StrengthsCard strengths={strengths} />

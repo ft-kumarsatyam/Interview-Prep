@@ -1,0 +1,250 @@
+{
+  "chapter": {
+    "id": "estimation-and-storage",
+    "title": "Estimation and storage choices",
+    "summary": "The numbers behind every design, and how to choose and combine databases deliberately."
+  },
+  "lessons": [
+    {
+      "id": "capacity-estimation",
+      "title": "Back-of-the-envelope estimation and capacity planning",
+      "minutes": 35,
+      "summary": "The latency and size numbers to memorise, a repeatable method for QPS, storage, bandwidth and memory estimates, and how estimates drive architecture decisions.",
+      "parts": [
+        {
+          "id": "numbers",
+          "label": "Numbers to know",
+          "body": "## Why estimate at all\n\nIn a system design interview (and in real capacity planning) you cannot choose between \"one database\" and \"sharded cluster\", or \"cache\" and \"no cache\", without knowing the **order of magnitude** of load and data. Estimation is not about precision; it is about being within a factor of 2 to 10 and showing you can reason from assumptions. A wrong assumption stated clearly is fine; unstated guesses are not.\n\n## Latency numbers (orders of magnitude)\n\n| operation | time |\n|---|---|\n| L1 cache reference | ~1 ns |\n| main memory (RAM) reference | ~100 ns |\n| compress 1 KB | ~2-10 µs |\n| send 1 KB over a 1 Gbps network | ~10 µs |\n| read 4 KB randomly from SSD | ~100 µs |\n| read 1 MB sequentially from RAM | ~10-50 µs |\n| read 1 MB sequentially from SSD | ~200 µs - 1 ms |\n| round trip within the same data centre | ~0.5 ms |\n| read 1 MB sequentially from a spinning disk | ~2-10 ms |\n| disk seek (HDD) | ~5-10 ms |\n| cross-continent round trip | ~100-150 ms |\n\nRules of thumb: **memory is 1,000x faster than SSD, SSD ~100x faster than a spinning disk seek; a network hop in the same DC costs about 5,000 memory references**. Avoid unnecessary round trips; batch; cache hot data in RAM; prefer sequential I/O.\n\n## Size and time units\n\n| unit | value | trick |\n|---|---|---|\n| 1 KB / MB / GB / TB / PB | 10³ / 10⁶ / 10⁹ / 10¹² / 10¹⁵ bytes | use powers of 10 for speed, ~2.4% error |\n| seconds per day | 86,400 | **~10⁵** |\n| seconds per month | ~2.6 million | ~2.5 × 10⁶ |\n| seconds per year | ~31.5 million | ~3 × 10⁷ |\n| 1 million requests/day | ~12 requests/s | 10⁶ / 10⁵ |\n| 100 million/day | ~1,200/s | |\n| 1 billion/day | ~12,000/s | |\n\nTypical object sizes: a tweet or short text record ~0.2-1 KB (with metadata), a user profile ~1-2 KB, a typical web JSON response ~2-50 KB, a compressed web photo ~200 KB - 2 MB, 1 minute of 1080p video ~50-100 MB (varies by encoding), a log line ~100-300 bytes, an ID 8-16 bytes, a UUID 16 bytes (36 as text).\n\n## Throughput of common components (single node, rough)\n\n| component | rough capacity |\n|---|---|\n| web/app server (typical framework) | 1,000-10,000 requests/s |\n| in-memory cache (Redis/Memcached) | 100,000+ ops/s |\n| relational database (PostgreSQL/MySQL) | 1,000-10,000 simple queries/s; writes lower |\n| NoSQL key-value (Cassandra/DynamoDB shard) | 10,000+ writes/s per node |\n| message broker (Kafka) | 100,000s of messages/s per broker, MBs/s to GBs/s |\n| 1 Gbps NIC | ~125 MB/s |\n| SSD | 100,000s IOPS, ~0.5-3 GB/s sequential |\n\nAvailability maths: 99.9% = 8.8 hours of downtime per year (43 minutes/month); 99.99% = 52 minutes/year; 99.999% = 5 minutes/year. Components in **series** multiply availabilities (0.999 × 0.999 ≈ 0.998); redundant components in **parallel** multiply failure probabilities (two 99% components: 1 − 0.01² = 99.99%).",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "method",
+          "label": "A method",
+          "body": "## Step by step\n\n1. **State assumptions** (users, actions per user, ratios). Ask or declare: \"Assume 300 million monthly active users, 50 million daily active.\"\n2. **Traffic**: requests/day → average QPS (÷ 10⁵) → **peak QPS** (× 2 to 5; consider daily and event-driven peaks).\n3. **Read:write ratio** and which path dominates.\n4. **Storage**: records/day × bytes × retention, ×(replication factor 3) ×(index overhead ~1.2-2).\n5. **Bandwidth**: QPS × payload size (ingress vs egress).\n6. **Memory for cache**: the hot working set, often the 80/20 rule: cache ~20% of daily distinct data.\n7. **Servers**: peak QPS ÷ per-server capacity, with headroom (target 50-70% utilisation) and N+1/zone redundancy.\n8. **Sanity check** and conclude what it implies (e.g. \"write QPS 3,500 fits one primary DB; read QPS 350K needs a cache + replicas; 90 TB means shard\").\n\n## Worked example: a photo-sharing service\n\nAssumptions: 500 million users, 100 million daily active; each DAU views 50 photos and uploads 0.2 photos per day; average stored photo 500 KB (after compression); thumbnails 20 KB.\n\n| quantity | calculation | result |\n|---|---|---|\n| uploads/day | 100M × 0.2 | 20 million |\n| upload QPS | 20M / 10⁵ | ~200/s average, ~600/s peak |\n| views/day | 100M × 50 | 5 billion |\n| read QPS | 5B / 10⁵ | ~50,000/s average, ~150,000/s peak |\n| read:write | 5B : 20M | 250 : 1, so extremely read-heavy → CDN and caching |\n| storage/day | 20M × 500 KB | 10 TB/day |\n| storage/year | 10 TB × 365 | ~3.65 PB/year (×3 replication ≈ 11 PB) |\n| egress at peak | 150K/s × ~100 KB average served (thumbnails + some full) | ~15 GB/s → CDN essential |\n| metadata | 20M × 1 KB | 20 GB/day, ~7 TB/year: relational/NoSQL sharded |\n\nConclusions: photos go to **object storage** behind a **CDN**; metadata in a sharded database; uploads via presigned URLs straight to object storage; a thumbnail pipeline on a queue; cache metadata for hot photos. Without this arithmetic you could not justify those choices.\n\n## Common pitfalls\n\n- **Forgetting peak versus average**: provision for peaks and consider bursts (a viral post, flash sale, midnight batch).\n- **Ignoring replication and overhead**: storage ×3 for replication, plus indexes, plus backups.\n- **Mixing bits and bytes** (network is often bits): 1 Gbps ≈ 125 MB/s.\n- **Not stating the unit**, or spending 10 minutes on precise arithmetic. Round: 86,400 → 10⁵, 365 → 400.\n- **Assuming the worst everywhere** (all users active at once) instead of a realistic DAU/MAU ratio (often 10-50%).\n- **Forgetting growth**: design for 2-5 years ahead, with a plan to scale beyond.\n- **Treating estimates as final**: verify with load tests and real metrics once you build.\n\n## What the estimates imply\n\n| finding | implication |\n|---|---|\n| read QPS ≫ write QPS | caching, read replicas, CDN |\n| write QPS beyond a single primary's limit (~5-10K/s) | sharding, LSM-based store, queue + async writes |\n| data > a few TB per node | partitioning |\n| huge egress bandwidth | CDN, compression, efficient formats |\n| tail latency targets (p99) | fewer hops, caching, parallel fan-out with timeouts |\n| strict availability (4 nines+) | multi-AZ/region, no single point of failure, graceful degradation |\n| large fan-out per event | async queues, batching |",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# A tiny estimator you can adapt: turn assumptions into QPS, storage and servers\nfrom dataclasses import dataclass\n\nSECONDS_PER_DAY = 86_400\n\n@dataclass\nclass Assumptions:\n    dau: float                 # daily active users\n    reads_per_user: float      # reads per user per day\n    writes_per_user: float\n    bytes_per_write: float\n    retention_days: int\n    replication: int = 3\n    peak_factor: float = 3.0\n    server_qps: float = 2_000  # capacity of one app server\n    target_util: float = 0.6\n\ndef estimate(a: Assumptions) -> dict:\n    read_qps = a.dau * a.reads_per_user / SECONDS_PER_DAY\n    write_qps = a.dau * a.writes_per_user / SECONDS_PER_DAY\n    peak_read, peak_write = read_qps * a.peak_factor, write_qps * a.peak_factor\n    storage_bytes = a.dau * a.writes_per_user * a.bytes_per_write * a.retention_days * a.replication\n    servers = (peak_read + peak_write) / (a.server_qps * a.target_util)\n    return {\n        \"avg_read_qps\": round(read_qps), \"peak_read_qps\": round(peak_read),\n        \"avg_write_qps\": round(write_qps), \"peak_write_qps\": round(peak_write),\n        \"storage_TB\": round(storage_bytes / 1e12, 1),\n        \"app_servers\": round(servers + 1),     # N+1\n    }\n\nprint(estimate(Assumptions(dau=100e6, reads_per_user=50, writes_per_user=0.2, bytes_per_write=500e3, retention_days=365)))\n# -> read ~58K qps avg (~174K peak), write ~231 avg, ~10.9 PB (3x) stored, ~146 servers"
+            },
+            {
+              "lang": "js",
+              "source": "// Availability maths: series vs parallel\nconst series = (...a) => a.reduce((p, x) => p * x, 1);\nconst parallel = (...a) => 1 - a.reduce((p, x) => p * (1 - x), 1);\n\nconsole.log(series(0.999, 0.999, 0.9995));        // ~0.9975: three dependencies in a chain\nconsole.log(parallel(0.99, 0.99));                 // 0.9999: two redundant 99% components\nconst downtimePerYearMin = (avail) => (1 - avail) * 365 * 24 * 60;\nconsole.log(downtimePerYearMin(0.999), downtimePerYearMin(0.9999));   // ~526 min, ~52.6 min"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nNot arithmetic skill but whether you **let numbers drive the design**: spotting that a system is read-heavy, that data won't fit on one node, or that bandwidth demands a CDN.\n\n## Questions with model answers\n\n### 1. Estimate the QPS and storage for a Twitter-like service.\n\n**Model answer.** I state assumptions: 300 million MAU, 100 million DAU, each posts 0.5 tweets and reads 100 timeline items per day. Writes: 50 million/day ≈ 600/s average (peak ~2,000/s); reads: 10 billion/day ≈ 115,000/s (peak ~350,000/s), so it is read-heavy 200:1. A tweet is ~300 bytes with metadata, so 15 GB/day of text, ~5.5 TB/year, ×3 replication ≈ 16 TB/year; media dominates and goes to object storage and a CDN. That tells me: cache and precompute timelines, shard tweets by id or user, and use a CDN for media.\n\n### 2. How many servers do you need for 100,000 requests per second?\n\n**Model answer.** Assume one application server handles about 2,000 to 5,000 simple requests per second and I want 50 to 60 percent utilisation for headroom and failure tolerance: at 2,000 capacity and 60 percent, each server serves ~1,200/s, giving ~85 servers, plus N+1 or zone-level redundancy so about 100 across at least three zones. Real numbers depend on per-request CPU and I/O, so I would load test one server to measure it.\n\n### 3. Why multiply average QPS by a peak factor?\n\n**Model answer.** Traffic is bursty: daily peaks, events, retries and thundering herds. Capacity must cover the peak, not the average, otherwise latency and errors spike exactly when users are most active. A peak factor of 2 to 5 is a typical starting guess, refined from real traffic patterns.\n\n### 4. What do 99.9 and 99.99 percent availability mean in practice?\n\n**Model answer.** About 8.8 hours versus 53 minutes of allowed downtime per year. Chained dependencies multiply (three 99.9 percent services in series give about 99.7 percent), so the achieved availability of a request path is lower than any single component, and redundancy in parallel is how you raise it.\n\n### 5. Your estimate says 15 GB/s of egress. What now?\n\n**Model answer.** That is far beyond what a few origin servers can serve economically, so the content must be served from a CDN with edge caching, using compression and efficient formats (WebP/AVIF, adaptive bitrate for video), and keeping the origin to cache misses. I'd also check the cache hit ratio target and the origin bandwidth that remains.\n\n### 6. How accurate should estimates be?\n\n**Model answer.** Order of magnitude. The goal is to distinguish between designs separated by factors of ten, like whether one database suffices, so rounding aggressively (86,400 seconds to 10⁵) and stating assumptions is better than false precision. Estimates are then validated with measurements.\n\n## Rapid-fire\n\n- **Seconds per day?** ~10⁵.\n- **1 million requests/day is ~?** 12 per second.\n- **RAM vs SSD speed?** ~1,000x.\n- **99.99% downtime per year?** ~52 minutes.\n- **1 Gbps in MB/s?** ~125.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Estimation effort",
+          "time": "minutes",
+          "space": "-"
+        },
+        {
+          "op": "RAM access",
+          "time": "~100 ns",
+          "space": "-"
+        },
+        {
+          "op": "SSD random read",
+          "time": "~100 µs",
+          "space": "-"
+        },
+        {
+          "op": "Same-DC round trip",
+          "time": "~0.5 ms",
+          "space": "-"
+        },
+        {
+          "op": "Cross-continent round trip",
+          "time": "~100-150 ms",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Memorise orders of magnitude: RAM ~100 ns, SSD ~100 µs, same-DC RTT ~0.5 ms, cross-continent ~100+ ms; 86,400 s/day ≈ 10⁵.",
+        "Method: state assumptions, compute average then peak QPS, read:write ratio, storage with replication and overhead, bandwidth, cache size, then server count with headroom.",
+        "Let results drive the design: read-heavy means cache/CDN/replicas, big data means sharding, huge egress means CDN, write-heavy beyond one primary means partitioned or LSM stores.",
+        "Availability in series multiplies down; redundancy in parallel multiplies failure probabilities.",
+        "Round aggressively, avoid bits/bytes confusion, plan for growth and verify with load tests."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "1,200",
+            "12,000",
+            "120,000",
+            "1.2 million"
+          ],
+          "q": "Roughly how many requests per second is 1 billion requests per day?",
+          "answer": 1,
+          "why": "A day has about 10^5 seconds, so 10^9 / 10^5 is roughly 10^4, or about 12,000 per second on average."
+        },
+        {
+          "options": [
+            "99.9 percent",
+            "99.99 percent",
+            "99.7 percent",
+            "100 percent"
+          ],
+          "q": "Three services each with 99.9 percent availability are called in series. About what availability does a request see?",
+          "answer": 2,
+          "why": "Series dependencies multiply: 0.999^3 is about 0.997."
+        },
+        {
+          "options": [
+            "Shard the write path",
+            "Caching, read replicas and possibly a CDN",
+            "Use a single server",
+            "Remove indexes"
+          ],
+          "q": "Read QPS is 200 times write QPS. What does this suggest first?",
+          "answer": 1,
+          "why": "A read-dominated workload benefits most from caching and read scaling; writes are comparatively cheap."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Jeff Dean: Latency numbers every programmer should know",
+          "url": "https://gist.github.com/jboner/2841832"
+        },
+        {
+          "title": "System Design Primer",
+          "url": "https://github.com/donnemartin/system-design-primer"
+        },
+        {
+          "title": "Google SRE Book: Embracing risk",
+          "url": "https://sre.google/sre-book/embracing-risk/"
+        }
+      ],
+      "practiceRef": "hld-framework"
+    },
+    {
+      "id": "choosing-databases",
+      "title": "Choosing databases: SQL, key-value, document, wide-column, graph, search",
+      "minutes": 45,
+      "summary": "A decision framework for picking storage by access pattern, consistency need and scale, the strengths and traps of each database family, polyglot persistence and migration strategy.",
+      "parts": [
+        {
+          "id": "families",
+          "label": "The families",
+          "body": "## Start with access patterns, not brands\n\n\"SQL or NoSQL?\" is the wrong first question. Ask: **what are the entities, how are they read and written, how big and fast must it be, and which invariants must always hold?** Then match a data model. Most systems end up using several stores (polyglot persistence), each for what it does best.\n\n## Relational (PostgreSQL, MySQL, SQL Server)\n\n- **Model**: tables, rows, joins, constraints, transactions (ACID), a rich query language.\n- **Strengths**: flexible ad hoc queries, integrity (foreign keys, unique constraints), multi-row transactions, mature tooling. Modern Postgres also handles JSON, full-text search, geospatial data, and vectors, which covers many \"I need a different database\" needs.\n- **Limits**: scaling **writes** beyond one primary needs sharding (hard with joins and transactions); schema changes need care; very high ingest of simple records is cheaper elsewhere.\n- **Scaling path**: indexes → caching → read replicas → partitioning → sharding (Vitess, Citus) or a distributed SQL database (CockroachDB, Spanner, TiDB, Aurora).\n- **Pick when**: money, inventory, bookings, anything with strong invariants; reporting; unknown future query patterns. **A relational database is the right default.**\n\n## Key-value (Redis, DynamoDB, Memcached, etcd)\n\n- **Model**: `get(key)`, `put(key, value)`; some add data structures (Redis) or secondary indexes (DynamoDB).\n- **Strengths**: simplest model, predictable low latency, horizontal scale by partitioning on key.\n- **Limits**: no ad hoc queries or joins; you must design keys for every access pattern.\n- **Pick when**: sessions, caches, feature flags, counters, rate limits, shopping carts, user profile lookups by id. DynamoDB is a managed, durable, infinitely-scalable KV/document store but needs careful partition-key design to avoid hot partitions.\n\n## Document (MongoDB, Couchbase, Firestore)\n\n- **Model**: JSON-like documents, nested; flexible schema; secondary indexes; atomic single-document updates.\n- **Strengths**: natural mapping to application objects, easy evolution, reads of an aggregate in one fetch.\n- **Limits**: cross-document transactions and joins are weaker/costlier; duplicated data must be maintained; unbounded arrays hurt.\n- **Pick when**: content management, catalogues with variable attributes, user-generated documents with a clear aggregate boundary.\n\n## Wide-column / LSM (Cassandra, ScyllaDB, HBase, Bigtable)\n\n- **Model**: rows keyed by partition key plus clustering columns; data sorted within a partition; tables designed **per query**.\n- **Strengths**: massive write throughput (LSM-trees), linear scalability, multi-datacentre replication, tunable consistency.\n- **Limits**: no joins, limited ad hoc queries, denormalise and duplicate per access pattern, tombstones and compaction need care, secondary indexes are limited.\n- **Pick when**: time-series and event data, messaging history, activity feeds, IoT at huge scale, always-on writes across regions.\n\n## Graph (Neo4j, Neptune, JanusGraph)\n\n- **Model**: nodes and edges with properties; traversal queries (Cypher, Gremlin).\n- **Strengths**: relationship-heavy queries (friends of friends, fraud rings, recommendations, dependency graphs) that explode into recursive joins in SQL.\n- **Limits**: harder to scale horizontally; smaller ecosystem. Many graph needs are satisfied by recursive CTEs in Postgres for moderate sizes.\n\n## Search (Elasticsearch/OpenSearch, Solr, Typesense, Postgres FTS)\n\n- **Model**: inverted index; relevance ranking, faceting, fuzzy matching, autocomplete, log analytics.\n- **Pick when**: full-text and faceted search. It is a **derived read model**, not the source of truth: index from the primary database via change data capture or events, accepting eventual consistency, and be able to rebuild it.\n\n## Time-series, analytics and others\n\n- **Time-series** (TimescaleDB, InfluxDB, Prometheus): append-heavy, downsampling, retention policies.\n- **OLAP / warehouse** (BigQuery, Snowflake, Redshift, ClickHouse): columnar storage, huge scans and aggregations; not for transactions.\n- **Object storage** (S3): blobs; cheap and durable; keep metadata elsewhere.\n- **Vector databases** (pgvector, Pinecone, Weaviate, Qdrant): similarity search for embeddings in RAG.\n- **NewSQL / distributed SQL**: SQL and ACID with horizontal scaling at the cost of latency (consensus) and complexity.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "decide",
+          "label": "Deciding and combining",
+          "body": "## A decision framework\n\n| question | leads to |\n|---|---|\n| Do you need multi-row transactions and strong integrity? | relational (or distributed SQL) |\n| Is access mostly by one key with massive scale? | key-value / DynamoDB |\n| Is data naturally hierarchical and read as a whole? | document |\n| Huge write volume, time-ordered, partitioned by key? | wide-column / time-series |\n| Heavy relationship traversals? | graph (or recursive SQL at small scale) |\n| Free-text, fuzzy and faceted search? | search engine as a derived index |\n| Large scans and aggregations? | columnar warehouse |\n| Binary blobs? | object storage + metadata DB |\n| Sub-millisecond reads of hot data? | in-memory cache |\n\n## Consistency and availability trade-offs\n\nSystems differ in what they guarantee when nodes fail or partitions occur (see the CAP and PACELC lessons). Single-leader relational databases offer strong consistency but one write location; leaderless/multi-leader stores (Cassandra, DynamoDB global tables) keep accepting writes in more failure scenarios with eventual consistency and conflict resolution (last-write-wins, vector clocks, CRDTs). Decide per feature: a \"like\" count may be eventually consistent; an account balance may not.\n\n## Polyglot persistence in practice\n\nA typical e-commerce platform:\n\n- **PostgreSQL**: orders, payments, inventory (transactions, invariants).\n- **Redis**: sessions, cart, rate limits, hot product cache.\n- **Elasticsearch**: product search and facets, fed from the catalogue DB by change events.\n- **S3 + CDN**: images.\n- **Kafka**: event backbone: order events, clickstream.\n- **ClickHouse/BigQuery**: analytics and reporting.\n- **Vector store**: recommendations or semantic search.\n\nThe cost of polyglot: **each store is something to operate, secure, back up, monitor and keep consistent**. Prefer fewer systems: Postgres can be your queue (SKIP LOCKED), search (FTS/trigram), document store (JSONB), time-series (partitioning/Timescale) and vector store (pgvector) until measurements prove otherwise.\n\n**Keeping stores in sync**: designate a **system of record**; propagate to derived stores through the transactional outbox or change data capture (Debezium), never by dual writes from the application; make consumers idempotent; and be able to rebuild derived stores from the source.\n\n## Modelling for scale: partitioning basics\n\n- **Partition (shard) key** determines data distribution and which queries are cheap. Choose a key with **high cardinality** and even load that appears in your main queries (user id, tenant id). Avoid monotonically increasing keys on range-partitioned stores (hot last partition).\n- **Hot partitions**: a celebrity user or popular item concentrates load; mitigate by key salting, splitting, caching or special handling.\n- **Secondary access patterns** need either secondary indexes (global indexes are expensive across shards), duplicate tables, or a search index.\n- **Cross-shard queries and transactions** are costly: design aggregates so common operations touch one shard.\n\n## Migration and evolution\n\nChoose stores you can leave: keep data access behind repository interfaces, use standard formats, document access patterns, and migrate with dual-read/shadow-write phases, backfills and verification. Don't adopt a novel database for a problem a boring relational database already solves; the operational cost of the unfamiliar system is the hidden bill.\n\n## Consistency of reads after writes\n\nWhen reading from replicas or caches, a user may not see their own just-written data. Techniques: read-your-writes by routing the user's reads to the primary for a short window, version tokens, or session stickiness. See the replication lesson.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "sql",
+              "source": "-- Postgres covering several \"other database\" needs before you add infrastructure\nCREATE TABLE products (\n  id          bigserial PRIMARY KEY,\n  name        text NOT NULL,\n  attrs       jsonb NOT NULL DEFAULT '{}',          -- document-style flexible attributes\n  embedding   vector(384),                          -- pgvector for similarity search\n  search      tsvector GENERATED ALWAYS AS (to_tsvector('english', name)) STORED\n);\nCREATE INDEX products_attrs_gin  ON products USING gin (attrs);       -- query inside JSON\nCREATE INDEX products_search_gin ON products USING gin (search);      -- full-text search\nCREATE INDEX products_emb_hnsw   ON products USING hnsw (embedding vector_cosine_ops);\n\n-- a job queue without a broker\nSELECT id FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED;"
+            },
+            {
+              "lang": "js",
+              "source": "// Repository interface keeps the store swappable; the outbox keeps derived stores consistent\n// (1) The system of record (Postgres) and the derived search index are updated from ONE transaction + events\nawait db.tx(async (t) => {\n  const product = await t.products.insert(input);\n  await t.outbox.insert({ type: \"ProductUpserted\", payload: { id: product.id } });   // consumed by an indexer\n});\n\n// (2) Indexer consumer: idempotent, rebuildable\nasync function onProductUpserted({ id }) {\n  const p = await db.products.find(id);\n  if (!p) return search.delete(\"products\", id);           // deleted meanwhile\n  await search.index(\"products\", id, { name: p.name, attrs: p.attrs });   // upsert by id = idempotent\n}"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nReasoned choices tied to **access patterns and invariants**, with awareness of operational cost and consistency, rather than fashionable answers.\n\n## Questions with model answers\n\n### 1. SQL or NoSQL for this system?\n\n**Model answer.** I'd begin by listing entities, access patterns, scale and invariants. If there are multi-row invariants like payments or inventory, relational is the default and scales further than people assume. If the workload is key-based at massive scale or ingest-heavy (events, timelines), a key-value or wide-column store fits. I'd rarely pick one store for everything: a system of record plus derived stores (cache, search, analytics) fed through events is typical.\n\n### 2. When would you choose Cassandra or DynamoDB over PostgreSQL?\n\n**Model answer.** When write volume or data size exceeds what a sharded relational setup handles comfortably, access patterns are known and key-based, multi-region active-active writes are needed, and eventual consistency is acceptable. The price is giving up joins, ad hoc queries and multi-row transactions, and designing tables per query.\n\n### 3. How do you keep Elasticsearch in sync with the database?\n\n**Model answer.** The database is the source of truth. Changes are published through the transactional outbox or change data capture, and an idempotent indexer consumes them to upsert or delete documents. Because the index is derived, it is eventually consistent and fully rebuildable by reindexing from the source; I avoid dual writes from the application.\n\n### 4. What is polyglot persistence and what is its cost?\n\n**Model answer.** Using different databases for different workloads within one system. The benefit is fitting each store to its access pattern; the cost is operational burden (deployment, backups, monitoring, security), data consistency across stores, and more failure modes. I add a new store only when measurements show the existing one can't meet a requirement.\n\n### 5. How do you choose a partition key?\n\n**Model answer.** High cardinality, even distribution of both data and load, and presence in the main query predicates so queries hit one partition. Avoid monotonically increasing keys on range partitions and watch for hot keys; mitigate with salting, composite keys or caching.\n\n### 6. How would you handle a celebrity-user hot partition?\n\n**Model answer.** Detect the hot key via metrics, then spread its load: cache reads aggressively, split its data across sub-partitions (key plus a random suffix on writes, merging on reads), use a different path for outliers (for example fan-out on read instead of write for celebrity feeds), and rate limit abuse.\n\n### 7. Why might you pick Postgres even for JSON-like data?\n\n**Model answer.** JSONB with GIN indexes handles flexible attributes with transactions and joins alongside relational data, avoiding another system. It's the right choice until scale, access patterns or operational needs clearly exceed what Postgres delivers.\n\n## Rapid-fire\n\n- **Default choice?** A relational database.\n- **Search engine role?** Derived index, not the source of truth.\n- **Safe way to update two stores?** Outbox / CDC, not dual writes.\n- **Time-ordered massive writes?** LSM / wide-column.\n- **Strong invariants?** Relational / distributed SQL.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Indexed point lookup (any family)",
+          "time": "O(log n) or O(1)",
+          "space": "index memory"
+        },
+        {
+          "op": "Cross-shard join",
+          "time": "scatter-gather O(shards)",
+          "space": "network"
+        },
+        {
+          "op": "Search query (inverted index)",
+          "time": "sub-linear in documents",
+          "space": "index size ≈ data size"
+        },
+        {
+          "op": "Columnar aggregate scan",
+          "time": "O(rows scanned) but vectorised",
+          "space": "compressed"
+        }
+      ],
+      "keyPoints": [
+        "Start from access patterns and invariants; a relational database is the right default and goes further than expected.",
+        "Key-value for key-based scale, document for aggregates, wide-column/LSM for massive writes and time series, graph for relationship traversals, search engines as derived indexes, warehouses for analytics.",
+        "Combine stores with a single system of record and propagate changes via outbox or CDC with idempotent consumers; avoid dual writes.",
+        "Pick partition keys with high cardinality, even load and presence in main queries; plan for hot keys and avoid cross-shard transactions.",
+        "Every extra database is an operational cost; adopt new ones only when measurements justify them."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "The app writes to both in sequence",
+            "Outbox or change data capture feeding an idempotent indexer",
+            "Nightly manual export",
+            "Searching the primary only"
+          ],
+          "q": "Which is the safest way to keep a search index consistent with the primary database?",
+          "answer": 1,
+          "why": "Dual writes can leave the stores diverged after a failure; events from the system of record are reliable, replayable and idempotent."
+        },
+        {
+          "options": [
+            "Multi-row financial transactions",
+            "Massive append-heavy time-ordered writes across regions",
+            "Ad hoc analytical joins",
+            "Tiny data with complex reporting"
+          ],
+          "q": "Which workload best matches a wide-column LSM store like Cassandra?",
+          "answer": 1,
+          "why": "LSM-based wide-column stores excel at high write throughput and linear scaling with partitioned, per-query tables."
+        },
+        {
+          "options": [
+            "A monotonically increasing timestamp",
+            "High cardinality, even load distribution and presence in the main queries",
+            "A boolean flag",
+            "The least-used column"
+          ],
+          "q": "What makes a good shard key?",
+          "answer": 1,
+          "why": "Such a key spreads data and traffic evenly and keeps common queries on a single shard."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Designing Data-Intensive Applications (book site)",
+          "url": "https://dataintensive.net/"
+        },
+        {
+          "title": "AWS: Choosing the right database",
+          "url": "https://aws.amazon.com/products/databases/"
+        },
+        {
+          "title": "Martin Fowler: Polyglot persistence",
+          "url": "https://martinfowler.com/bliki/PolyglotPersistence.html"
+        }
+      ],
+      "practiceRef": "dbms-nosql"
+    }
+  ]
+}

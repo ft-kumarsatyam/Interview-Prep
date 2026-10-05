@@ -36,7 +36,7 @@ const MODULES = readdirSync(join(ROOT, "modules")).filter((n) => statSync(join(R
 /** Every module-to-module import that exists today ("importer > imported"). Adding one is a design decision. */
 const BASELINE = new Set([
   "ai > settings", "aptitude > planner", "aptitude > quiz", "aptitude > settings", "course > learn", "design > ai", "design > news", "design > progress",
-  "design > quiz", "dsa > ai", "dsa > news", "dsa > planner", "dsa > progress", "dsa > settings", "jobs > notifications", "jobs > ai", "jobs > planner", "jobs > progress", "jobs > resume",
+  "design > quiz", "dsa > ai", "dsa > news", "dsa > planner", "dsa > progress", "dsa > settings", "interview-bank > ai", "interview-bank > news", "jobs > notifications", "jobs > ai", "jobs > planner", "jobs > progress", "jobs > resume",
   "jobs > settings", "jobs > targets", "learn > ai", "learn > design", "learn > news", "learn > progress", "learn > quiz", "learn > resume", "mock > ai", "mock > dsa",
   "mock > planner", "mock > quiz", "mock > settings", "news > planner", "news > settings", "notifications > news", "notifications > planner",
   "notifications > progress", "notifications > resume", "planner > dsa", "planner > jobs", "planner > mock", "planner > news", "planner > notifications",

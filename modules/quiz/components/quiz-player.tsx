@@ -251,6 +251,7 @@ export function QuizPlayer({ questions, seed, passPct, submit, initial, onRetake
               <li key={q.id}>
                 <QuestionReview
                   number={i + 1}
+                  questionId={q.id}
                   prompt={q.prompt}
                   code={q.code}
                   options={q.options}

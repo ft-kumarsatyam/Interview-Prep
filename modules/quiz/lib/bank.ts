@@ -1,6 +1,7 @@
 import bankJson from "@/data/quiz-bank.json";
+import scenariosJson from "@/data/quiz-scenarios.json";
 import { problemBySlug, subtopicById } from "@/core/content";
-import { quizBankSchema, type QuizQuestion } from "@/modules/quiz/lib/question";
+import { defaultDifficulty, quizBankSchema, type QuizQuestion } from "@/modules/quiz/lib/question";
 
 export interface BankIndex {
   all: QuizQuestion[];
@@ -22,7 +23,11 @@ function push<K>(map: Map<K, QuizQuestion[]>, key: K, q: QuizQuestion) {
 /** The static question bank (data/quiz-bank.json), validated once and indexed. */
 export function bank(): BankIndex {
   if (cached) return cached;
-  const { questions } = quizBankSchema.parse(bankJson);
+  // Scenario and debugging questions (scripts/generate-scenarios.ts) sit beside the main bank; ids never collide.
+  const main = quizBankSchema.parse(bankJson).questions;
+  const known = new Set(main.map((q) => q.id));
+  const extra = quizBankSchema.parse(scenariosJson).questions.filter((q) => !known.has(q.id));
+  const questions = [...main, ...extra].map((q) => ({ ...q, difficulty: defaultDifficulty(q) }));
   const index: BankIndex = { all: questions, byId: new Map(), bySubtopic: new Map(), byPattern: new Map(), byTrack: new Map() };
   for (const q of questions) {
     index.byId.set(q.id, q);

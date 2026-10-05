@@ -28,6 +28,8 @@ const postingSchema = new Schema(
     tags: { type: [String], default: [] },
     /** Canonical skill terms in the title and description, computed once when stored, so matching never has to read the description. */
     terms: { type: [String], default: [] },
+    /** Minimum years of experience the description asks for (null when it does not say). */
+    yearsMin: { type: Number, default: null },
     firstSeenAt: { type: Date, required: true },
     lastSeenAt: { type: Date, required: true },
     closedAt: { type: Date, default: null },

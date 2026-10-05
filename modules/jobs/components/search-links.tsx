@@ -16,7 +16,7 @@ export interface DeepLinkView {
 }
 
 /** Searches on the sites that have no public API, prefilled from your preferences and opened in your own signed-in browser. */
-export function SearchLinks({ initialRole, initialLocation, initialRemote, companies }: { initialRole: string; initialLocation: string; initialRemote: boolean; companies: DeepLinkView[] }) {
+export function SearchLinks({ initialRole, initialLocation, initialRemote, roleOptions = [], locationOptions = [], companies }: { initialRole: string; initialLocation: string; initialRemote: boolean; roleOptions?: string[]; locationOptions?: string[]; companies: DeepLinkView[] }) {
   const [role, setRole] = useState(initialRole);
   const [location, setLocation] = useState(initialLocation);
   const [remote, setRemote] = useState(initialRemote);
@@ -30,10 +30,28 @@ export function SearchLinks({ initialRole, initialLocation, initialRemote, compa
         <div className="space-y-1.5">
           <Label htmlFor="sl-role">Role</Label>
           <Input id="sl-role" value={role} onChange={(e) => setRole(e.target.value)} placeholder="Backend engineer" maxLength={80} />
+          {roleOptions.length > 1 && (
+            <div role="group" aria-label="Roles in this profile" className="flex flex-wrap gap-1.5 pt-1">
+              {roleOptions.map((r) => (
+                <Chip key={r} pressed={role === r} onClick={() => setRole(r)}>
+                  {r}
+                </Chip>
+              ))}
+            </div>
+          )}
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="sl-loc">Place</Label>
           <Input id="sl-loc" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Bengaluru" maxLength={80} />
+          {locationOptions.length > 1 && (
+            <div role="group" aria-label="Places in this profile" className="flex flex-wrap gap-1.5 pt-1">
+              {locationOptions.map((l) => (
+                <Chip key={l} pressed={location === l} onClick={() => setLocation(l)}>
+                  {l}
+                </Chip>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
           <Chip pressed={remote} onClick={() => setRemote((v) => !v)}>

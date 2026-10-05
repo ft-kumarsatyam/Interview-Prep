@@ -19,7 +19,7 @@ const MIN = [
 ];
 
 /** Filters live in the URL, so a view can be refreshed, bookmarked and shared. */
-export function DiscoverFilters({ tiers }: { tiers: Array<{ id: string; name: string }> }) {
+export function DiscoverFilters({ tiers, profiles = [] }: { tiers: Array<{ id: string; name: string }>; profiles?: Array<{ id: string; name: string }> }) {
   const router = useRouter();
   const path = usePathname();
   const params = useSearchParams();
@@ -57,6 +57,18 @@ export function DiscoverFilters({ tiers }: { tiers: Array<{ id: string; name: st
           maxLength={60}
         />
       </div>
+      {profiles.length > 0 && (
+        <div role="group" aria-label="Search profile" className="flex flex-wrap gap-1.5">
+          <Chip pressed={!get("profile")} onClick={() => set({ profile: null })}>
+            General preferences
+          </Chip>
+          {profiles.map((p) => (
+            <Chip key={p.id} pressed={get("profile") === p.id} onClick={() => toggle("profile", p.id)}>
+              {p.name}
+            </Chip>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap gap-x-5 gap-y-2">
         <div role="group" aria-label="Where from" className="flex flex-wrap gap-1.5">
           <Chip pressed={!get("kind")} onClick={() => set({ kind: null })}>

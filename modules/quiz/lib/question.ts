@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const QUESTION_STYLES = ["output", "concept", "pattern", "recall", "llm"] as const;
+export const QUESTION_STYLES = ["output", "concept", "pattern", "recall", "llm", "scenario", "debug"] as const;
 export type QuestionStyle = (typeof QUESTION_STYLES)[number];
 
 export const SOURCE_KINDS = ["problem", "subtopic", "pattern", "article", "case"] as const;
@@ -39,6 +39,8 @@ export const quizQuestionSchema = z
     style: z.enum(QUESTION_STYLES),
     /** Unrated questions (generated, LLM) count as any difficulty. */
     difficulty: difficultySchema.optional(),
+    /** Short labels such as "production" or "tradeoff", for filtering. */
+    tags: z.array(z.string().trim().min(1).max(30)).max(6).optional(),
   })
   .superRefine((q, ctx) => {
     const issue = (message: string) => ctx.addIssue({ code: "custom", message });
@@ -131,3 +133,19 @@ export type LlmQuestion = z.infer<typeof llmQuestionSchema>;
 
 export const llmQuizSchema = (min: number, max: number) =>
   z.object({ questions: z.array(llmQuestionSchema).min(min).max(max) });
+
+/**
+ * A difficulty for questions the bank leaves unrated, from how they are built: recalling a name is easy, spotting a
+ * pattern or a short output is medium, and reading longer code is hard. Rated questions keep their rating.
+ */
+export function defaultDifficulty(q: Pick<QuizQuestion, "style" | "code" | "difficulty">): Difficulty {
+  if (q.difficulty) return q.difficulty;
+  if (q.style === "recall") return "easy";
+  if (q.style === "output") return (q.code?.length ?? 0) > 400 ? "hard" : "medium";
+  if (q.style === "pattern") return "medium";
+  return "medium";
+}
+
+/** What a custom quiz can focus on. "any" keeps every question type. */
+export const QUESTION_FOCUS = ["any", "concept", "scenario", "debug", "output"] as const;
+export type QuestionFocus = (typeof QUESTION_FOCUS)[number];

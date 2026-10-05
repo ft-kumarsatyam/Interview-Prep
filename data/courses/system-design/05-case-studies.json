@@ -489,6 +489,321 @@
           "url": "https://highscalability.com/the-whatsapp-architecture-facebook-bought-for-19-billion/"
         }
       ]
+    },
+    {
+      "id": "design-notification-system",
+      "title": "Design a notification system (push, email, SMS, in-app)",
+      "minutes": 45,
+      "summary": "A full interview walkthrough: requirements, numbers, multi-channel architecture with queues, templates and preferences, reliability, rate limiting and deduplication, plus the LLD of a channel provider abstraction.",
+      "parts": [
+        {
+          "id": "requirements",
+          "label": "Requirements and numbers",
+          "body": "## Why this question\n\n\"Design a notification system\" tests whether you can build a **reliable asynchronous pipeline** with many external dependencies (APNs, FCM, email and SMS providers), handle **fan-out**, respect user preferences, and avoid the two classic failures: **dropping** important notifications and **spamming** users with duplicates. Budget: 5 minutes on requirements and numbers, 10 on HLD, 20 on deep dives, 5 on trade-offs.\n\n## Functional requirements\n\n- Send notifications over multiple **channels**: mobile push (iOS APNs, Android FCM), web push, email, SMS, in-app inbox.\n- Triggered by **events** (order shipped, password reset, new follower) and by **campaigns** (marketing to a segment) and **scheduled** reminders.\n- **Templates** with localisation and variables.\n- **User preferences**: opt in/out per channel and per category, quiet hours, frequency caps. Legal: honour unsubscribe immediately (CAN-SPAM, GDPR).\n- **Priority**: transactional/critical (OTP, security alert) vs marketing (bulk, deferrable).\n- **Tracking**: delivered, opened, clicked, failed/bounced; retries.\n- Out of scope: rich-content authoring UI, A/B testing platform (mention as extension).\n\n## Non-functional requirements\n\n- **High availability** and **no lost notifications** for critical types (at-least-once delivery; dedupe to approximate exactly-once).\n- **Latency**: OTP within seconds; marketing can take minutes to hours.\n- **Scalable** for bursts: a campaign to 50 million users must not delay OTPs.\n- **Isolation** between priorities and tenants.\n- **Extensible**: adding a channel or provider should not touch core logic.\n- **Privacy and security**: PII protection, signed unsubscribe links, auditing.\n\n## Estimation\n\nAssume 100 million users, 20 notifications per user per day average across channels.\n\n| quantity | calculation | result |\n|---|---|---|\n| notifications/day | 100M × 20 | 2 billion/day |\n| average rate | 2B / 10⁵ s | ~20,000/s |\n| peak (events, campaigns) | × 5 | ~100,000/s |\n| campaign burst | 50M recipients, wants to finish in 1 hour | ~14,000/s sustained |\n| storage of delivery log | 2B × 300 B | 600 GB/day, keep 30 days hot ≈ 18 TB, older in cold storage |\n\nProvider limits matter more than our capacity: APNs/FCM allow high concurrency per connection, SMS providers are rate-limited and cost money per message (~$0.01), email providers throttle per domain and punish bad reputation. The bottleneck is the **external delivery**, so a durable queue to absorb bursts is essential.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "api-hld",
+          "label": "API, data and HLD",
+          "body": "## API\n\n```text\nPOST /v1/notifications            (internal services / authenticated)\n  { \"userId\": \"u_42\", \"type\": \"order_shipped\", \"data\": {\"orderId\": \"o_9\"},\n    \"priority\": \"high\", \"idempotencyKey\": \"order_shipped:o_9\" }\n  202 Accepted { \"id\": \"n_123\" }\n\nPOST /v1/campaigns   { \"segmentId\": ..., \"template\": ..., \"sendAt\": ..., \"rateLimit\": 5000 }\n\nGET  /v1/users/{id}/preferences      PUT  /v1/users/{id}/preferences\nGET  /v1/users/{id}/inbox?cursor=...  (in-app notifications)\nPOST /v1/devices                     (register push token: userId, platform, token)\nPOST /webhooks/{provider}            (delivery receipts, bounces, unsubscribes)\n```\n\n`202 Accepted` signals the request was queued, not delivered. The **idempotency key** makes retries by calling services safe.\n\n## High-level design\n\n```\nProducers (order svc, auth svc, campaign scheduler)\n        │\n        ▼\n Notification API ─► validate, dedupe (idempotency), persist request\n        │\n        ▼\n [ Ingest queue ]  (Kafka, partitioned by userId)\n        │\n        ▼\n Processor workers:\n   1. load user, preferences, devices\n   2. apply rules: opt-out, quiet hours, frequency cap, dedupe window\n   3. render template (locale, variables)\n   4. choose channel(s) and enqueue per-channel jobs\n        │\n   ┌────┴─────┬───────────┬─────────┐\n   ▼          ▼           ▼         ▼\n[push q]   [email q]   [sms q]  [inbox q]      (separate queues per channel and per priority)\n   │          │           │         │\n push       email        SMS     inbox writer\n workers    workers     workers   (DB)\n   │          │           │\n APNs/FCM   SES/SendGrid  Twilio...  ──► provider webhooks ─► status updates ─► analytics\n```\n\nKey design decisions:\n\n1. **Asynchronous with durable queues** between every stage, so bursts and provider outages don't lose messages or block producers.\n2. **Separate queues per channel and per priority**: a million-recipient marketing campaign queue must never delay a one-time-password queue. Give critical queues dedicated workers and capacity.\n3. **Stateless workers** that scale horizontally; partition by `userId` to keep per-user ordering and make frequency caps simple.\n4. **Preferences and device registry** in a fast store (Redis cache in front of a sharded DB) read on every notification.\n5. **Template service** with versioning, localisation and variable validation; rendering at the processor or channel worker.\n6. **Provider abstraction layer** with failover (primary SMS provider down → secondary), circuit breakers, and per-provider rate limiters.\n7. **Delivery log and status tracking**: an append-only event store (Cassandra or Kafka → warehouse) plus a status table for recent notifications.",
+          "diagrams": [
+            {
+              "title": "Notification pipeline with per-channel queues",
+              "code": "flowchart LR\n  P[\"Producers\"] --> API[\"Notification API\"]\n  API --> Q1[(\"Ingest queue\")]\n  Q1 --> W[\"Processor workers: prefs, rules, template\"]\n  W --> QP[(\"Push queue\")]\n  W --> QE[(\"Email queue\")]\n  W --> QS[(\"SMS queue\")]\n  W --> QI[(\"In-app queue\")]\n  QP --> PW[\"Push workers\"] --> AP[\"APNs / FCM\"]\n  QE --> EW[\"Email workers\"] --> ES[\"Email provider\"]\n  QS --> SW[\"SMS workers\"] --> SP[\"SMS provider\"]\n  QI --> IW[\"Inbox writer\"] --> DB[(\"Inbox DB\")]\n  AP --> WH[\"Webhooks / receipts\"]\n  ES --> WH\n  SP --> WH\n  WH --> ST[(\"Status + analytics\")]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "deep-dives",
+          "label": "Deep dives",
+          "body": "## Reliability: at-least-once plus dedupe\n\n- Producers send with an **idempotency key** (`type:entityId`). The API stores `(key → notificationId)` with a unique constraint; a duplicate returns the existing id.\n- Queue consumers **ack after the provider call is accepted**, and processing is at-least-once. To avoid duplicates on redelivery, workers record `(notificationId, channel)` in a **send log** (or use the provider's own idempotency/message id) and skip if already sent.\n- **Retries** with exponential backoff and jitter for transient errors (5xx, timeouts, 429 honouring `Retry-After`); **do not retry** permanent errors (invalid token, unsubscribed, bad number). After N attempts move to a **dead-letter queue**, alert and allow redrive.\n- **Provider failover**: if SMS provider A's circuit breaker opens, route to provider B. For push, tokens are provider-specific, so failover is not possible; retry and surface.\n- **Critical notifications** (OTP, security) get a fast path, short TTLs (\"an OTP older than 2 minutes is useless, drop it\"), and sometimes multi-channel fallback (push failed → SMS).\n\n## Fan-out for campaigns\n\nA campaign to a segment of 50 million users: do **not** create 50 million rows synchronously. A scheduler streams the segment in **batches** (cursor over the audience table or a precomputed list), writing per-user jobs to the low-priority queue at a **controlled rate** (the campaign `rateLimit`), so providers and downstream databases aren't overwhelmed. Track progress per campaign with checkpoints so it can pause/resume and survive crashes without re-sending (idempotency key = `campaignId:userId`).\n\n## Respecting users: preferences, quiet hours, caps\n\n- Evaluate **in order**: hard blocks (global unsubscribe, GDPR deletion, suppression list from bounces/complaints) → channel/category preferences → quiet hours in the **user's time zone** (defer to the next window rather than drop, unless critical) → **frequency caps** (max N marketing messages per day per user, using a Redis counter with TTL) → deduplication window (same type within 10 minutes).\n- Unsubscribe links are **signed tokens**; the one-click unsubscribe must take effect immediately in the suppression list that every worker checks.\n- Collapse bursts: ten \"new like\" events in a minute become one \"10 people liked your post\" via a **digest/aggregation** window keyed by `(user, type)`.\n\n## Device and token management\n\nMobile push tokens change and expire. Store `(userId, platform, token, lastSeen)`; on APNs/FCM \"unregistered\" responses, delete the token. A user may have several devices: fan out to each active one. Rate-limit per device to avoid notification storms.\n\n## Rate limiting and protecting providers\n\nToken buckets per provider and per destination domain (email providers throttle per receiving domain); a global limiter for expensive SMS; separate quotas per tenant or team so one noisy producer can't consume the budget. Warm up new email IPs gradually and manage sender reputation: separate transactional and marketing IPs/domains, process bounces and complaints, authenticate with SPF, DKIM and DMARC.\n\n## Observability\n\nPer channel and provider: enqueue-to-send latency, success/failure/bounce rates, queue depth and age of oldest message, DLQ size, provider latency, cost. Alert on **age of oldest message in the OTP queue** (user-visible) rather than CPU. Tracing with the notification id across stages; the status API answers \"why didn't user X get this?\" (which rule dropped it).",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "lld-tradeoffs",
+          "label": "LLD and trade-offs",
+          "body": "## LLD: channel abstraction and pipeline\n\n```ts\ninterface Channel {\n  readonly name: \"push\" | \"email\" | \"sms\" | \"inbox\";\n  send(msg: RenderedMessage, dest: Destination): Promise<SendResult>;   // provider-specific inside\n}\ntype SendResult =\n  | { status: \"sent\"; providerId: string }\n  | { status: \"retry\"; after?: number }                 // transient: backoff\n  | { status: \"permanent_failure\"; reason: string };    // invalid token, unsubscribed: do not retry\n\nclass RuleEngine {\n  constructor(private rules: Rule[]) {}\n  async evaluate(ctx: Context): Promise<Decision> {     // chain of responsibility; first \"deny\" wins\n    for (const r of this.rules) { const d = await r.check(ctx); if (d.action !== \"allow\") return d; }\n    return { action: \"allow\" };\n  }\n}\n// Rules: SuppressionRule, PreferenceRule, QuietHoursRule(defer), FrequencyCapRule, DedupeRule\n\nclass Dispatcher {\n  async handle(job: Job) {\n    const decision = await this.rules.evaluate(await this.context(job));\n    if (decision.action === \"drop\") return this.log(job, \"dropped\", decision.reason);\n    if (decision.action === \"defer\") return this.queue.sendAt(job, decision.until);\n    const msg = await this.templates.render(job.template, job.locale, job.data);\n    for (const ch of job.channels) {\n      if (await this.sendLog.alreadySent(job.id, ch)) continue;              // idempotent\n      const res = await this.channels[ch].send(msg, job.destination(ch));\n      await this.sendLog.record(job.id, ch, res);\n      if (res.status === \"retry\") throw new RetryableError(res.after);      // queue redelivers with backoff\n    }\n  }\n}\n```\n\nPatterns: **Strategy/Adapter** (channels and providers), **Chain of Responsibility** (rules), **Template Method** (common retry/logging around each channel), **Observer/events** (status updates), **Factory** (channel registry).\n\n## Trade-offs and alternatives\n\n| decision | option A | option B | choice |\n|---|---|---|---|\n| queue | Kafka (ordered, replay, high throughput) | SQS/RabbitMQ (simple per-message ack, delay queues) | Kafka for ingest and analytics; SQS-style for per-channel retry/delay |\n| fan-out | write-time (expand recipients early) | read/send-time (expand lazily in batches) | lazy batches for campaigns; immediate for single events |\n| delivery guarantee | at-most-once (never duplicate) | at-least-once + dedupe | at-least-once + idempotency for critical; accept rare duplicates |\n| preference store | DB per read | cached (Redis) with invalidation | cache + short TTL; unsubscribe invalidates immediately |\n| ordering | none | per-user ordering via partition key | partition by user where it matters (chat-like), otherwise not required |\n| template rendering | at ingest | at send time | at send time (latest copy, locale) with versioning |\n\n## Common follow-ups\n\n- **\"What if the push provider is down for an hour?\"** Queue grows; workers back off with a circuit breaker; critical messages fall back to another channel; resume at a controlled rate to avoid a thundering herd; drop expired ones by TTL.\n- **\"How do you avoid sending an OTP twice?\"** Idempotency key at ingest plus send log; OTP has a TTL and the code is single-use server-side, so a duplicate is harmless.\n- **\"How do you test it?\"** Contract tests per provider with sandboxes, load tests of the queue pipeline, chaos tests killing workers mid-send, and shadow-sending to a sink before enabling a channel.\n- **\"Cost control?\"** Prefer push/in-app over SMS, batch emails, deduplicate, enforce caps, and monitor spend per team.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Idempotent send worker: skip if already sent, classify provider errors, back off on retry\nimport random, time\n\ndef backoff(attempt: int, base: float = 0.5, cap: float = 60.0) -> float:\n    return random.uniform(0, min(cap, base * 2 ** attempt))           # full jitter\n\ndef handle(job, send_log, channels, queue):\n    for ch in job[\"channels\"]:\n        key = (job[\"id\"], ch)\n        if send_log.exists(key):                                       # redelivery after a crash: no duplicate\n            continue\n        result = channels[ch].send(job[\"message\"], job[\"dest\"][ch])\n        if result.kind == \"sent\":\n            send_log.put(key, result.provider_id)\n        elif result.kind == \"transient\":                               # 5xx / timeout / 429\n            if job[\"attempt\"] >= 6:\n                queue.dead_letter(job)\n            else:\n                queue.retry(job, delay=backoff(job[\"attempt\"]))\n            return\n        else:                                                          # permanent: bad token, unsubscribed\n            send_log.put(key, \"failed:\" + result.reason)"
+            }
+          ]
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "A notification system is an asynchronous pipeline: API, durable ingest queue, processors that apply preferences and rules, then separate per-channel, per-priority queues feeding provider adapters.",
+        "Isolate priorities and channels so campaigns never delay OTPs; absorb bursts in queues because external providers are the bottleneck.",
+        "Delivery is at-least-once with idempotency keys and a send log for dedupe; retry transient errors with backoff and jitter, dead-letter permanent failures.",
+        "Respect users: suppression lists, preferences, quiet hours in their time zone, frequency caps and digests; unsubscribe takes effect immediately.",
+        "Campaigns fan out lazily in rate-limited batches with checkpoints; manage push tokens, provider failover, sender reputation and queue-age monitoring."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "To use more servers",
+            "So a huge campaign cannot delay time-critical messages",
+            "Because Kafka requires it",
+            "To avoid encryption"
+          ],
+          "q": "Why use separate queues for OTP and marketing notifications?",
+          "answer": 1,
+          "why": "Isolation of priority classes prevents head-of-line blocking; critical messages get dedicated capacity and short latency."
+        },
+        {
+          "options": [
+            "Ignore it",
+            "Record sends in a send log keyed by notification and channel (or use the provider's idempotency id) and skip if present",
+            "Disable retries",
+            "Send twice deliberately"
+          ],
+          "q": "A worker crashes after calling the SMS provider but before acking. How do you avoid a duplicate SMS on redelivery?",
+          "answer": 1,
+          "why": "At-least-once delivery means redelivery; the idempotent send log turns it into effectively-once behaviour."
+        },
+        {
+          "options": [
+            "Create 50 million jobs at once",
+            "Stream recipients in batches at a controlled rate with checkpoints",
+            "Send synchronously from the API",
+            "Email everyone at midnight"
+          ],
+          "q": "How should a campaign to 50 million users be sent?",
+          "answer": 1,
+          "why": "Lazy, rate-limited fan-out protects queues, databases and providers and lets the campaign pause, resume and avoid duplicates."
+        }
+      ],
+      "sources": [
+        {
+          "title": "ByteByteGo: System design resources",
+          "url": "https://bytebytego.com/"
+        },
+        {
+          "title": "Firebase Cloud Messaging documentation",
+          "url": "https://firebase.google.com/docs/cloud-messaging"
+        },
+        {
+          "title": "Amazon SES: sending best practices",
+          "url": "https://docs.aws.amazon.com/ses/latest/dg/best-practices.html"
+        }
+      ],
+      "practiceRef": "hld-notification"
+    },
+    {
+      "id": "design-ticket-booking",
+      "title": "Design a ticket booking system (Ticketmaster / BookMyShow)",
+      "minutes": 50,
+      "summary": "Handling extreme contention for limited seats: inventory modelling, temporary holds, preventing double booking, payments, flash-sale traffic spikes with virtual queues, and the LLD of seat locking.",
+      "parts": [
+        {
+          "id": "requirements",
+          "label": "Requirements and numbers",
+          "body": "## Why this question is different\n\nMost systems optimise for scale; a ticketing system must additionally guarantee **correctness under contention**: two people must never buy the same seat, yet a hundred thousand people will fight for 20,000 seats within seconds. It tests inventory modelling, concurrency control, temporary reservations, payment integration and surge handling.\n\n## Functional requirements\n\n- Browse events, venues and showtimes; search and filter.\n- View the **seat map** with live availability.\n- **Select seats** and place a **temporary hold** (for example 10 minutes) while the user pays.\n- **Pay** and receive a confirmed booking with tickets (QR codes); email/push confirmation.\n- Cancel/refund per policy; waitlist (optional).\n- Admin: create events, set pricing tiers, release inventory.\n- Out of scope unless asked: resale marketplace, dynamic pricing algorithm, seat recommendation.\n\n## Non-functional requirements\n\n- **No double booking**: a seat is sold at most once (strong consistency for inventory).\n- **Fairness and surge tolerance**: popular on-sales cause 100x normal traffic.\n- **Low latency** browsing (read-heavy), correctness-first booking.\n- **High availability** for browsing even if booking is degraded.\n- **Idempotent payments**: no double charge; clear states for failures.\n- **Bot resistance**: scalpers hammer the system.\n\n## Estimation\n\nAssume 10 million DAU normally, a hot event with 50,000 seats and 2 million people arriving at on-sale.\n\n| quantity | calculation | result |\n|---|---|---|\n| normal browse QPS | 10M × 20 views / 10⁵ | ~2,000/s (peak ~6,000/s) |\n| on-sale spike | 2M users in the first 2 minutes, each polling the seat map every 2 s | ~1 million requests/s on one event |\n| bookings | 50,000 seats over minutes | ~hundreds of successful holds/s, but millions of attempts |\n| inventory rows | 1,000 events × 50,000 seats | 50 million rows: small |\n\nKey insight: the **booking write volume is tiny** (limited by seats), but **read traffic and contention are enormous** for a few hot events. The hard part is not storage but protecting a single hot dataset and keeping fairness.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "api-hld",
+          "label": "API, data and HLD",
+          "body": "## API\n\n```text\nGET  /v1/events?city=...&q=...            browse/search (cached, CDN)\nGET  /v1/events/{id}/seats                seat availability (cached 1-2 s)\nPOST /v1/events/{id}/holds                { \"seatIds\": [\"A12\",\"A13\"] } -> 201 { holdId, expiresAt } | 409 seat taken\nPOST /v1/holds/{holdId}/checkout          { paymentMethod, Idempotency-Key } -> 202 { bookingId, status: \"pending_payment\" }\nGET  /v1/bookings/{id}                    status: pending_payment | confirmed | failed | expired\nDELETE /v1/holds/{holdId}                 release\n```\n\n## Data model\n\n```\nevents(event_id, venue_id, starts_at, ...)\nseats(event_id, seat_id, section, row, number, price_tier, status, hold_id, hold_expires_at, booking_id, version)\n   status: AVAILABLE | HELD | SOLD\nbookings(booking_id, user_id, event_id, seat_ids, status, amount, payment_id, created_at)\npayments(payment_id, booking_id, provider_ref, status, idempotency_key)\n```\n\nPrimary key `(event_id, seat_id)`: all seat operations for an event hit one shard (shard by `event_id`), which concentrates contention on one partition but makes transactions simple.\n\n## Preventing double booking\n\nThe core operation, **hold seats**, must be atomic: change `AVAILABLE → HELD` only if currently available (or the previous hold has expired).\n\n```sql\nUPDATE seats\nSET status = 'HELD', hold_id = :hold, hold_expires_at = now() + interval '10 minutes'\nWHERE event_id = :e AND seat_id = ANY(:seats)\n  AND (status = 'AVAILABLE' OR (status = 'HELD' AND hold_expires_at < now()));\n-- succeed only if rows affected == number of seats requested; otherwise ROLLBACK (all or nothing)\n```\n\nA single conditional UPDATE inside a transaction is the simplest correct mechanism (a compare-and-set in SQL). Alternatives: `SELECT ... FOR UPDATE` row locks, optimistic `version` columns, Redis `SET seat NX EX` locks in front for speed (with the database remaining the source of truth), or a single-writer actor per event.\n\n## High-level design\n\n```\nClient ─► CDN / WAF / bot protection ─► Virtual waiting room (for hot events)\n                                              │ admits users at a controlled rate\n                                              ▼\n                    API gateway ─► Browse service (cache, read replicas)\n                                 ─► Booking service ─► Inventory DB (sharded by event_id; strong consistency)\n                                                    ─► Payment service ─► PSP (Stripe/Adyen), webhooks\n                                                    ─► Outbox ─► Kafka ─► Notification, Ticket generation, Analytics\n                    Expiry worker: releases lapsed holds (or lazily on read/write)\n```",
+          "diagrams": [
+            {
+              "title": "Booking flow with holds and payment",
+              "code": "flowchart LR\n  U[\"User picks seats\"] --> H{\"Atomic hold: AVAILABLE to HELD\"}\n  H -->|\"success\"| T[\"10 min timer\"]\n  H -->|\"conflict\"| X[\"409: pick other seats\"]\n  T --> P[\"Checkout: payment intent\"]\n  P -->|\"paid\"| S[\"Mark SOLD, create booking, issue tickets\"]\n  P -->|\"failed or timeout\"| R[\"Release hold: back to AVAILABLE\"]\n  T -->|\"expires\"| R"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "deep-dives",
+          "label": "Deep dives",
+          "body": "## Hold expiry\n\nTwo complementary mechanisms:\n\n1. **Lazy expiry**: treat `HELD` with `hold_expires_at < now()` as available in the conditional update (above). Correct even if no worker runs.\n2. **Active sweep**: a worker (or delayed-queue message at hold creation, Redis key expiry events, DB TTL) flips expired holds back and publishes \"seats released\" so the UI refreshes. Never rely only on the sweeper; clocks and failures happen.\n\nChoose hold durations deliberately (5 to 10 minutes): long holds let bots and abandoners starve inventory; short holds frustrate real users. Reset per payment step only with care.\n\n## Payments: avoiding double charge and orphaned holds\n\n- Create a **payment intent** with an **idempotency key** derived from the hold (`hold_id`). A retry returns the same intent.\n- Booking state machine: `HELD → PENDING_PAYMENT → CONFIRMED` or `FAILED/EXPIRED`. Transitions are conditional updates so concurrent callbacks can't double-confirm.\n- The payment provider's **webhook** is the source of truth for success (the browser redirect can be lost). Handle webhooks **idempotently**; verify signatures.\n- **Race: payment succeeds after the hold expired.** Before confirming, re-validate in a transaction that the seats are still held by this hold. If another user took them, **refund automatically** and tell the user; also extend the hold when a payment is in flight (mark `PENDING_PAYMENT` so the sweeper skips it).\n- **Saga**: hold seats → authorise payment → confirm booking → capture; each step has a compensation (release seats, void authorisation). Outbox events drive tickets and emails.\n\n## Surviving the on-sale spike\n\n- **Virtual waiting room / queue**: put users in a fair FIFO (or randomised lottery) queue in front of the booking service and admit them at the rate the system can process; show position and ETA. Implement with signed queue tokens, a CDN-edge queue, or a managed service (Queue-it style). It converts a thundering herd into a controlled stream.\n- **Cache the seat map** aggressively (1 to 2 seconds, CDN/edge), serve **deltas** over SSE/WebSocket rather than polling, and accept slightly stale availability: a stale \"available\" simply fails at the atomic hold with 409.\n- **Pre-warm** caches and capacity before the on-sale; shed load gracefully (return 429/waiting-room redirect) instead of timing out.\n- **Rate limit per user/IP/device** and require authentication for holds; add CAPTCHA/proof-of-work challenges, device fingerprinting, purchase limits per account/payment method to curb bots and scalpers.\n- Keep the **critical path tiny**: hold → pay → confirm. Move email, analytics and ticket PDF generation to async consumers.\n\n## Seat selection modes\n\n- **Reserved seating**: pick specific seats (the model above).\n- **General admission / tiers**: no seat identity, only counts. Use an **atomic counter** per tier (`UPDATE tier SET remaining = remaining - :n WHERE remaining >= :n`) or a Redis decrement; much less contention than per-seat rows.\n- **\"Best available\"**: server selects contiguous seats in a section, using a per-row structure (bitmap) to find runs; still ends in the same atomic hold.\n\n## Consistency and scale\n\nInventory for one event lives on **one shard/primary**, so all contended writes serialise cleanly and consistently. For the biggest events, give that event a dedicated database or partition so it cannot affect others. Reads (seat map, event pages) come from caches/replicas; booking confirmation reads from the primary (read-your-writes). Multi-region: route an event's bookings to its home region; do not split a single event's inventory across active-active regions without a conflict-free design (partition the seats between regions instead).",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "lld-tradeoffs",
+          "label": "LLD and trade-offs",
+          "body": "## LLD: seat hold service\n\n```java\nenum SeatStatus { AVAILABLE, HELD, SOLD }\n\ninterface InventoryRepo {\n    // Atomically hold ALL seats or none. Returns true if every requested seat transitioned.\n    boolean tryHold(String eventId, List<String> seatIds, String holdId, Instant expiresAt, Instant now);\n    boolean confirm(String eventId, List<String> seatIds, String holdId, String bookingId);   // HELD(holdId) -> SOLD\n    void release(String eventId, String holdId);\n}\n\nclass BookingService {\n    private final InventoryRepo inventory; private final PaymentGateway payments; private final Clock clock;\n\n    Hold hold(User u, String eventId, List<String> seats) {\n        if (seats.size() > MAX_SEATS_PER_ORDER) throw new TooManySeats();\n        String holdId = UUID.randomUUID().toString();\n        Instant now = clock.instant();\n        if (!inventory.tryHold(eventId, seats, holdId, now.plus(HOLD_TTL), now)) throw new SeatsUnavailable();\n        return new Hold(holdId, eventId, seats, now.plus(HOLD_TTL));\n    }\n\n    Booking checkout(Hold hold, PaymentMethod pm, String idemKey) {\n        PaymentResult r = payments.charge(pm, hold.amount(), \"hold-\" + hold.id());          // idempotent by hold id\n        if (!r.success()) { inventory.release(hold.eventId(), hold.id()); throw new PaymentFailed(r.reason()); }\n        boolean ok = inventory.confirm(hold.eventId(), hold.seats(), hold.id(), newBookingId());\n        if (!ok) { payments.refund(r.paymentId()); throw new HoldExpired(); }                // lost the race: refund\n        return saveBooking(hold, r);\n    }\n}\n```\n\nPatterns: **State** (seat and booking lifecycle), **Strategy** (seat allocation: best available vs specific; pricing), **Saga/compensation** (refund, release), **Observer** (publish seat-released events to the UI), **Repository** (inventory behind an interface for tests).\n\n## Trade-offs\n\n| decision | option A | option B | choice |\n|---|---|---|---|\n| locking | pessimistic row locks | optimistic version / conditional update | conditional update (short, no long-held locks); locks only briefly inside the transaction |\n| hold store | Redis TTL keys | DB columns with expiry | DB is source of truth; Redis optional as a fast pre-filter |\n| availability freshness | strongly consistent seat map | cached 1-2 s | cached; correctness enforced at hold time |\n| fairness | first-come (race) | waiting room FIFO/lottery | waiting room for hot events |\n| payment timing | charge then confirm | authorise, confirm, capture | authorise first, capture on confirm; compensate on failure |\n| sharding | by event | by seat range or hash | by event (transactions stay local); dedicate hardware for blockbuster events |\n\n## Follow-ups\n\n- **\"How do you stop bots?\"** Waiting room with signed tokens, CAPTCHA, per-account purchase limits, device and payment fingerprinting, rate limits, and verified-fan lists.\n- **\"What happens if the database primary fails during on-sale?\"** Fail over to a synchronous replica (no loss for committed holds), the waiting room pauses admissions, and clients retry holds idempotently with the same hold request id.\n- **\"How do you scale the seat map reads?\"** CDN + short TTL cache, delta pushes, compressed seat bitmaps (50,000 seats ≈ 6 KB as a bit array per status).\n- **\"Dynamic pricing?\"** A pricing service reading demand signals; the price is snapshotted onto the hold so what the user sees is what they pay.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "sql",
+              "source": "-- Atomic all-or-nothing hold inside one transaction (PostgreSQL)\nBEGIN;\nWITH wanted AS (SELECT unnest(:seat_ids::text[]) AS seat_id),\nupdated AS (\n  UPDATE seats s\n  SET status = 'HELD', hold_id = :hold_id, hold_expires_at = now() + interval '10 minutes'\n  FROM wanted w\n  WHERE s.event_id = :event_id AND s.seat_id = w.seat_id\n    AND (s.status = 'AVAILABLE' OR (s.status = 'HELD' AND s.hold_expires_at < now()))\n  RETURNING s.seat_id\n)\nSELECT count(*) FROM updated;      -- application: if count <> cardinality(:seat_ids) THEN ROLLBACK ELSE COMMIT\nCOMMIT;"
+            }
+          ]
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Ticketing is a correctness-under-contention problem: write volume is small (limited seats) but contention and read spikes are huge.",
+        "Prevent double booking with an atomic conditional update (AVAILABLE or expired hold to HELD, all seats or none), keeping all of an event's inventory on one strongly consistent shard.",
+        "Temporary holds expire lazily (checked in the update) and actively (sweeper); the payment webhook is the source of truth and confirmation re-validates the hold, refunding on a lost race.",
+        "Survive on-sale spikes with a virtual waiting room, cached seat maps with delta pushes, rate limits, bot defences and a tiny critical path.",
+        "Model the flow as a saga with compensations; use idempotency keys for payments and holds; tiers and general admission use atomic counters instead of per-seat rows."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Reading availability then writing in application code",
+            "A single conditional UPDATE (AVAILABLE or expired to HELD) checked by rows affected",
+            "Client-side locks",
+            "A cache with no expiry"
+          ],
+          "q": "Which mechanism best prevents two buyers from holding the same seat?",
+          "answer": 1,
+          "why": "The check and the state change happen atomically in the database, so only one transaction can succeed."
+        },
+        {
+          "options": [
+            "It makes seats cheaper",
+            "It converts a thundering herd into a controlled admission rate and gives fairness",
+            "It avoids needing a database",
+            "It prevents refunds"
+          ],
+          "q": "Why is a virtual waiting room used for hot on-sales?",
+          "answer": 1,
+          "why": "The booking system is protected from overload, and users are admitted in a fair order at a rate the backend can serve."
+        },
+        {
+          "options": [
+            "Double book the seat",
+            "Detect the lost race at confirmation and refund automatically",
+            "Ignore the payment",
+            "Cancel the other user's booking"
+          ],
+          "q": "A payment succeeds after the hold expired and another user took the seat. What should happen?",
+          "answer": 1,
+          "why": "Confirmation must re-validate the hold in a transaction; if the seats are gone, compensate with a refund."
+        }
+      ],
+      "sources": [
+        {
+          "title": "ByteByteGo: System design resources",
+          "url": "https://bytebytego.com/"
+        },
+        {
+          "title": "Stripe docs: Idempotent requests",
+          "url": "https://docs.stripe.com/api/idempotent_requests"
+        },
+        {
+          "title": "Cloudflare: Waiting Room",
+          "url": "https://developers.cloudflare.com/waiting-room/"
+        }
+      ],
+      "practiceRef": "hld-payments-ticketing"
+    },
+    {
+      "id": "design-ride-sharing",
+      "title": "Design a ride-sharing service (Uber / Lyft)",
+      "minutes": 50,
+      "summary": "Real-time location tracking at scale, geospatial indexing (geohash, quadtree, H3), matching riders to drivers, trip state machines, surge pricing, ETA and the LLD of dispatch.",
+      "parts": [
+        {
+          "id": "requirements",
+          "label": "Requirements and numbers",
+          "body": "## What makes this interesting\n\nRide-sharing is a **real-time, location-driven, two-sided marketplace**. The system must continuously ingest driver locations, answer \"who is near this rider?\" in milliseconds, **match** supply and demand, track trips as state machines, compute ETAs and prices, and take payments, all while staying available in every city. It tests geospatial indexing, write-heavy streams, matching algorithms and consistency of trip state.\n\n## Functional requirements\n\n- **Riders**: request a ride from A to B, see nearby drivers and an ETA/price estimate, track the driver live, pay, rate.\n- **Drivers**: go online/offline, receive trip offers, accept/decline, navigate, complete trips, earn payouts.\n- **Matching/dispatch**: assign a nearby suitable driver quickly.\n- **Pricing**: base fare + distance + time, with **surge** when demand exceeds supply.\n- **Trip lifecycle**: requested, matched, driver en route, arrived, in trip, completed, cancelled.\n- Notifications, ratings, receipts, support tooling. Out of scope: pooling (mention), scheduled rides, driver onboarding/KYC.\n\n## Non-functional requirements\n\n- **Low latency matching** (a few seconds end to end), location updates visible within ~1-3 seconds.\n- **High availability**; degraded modes are acceptable in the periphery but a trip in progress must never be lost.\n- **Strong consistency for trip assignment**: a driver is never assigned two trips; a rider never gets two cars.\n- **Scalable write throughput** from millions of location pings.\n- **Per-city/region partitioning** works naturally: a city is a self-contained market.\n\n## Estimation\n\nAssume 20 million rides/day, 5 million drivers, 1 million concurrently active drivers at peak, each pinging location every 4 seconds.\n\n| quantity | calculation | result |\n|---|---|---|\n| location writes | 1M drivers / 4 s | **250,000 updates/s** at peak |\n| ride requests | 20M / 10⁵ ≈ 230/s average, ×5 peak | ~1,200/s |\n| nearby-driver queries | each request + riders watching the map: say 10 per ride | ~12,000/s |\n| location payload | ~50 bytes (id, lat, lon, ts, heading) | 12.5 MB/s ingest |\n| storage of location history | 250K/s × 50 B × 10⁵ s | ~1.2 TB/day, keep hot a few hours, archive for analytics/safety |\n| trips data | 20M/day × 2 KB | 40 GB/day, relational |\n\nThe standout number is **250K location writes/s**: a write-heavy stream where only the **latest** location matters for matching. That suggests an in-memory, sharded geo index (not a transactional database) plus an append-only stream for history.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "api-hld",
+          "label": "API, data and HLD",
+          "body": "## API (sketch)\n\n```text\nPOST /v1/rides/estimate   { pickup, dropoff } -> { fare, etaToPickup, surgeMultiplier }\nPOST /v1/rides            { pickup, dropoff, productType, Idempotency-Key } -> 202 { rideId, status: \"searching\" }\nGET  /v1/rides/{id}       status, driver, vehicle, polyline, eta  (also pushed via WebSocket)\nPOST /v1/rides/{id}/cancel\n\nDriver app:\nPUT  /v1/drivers/me/status          { online: true }\nPOST /v1/drivers/me/location        { lat, lon, heading, ts }  (or over a persistent connection)\nPOST /v1/offers/{id}/accept | decline\nPOST /v1/rides/{id}/arrived | start | complete\n```\n\nPersistent **WebSocket/gRPC streams** carry location pings and offers; HTTP polling would not scale.\n\n## Geospatial indexing\n\n\"Find drivers within 2 km\" cannot scan every driver. Index the plane:\n\n| approach | idea | notes |\n|---|---|---|\n| **Geohash** | interleave lat/lon bits into a string; shared prefix = nearby cell | simple, works with key-value stores/Redis; cell edges cause neighbour lookups (query the cell + 8 neighbours) |\n| **Quadtree** | recursively split dense regions into four | adapts to density (cities vs rural); in-memory, rebalancing on update |\n| **S2 / H3** (Google S2, Uber's H3 hexagons) | hierarchical cell ids covering the sphere | uniform neighbour distances (hexagons), great for aggregation (surge cells), used in production |\n| **R-tree / PostGIS** | spatial index in a database | excellent for static data, too write-heavy for 250K updates/s |\n\nPractical design: partition by city/region, then within a region keep a **cell → set of driver ids** map (H3 resolution ~8, cells ~0.7 km²) in memory/Redis. A driver's ping removes them from the old cell and adds them to the new one (only when the cell changes; otherwise just update their coordinates in a hash). A query looks at the rider's cell plus rings of neighbours (`k-ring`) until enough candidates are found, then ranks by true distance/ETA.\n\n## High-level design\n\n```\nDriver apps ─(WebSocket)─► Location gateway ─► Kafka (location stream)\n                                   │                 ├─► Geo index service (in-memory, sharded by region/cell)\n                                   │                 ├─► Trip tracking / ETA\n                                   │                 └─► Data lake (history, analytics, safety)\nRider app ─► API gateway ─► Ride service ─► Dispatch (matching) ◄── Geo index (candidates)\n                                   │               │\n                                   │               └─► Offer service ─► driver (push/WebSocket)\n                                   ├─► Pricing service (surge by H3 cell)\n                                   ├─► ETA/routing service (maps, traffic)\n                                   ├─► Trip store (sharded SQL; the system of record)\n                                   └─► Payments, Notifications (async via outbox/Kafka)\n```",
+          "diagrams": [
+            {
+              "title": "Ride request to match",
+              "code": "flowchart LR\n  R[\"Rider requests ride\"] --> RS[\"Ride service: create trip (SEARCHING)\"]\n  RS --> D[\"Dispatch\"]\n  D --> G[\"Geo index: candidate drivers near pickup\"]\n  G --> E[\"Rank by ETA, rating, fairness\"]\n  E --> O[\"Offer to best driver (timeout 10-15 s)\"]\n  O -->|\"accept\"| A[\"Atomic assign: driver AVAILABLE to ON_TRIP, trip MATCHED\"]\n  O -->|\"decline or timeout\"| E\n  A --> N[\"Notify rider and driver, start tracking\"]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "deep-dives",
+          "label": "Deep dives",
+          "body": "## Handling 250K location updates per second\n\n- Terminate persistent connections at a **location gateway** tier (stateless; sticky by driver id), batching and validating pings.\n- Publish to **Kafka** partitioned by `regionId/cellId or driverId`. Consumers: the geo index updater (keeps only the latest position), trip tracking (append points to active trips), and the archive (S3/warehouse).\n- The geo index holds **only live drivers** and is rebuilt from the stream after a failure: the stream is the source of truth for recovery, and a driver's next ping (4 s later) heals most state anyway. Losing a few pings is harmless: location is **ephemeral, high-volume, loss-tolerant** data, unlike trips.\n- Reduce traffic: adaptive ping rates (faster when on a trip or moving, slower when idle), send deltas, compress, drop pings when a driver hasn't moved. Smooth GPS noise with map-matching on the server.\n\n## Matching (dispatch)\n\nGoals: minimise rider wait and driver idle time while being fair. Approaches:\n\n1. **Nearest driver first**: query candidates in the pickup cell and rings, rank by **ETA** (road network, not straight-line distance), filter by availability, vehicle type and eligibility, send an **offer** with a timeout (10 to 15 seconds). On decline/timeout, offer to the next. Simple, low latency, locally greedy.\n2. **Batched matching**: collect requests and available drivers over a short window (2 to 5 seconds) and solve an **assignment problem** (Hungarian algorithm or min-cost flow) to minimise total pickup time across all pairs, improving global efficiency (used at scale).\n3. Add business rules: driver acceptance rate, ratings, fairness, airport queues, destination filters, rider/driver pooling.\n\n**Never double-assign.** Assignment is a transactional step: in the trip store, atomically transition the driver `AVAILABLE → OFFERED/ON_TRIP` and the trip `SEARCHING → MATCHED` (conditional updates, or a single-writer **actor per driver** and per trip). Offers reserve the driver for the timeout window so two dispatchers don't offer the same driver simultaneously. Use idempotent handlers: accept events can be retried.\n\n## Trip state machine\n\n`REQUESTED → SEARCHING → MATCHED → DRIVER_EN_ROUTE → ARRIVED → IN_TRIP → COMPLETED` with `CANCELLED` and `NO_DRIVERS` terminals. Persist each transition with a version; the trip store is a sharded relational database keyed by trip id (or rider/driver id depending on queries). Every transition publishes an event (outbox) for notifications, billing and analytics. **In-flight trips must survive failures:** state is durable, clients reconnect and resync from the trip service, and drivers' apps continue recording the route locally for later upload.\n\n## ETA, routing and pricing\n\n- **ETA service**: road graph with live traffic (contraction hierarchies or precomputed routing tiles), cached per cell pairs; machine-learning corrections from historical trips. Return quickly; fall back to straight-line × factor.\n- **Fare estimate**: base + per-km + per-minute, minimum fare, tolls, taxes. Show an upfront price and **lock it** into the trip.\n- **Surge pricing**: per H3 cell compute demand (requests, app opens) vs supply (available drivers) in a sliding window (stream processing: Flink/Kafka Streams); map the ratio to a multiplier with smoothing to avoid oscillation and caps for regulation. Publish multipliers to a cache read by the pricing service. Surge also nudges supply by showing drivers a heat map.\n\n## Reliability and operations\n\n- **Per-region deployment**: a city's services and data are isolated; a failure in one city doesn't take down others. Replicate trip data across zones; plan regional failover for the trip store.\n- **Graceful degradation**: if surge calculation fails, use the last multiplier; if ETA fails, estimate roughly; if payments are slow, let the trip proceed and charge asynchronously.\n- **Safety and fraud**: share-trip links, anomaly detection (GPS spoofing, collusion), SOS, audit logs of location traces.\n- **Observability**: match latency, offer acceptance rate, driver supply per cell, dispatch queue depth, ETA error, location ingest lag.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "lld-tradeoffs",
+          "label": "LLD and trade-offs",
+          "body": "## LLD: geo index and dispatch\n\n```python\nfrom collections import defaultdict\nimport h3   # Uber's hexagonal grid\n\nclass GeoIndex:\n    \"\"\"Latest known position of each live driver, bucketed by H3 cell. Rebuildable from the location stream.\"\"\"\n    RES = 8\n    def __init__(self):\n        self.cell_to_drivers = defaultdict(set)       # cell -> {driver_id}\n        self.driver_state = {}                        # driver_id -> (lat, lon, cell, ts, status)\n\n    def update(self, driver_id, lat, lon, ts, status):\n        cell = h3.latlng_to_cell(lat, lon, self.RES)\n        prev = self.driver_state.get(driver_id)\n        if prev and prev[2] != cell:\n            self.cell_to_drivers[prev[2]].discard(driver_id)       # moved to a new cell\n        self.cell_to_drivers[cell].add(driver_id)\n        self.driver_state[driver_id] = (lat, lon, cell, ts, status)\n\n    def nearby(self, lat, lon, k_max=3, need=10):\n        center = h3.latlng_to_cell(lat, lon, self.RES)\n        found = []\n        for k in range(k_max + 1):                                  # expand ring by ring until enough candidates\n            for cell in h3.grid_ring(center, k):\n                for d in self.cell_to_drivers.get(cell, ()):\n                    if self.driver_state[d][4] == \"AVAILABLE\":\n                        found.append(d)\n            if len(found) >= need: break\n        return found\n\nclass Dispatcher:\n    def __init__(self, geo, eta, offers, trips):\n        self.geo, self.eta, self.offers, self.trips = geo, eta, offers, trips\n\n    def match(self, trip):\n        candidates = self.geo.nearby(trip.pickup.lat, trip.pickup.lon)\n        ranked = sorted(candidates, key=lambda d: self.eta.seconds(d, trip.pickup))[:5]\n        for driver in ranked:\n            if not self.trips.reserve_driver(driver, trip.id):       # atomic: AVAILABLE -> OFFERED\n                continue\n            if self.offers.send_and_wait(driver, trip, timeout_s=12):\n                return self.trips.assign(trip.id, driver)            # atomic: SEARCHING -> MATCHED\n            self.trips.release_driver(driver, trip.id)\n        return None                                                   # widen search or retry later\n```\n\nPatterns: **Strategy** (matching algorithm, pricing), **State** (trip lifecycle), **Observer** (location subscribers), **Repository**, **Command** (offers and accept events), **Actor model** (one actor per driver serialises state).\n\n## Trade-offs\n\n| decision | option A | option B | choice |\n|---|---|---|---|\n| matching | greedy nearest | batched global optimisation | greedy for low latency and small markets; batched when density and scale justify it |\n| geo index | geohash on Redis | H3/S2 in-memory service | Redis geo for simplicity; custom H3 service at scale |\n| location store | transactional DB | in-memory + stream | in-memory latest + stream for history (ephemeral data) |\n| trip store | NoSQL | sharded SQL | sharded SQL (strong consistency, transactions for assignment) |\n| ping transport | HTTP polling | persistent WebSocket/gRPC | persistent streams |\n| consistency | eventual everywhere | strong for assignment/trips, eventual for location | strong where money and assignment are at stake |\n| pricing | static | dynamic surge | surge with smoothing, caps and upfront price lock |\n\n## Follow-ups\n\n- **\"What if two dispatchers offer the same driver?\"** Reserve the driver atomically (compare-and-set status) before sending an offer; the loser picks another.\n- **\"How do you scale across cities?\"** Region-sharded deployments; a global control plane for accounts and config; trips pinned to their city.\n- **\"Driver is offline mid-trip?\"** The app buffers locations; the server marks the driver \"stale\" but never cancels an in-progress trip automatically; riders see last known location and support can intervene.\n- **\"Carpool/shared rides?\"** Matching becomes a route-insertion problem (insert pickup/dropoff into existing routes with detour constraints), usually solved with heuristics.\n- **\"Privacy?\"** Minimise retention of precise location, mask pickup points, restrict access, and aggregate for analytics.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Surge multiplier per cell from a sliding window of demand and supply (smoothed, capped)\ndef surge_multiplier(requests_5min: int, available_drivers: int, prev: float = 1.0) -> float:\n    ratio = requests_5min / max(available_drivers, 1)\n    target = 1.0 if ratio <= 1.0 else min(1.0 + 0.5 * (ratio - 1.0), 3.0)     # cap at 3.0x\n    return round(0.7 * prev + 0.3 * target, 2)                                  # exponential smoothing avoids flapping\n\nprint(surge_multiplier(120, 40))   # demand 3x supply -> rises gradually toward a higher multiplier"
+            }
+          ]
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Ride-sharing is a real-time geo-marketplace: the standout load is ~250K location updates/s, which are ephemeral and loss-tolerant, so keep only the latest position in a sharded in-memory geo index and stream history to a log.",
+        "Use hierarchical cell indexes (geohash, quadtree, H3/S2): look up the rider's cell plus neighbouring rings, then rank candidates by road-network ETA.",
+        "Matching is greedy offers with timeouts at small scale and batched assignment optimisation at large scale; assignment itself must be atomic so no driver or rider is double-booked.",
+        "Trips are a durable state machine in a strongly consistent sharded database; location, ETA and surge are eventually consistent derived data.",
+        "Surge is computed per cell from demand vs supply with smoothing and caps; deploy per city/region for isolation, and degrade gracefully when subsystems fail."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Databases cannot store coordinates",
+            "Location updates are extremely high volume and only the latest value matters, and loss is tolerable",
+            "Locations must be durable forever",
+            "It avoids needing Kafka"
+          ],
+          "q": "Why is the driver location store typically in-memory plus a stream rather than a transactional database?",
+          "answer": 1,
+          "why": "250K writes per second of ephemeral data suits an in-memory index rebuilt from a stream; durability is reserved for trips and payments."
+        },
+        {
+          "options": [
+            "Hoping dispatchers are fast",
+            "An atomic compare-and-set reserving the driver (AVAILABLE to OFFERED) before sending the offer",
+            "Sending offers to everyone",
+            "Eventual consistency"
+          ],
+          "q": "How is double assignment of one driver prevented?",
+          "answer": 1,
+          "why": "The first dispatcher to win the atomic state transition owns the driver for that offer; others pick different candidates."
+        },
+        {
+          "options": [
+            "They are square",
+            "All neighbours are equidistant and rings of cells are easy to enumerate",
+            "They need no memory",
+            "They replace GPS"
+          ],
+          "q": "What is the advantage of H3 hexagonal cells for neighbour search?",
+          "answer": 1,
+          "why": "Hexagons give uniform adjacency, so k-ring expansion gives predictable coverage for nearby queries and aggregation like surge pricing."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Uber Engineering: H3 hexagonal hierarchical spatial index",
+          "url": "https://www.uber.com/blog/h3/"
+        },
+        {
+          "title": "Uber Engineering: Ringpop and the dispatch platform",
+          "url": "https://www.uber.com/blog/ringpop-open-source-nodejs-library/"
+        },
+        {
+          "title": "Redis: Geospatial indexes",
+          "url": "https://redis.io/docs/latest/develop/data-types/geospatial/"
+        }
+      ],
+      "practiceRef": "hld-video-uber"
     }
   ]
 }

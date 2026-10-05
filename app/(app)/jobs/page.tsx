@@ -12,6 +12,7 @@ import { PageStack } from "@/components/shared/page-stack";
 import { Button } from "@/components/ui/button";
 import { tierProfiles } from "@/core/content";
 import { discoverJobs, getJobPrefs, listSources } from "@/modules/jobs/services/job-discovery";
+import { listProfiles } from "@/modules/jobs/services/job-profiles";
 import { listJobs } from "@/modules/jobs/services/jobs";
 import { NextStep } from "@/modules/jobs/components/next-step";
 import { getJobOverview } from "@/modules/jobs/services/job-overview";
@@ -35,16 +36,18 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
   const now = new Date();
   const pageSize = Math.min(150, Math.max(30, num(sp.n) ?? 30));
   const overview = await getJobOverview(todayIn(await getSettings()));
+  const profiles = await listProfiles();
+  const profileId = profiles.find((p) => p.id === one(sp.profile))?.id;
   const [prefs, found, sources, tracked] = await Promise.all([
     getJobPrefs(),
-    discoverJobs({ q: one(sp.q), kind: kind === "boards" || kind === "remote" ? kind : "all", tier: one(sp.tier) || undefined, remote: one(sp.remote) === "1", days: num(sp.days), min: num(sp.min), showDismissed: one(sp.dismissed) === "1", limit: pageSize }, now),
+    discoverJobs({ q: one(sp.q), kind: kind === "boards" || kind === "remote" ? kind : "all", tier: one(sp.tier) || undefined, remote: one(sp.remote) === "1", days: num(sp.days), min: num(sp.min), showDismissed: one(sp.dismissed) === "1", ...(profileId ? { profileId } : {}), limit: pageSize }, now),
     listSources(now),
     listJobs(),
   ]);
   const tierName = new Map<string, string>(tierProfiles.map((t) => [t.id, t.name]));
   const active = sources.filter((s) => s.enabled);
   const lastOk = sources.map((s) => s.lastOkAt).filter((x): x is string => x !== null).toSorted().at(-1);
-  const filtering = Boolean(one(sp.q) || kind || one(sp.tier) || one(sp.remote) || one(sp.days) || one(sp.min));
+  const filtering = Boolean(one(sp.q) || kind || one(sp.tier) || one(sp.remote) || one(sp.days) || one(sp.min) || profileId);
 
   return (
     <>
@@ -65,7 +68,7 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
           </div>
         </details>
 
-        <DiscoverFilters tiers={tierProfiles.map((t) => ({ id: t.id, name: t.name }))} />
+        <DiscoverFilters tiers={tierProfiles.map((t) => ({ id: t.id, name: t.name }))} profiles={profiles.map((p) => ({ id: p.id, name: p.name }))} />
 
         <p className="text-xs text-muted-foreground" role="status">
           {found.matching.toLocaleString()} matching · reading {active.length} sources{lastOk ? `, last updated ${new Date(lastOk).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : ""}

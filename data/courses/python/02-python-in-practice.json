@@ -1,0 +1,244 @@
+{
+  "chapter": {
+    "id": "python-in-practice",
+    "title": "Python in practice",
+    "summary": "Concurrency, performance, testing and project hygiene: what separates scripts from production Python."
+  },
+  "lessons": [
+    {
+      "id": "py-concurrency-gil-asyncio",
+      "title": "Concurrency in Python: the GIL, threads, processes and asyncio",
+      "minutes": 45,
+      "summary": "What the GIL does and does not limit, choosing between threads, processes and asyncio, writing correct asyncio code, and the pitfalls of blocking the event loop.",
+      "parts": [
+        {
+          "id": "gil",
+          "label": "The GIL and the choices",
+          "body": "## Why concurrency in Python has a reputation\n\nCPython (the default interpreter) has a **Global Interpreter Lock**: a mutex that lets **only one thread execute Python bytecode at a time**. It protects the interpreter's internal state (notably reference counts). Consequences:\n\n- **CPU-bound** work in threads gets **no speed-up** from multiple cores; threads take turns holding the GIL.\n- **I/O-bound** work does benefit from threads: a thread **releases the GIL while waiting** on sockets, files, `time.sleep`, and in many C extensions (NumPy, hashing, compression, database drivers). While one thread waits, another runs.\n- The GIL does **not** make your code thread-safe: `counter += 1` is still read-modify-write across bytecodes, and threads can switch between them. Use locks or thread-safe structures (`queue.Queue`).\n- Python 3.13+ ships an optional **free-threaded build** (no GIL), still maturing; most production Python today runs with the GIL.\n\n## Choosing a model\n\n| workload | tool | why |\n|---|---|---|\n| many network calls (thousands of connections) | **asyncio** | one thread, cooperative tasks, tiny per-task cost |\n| a modest number of blocking I/O calls, legacy blocking libraries | **threads** (`ThreadPoolExecutor`) | simple; the GIL is released during I/O |\n| CPU-heavy pure Python (parsing, number crunching) | **processes** (`ProcessPoolExecutor`, `multiprocessing`) | separate interpreters and GILs, real parallelism; cost: pickling data between processes, startup time |\n| numeric arrays | **NumPy / vectorisation** or native extensions | work happens in C without the GIL |\n| scaling across machines | task queues (Celery, RQ, Dramatiq), Ray, Dask | distributed workers |\n\nStart from the bottleneck: profile first. Many \"slow Python\" problems are algorithmic or I/O waits, not the interpreter.\n\n## concurrent.futures\n\nThe simplest API for both threads and processes:\n\n```python\nfrom concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed\n\nwith ThreadPoolExecutor(max_workers=16) as pool:            # I/O-bound\n    futures = {pool.submit(fetch, url): url for url in urls}\n    for fut in as_completed(futures):\n        print(futures[fut], fut.result())                   # result() re-raises the task's exception\n\nwith ProcessPoolExecutor() as pool:                         # CPU-bound: defaults to core count\n    results = list(pool.map(crunch, chunks, chunksize=100))\n```\n\nProcess pools pickle arguments and results (so lambdas and open connections can't cross), start workers that re-import your module (guard with `if __name__ == \"__main__\":`), and are best for coarse-grained tasks. Use `multiprocessing.shared_memory` or memory-mapped files to avoid copying large arrays.\n\n## Thread safety toolbox\n\n`threading.Lock`/`RLock`, `Semaphore`, `Event`, `Condition`, `Barrier`; `queue.Queue` for producer-consumer; `threading.local()` for per-thread state. Prefer message passing (queues) over shared mutable state. `dict.setdefault`, `list.append` and `collections.deque.append` are atomic individually, but check-then-act sequences are not.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "asyncio",
+          "label": "asyncio",
+          "body": "## The model\n\n`asyncio` runs many **coroutines** on one thread with an **event loop**. A coroutine is an `async def` function; `await` suspends it until the awaited operation finishes, letting the loop run others. Concurrency is **cooperative**: a task runs until it awaits, so a task that never awaits (a long CPU loop or a blocking call) freezes everything. It is the same idea as Node's event loop.\n\n```python\nimport asyncio, httpx\n\nasync def fetch(client: httpx.AsyncClient, url: str) -> int:\n    r = await client.get(url, timeout=5)\n    return r.status_code\n\nasync def main(urls: list[str]):\n    async with httpx.AsyncClient() as client:\n        sem = asyncio.Semaphore(20)                          # limit concurrency\n        async def limited(u):\n            async with sem:\n                return await fetch(client, u)\n        return await asyncio.gather(*(limited(u) for u in urls), return_exceptions=True)\n\nasyncio.run(main(urls))\n```\n\nKey tools:\n\n- **`asyncio.run(main())`**: start the loop (once, at the top).\n- **`asyncio.create_task(coro)`**: schedule a coroutine to run concurrently; **keep a reference** to the task, or it may be garbage collected mid-flight.\n- **`asyncio.gather(*aws, return_exceptions=...)`**: run many and collect results in order.\n- **`asyncio.TaskGroup`** (3.11+): structured concurrency, where child tasks live inside a `async with` block, and if one fails the others are cancelled and errors are grouped (`ExceptionGroup`, caught with `except*`). Prefer it to bare `gather`.\n- **`asyncio.timeout(5)`** / `asyncio.wait_for(coro, 5)`: deadlines; cancellation is delivered as `CancelledError` at the next `await` (do not swallow it; clean up in `finally`).\n- **`asyncio.Queue`**, `Lock`, `Event`, `Semaphore` for coordination; `asyncio.to_thread(fn, ...)` runs a blocking function in a thread without blocking the loop.\n\n## The classic mistakes\n\n| mistake | consequence | fix |\n|---|---|---|\n| calling blocking code (`requests.get`, `time.sleep`, heavy CPU, blocking DB driver) inside `async def` | the entire loop stalls | async libraries (httpx, aiohttp, asyncpg), `asyncio.sleep`, `await asyncio.to_thread(...)`, or a process pool |\n| forgetting `await` | you get a coroutine object, never run (\"coroutine was never awaited\") | linters, enable `-X dev` |\n| `create_task` without keeping a reference | task may vanish | store tasks in a set / use TaskGroup |\n| swallowing `CancelledError` | tasks can't be cancelled | re-raise it |\n| unbounded `gather` over 100,000 items | memory and connection exhaustion | semaphore or batching |\n| mixing sync and async code carelessly | deadlocks | one boundary: `asyncio.run` at the top, `to_thread` for sync-in-async |\n| sharing a client/session per call | slow, no connection reuse | one `AsyncClient` per application/lifespan |\n\nFastAPI/Starlette: `async def` endpoints run on the event loop (must not block); plain `def` endpoints run in a threadpool automatically. For CPU-heavy work, hand off to a worker process or queue.\n\n## Choosing: asyncio vs threads\n\nAsyncio scales to tens of thousands of idle connections with tiny memory and has explicit suspension points that make shared state easier to reason about, but needs an async-compatible ecosystem and discipline. Threads are simpler with blocking libraries, preemptive (a bug can't freeze others as easily), but each thread costs ~8 MB of virtual stack and context switches, and shared state needs locks.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Three ways to run the same I/O work, plus the CPU-bound case with processes\nimport asyncio, time\nfrom concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor\n\ndef blocking_io(i):                 # pretend network call\n    time.sleep(0.2); return i\n\nasync def async_io(i):\n    await asyncio.sleep(0.2); return i\n\ndef cpu(n):                         # pure-Python CPU work: threads won't help\n    return sum(i * i for i in range(n))\n\nasync def main():\n    t = time.perf_counter()\n    async with asyncio.TaskGroup() as tg:                    # structured concurrency\n        tasks = [tg.create_task(async_io(i)) for i in range(100)]\n    print(\"asyncio 100 tasks:\", round(time.perf_counter() - t, 2), \"s\")   # ~0.2 s\n\n    t = time.perf_counter()\n    res = await asyncio.gather(*(asyncio.to_thread(blocking_io, i) for i in range(20)))\n    print(\"to_thread 20 blocking calls:\", round(time.perf_counter() - t, 2), \"s\")\n\nif __name__ == \"__main__\":\n    asyncio.run(main())\n    with ThreadPoolExecutor(20) as p: list(p.map(blocking_io, range(20)))   # ~0.2 s: sleeps release the GIL\n    with ProcessPoolExecutor() as p: print(sum(p.map(cpu, [2_000_000] * 4)))  # uses multiple cores"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nWhether you know **what the GIL really does**, can pick the right concurrency model for a workload, and avoid the classic asyncio pitfalls.\n\n## Questions with model answers\n\n### 1. What is the GIL and how does it affect your programs?\n\n**Model answer.** A mutex in CPython that lets only one thread run Python bytecode at a time, protecting interpreter internals such as reference counts. CPU-bound threads therefore can't use multiple cores, but I/O-bound threads work well because the lock is released while blocked, and so do C extensions that release it (NumPy, hashing, compression). It doesn't make compound operations thread-safe, so shared state still needs locks.\n\n### 2. How do you parallelise CPU-bound Python?\n\n**Model answer.** Multiple processes (`ProcessPoolExecutor` or `multiprocessing`), each with its own interpreter and GIL, with coarse-grained tasks because arguments and results are pickled. Alternatively move the hot loop into NumPy or a native extension, use Cython/Rust, or distribute with Dask or Ray. I profile first, since an algorithmic improvement often beats parallelism.\n\n### 3. Threads vs asyncio?\n\n**Model answer.** Both help I/O-bound workloads. Asyncio uses one thread and cooperative tasks that yield at `await`, scaling to very many connections cheaply, but everything in the call path must be non-blocking. Threads work with ordinary blocking libraries and are preempted by the OS, but cost more memory and need locks for shared state. I pick asyncio for high-concurrency network services and threads (or `to_thread`) when I must call blocking code.\n\n### 4. Why does one blocking call freeze an asyncio program?\n\n**Model answer.** There is a single event loop thread. A blocking call such as `requests.get`, `time.sleep` or heavy computation does not yield control, so no other task runs until it returns. I use async libraries, `asyncio.sleep`, or push blocking work to `asyncio.to_thread` or a process pool.\n\n### 5. What is structured concurrency and why does `TaskGroup` help?\n\n**Model answer.** Child tasks are scoped to a block, so they cannot outlive their parent: the `async with TaskGroup()` exits only when all tasks complete, and if one fails the rest are cancelled and exceptions are raised together as an `ExceptionGroup`. That avoids orphaned tasks, lost exceptions and leaks that arise with fire-and-forget `create_task` or `gather` without cleanup.\n\n### 6. How do you cancel a task safely?\n\n**Model answer.** Call `task.cancel()`, which raises `CancelledError` inside the coroutine at its next `await`. The coroutine should clean up in `finally` and re-raise `CancelledError`, never swallow it. Use `asyncio.timeout()` for deadlines, which cancels the enclosed work on expiry.\n\n### 7. Is `counter += 1` thread-safe in Python?\n\n**Model answer.** No. It compiles to load, add and store bytecodes, and the interpreter can switch threads between them, so two threads can lose updates even with a GIL. Guard it with a `Lock`, use `queue.Queue` or an atomic approach, or avoid shared mutable state.\n\n## Rapid-fire\n\n- **Threads for CPU-bound Python?** No speed-up with the GIL.\n- **Cap concurrency in asyncio?** `Semaphore`.\n- **Run sync code inside async code?** `asyncio.to_thread`.\n- **Need `if __name__ == \"__main__\"` with multiprocessing?** Yes, workers re-import the module.\n- **Gather vs TaskGroup?** TaskGroup cancels siblings and groups errors.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Thread creation",
+          "time": "~50-100 µs, ~8 MB virtual stack",
+          "space": "per thread"
+        },
+        {
+          "op": "asyncio task",
+          "time": "~µs, ~KB",
+          "space": "per task"
+        },
+        {
+          "op": "Process spawn",
+          "time": "~10-100 ms",
+          "space": "separate interpreter"
+        },
+        {
+          "op": "IPC pickling",
+          "time": "O(data size)",
+          "space": "copies"
+        }
+      ],
+      "keyPoints": [
+        "The GIL lets one thread run Python bytecode at a time: no multi-core speed-up for CPU-bound threads, but I/O-bound threads work because the lock is released while waiting; it does not make compound operations atomic.",
+        "Use asyncio for many concurrent network tasks, threads for blocking libraries, processes (or NumPy/native code) for CPU-bound work.",
+        "asyncio is cooperative: never block the loop; use async libraries, to_thread or process pools.",
+        "Prefer TaskGroup, timeouts and semaphores; keep references to created tasks and never swallow CancelledError.",
+        "Profile before parallelising; algorithms and I/O waits are usually the real bottleneck."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "CPU-bound number crunching in pure Python",
+            "Many blocking network requests",
+            "Matrix multiplication in a Python loop",
+            "Recursion-heavy parsing"
+          ],
+          "q": "Which workload benefits from threading in standard CPython?",
+          "answer": 1,
+          "why": "Threads release the GIL while waiting on I/O, so other threads progress; CPU-bound pure Python stays serialised by the GIL."
+        },
+        {
+          "options": [
+            "requests is deprecated",
+            "It blocks the event loop and stalls all other requests",
+            "It leaks memory",
+            "It is always faster"
+          ],
+          "q": "A FastAPI async endpoint calls requests.get(). What is the problem?",
+          "answer": 1,
+          "why": "A blocking call in a coroutine does not yield to the loop; use an async client or a plain def endpoint (runs in a threadpool)."
+        },
+        {
+          "options": [
+            "Ignores it",
+            "Cancels the remaining tasks and raises an ExceptionGroup",
+            "Restarts the task",
+            "Hangs forever"
+          ],
+          "q": "What does asyncio.TaskGroup do when one child task raises?",
+          "answer": 1,
+          "why": "Structured concurrency ensures sibling tasks are cancelled and errors are collected when the block exits."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Python docs: asyncio",
+          "url": "https://docs.python.org/3/library/asyncio.html"
+        },
+        {
+          "title": "Python docs: concurrent.futures",
+          "url": "https://docs.python.org/3/library/concurrent.futures.html"
+        },
+        {
+          "title": "Real Python: What is the Python GIL?",
+          "url": "https://realpython.com/python-gil/"
+        }
+      ]
+    },
+    {
+      "id": "py-performance-testing-tooling",
+      "title": "Performance, testing and project tooling",
+      "minutes": 40,
+      "summary": "Profiling before optimising, the biggest Python speed wins, testing with pytest, and a modern project setup with virtual environments, pyproject.toml, linting and type checking.",
+      "parts": [
+        {
+          "id": "perf",
+          "label": "Performance",
+          "body": "## Measure first\n\n\"Python is slow\" is often wrong about *where*. Always profile before changing code.\n\n- **Wall-clock timing**: `time.perf_counter()`, `timeit` for micro-benchmarks (`python -m timeit \"...\"`).\n- **`cProfile`**: function-level CPU profile: `python -m cProfile -o out.prof app.py`, view with `snakeviz` or `pstats`.\n- **`py-spy`**: sampling profiler that attaches to a running process with no code changes (`py-spy top --pid`, `py-spy record -o flame.svg`): ideal for production.\n- **`line_profiler`** for line-by-line hot spots, **`tracemalloc`** / `memray` for memory, **`scalene`** for CPU+memory+GPU.\n\n## The big wins, in order\n\n1. **Better algorithm / data structure.** Replacing an `O(n²)` nested loop with a set or dict lookup beats any micro-optimisation: `x in list` is O(n), `x in set` is O(1); `list.insert(0, x)` is O(n), use `collections.deque`; sort once, use `bisect`/`heapq`.\n2. **Do less I/O**: batch database queries (fix N+1), cache, stream instead of loading.\n3. **Use built-ins and the standard library** (implemented in C): `sum`, `sorted`, `str.join`, `collections.Counter`, `itertools`, comprehensions over manual loops with `append`.\n4. **Vectorise numeric work** with NumPy/pandas/Polars instead of Python loops (often 10 to 100 times faster).\n5. **Avoid repeated work**: hoist invariants out of loops, cache with `functools.cache`, precompile regexes (`re.compile`), reuse connections.\n6. **Reduce memory**: generators, `__slots__`, `array`, avoid copying large lists.\n7. **Native code** for real hot spots: Cython, Numba (JIT for numeric loops), PyO3/Rust, `ctypes`/C extensions.\n8. **Concurrency** (previous lesson) when the work is parallelisable.\n9. **Different runtimes/versions**: newer CPython (3.11+ is substantially faster than 3.9, with more gains in 3.12/3.13), PyPy (JIT) for long-running pure-Python loops.\n\n## Micro-optimisation facts (and when they matter)\n\n- Local variable access is faster than global/attribute access; in a very hot loop bind `append = out.append`. Only do this after profiling shows it matters.\n- String building: `\"\".join(parts)`, not repeated `+=` in a loop.\n- `dict`/`set` lookups are O(1) average; membership in a `list` is O(n).\n- f-strings are the fastest formatting method; avoid logging with eager formatting (`logger.debug(\"x=%s\", x)`).\n- Exceptions are cheap when not raised (EAFP is fine) and expensive when raised in hot paths.\n- Beware accidental O(n²): list slicing in loops, `str +=`, `list.pop(0)`, `in` on lists, repeated `sorted`.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "testing",
+          "label": "Testing and tooling",
+          "body": "## pytest\n\nThe de facto test framework: plain `assert` statements with rich failure output, fixtures for setup and teardown, parametrisation, and plugins.\n\n```python\nimport pytest\n\n@pytest.fixture\ndef cart():\n    c = Cart(); c.add(\"pen\", 2); yield c            # teardown after the yield if needed\n\ndef test_total(cart):\n    assert cart.total() == 20\n\n@pytest.mark.parametrize(\"qty,expected\", [(0, 0), (1, 10), (5, 50)])\ndef test_price(qty, expected):\n    assert price(qty) == expected\n\ndef test_rejects_negative():\n    with pytest.raises(ValueError, match=\"qty\"):\n        price(-1)\n```\n\n- **Fixtures** (with scopes `function`, `module`, `session`) replace setup code; `tmp_path`, `monkeypatch`, `capsys` are built in.\n- **Mocking**: `unittest.mock` (`patch`, `MagicMock`) at the boundaries you don't own; patch where the name is **looked up**, not where it is defined. Prefer fakes and dependency injection for your own code.\n- **Property-based testing** with Hypothesis generates inputs and shrinks failures.\n- **Coverage**: `pytest --cov`; **pytest-asyncio / anyio** for async tests; **freezegun** for time; **responses/respx** to stub HTTP.\n- Structure: `tests/` mirrors `src/`; fast unit tests by default, integration tests marked (`@pytest.mark.integration`) and run in CI against real databases via containers.\n\n## Project setup that scales\n\n- **Virtual environments** isolate dependencies per project: `python -m venv .venv`. Never `pip install` into the system Python. Modern tools: **uv** (very fast resolver/installer and project manager), Poetry, PDM, pip-tools.\n- **`pyproject.toml`** is the single configuration file: project metadata, dependencies, build backend, and tool settings (ruff, pytest, mypy).\n- **Pin and lock** dependencies (`uv.lock`, `poetry.lock`, `requirements.txt` with hashes) so builds are reproducible; keep dev dependencies separate; update with a bot (Renovate, Dependabot).\n- **src layout** (`src/mypkg/`) prevents accidentally importing the working directory instead of the installed package.\n- **Formatting and linting**: **ruff** (linter + formatter, replaces flake8, isort, black for most uses). **Type checking**: mypy or pyright in CI, strict on new code.\n- **Pre-commit hooks** run ruff, formatters and type checks before each commit; CI runs the full set.\n- **Logging**: the `logging` module with module-level `logger = logging.getLogger(__name__)`; structured JSON in production (structlog); never `print` in libraries.\n- **Configuration**: environment variables parsed with pydantic-settings; no secrets in code.\n- **Docker**: slim base, non-root user, install from the lockfile, multi-stage; run with gunicorn/uvicorn workers.\n\n## Python packaging in one paragraph\n\nA **package** is a directory with modules (an `__init__.py` marks regular packages); an **installable distribution** is built into a wheel (`python -m build`) and published to PyPI or a private index. Import resolution uses `sys.path`; relative imports (`from .utils import x`) work only inside packages; avoid circular imports by extracting shared code. Keep import-time side effects out of modules.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Profile, find the hotspot, fix it with the right data structure, and prove the gain\nimport timeit, cProfile, pstats, io\n\ndef slow(items, wanted):\n    return [x for x in items if x in wanted]        # wanted is a LIST: each 'in' is O(n)\n\ndef fast(items, wanted):\n    ws = set(wanted)                                 # build once, then O(1) lookups\n    return [x for x in items if x in ws]\n\nitems = list(range(20_000)); wanted = list(range(0, 20_000, 2))\nprint(timeit.timeit(lambda: slow(items, wanted), number=1))   # seconds (large)\nprint(timeit.timeit(lambda: fast(items, wanted), number=1))   # milliseconds\n\npr = cProfile.Profile(); pr.enable(); slow(items, wanted); pr.disable()\ns = io.StringIO(); pstats.Stats(pr, stream=s).sort_stats(\"cumulative\").print_stats(5); print(s.getvalue())\n\n# pytest-style tests for the same function\ndef test_fast_matches_slow():\n    assert fast([1, 2, 3, 4], [2, 4]) == slow([1, 2, 3, 4], [2, 4]) == [2, 4]"
+            },
+            {
+              "lang": "bash",
+              "source": "# A modern Python project in a few commands (uv)\nuv init myservice && cd myservice\nuv add fastapi \"uvicorn[standard]\" pydantic-settings\nuv add --dev pytest pytest-asyncio ruff mypy\nuv run ruff check . && uv run ruff format --check .\nuv run mypy src\nuv run pytest -q --maxfail=1\nuv lock && uv sync --frozen                 # reproducible installs in CI/Docker"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nPragmatism: measure before optimising, know the cheap wins, and set up projects like a professional.\n\n## Questions with model answers\n\n### 1. A Python function is slow. What do you do?\n\n**Model answer.** Reproduce with a benchmark, then profile (cProfile locally, py-spy in production) to find where time goes. Typically the fix is algorithmic: use sets and dicts for lookups, avoid quadratic loops, batch I/O. Then use built-ins and comprehensions, vectorise with NumPy where numeric, cache repeated work, and only then consider Cython, Numba or Rust for the hot path or parallelism. After each change I re-measure.\n\n### 2. Why is `x in my_list` slow in a loop and what do you use instead?\n\n**Model answer.** Membership in a list scans linearly, so a loop of n lookups over m items is O(n·m). Converting the list to a set once makes each membership test O(1) on average (items must be hashable), so the total is O(n + m).\n\n### 3. How do fixtures and parametrisation help in pytest?\n\n**Model answer.** Fixtures provide reusable setup and teardown with controllable scope and dependency injection by argument name, keeping tests short and isolated. Parametrisation runs the same test over multiple inputs, each reported as its own test case, which makes edge-case tables cheap to write.\n\n### 4. Where do you patch in `unittest.mock`?\n\n**Model answer.** Where the name is looked up, not where it's defined: if `service.py` does `from client import fetch`, patch `service.fetch`, because that's the reference the code under test uses. I try to avoid patching by passing dependencies in.\n\n### 5. How do you manage dependencies and environments?\n\n**Model answer.** A virtual environment per project and a `pyproject.toml` declaring dependencies, with a lockfile (uv, Poetry or pip-tools) for reproducible installs and separate dev dependencies. CI installs from the lockfile, a bot proposes updates, and the Docker image uses the same lock. I run `pip-audit` or similar for vulnerabilities.\n\n### 6. What tooling do you use for code quality?\n\n**Model answer.** Ruff for linting and formatting, mypy or pyright for type checking, pytest with coverage for tests, and pre-commit hooks plus CI gates so style and type errors never reach review. Type hints on public APIs, strict mode for new modules.\n\n### 7. How would you find a memory leak in a Python service?\n\n**Model answer.** Watch RSS over time, then use `tracemalloc` snapshots (comparing before and after) or memray to see which allocations grow. Typical causes: unbounded caches or global collections, lingering references in closures and tracebacks, accumulating tasks or threads, and `lru_cache` on methods holding `self`. Fix by bounding caches, using weak references, and cleaning up resources.\n\n## Rapid-fire\n\n- **Fast production profiler without code changes?** py-spy.\n- **Micro-benchmark tool?** `timeit`.\n- **Formatter and linter in one?** ruff.\n- **Isolate dependencies?** Virtual environment.\n- **Test parametrisation decorator?** `@pytest.mark.parametrize`.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "x in list",
+          "time": "O(n)",
+          "space": "O(1)"
+        },
+        {
+          "op": "x in set / dict",
+          "time": "O(1) average",
+          "space": "O(n)"
+        },
+        {
+          "op": "list.insert(0, x)",
+          "time": "O(n)",
+          "space": "-"
+        },
+        {
+          "op": "deque.appendleft",
+          "time": "O(1)",
+          "space": "-"
+        },
+        {
+          "op": "timeit / cProfile",
+          "time": "measurement overhead (~2x)",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Profile before optimising: cProfile and py-spy locate the hotspot; most wins are algorithmic (sets/dicts, no quadratic loops) or fewer I/O round trips.",
+        "Then use built-ins, comprehensions, NumPy vectorisation and caching; reach for Cython, Numba or Rust only for proven hot paths.",
+        "pytest fixtures, parametrisation and focused mocking (patch where looked up) give fast, readable tests; prefer fakes and injection.",
+        "Use a virtual environment, pyproject.toml, lockfile and src layout; automate ruff, type checks and tests in pre-commit and CI.",
+        "Hunt leaks with tracemalloc or memray; look for unbounded caches, globals and retained references."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Rewrite it in C",
+            "Profile it to find where time is spent",
+            "Add threads",
+            "Upgrade the server"
+          ],
+          "q": "What is the first step when a Python function is too slow?",
+          "answer": 1,
+          "why": "Optimising without measurement often targets the wrong code; profiling shows the real hotspot."
+        },
+        {
+          "options": [
+            "Sets preserve order",
+            "Set membership is O(1) on average instead of O(n)",
+            "Sets use less memory always",
+            "It avoids imports"
+          ],
+          "q": "Why convert a list to a set before a loop of membership tests?",
+          "answer": 1,
+          "why": "Hash lookups make each test constant time on average, turning a quadratic loop into a linear one."
+        },
+        {
+          "options": [
+            "client.fetch",
+            "service.fetch",
+            "builtins.fetch",
+            "Anywhere"
+          ],
+          "q": "With 'from client import fetch' in service.py, where do you patch fetch in tests?",
+          "answer": 1,
+          "why": "Patching must replace the name where the code under test looks it up, which is the reference imported into service."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Python docs: The Python profilers",
+          "url": "https://docs.python.org/3/library/profile.html"
+        },
+        {
+          "title": "pytest documentation",
+          "url": "https://docs.pytest.org/"
+        },
+        {
+          "title": "Python Packaging User Guide",
+          "url": "https://packaging.python.org/"
+        }
+      ]
+    }
+  ]
+}

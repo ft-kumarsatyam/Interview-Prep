@@ -3,6 +3,7 @@ import { subtopics } from "@/core/content";
 import { resetEnvForTests } from "@/core/env";
 import { GeneratedQuestionRow, PracticeAttempt } from "@/core/models/learning";
 import { Settings } from "@/core/models/system";
+import { correctAnswerKey } from "@/modules/quiz/domain/quiz";
 import { bank } from "@/modules/quiz/lib/bank";
 import { generateMoreQuestions, generationTarget, loadGenerated } from "@/modules/quiz/services/generated";
 import { getLevelProgress } from "@/modules/quiz/services/levels";
@@ -41,7 +42,7 @@ const NEW_QS = [
 
 async function solveAll(attemptId: string) {
   const a = await PracticeAttempt.findById(attemptId).lean();
-  return submitPractice(attemptId, (a!.questions ?? []).map((q) => q.answerIndex), new Date());
+  return submitPractice(attemptId, (a!.questions ?? []).map((q) => correctAnswerKey({ type: q.type ?? undefined, answerIndex: q.answerIndex, answerIndices: q.answerIndices ?? undefined })), new Date());
 }
 
 describe("levels on practice runs", () => {

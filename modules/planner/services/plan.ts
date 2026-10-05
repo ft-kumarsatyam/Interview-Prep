@@ -9,6 +9,8 @@ import { ProblemProgress, SubtopicProgress } from "@/core/models/progress";
 import { Notification, Settings, SETTINGS_ID } from "@/core/models/system";
 import { carryOverChange, replanChange } from "@/modules/planner/domain/plan-changes";
 import { recomputeDay, type DayState } from "@/modules/planner/services/day";
+import { rolePlacement } from "@/modules/planner/domain/role-path";
+import { weekMapForRole } from "@/modules/planner/lib/roles";
 import { loadPersonalisation, type Personalisation } from "@/modules/planner/services/intake-weights";
 import { gapsOfDays, logPlanChange } from "@/modules/planner/services/plan-log";
 import { getSettings, invalidateSettings, type AppSettings } from "@/modules/settings/services/settings";
@@ -108,6 +110,7 @@ export async function loadPlanInputs(): Promise<{ problems: ProblemState[]; revi
     loadCosts(),
     loadPersonalisation(),
   ]);
+  const roleWeeks = weekMapForRole(personal.roleId);
   const solved = new Set(progressRows.filter((p) => p.status === "solved").map((p) => p.slug));
   const done = new Set(doneSubtopics.map((d) => d.subtopicId));
   return {
@@ -115,7 +118,8 @@ export async function loadPlanInputs(): Promise<{ problems: ProblemState[]; revi
     reviews: progressRows.filter((p) => p.nextReviewAt).map((p) => ({ slug: p.slug, nextReviewAt: p.nextReviewAt! })),
     subtopics: subtopics.map((t) => {
       const weight = personal.weights.get(t.topicId)?.weight;
-      return { id: t.id, week: t.week, position: t.position, done: done.has(t.id), ...(weight !== undefined ? { weight } : {}) };
+      const placed = rolePlacement(roleWeeks, t.topicId, t.week, t.position);
+      return { id: t.id, week: placed.week, position: placed.position, done: done.has(t.id), ...(weight !== undefined ? { weight } : {}) };
     }),
     costs,
     overrides: personal.overrides,

@@ -5,9 +5,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { playgroundHref } from "@/modules/dsa/lib/playground/share";
 import { cn } from "@/core/utils";
 import { QuestionAiTools } from "@/modules/quiz/components/question-ai-tools";
+import { ReportQuestion } from "@/modules/quiz/components/report-question";
 
 export interface QuestionReviewProps {
   number: number;
+  /** Bank id of the question; shows "Report a problem" when given. */
+  questionId?: string;
   prompt: string;
   code?: string;
   options: readonly string[];
@@ -22,7 +25,7 @@ export interface QuestionReviewProps {
 }
 
 /** One graded question: your answer vs the correct one, the explanation and help for misses. */
-export function QuestionReview({ number, prompt, code, options, multi, chosen, correct, right, explanation, subject, learnMore }: QuestionReviewProps) {
+export function QuestionReview({ number, questionId, prompt, code, options, multi, chosen, correct, right, explanation, subject, learnMore }: QuestionReviewProps) {
   const skipped = chosen.length === 0;
   const status = right ? "Correct" : skipped ? "Skipped" : "Wrong";
   const StatusIcon = right ? Check : skipped ? CircleSlash : X;
@@ -79,6 +82,7 @@ export function QuestionReview({ number, prompt, code, options, multi, chosen, c
         {!right && (
           <QuestionAiTools subject={subject} question={{ prompt, code, options, chosen, correct, explanation }} />
         )}
+        {questionId && <ReportQuestion questionId={questionId} />}
       </CardContent>
     </Card>
   );

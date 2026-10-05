@@ -60,7 +60,7 @@ describe("migration 001-owner-id", () => {
     const { MigrationDoc } = await import("@/core/models/migration");
     await DayLog.collection.insertOne({ date: "2025-12-31" });
     const first = await runMigrations();
-    expect(first.applied).toEqual(["001-owner-id", "002-event-indexes", "003-vector-index", "004-ai-chat-indexes", "005-captured-notes"]);
+    expect(first.applied).toEqual(["001-owner-id", "002-event-indexes", "003-vector-index", "004-ai-chat-indexes", "005-captured-notes", "006-job-profiles", "007-posting-years", "008-question-flags", "009-interview-bank"]);
     expect(await DayLog.countDocuments({ date: "2025-12-31" })).toBe(1);
     expect((await DayLog.collection.findOne({ date: "2025-12-31" }))?.ownerId).toBe("owner");
     const idx = await DayLog.collection.indexes();
@@ -68,7 +68,7 @@ describe("migration 001-owner-id", () => {
     expect(idx.some((i) => i.unique && JSON.stringify(i.key) === JSON.stringify({ date: 1 }))).toBe(false);
 
     expect((await runMigrations()).applied).toEqual([]);
-    expect(await MigrationDoc.countDocuments()).toBe(5);
+    expect(await MigrationDoc.countDocuments()).toBe(9);
     void mongoose;
   });
 });

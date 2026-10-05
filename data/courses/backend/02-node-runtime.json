@@ -1,0 +1,243 @@
+{
+  "chapter": {
+    "id": "node-runtime",
+    "title": "The Node.js runtime and server architecture",
+    "summary": "How Node really runs your code, how to structure a server so it stays maintainable, and how to keep it fast and alive under load."
+  },
+  "lessons": [
+    {
+      "id": "node-event-loop",
+      "title": "The Node.js event loop, libuv and worker threads",
+      "minutes": 40,
+      "summary": "Why one JavaScript thread can serve thousands of connections, the exact order of event-loop phases, microtasks, what blocks the loop, and when to use worker threads.",
+      "parts": [
+        {
+          "id": "model",
+          "label": "The model",
+          "body": "## One thread, many connections\n\nNode runs your JavaScript on **one thread**. That sounds like a limit, but a typical web server spends almost all its time **waiting** (for the database, the network, the disk), not computing. Node's trick is to start those waits, go on to other work, and come back when they finish.\n\n- **V8** runs your JavaScript.\n- **libuv** (a C library) provides the **event loop**, and talks to the operating system's async I/O (epoll on Linux, kqueue on macOS, IOCP on Windows) for sockets.\n- Operations the OS cannot do asynchronously (file system, DNS `lookup`, some crypto, zlib) run on libuv's **thread pool** (4 threads by default; `UV_THREADPOOL_SIZE` up to 1024).\n\nSo \"Node is single-threaded\" is only true for **your JS**. The runtime itself uses threads.\n\n```\n          your JS callbacks run here (one thread)\n                     │\n   ┌─────────────────▼─────────────────┐\n   │            EVENT LOOP             │ ◄── OS: sockets ready\n   └─────────────────▲─────────────────┘ ◄── thread pool: file/crypto done\n                     │                   ◄── timers expired\n              task queues\n```\n\n## Phases of the loop\n\nEach turn (\"tick\") of the loop visits phases in a fixed order. Each phase has a FIFO queue of callbacks:\n\n1. **timers**: callbacks of `setTimeout` / `setInterval` whose time has elapsed.\n2. **pending callbacks**: some deferred system callbacks (e.g. certain TCP errors).\n3. **idle, prepare**: internal.\n4. **poll**: retrieve new I/O events and run their callbacks; **the loop may block here waiting for I/O** if nothing else is scheduled.\n5. **check**: `setImmediate` callbacks.\n6. **close callbacks**: e.g. `socket.on('close')`.\n\nBetween **every callback** (and between phases), Node drains two special queues:\n\n1. `process.nextTick` queue first,\n2. then the **promise microtask** queue (`.then`, `await` continuations, `queueMicrotask`).\n\n## The classic ordering puzzle\n\n```js\nconsole.log(\"1 sync\");\nsetTimeout(() => console.log(\"5 timeout\"), 0);\nsetImmediate(() => console.log(\"6 immediate\"));\nPromise.resolve().then(() => console.log(\"4 promise\"));\nprocess.nextTick(() => console.log(\"3 nextTick\"));\nconsole.log(\"2 sync\");\n```\n\nOutput: `1 sync, 2 sync, 3 nextTick, 4 promise, 5 timeout, 6 immediate` (the last two can swap when called from the main module because timer resolution is non-deterministic; inside an I/O callback `setImmediate` always wins).\n\nReasoning: all synchronous code finishes first; then `nextTick`; then promise microtasks; then the loop starts and runs timers, and later the check phase.\n\n**Starvation:** microtasks and `nextTick` run until their queues are empty *before* the loop moves on. A recursive `process.nextTick` (or an endless promise chain) can starve I/O forever. Use `setImmediate` to yield to the loop.\n\n## What `await` actually does\n\n`await p` suspends the async function, schedules its continuation as a **microtask** when `p` settles, and returns control to the caller. It does **not** block the thread. That is why thousands of in-flight requests, each awaiting a database query, cost almost nothing.",
+          "diagrams": [
+            {
+              "title": "Event loop phases and the two microtask queues",
+              "code": "flowchart TD\n  T[\"timers: setTimeout, setInterval\"] --> P[\"pending callbacks\"]\n  P --> PO[\"poll: I/O events, may wait here\"]\n  PO --> CH[\"check: setImmediate\"]\n  CH --> CL[\"close callbacks\"]\n  CL --> T\n  M[\"after EVERY callback: drain nextTick, then promise microtasks\"] -.-> PO"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "blocking",
+          "label": "Blocking and parallelism",
+          "body": "## The one rule: do not block the loop\n\nWhile your callback is running, **nothing else runs**: no other request, no timers, no health check. A single 2-second CPU task makes every connected user wait 2 seconds.\n\nTypical blockers:\n\n- Heavy computation in a handler: image processing, big `JSON.parse` of a huge payload, sorting millions of items, password hashing implemented synchronously (`bcrypt.hashSync`, `crypto.pbkdf2Sync`).\n- `fs.readFileSync` and other `*Sync` calls after startup.\n- A **catastrophic regular expression** (ReDoS): a regex with nested quantifiers like `/^(a+)+$/` can take exponential time on crafted input. Validate input length and avoid ambiguous patterns.\n- Giant synchronous loops and huge `JSON.stringify` calls.\n\nHow to see it: measure **event-loop delay** (`perf_hooks.monitorEventLoopDelay()`); if p99 delay climbs above tens of milliseconds, something is hogging the thread.\n\n## Fixes, in order of preference\n\n1. **Use the async API** (`fs.promises`, async crypto like `crypto.scrypt`, which runs on the thread pool).\n2. **Chunk the work** and yield: process 1,000 items, then `await setImmediate`-style yield, repeat.\n3. **Worker threads** (`node:worker_threads`): real parallel JS threads with their own V8 isolate and event loop; communicate via messages (structured clone) or share memory with `SharedArrayBuffer`. Best for CPU-bound jobs (image resize, PDF generation, parsing). Use a **pool** (like piscina), not a new worker per task.\n4. **Child processes** (`child_process`): when you need a separate program or strong isolation.\n5. **Cluster / multiple processes**: run one Node process per CPU core behind a load balancer (PM2, `cluster`, or containers) to use all cores for ordinary request handling.\n6. **Move it out of the request path** entirely: put a job on a queue and let a worker process it.\n\n| tool | parallel JS? | memory | best for |\n|---|---|---|---|\n| async I/O | n/a | shared | waiting on I/O |\n| worker thread | yes | separate heap, can share buffers | CPU-bound tasks |\n| child process | yes | separate process | other binaries, isolation |\n| cluster / replicas | yes | separate processes | scaling request throughput |\n\n## Streams and backpressure\n\nLoading a 2 GB file with `readFile` needs 2 GB of RAM. A **stream** processes data in chunks (default 64 KiB for files), so memory stays flat no matter the size.\n\nFour kinds: **Readable**, **Writable**, **Duplex**, **Transform**. You connect them with `pipeline()` (which handles errors and cleanup, unlike bare `.pipe()`).\n\n**Backpressure** is the stream's way to say \"slow down, I can't write that fast\". When `writable.write(chunk)` returns `false`, you must wait for `'drain'` before writing more; `pipeline` does it for you. Ignoring it makes memory balloon when the reader is faster than the writer (say, disk to a slow client).\n\nBuffers: a `Buffer` is a fixed-size chunk of raw bytes (outside the V8 heap). Convert with an explicit encoding (`toString(\"utf8\")`); remember a multi-byte character can be split across chunks, so use `StringDecoder` or set the stream encoding rather than concatenating strings by hand.\n\n## Memory and garbage collection\n\nV8 splits the heap into a short-lived **young generation** (collected often and cheaply) and an **old generation** (collected less often, more expensively). Common leaks: unbounded in-memory caches or arrays, listeners added and never removed, closures retaining big objects, global maps keyed by request. Find them with heap snapshots (`--inspect`, Chrome DevTools), and cap process memory with `--max-old-space-size` (and container limits) so a leak crashes cleanly and restarts instead of thrashing.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "js",
+              "source": "// Offload CPU-heavy work to a worker pool (piscina) instead of blocking the loop\nimport Piscina from \"piscina\";\n\nconst pool = new Piscina({ filename: new URL(\"./hash-worker.js\", import.meta.url).href, maxThreads: 4 });\n\napp.post(\"/thumbnail\", async (req, res) => {\n  const out = await pool.run({ bytes: req.body }); // runs on another thread; the loop stays free\n  res.type(\"image/webp\").send(out);\n});\n\n// Streaming a large file with backpressure and proper error handling\nimport { createReadStream } from \"node:fs\";\nimport { createGzip } from \"node:zlib\";\nimport { pipeline } from \"node:stream/promises\";\n\napp.get(\"/export.csv.gz\", async (req, res) => {\n  res.setHeader(\"Content-Type\", \"application/gzip\");\n  await pipeline(createReadStream(\"export.csv\"), createGzip(), res); // constant memory\n});\n\n// Measuring event-loop delay\nimport { monitorEventLoopDelay } from \"node:perf_hooks\";\nconst h = monitorEventLoopDelay({ resolution: 20 });\nh.enable();\nsetInterval(() => { console.log(\"p99 loop delay ms\", h.percentile(99) / 1e6); h.reset(); }, 10_000).unref();"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nNode interviews separate people who use `async/await` from people who understand **what runs where**. Expect ordering puzzles, \"why did my server freeze\" scenarios and scaling questions.\n\n## Questions with model answers\n\n### 1. How can single-threaded Node handle thousands of concurrent connections?\n\n**Model answer.** Because the work is mostly I/O waiting. Node hands sockets to the OS's non-blocking I/O facility through libuv, registers callbacks, and keeps running other callbacks while the OS waits. When the OS reports readiness, the event loop schedules the callback on the single JS thread. The thread is only busy for the short bursts of CPU work between waits, so one thread can interleave thousands of connections. CPU-heavy work breaks this model, which is why it goes to worker threads or other processes.\n\n### 2. What is the order: `setTimeout(0)`, `setImmediate`, `process.nextTick`, a resolved promise?\n\n**Model answer.** After the current synchronous code: `nextTick` first, then promise microtasks, then the loop phases. `setTimeout(0)` runs in the timers phase (minimum about 1 ms), and `setImmediate` in the check phase just after poll. From the main module the relative order of timeout and immediate can vary; inside an I/O callback `setImmediate` is always first.\n\n### 3. Your API's p99 latency spikes every few minutes but CPU is low overall. Where do you look?\n\n**Model answer.** Something is intermittently blocking the loop or exhausting the thread pool. I check event-loop delay, look for synchronous work like large JSON parse/stringify, a ReDoS-prone regex, or `*Sync` calls; check whether many concurrent `fs`/`crypto`/`dns.lookup` calls exceed the 4-thread pool (raise `UV_THREADPOOL_SIZE` or avoid `lookup`); look at GC pauses via `--trace-gc`; and capture a CPU profile during a spike. Downstream causes, like a slow database or connection-pool exhaustion, also show up as latency without local CPU.\n\n### 4. Worker threads or cluster? When would you use each?\n\n**Model answer.** Cluster (or simply several processes/containers) replicates the whole server to use all cores for request throughput; it's about scaling the *number of requests*. Worker threads move a *single CPU-heavy task* off the main loop so other requests aren't blocked, and can share memory through `SharedArrayBuffer`. A real system often does both: N processes, each with a small worker pool for heavy tasks, or it moves heavy jobs to a queue-driven worker service.\n\n### 5. What is backpressure and how do you honour it?\n\n**Model answer.** It is flow control: a fast producer must not overwhelm a slow consumer. A writable stream signals saturation when `write()` returns `false`; the producer pauses until `'drain'`. Using `stream.pipeline` (or `for await` with a writable's backpressure-aware APIs) does this automatically and also destroys all streams on error. Ignoring it leads to unbounded buffering and out-of-memory crashes, for example when streaming a big file to a slow client.\n\n### 6. How do you gracefully shut down a Node server?\n\n**Model answer.** On `SIGTERM`: stop accepting new connections (`server.close()`), mark readiness as failing so the load balancer stops sending traffic, wait for in-flight requests (with a timeout), close database and queue connections, flush logs, then exit with code 0. In containers set a sensible `terminationGracePeriodSeconds` and call `server.closeIdleConnections()` so keep-alive sockets don't hold the process open.\n\n## Rapid-fire\n\n- **Default thread pool size?** 4.\n- **Which blocks the loop: `await fetch()` or `JSON.parse(hugeString)`?** The parse; the await just yields.\n- **`process.nextTick` vs `setImmediate`?** nextTick runs before the loop continues, `setImmediate` in the check phase.\n- **How to use all CPU cores?** Multiple processes (cluster/containers); worker threads for CPU tasks.\n- **Why `pipeline` over `.pipe`?** Error propagation and cleanup.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Callback / microtask scheduling",
+          "time": "O(1) per task",
+          "space": "O(queue)"
+        },
+        {
+          "op": "Thread-pool task (fs, crypto)",
+          "time": "limited by pool size (4 default)",
+          "space": "-"
+        },
+        {
+          "op": "Worker thread startup",
+          "time": "~tens of ms, hence pool",
+          "space": "separate heap"
+        }
+      ],
+      "keyPoints": [
+        "Node runs your JavaScript on one thread; libuv provides the event loop, OS async I/O and a 4-thread pool for file, DNS and crypto work.",
+        "After sync code, nextTick runs first, then promise microtasks; then loop phases: timers, poll, check (setImmediate), close.",
+        "Never block the loop: avoid sync APIs, giant JSON work and ReDoS regexes; monitor event-loop delay.",
+        "Use worker threads (pooled) for CPU tasks, multiple processes for throughput, and queues for background work.",
+        "Streams with pipeline keep memory flat and honour backpressure; shut down gracefully on SIGTERM."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "setTimeout(0) callbacks",
+            "setImmediate callbacks",
+            "process.nextTick callbacks, then promise microtasks",
+            "I/O callbacks"
+          ],
+          "q": "What runs first after the current synchronous code finishes?",
+          "answer": 2,
+          "why": "The nextTick queue and then the promise microtask queue are drained before the event loop moves to timers, poll or check phases."
+        },
+        {
+          "options": [
+            "Node limits each request to one socket",
+            "JavaScript callbacks share one thread, so no other callback runs until it returns",
+            "The thread pool is full",
+            "The garbage collector pauses forever"
+          ],
+          "q": "Why can a CPU-heavy request freeze a Node server for all users?",
+          "answer": 1,
+          "why": "The event loop can only start the next callback when the current one finishes, so a long synchronous task delays every other request."
+        },
+        {
+          "options": [
+            "Wrap it in an async function",
+            "Run it in a pooled worker thread or background job",
+            "Use setTimeout to delay it",
+            "Increase the HTTP timeout"
+          ],
+          "q": "What is the best fix for a 500 ms image-resize in a request handler?",
+          "answer": 1,
+          "why": "async keyword alone does not move work off the main thread; only worker threads, other processes or queues do."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Node.js: Event loop, timers and nextTick",
+          "url": "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick"
+        },
+        {
+          "title": "Node.js: Don't block the event loop",
+          "url": "https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop"
+        },
+        {
+          "title": "Node.js: Backpressuring in streams",
+          "url": "https://nodejs.org/en/learn/modules/backpressuring-in-streams"
+        }
+      ],
+      "practiceRef": "node-internals"
+    },
+    {
+      "id": "server-architecture",
+      "title": "Structuring a backend: layers, middleware and errors",
+      "minutes": 40,
+      "summary": "Request lifecycle and middleware, controller-service-repository layering, validation, central error handling, configuration, logging and dependency injection.",
+      "parts": [
+        {
+          "id": "lifecycle",
+          "label": "Lifecycle and middleware",
+          "body": "## The shape of a request\n\nEvery web framework (Express, Fastify, Koa, NestJS, Hono) reduces to the same pipeline:\n\n1. The server accepts a connection and parses HTTP.\n2. A chain of **middleware** runs in order: logging, request id, CORS, body parsing, authentication, rate limiting.\n3. The **router** matches method + path to a handler.\n4. The handler validates input, calls business logic, and builds a response.\n5. An **error handler** converts any thrown error into a safe response.\n6. Response middleware / hooks run (logging the status and duration).\n\nA **middleware** is a function `(req, res, next)`. It may read or modify `req`/`res`, end the response itself, or call `next()` to pass control on. Order matters: authentication before authorisation, body parser before anything reading `req.body`, the error handler last.\n\nIn Express 5 async handlers that throw or reject are forwarded to the error handler automatically; in Express 4 you had to wrap them. Fastify uses **hooks** and **plugins** with encapsulation and built-in JSON-schema validation, and is typically faster; NestJS adds decorators, modules and dependency injection on top of Express or Fastify.\n\n## Cross-cutting concerns as middleware\n\n| concern | what it does |\n|---|---|\n| request id | generates/propagates `X-Request-Id`, attached to every log line |\n| logging | one structured line per request: method, route, status, duration, user id |\n| auth | resolves the caller (`req.user`) or rejects with 401 |\n| rate limiting | per key / per IP limits (`429`) |\n| validation | rejects bad input before business code runs |\n| security headers | `helmet`: HSTS, no-sniff, frame options, CSP |\n| compression, CORS | transport-level behaviour |\n\n## Layers: keep HTTP out of business logic\n\nA structure that scales from a weekend project to a team codebase:\n\n```\nsrc/\n  routes/        HTTP only: parse, validate, call a service, shape the response\n  services/      business rules (no req/res, no SQL)\n  repositories/  data access (SQL / Mongo), returns domain objects\n  domain/        pure functions and types (easy to unit test)\n  lib/           logger, config, http client, errors\n```\n\n- **Controller / route** knows HTTP (status codes, headers) and nothing else.\n- **Service** knows business rules (\"a coupon can only be used once\", \"stock must be reserved\") and nothing about Express. It can be reused by a queue worker, a CLI or a test.\n- **Repository** hides the database. Swap Postgres for something else, or fake it in tests, without touching services.\n- Dependencies flow **inward**: routes → services → repositories. Never the reverse, never services importing `express`.\n\nWhy it matters: when a rule changes, you edit one service; when a new interface (cron job, GraphQL, message consumer) appears, you reuse the services untouched; and you can unit test business logic without starting a server or a database.\n\nDon't over-engineer: for a three-endpoint app, a route file calling the database directly is fine. Add layers when duplication or tests start to hurt.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "errors",
+          "label": "Validation, errors, config",
+          "body": "## Validate at the boundary\n\nEverything from outside (body, query, params, headers, queue messages, third-party API responses) is **untrusted**. Parse it into typed, validated data once, at the edge, with a schema library (zod, valibot, TypeBox/JSON Schema with Ajv, class-validator). Inside the system you work with trusted types.\n\n- Reject unknown or malformed input with `400`/`422`.\n- Enforce **limits**: body size, array length, string length, page size. Unbounded input is a denial-of-service vector.\n- Coerce deliberately (`\"10\"` → `10`), never implicitly.\n- **Allow-list** fields: never spread `req.body` straight into a database update (mass assignment lets users set `isAdmin: true`).\n\n## Central error handling\n\nDistinguish two kinds of errors:\n\n- **Operational errors**: expected failures of the environment or input (validation failed, not found, conflict, upstream timeout). Map to an HTTP status and a stable error code.\n- **Programmer errors**: bugs (`undefined is not a function`). Log with full detail, return a generic `500`, alert, and consider restarting the process if the state may be corrupt.\n\nPattern: define a small hierarchy and one error-handling middleware.\n\n```ts\nclass AppError extends Error {\n  constructor(public status: number, public code: string, message: string, public details?: unknown) { super(message); }\n}\nconst notFound = (what: string) => new AppError(404, \"not_found\", `${what} not found`);\n```\n\nServices throw `AppError`s; the final middleware turns them into the JSON error format, logs the unexpected ones with the request id, and never leaks stack traces to clients.\n\nAlso install process-level safety nets: `unhandledRejection` and `uncaughtException` should log and exit (let the supervisor restart you) rather than continue in an unknown state.\n\n## Configuration\n\nFollow the **twelve-factor** approach: config comes from **environment variables**, never hard-coded and never committed.\n\n- Validate all env vars **at startup** with a schema; crash immediately with a clear message if one is missing (fail fast, not at 3 a.m. when the code path is first hit).\n- Keep a typed `config` object; don't read `process.env` all over the codebase.\n- Secrets come from a secret manager (not the repo, not logs), and differ per environment.\n- Same build artifact for every environment; only configuration differs.\n\n## Logging\n\n- **Structured JSON logs** (pino, winston) so they can be searched: `{\"level\":\"info\",\"reqId\":\"r_8f3\",\"route\":\"/orders\",\"status\":201,\"ms\":42}`.\n- Levels (`debug`, `info`, `warn`, `error`) and a request id on every line, propagated to downstream calls.\n- **Never log** passwords, tokens, full card numbers or personal data; redact by path.\n- Log to stdout and let the platform ship it (containers), instead of writing files in the app.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "di",
+          "label": "Dependency injection",
+          "body": "## Dependency injection (DI)\n\nDI means a component receives what it needs instead of creating it. Instead of a service doing `import db from \"./db\"` and using it directly, it takes a repository in its constructor or factory:\n\n```ts\nexport function makeOrderService(deps: { orders: OrderRepo; payments: PaymentGateway; clock: () => Date }) {\n  return {\n    async place(input: PlaceOrder) {\n      const total = priceOf(input.items);                      // pure domain function\n      const charge = await deps.payments.charge(input.card, total);\n      return deps.orders.insert({ ...input, total, chargeId: charge.id, placedAt: deps.clock() });\n    },\n  };\n}\n```\n\nAt startup, one **composition root** builds the real implementations and wires them. In tests you pass fakes: an in-memory repo, a payment gateway that returns a canned result, a fixed clock. No mocking library magic, no network.\n\nFrameworks like NestJS provide a DI container; in plain Express or Fastify, factory functions and a single `buildApp(deps)` give you most of the benefit.\n\n## Health, readiness and shutdown\n\n- **Liveness** (`/healthz`): the process is up. Failing it makes the orchestrator restart the container. Keep it trivial.\n- **Readiness** (`/readyz`): dependencies (DB, cache) are reachable and the server is ready for traffic. Failing it removes the instance from the load balancer without killing it.\n- **Graceful shutdown** on `SIGTERM`: flip readiness to failing, stop accepting, finish in-flight work, close pools, exit.\n\n## Request-scoped context\n\nUse `AsyncLocalStorage` to carry the request id, user and tenant through async calls without passing them as arguments everywhere; loggers read it automatically, so every log line is correlated with no extra plumbing.\n\n## Common anti-patterns\n\n- Fat controllers: 200 lines of SQL and business rules inside the route.\n- Services that import `req`/`res`.\n- Business logic in the ORM models and hooks, hidden from tests.\n- Catching errors and returning `200 { success: false }`.\n- Swallowing errors with empty `catch {}`.\n- `process.env.X` scattered across 40 files.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// A small, well-layered Express app: validation, services, central error handling\nimport express from \"express\";\nimport { z } from \"zod\";\nimport pino from \"pino\";\nimport { randomUUID } from \"node:crypto\";\n\nconst log = pino({ redact: [\"req.headers.authorization\", \"*.password\"] });\n\nclass AppError extends Error {\n  constructor(public status: number, public code: string, msg: string) { super(msg); }\n}\n\nconst placeOrder = z.object({ sku: z.string().min(1), qty: z.number().int().min(1).max(100) }).strict(); // .strict() = no extra keys\n\nexport function buildApp(deps: { orders: ReturnType<typeof makeOrderService> }) {\n  const app = express();\n  app.use(express.json({ limit: \"100kb\" }));                         // bounded body\n  app.use((req, res, next) => {                                      // request id + access log\n    const id = (req.headers[\"x-request-id\"] as string) ?? randomUUID();\n    res.setHeader(\"x-request-id\", id);\n    Object.assign(req, { id });\n    const start = performance.now();\n    res.on(\"finish\", () => log.info({ reqId: id, method: req.method, url: req.originalUrl, status: res.statusCode, ms: Math.round(performance.now() - start) }));\n    next();\n  });\n\n  app.post(\"/v1/orders\", async (req, res) => {\n    const input = placeOrder.parse(req.body);                         // throws ZodError -> handler\n    const order = await deps.orders.place(input);                     // service: no req/res inside\n    res.status(201).location(`/v1/orders/${order.id}`).json(order);\n  });\n\n  // central error handler: LAST middleware\n  app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {\n    const reqId = (req as any).id;\n    if (err instanceof z.ZodError) return res.status(422).json({ code: \"validation_failed\", errors: err.issues, reqId });\n    if (err instanceof AppError) return res.status(err.status).json({ code: err.code, message: err.message, reqId });\n    log.error({ err, reqId }, \"unhandled\");                           // full detail in logs only\n    res.status(500).json({ code: \"internal\", message: \"Something went wrong\", reqId });\n  });\n  return app;\n}"
+            },
+            {
+              "lang": "ts",
+              "source": "// Graceful shutdown + process safety nets\nconst server = app.listen(port);\nlet ready = true;\napp.get(\"/readyz\", (_req, res) => (ready ? res.sendStatus(200) : res.sendStatus(503)));\n\nasync function shutdown(signal: string) {\n  log.info({ signal }, \"shutting down\");\n  ready = false;                                   // load balancer stops routing here\n  server.close(async () => {                       // stops accepting; waits for in-flight requests\n    await Promise.allSettled([db.end(), redis.quit()]);\n    process.exit(0);\n  });\n  server.closeIdleConnections();\n  setTimeout(() => process.exit(1), 25_000).unref(); // hard deadline below the platform's kill timeout\n}\nprocess.on(\"SIGTERM\", () => shutdown(\"SIGTERM\"));\nprocess.on(\"SIGINT\", () => shutdown(\"SIGINT\"));\nprocess.on(\"unhandledRejection\", (e) => { log.fatal({ e }, \"unhandledRejection\"); process.exit(1); });"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nBackend structure questions test maintainability judgement: separation of concerns, testability, error design and operational readiness, not framework trivia.\n\n## Questions with model answers\n\n### 1. How do you structure a Node backend?\n\n**Model answer.** I separate transport from business logic: routes parse and validate HTTP and call services; services hold business rules and orchestrate repositories and external gateways; repositories encapsulate data access; domain code is pure functions that are trivial to unit test. Dependencies point inward, wiring happens in a single composition root, configuration is validated at startup, and cross-cutting concerns (request id, logging, auth, rate limits, error handling) are middleware. I start simple and add layers when duplication or testing pain appears.\n\n### 2. What is middleware and why does order matter?\n\n**Model answer.** Middleware are functions in a chain that can inspect or modify the request/response and either end the response or call `next()`. Order matters because each depends on what earlier ones did: the body parser must run before validation, authentication before authorisation, and the error handler last so it catches errors thrown by anything before it. A rate limiter placed after an expensive body parser or auth call is less effective than one placed before.\n\n### 3. How do you handle errors consistently?\n\n**Model answer.** Operational errors are modelled as typed errors with an HTTP status and a stable code, thrown from services; a single error-handling middleware maps them to a uniform response with a request id. Unexpected errors are logged with a stack and context but return a generic 500. Async failures are forwarded to that handler, and process-level `unhandledRejection`/`uncaughtException` handlers log and exit so the supervisor restarts a clean process.\n\n### 4. Why validate configuration at startup?\n\n**Model answer.** A missing or malformed variable otherwise surfaces much later, in the first request that touches it, often in production under load. Validating the whole environment against a schema when the process boots makes the deployment fail immediately and visibly, which is a safe failure (the old version keeps serving), and gives one typed config object instead of scattered `process.env` reads.\n\n### 5. What is mass assignment and how do you prevent it?\n\n**Model answer.** It happens when you pass a request body directly to a create or update call, so a client can set fields they should not control (`role`, `isAdmin`, `price`, `ownerId`). Prevent it by validating with a strict allow-list schema per endpoint, mapping to explicit fields, and never trusting client-provided ownership; ownership and privileged fields come from the session or server logic.\n\n### 6. How does dependency injection help testing?\n\n**Model answer.** Components declare what they need (repository, payment gateway, clock) as parameters. In production a composition root wires real implementations; tests pass in-memory fakes or stubs. That makes service tests fast, deterministic and free of network or database setup, and lets me test failure paths (gateway timeout, duplicate key) by making the fake fail on demand.\n\n## Rapid-fire\n\n- **Liveness vs readiness?** Liveness restarts a stuck process; readiness removes it from traffic.\n- **Where does validation belong?** At the boundary, before business logic.\n- **Log format?** Structured JSON with a request id; never secrets.\n- **Where to read env vars?** One validated config module at startup.\n- **What belongs in a service, not a controller?** Business rules and orchestration.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Middleware chain",
+          "time": "O(m) per request for m middlewares",
+          "space": "O(1)"
+        },
+        {
+          "op": "Schema validation",
+          "time": "O(size of payload)",
+          "space": "O(payload)"
+        },
+        {
+          "op": "AsyncLocalStorage lookup",
+          "time": "O(1)",
+          "space": "O(active requests)"
+        }
+      ],
+      "keyPoints": [
+        "A request flows through ordered middleware, a router, a handler and a central error handler; order encodes dependencies.",
+        "Keep HTTP in routes, business rules in services, data access in repositories and pure logic in a domain layer; depend inward.",
+        "Validate every external input with a schema at the boundary, allow-list fields and cap sizes to prevent mass assignment and DoS.",
+        "Model operational errors with status and stable code; log unexpected ones with a request id and return a generic 500.",
+        "Validate config at startup, log structured JSON without secrets, expose liveness and readiness, and shut down gracefully."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "It must run first to wrap everything",
+            "It only receives errors from handlers and middleware registered before it",
+            "Express requires alphabetical order",
+            "It cannot run after routes"
+          ],
+          "q": "Why should the error-handling middleware be registered last?",
+          "answer": 1,
+          "why": "Error middleware catches errors forwarded by earlier layers. If it is registered before a route, errors from that route never reach it."
+        },
+        {
+          "options": [
+            "Using PUT instead of PATCH",
+            "A strict allow-list schema and explicit field mapping",
+            "Enabling gzip",
+            "Returning 201"
+          ],
+          "q": "Which change prevents a user from setting role=admin through a profile update endpoint?",
+          "answer": 1,
+          "why": "Mass assignment is stopped by accepting only the fields the endpoint should allow and never spreading the raw body into the database call."
+        },
+        {
+          "options": [
+            "Services run faster",
+            "Services can be reused by workers and tests and tested without HTTP",
+            "It removes the need for validation",
+            "It makes routes unnecessary"
+          ],
+          "q": "What is the main benefit of keeping req/res out of service functions?",
+          "answer": 1,
+          "why": "Business logic that does not know about HTTP can be called from a queue consumer, CLI or unit test with plain arguments."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Express: error handling",
+          "url": "https://expressjs.com/en/guide/error-handling.html"
+        },
+        {
+          "title": "The Twelve-Factor App",
+          "url": "https://12factor.net/"
+        },
+        {
+          "title": "Pino logger",
+          "url": "https://getpino.io/"
+        }
+      ],
+      "practiceRef": "node-backend"
+    }
+  ]
+}

@@ -33,6 +33,8 @@ export type AvailabilityOverride = z.infer<typeof availabilityOverrideSchema>;
 const goalsStep = z.object({
   step: z.literal("goals"),
   targetRole: z.string().trim().min(1, "Enter a target role").max(80),
+  /** A role path from data/roles.json that orders the plan; empty keeps the standard order. */
+  roleId: z.string().trim().max(40).default(""),
   targetCompany: z.string().trim().max(80),
   level: z.enum(LEVELS),
   focusNotes: z.string().trim().max(300),
@@ -64,7 +66,7 @@ export const intakeStepSchema = z.discriminatedUnion("step", [goalsStep, ratings
 export type IntakeStepInput = z.infer<typeof intakeStepSchema>;
 
 export interface IntakeState {
-  goals: { targetRole: string; targetCompany: string; level: Level; focusNotes: string };
+  goals: { targetRole: string; roleId: string; targetCompany: string; level: Level; focusNotes: string };
   interviewDate: string | null;
   ratings: TopicRating[];
   availability: { hoursByDow: number[]; overrides: AvailabilityOverride[] };

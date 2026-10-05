@@ -1,0 +1,392 @@
+{
+  "chapter": {
+    "id": "backend-data",
+    "title": "Data for backend engineers",
+    "summary": "SQL that stays fast, document modelling that fits your queries, and caching that does not lie."
+  },
+  "lessons": [
+    {
+      "id": "sql-for-backend",
+      "title": "SQL for backend engineers: joins, indexes, EXPLAIN and N+1",
+      "minutes": 45,
+      "summary": "Write correct joins, read a query plan, design indexes that actually get used, avoid the N+1 query trap and paginate and batch safely.",
+      "parts": [
+        {
+          "id": "queries",
+          "label": "Queries that stay correct",
+          "body": "## Think in sets, not loops\n\nSQL is declarative: you describe the **set of rows** you want and the database chooses how to fetch them. The skill is knowing what each construct does to the row set.\n\nOrder in which a query is logically evaluated (not the order you write it):\n\n1. `FROM` / `JOIN` (build the candidate rows)\n2. `WHERE` (filter rows)\n3. `GROUP BY` (collapse rows into groups)\n4. `HAVING` (filter groups)\n5. `SELECT` (compute columns, window functions)\n6. `DISTINCT`, `ORDER BY`, `LIMIT`\n\nThat is why you can't use a `SELECT` alias in `WHERE` but can in `ORDER BY`, and why filtering rows before aggregating (`WHERE`) is cheaper than filtering groups after (`HAVING`).\n\n## Joins\n\nGiven `users(id, name)` and `orders(id, user_id, total)`:\n\n| join | returns | use |\n|---|---|---|\n| `INNER JOIN` | only rows that match on both sides | orders with their user |\n| `LEFT JOIN` | all left rows, NULLs where the right has no match | all users, even those with zero orders |\n| `RIGHT JOIN` | mirror of left (rarely needed, swap the tables) | |\n| `FULL OUTER JOIN` | everything from both, NULL where unmatched | reconciliation reports |\n| `CROSS JOIN` | every combination (n × m) | generating combinations |\n\n**The `LEFT JOIN` trap.** This quietly becomes an inner join:\n\n```sql\nSELECT u.name, o.total\nFROM users u LEFT JOIN orders o ON o.user_id = u.id\nWHERE o.status = 'paid';            -- filters out the NULL rows!\n```\n\nThe `WHERE` rejects every user with no order (their `o.status` is NULL). Put the condition in the `ON` clause to keep the left rows: `LEFT JOIN orders o ON o.user_id = u.id AND o.status = 'paid'`.\n\n**Join fan-out.** Joining a user to both orders and addresses multiplies rows (3 orders × 2 addresses = 6 rows per user), and `SUM(total)` is then wrong. Aggregate each side in a subquery or CTE first, then join the results.\n\n## NULL is not a value\n\n`NULL` means \"unknown\". `NULL = NULL` is not true (it is NULL). Use `IS NULL` / `IS NOT NULL`. `NOT IN (subquery)` returns nothing if the subquery contains a single NULL; prefer `NOT EXISTS`. `COUNT(*)` counts rows; `COUNT(col)` skips NULLs.\n\n## Aggregation, CTEs and window functions\n\n- `GROUP BY user_id` with `COUNT`, `SUM`, `AVG`, `MAX`.\n- **CTEs** (`WITH recent AS (...)`) name a step, making long queries readable; `WITH RECURSIVE` walks trees (org charts, comment threads).\n- **Window functions** compute across related rows **without collapsing them**: `ROW_NUMBER()`, `RANK()`, `LAG()`, running totals.\n\nTop order per customer (a very common interview question):\n\n```sql\nSELECT * FROM (\n  SELECT o.*, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY total DESC) AS rn\n  FROM orders o\n) t WHERE rn = 1;\n```\n\nRunning total: `SUM(total) OVER (PARTITION BY user_id ORDER BY created_at)`.\n\n## Upserts and constraints\n\nLet the database enforce rules, not just the app:\n\n- `PRIMARY KEY`, `UNIQUE` (prevents duplicates even under concurrency), `FOREIGN KEY` (no orphans), `NOT NULL`, `CHECK (qty > 0)`.\n- Atomic upsert (PostgreSQL): `INSERT ... ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name`. (MySQL: `ON DUPLICATE KEY UPDATE`.) This avoids the race in \"SELECT, then INSERT if missing\".",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "indexes",
+          "label": "Indexes and query plans",
+          "body": "## What an index is\n\nAn index is a separate, sorted structure (usually a **B-tree**) from key values to row locations. Without one, finding `email = 'a@b.com'` means a **sequential scan** of every row: `O(n)`. With a B-tree it is `O(log n)`: a handful of page reads even for hundreds of millions of rows.\n\nThe price: every write must also update each index (slower inserts, updates and deletes), and indexes consume disk and memory. **Index for the queries you actually run.**\n\n## Composite indexes and the leftmost-prefix rule\n\nAn index on `(user_id, created_at)` is sorted by `user_id`, then by `created_at` inside each user. It serves:\n\n- `WHERE user_id = 7` ✓\n- `WHERE user_id = 7 AND created_at > '2026-01-01'` ✓\n- `WHERE user_id = 7 ORDER BY created_at DESC LIMIT 20` ✓ (no sort needed: already ordered)\n- `WHERE created_at > '2026-01-01'` ✗ (skips the leading column; cannot use the index well)\n\nRule of thumb for column order: **equality columns first, then the range or sort column**. Put the most selective equality column first when order is otherwise free.\n\n## Covering indexes\n\nIf an index contains every column the query needs, the database answers from the index alone (an \"index-only scan\"), skipping the table. PostgreSQL: `CREATE INDEX ... ON orders (user_id, created_at) INCLUDE (total)`.\n\n## Things that stop an index being used\n\n- A function on the column: `WHERE LOWER(email) = 'x'` (create an expression index on `LOWER(email)`, or store normalised values).\n- A leading wildcard: `LIKE '%smith'` (prefix `LIKE 'smith%'` is fine; use full-text or trigram indexes for contains).\n- Type mismatch: comparing a string column to a number forces a cast.\n- Low selectivity: an index on a boolean `is_active` that is true for 98% of rows; the planner will scan instead.\n- Stale statistics: run `ANALYZE` (autovacuum usually does).\n- `OR` across different columns, and `OFFSET` with large values.\n\n## Reading EXPLAIN\n\n```sql\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT * FROM orders WHERE user_id = 7 ORDER BY created_at DESC LIMIT 20;\n```\n\n```\nLimit (cost=0.43..8.9 rows=20) (actual time=0.05..0.09 rows=20 loops=1)\n  -> Index Scan Backward using orders_user_created_idx on orders\n       Index Cond: (user_id = 7)\nPlanning Time: 0.1 ms   Execution Time: 0.12 ms\n```\n\nWhat to look for:\n\n- **Seq Scan** on a big table with a selective filter → missing index.\n- **Rows estimated vs actual** far apart → stale statistics.\n- **Sort** on a large set → an index matching the `ORDER BY` can remove it.\n- **Nested Loop** with a huge inner side → missing index on the join column; **Hash Join** and **Merge Join** are normal for big sets.\n- `loops=` multiplies the per-loop time.\n- `ANALYZE` actually **runs** the query (careful with writes; wrap in a transaction and roll back).\n\nAlways index **foreign keys** in the child table (`orders.user_id`): joins and cascading deletes depend on it, and PostgreSQL does not create them automatically.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "n1",
+          "label": "N+1, transactions, scale",
+          "body": "## The N+1 query problem\n\nThe most common backend performance bug. You fetch a list, then loop and query for each item:\n\n```ts\nconst orders = await db.query(\"SELECT * FROM orders LIMIT 50\");   // 1 query\nfor (const o of orders) {\n  o.user = await db.query(\"SELECT * FROM users WHERE id = $1\", [o.user_id]); // 50 more!\n}\n```\n\n51 round trips at ~1 ms each is 51 ms of pure latency, and it grows with the list. Fixes:\n\n1. **Join**: `SELECT o.*, u.name FROM orders o JOIN users u ON u.id = o.user_id`.\n2. **Batch**: `SELECT * FROM users WHERE id = ANY($1)` with the collected ids, then map in memory (what ORMs call eager loading: `include`, `select_related`, `joinedload`).\n3. **DataLoader** (GraphQL): collect ids requested within one tick and issue one batched query.\n\nDetect it by logging query counts per request in development, or tests that assert a maximum query count. ORMs make N+1 easy because lazy loading hides the queries.\n\n## Transactions and isolation\n\nA **transaction** groups statements so they succeed or fail together (**ACID**: Atomicity, Consistency, Isolation, Durability).\n\n```sql\nBEGIN;\nUPDATE accounts SET balance = balance - 100 WHERE id = 1 AND balance >= 100;\nUPDATE accounts SET balance = balance + 100 WHERE id = 2;\nCOMMIT;   -- or ROLLBACK on any failure\n```\n\nConcurrency anomalies, from mild to severe, and what each **isolation level** allows:\n\n| level | dirty read | non-repeatable read | phantom | write skew / lost update |\n|---|---|---|---|---|\n| Read Committed (PostgreSQL default) | no | possible | possible | possible |\n| Repeatable Read (MySQL InnoDB default) | no | no | mostly no (snapshot) | write skew possible in PG |\n| Serializable | no | no | no | no (transactions may abort and must be retried) |\n\n**Lost update** example: two requests read `stock = 5`, each subtracts 1 in app code and writes 4. Fixes: do it in one atomic statement (`UPDATE ... SET stock = stock - 1 WHERE stock > 0`), use `SELECT ... FOR UPDATE` to lock the row, use optimistic locking with a `version` column (`WHERE id = ? AND version = ?`, retry if 0 rows updated), or use `SERIALIZABLE` with retry.\n\nKeep transactions **short**. Never hold one open across a network call to another service or while waiting for a user. Long transactions hold locks, bloat the database and block vacuum.\n\n**Deadlocks:** two transactions lock rows in opposite order. Prevention: always lock in a consistent order; the database detects deadlocks and aborts one, so callers must **retry**.\n\n## Connection pooling\n\nOpening a database connection is expensive and a Postgres server handles only a few hundred. Use a **pool** (pg-pool, HikariCP, SQLAlchemy pool) with a limit near `(cores × 2) + disks` per instance, and think in totals: 50 app instances × pool of 20 = 1,000 connections, which kills the database. Put **PgBouncer** (transaction pooling) in front, or shrink pools. Exhausted pool symptoms: requests hang waiting for a connection while the database looks idle.\n\n## Migrations that don't take the site down\n\n- Make schema changes **backward compatible** in steps (expand, migrate, contract): add a nullable column → deploy code that writes both → backfill in batches → switch reads → drop the old column later.\n- Adding a column with a default, or creating an index, can lock a big table. Use `CREATE INDEX CONCURRENTLY` in PostgreSQL and batched backfills.\n- Keep migrations in version control, run automatically and test them against production-sized data.\n\n## Scaling beyond one box\n\n1. Fix queries and indexes first (the biggest wins by far).\n2. Cache hot reads.\n3. **Read replicas** for read-heavy load (accept replication lag: read-your-writes needs care).\n4. **Partitioning** big tables by time or tenant.\n5. **Sharding** only when a single primary can't handle the write volume.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// node-postgres: parameterised queries, a batch instead of N+1, and an atomic stock decrement\nimport { Pool } from \"pg\";\nconst pool = new Pool({ max: 10, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 2_000 });\n\n// 1) ALWAYS parameterise: never build SQL by string concatenation (SQL injection)\nexport const findUser = (email: string) =>\n  pool.query(\"SELECT id, name FROM users WHERE email = $1\", [email]).then((r) => r.rows[0]);\n\n// 2) Avoid N+1: fetch parents, then children in ONE query\nexport async function ordersWithUsers(limit = 50) {\n  const { rows: orders } = await pool.query(\"SELECT * FROM orders ORDER BY id DESC LIMIT $1\", [limit]);\n  const ids = [...new Set(orders.map((o) => o.user_id))];\n  const { rows: users } = await pool.query(\"SELECT id, name FROM users WHERE id = ANY($1)\", [ids]);\n  const byId = new Map(users.map((u) => [u.id, u]));\n  return orders.map((o) => ({ ...o, user: byId.get(o.user_id) }));\n}\n\n// 3) Transaction with row lock; always release the client\nexport async function reserve(sku: string, qty: number) {\n  const c = await pool.connect();\n  try {\n    await c.query(\"BEGIN\");\n    const { rows } = await c.query(\"SELECT stock FROM items WHERE sku = $1 FOR UPDATE\", [sku]);\n    if (!rows[0] || rows[0].stock < qty) { await c.query(\"ROLLBACK\"); return false; }\n    await c.query(\"UPDATE items SET stock = stock - $2 WHERE sku = $1\", [sku, qty]);\n    await c.query(\"COMMIT\");\n    return true;\n  } catch (e) { await c.query(\"ROLLBACK\"); throw e; } finally { c.release(); }\n}"
+            },
+            {
+              "lang": "python",
+              "source": "# SQLAlchemy 2.x: eager loading to avoid N+1, plus optimistic locking\nfrom sqlalchemy import select, update\nfrom sqlalchemy.orm import selectinload, Session\n\ndef recent_orders(db: Session, limit: int = 50):\n    # selectinload issues ONE extra query for all users instead of one per order\n    stmt = select(Order).options(selectinload(Order.user)).order_by(Order.id.desc()).limit(limit)\n    return db.scalars(stmt).all()\n\ndef rename(db: Session, product_id: int, name: str, version: int) -> bool:\n    res = db.execute(\n        update(Product).where(Product.id == product_id, Product.version == version)\n        .values(name=name, version=version + 1)\n    )\n    db.commit()\n    return res.rowcount == 1          # False -> someone else changed it first; reload and retry"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nThey want to see that you can write correct SQL, **explain why a query is slow**, and reason about concurrency, not just recite syntax.\n\n## Questions with model answers\n\n### 1. A page loads slowly. How do you find and fix the database cause?\n\n**Model answer.** I measure first: log slow queries and per-request query counts. For a suspect query I run `EXPLAIN (ANALYZE, BUFFERS)` and look for sequential scans on large tables, big sorts, nested loops over many rows, and estimates far from actuals. Fixes in order: remove N+1 patterns with joins or batching, add or reshape a composite index (equality columns then range/sort column) so it matches the `WHERE` and `ORDER BY`, avoid functions on indexed columns, replace `OFFSET` with keyset pagination, then consider caching or a read replica. I re-run EXPLAIN to confirm and check write overhead of the new index.\n\n### 2. How does a B-tree index speed up lookups, and what does it cost?\n\n**Model answer.** It keeps keys sorted in a balanced tree whose nodes are disk pages, so a lookup touches `O(log n)` pages, typically 3 to 4 even for hundreds of millions of rows, and range scans read adjacent leaves. The costs are extra storage and slower writes, since every insert, update of an indexed column or delete must update every index, plus planner and maintenance overhead. So I index for actual query patterns and drop unused indexes.\n\n### 3. Explain the N+1 problem.\n\n**Model answer.** It is one query to fetch a list followed by one more query per item to fetch related data, so total queries grow linearly with the list and latency multiplies. I fix it by joining, by batching the related lookups with `WHERE id IN (...)`, or by ORM eager loading, and I guard against it by asserting query counts in tests.\n\n### 4. What's the difference between WHERE and HAVING, and between INNER and LEFT JOIN?\n\n**Model answer.** `WHERE` filters rows before grouping; `HAVING` filters groups after aggregation. An inner join keeps only rows matching on both sides; a left join keeps every left row and fills right columns with NULL when nothing matches. A condition on the right table in `WHERE` negates a left join, so it belongs in the `ON` clause.\n\n### 5. Two users buy the last item at the same time. How do you prevent overselling?\n\n**Model answer.** Make the check and the decrement a single atomic operation: `UPDATE items SET stock = stock - 1 WHERE sku = ? AND stock > 0` and check that one row was affected. Alternatives are `SELECT ... FOR UPDATE` inside a transaction, optimistic locking with a version column and retry, or serializable isolation with retries. The read-then-write in application code is the bug, because both requests can read `stock = 1`.\n\n### 6. What isolation levels exist and which would you use?\n\n**Model answer.** Read Committed prevents dirty reads; Repeatable Read also gives a stable snapshot within the transaction; Serializable behaves as if transactions ran one at a time and may abort with serialisation failures that must be retried. Most apps run on Read Committed and protect critical invariants explicitly with constraints, atomic updates or row locks; I use Serializable for tricky multi-row invariants and accept the retry logic.\n\n### 7. How do you add a column to a 500-million-row table with zero downtime?\n\n**Model answer.** Expand and contract: add a nullable column (cheap metadata change), deploy code that writes both old and new, backfill in small batches with throttling, add indexes `CONCURRENTLY`, switch reads to the new column, and only later drop the old one. Avoid operations that rewrite the table or hold long locks during peak load, and test the migration on production-sized data.\n\n## Rapid-fire\n\n- **What does `COUNT(col)` skip?** NULLs.\n- **Why `NOT EXISTS` over `NOT IN`?** NOT IN misbehaves with NULLs.\n- **Index on a boolean column?** Rarely useful; low selectivity.\n- **Safe against SQL injection?** Parameterised queries, never string concatenation.\n- **Offset or keyset for deep pages?** Keyset.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Seq scan",
+          "time": "O(n)",
+          "space": "O(1)"
+        },
+        {
+          "op": "B-tree point lookup",
+          "time": "O(log n)",
+          "space": "O(n) index"
+        },
+        {
+          "op": "B-tree range scan",
+          "time": "O(log n + k)",
+          "space": "-"
+        },
+        {
+          "op": "Hash join",
+          "time": "O(n + m)",
+          "space": "O(smaller side)"
+        },
+        {
+          "op": "Nested loop join (with index)",
+          "time": "O(n log m)",
+          "space": "-"
+        },
+        {
+          "op": "Nested loop (no index)",
+          "time": "O(n · m)",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Think in sets: logical order is FROM/JOIN, WHERE, GROUP BY, HAVING, SELECT, ORDER BY, LIMIT; watch NULLs, join fan-out and conditions that turn LEFT JOIN into INNER JOIN.",
+        "B-tree indexes make lookups O(log n); order composite columns equality-first, then range/sort, and avoid functions or leading wildcards on indexed columns.",
+        "Read EXPLAIN (ANALYZE): look for sequential scans, big sorts, bad row estimates, and index every foreign key.",
+        "Eliminate N+1 with joins, batched IN queries or eager loading; always use parameterised queries.",
+        "Protect invariants with constraints, atomic updates, row locks or optimistic versions; keep transactions short and pool connections sensibly."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "WHERE user_id = 7",
+            "WHERE user_id = 7 ORDER BY created_at DESC LIMIT 20",
+            "WHERE created_at > '2026-01-01'",
+            "WHERE user_id = 7 AND created_at > '2026-01-01'"
+          ],
+          "q": "A composite index on (user_id, created_at) exists. Which query can NOT use it efficiently?",
+          "answer": 2,
+          "why": "The index is sorted by user_id first, so a query that skips the leading column cannot seek into it (leftmost-prefix rule)."
+        },
+        {
+          "options": [
+            "LEFT JOIN is slower",
+            "Users without orders have NULL status, which the WHERE rejects",
+            "It converts to a full outer join",
+            "status must be indexed"
+          ],
+          "q": "Why does WHERE o.status = 'paid' after a LEFT JOIN orders o often return fewer users than expected?",
+          "answer": 1,
+          "why": "Unmatched left rows have NULL right columns; the filter discards them, effectively making it an inner join. Move the condition into ON."
+        },
+        {
+          "options": [
+            "SELECT stock, then UPDATE in application code",
+            "UPDATE items SET stock = stock - 1 WHERE sku = ? AND stock > 0 and check the affected row count",
+            "Increase the connection pool size",
+            "Add an index on stock"
+          ],
+          "q": "Which approach prevents two requests from both buying the last item?",
+          "answer": 1,
+          "why": "The condition and decrement happen atomically in the database, so only one request can succeed when stock is 1."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Use The Index, Luke",
+          "url": "https://use-the-index-luke.com/"
+        },
+        {
+          "title": "PostgreSQL: Using EXPLAIN",
+          "url": "https://www.postgresql.org/docs/current/using-explain.html"
+        },
+        {
+          "title": "PostgreSQL: Transaction isolation",
+          "url": "https://www.postgresql.org/docs/current/transaction-iso.html"
+        }
+      ],
+      "practiceRef": "sql-advanced"
+    },
+    {
+      "id": "mongodb-modelling",
+      "title": "MongoDB: document modelling, indexes and aggregation",
+      "minutes": 40,
+      "summary": "When a document database fits, embed versus reference, schema design for access patterns, indexes, the aggregation pipeline, transactions and common pitfalls.",
+      "parts": [
+        {
+          "id": "modelling",
+          "label": "Modelling for access",
+          "body": "## Documents, collections and flexible schemas\n\nMongoDB stores **documents**: JSON-like (BSON) objects, grouped in **collections**. Documents in the same collection can have different fields, and a document can hold nested objects and arrays. This maps naturally onto objects in application code, so there is little impedance mismatch.\n\n\"Schemaless\" is a trap: your application still has a schema, it is just enforced in code. In production use **schema validation** (`$jsonSchema`), and an ODM (Mongoose) or zod types, so bad data cannot slip in.\n\n## The central question: embed or reference?\n\nSQL design starts with normalising entities. MongoDB design starts with **how the data is read and written together**. Model for your queries.\n\n**Embed** (nest the child inside the parent) when:\n\n- the child is always read with the parent (\"order with its line items\"),\n- the child belongs to one parent and has no life of its own,\n- the nested set is **bounded** and small.\n\n**Reference** (store the other document's id) when:\n\n- the child is shared or referenced from many places (a product used in many orders),\n- the nested set is **unbounded** or large (all comments of a viral post),\n- the child changes independently and often,\n- you need to query the child on its own.\n\nExample: an order embeds a **snapshot** of each line item (name, price at purchase time) because history must not change when the product's price changes, and references the `userId` and `productId` for lookups.\n\n```json\n{\n  \"_id\": \"ord_9812\",\n  \"userId\": \"u_42\",\n  \"status\": \"paid\",\n  \"items\": [\n    { \"productId\": \"p_7\", \"name\": \"Keyboard\", \"unitPrice\": 7900, \"qty\": 1 },\n    { \"productId\": \"p_9\", \"name\": \"Cable\", \"unitPrice\": 900, \"qty\": 2 }\n  ],\n  \"total\": 9700,\n  \"createdAt\": \"2026-10-05T11:30:00Z\"\n}\n```\n\nOne read returns everything the order page needs: no joins, one disk seek. That is the strength of the document model.\n\n## Patterns worth knowing\n\n| pattern | idea | example |\n|---|---|---|\n| **Subset** | keep only the hot subset embedded | latest 10 reviews inside the product; the rest in a `reviews` collection |\n| **Bucket** | group many small items per time window | one document per sensor per hour holding an array of readings |\n| **Computed** | store a precomputed value, update on write | `commentCount`, `avgRating` |\n| **Outlier** | handle the rare huge document differently | a celebrity with 50 million followers gets overflow documents |\n| **Extended reference** | copy a few fields from the referenced doc to avoid lookups | store `author.name` in the post |\n| **Schema versioning** | a `schemaVersion` field and lazy migration | evolve without downtime |\n\n## Limits to design around\n\n- A document is capped at **16 MB**. An ever-growing array (`$push` forever) will eventually break it and hurt performance long before: that is the **unbounded array anti-pattern**.\n- Duplicated data (extended references, snapshots) must be updated in several places, or accepted as historical. Decide per field.\n- Large arrays that you update a lot cause document growth and index churn.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "indexes",
+          "label": "Indexes and aggregation",
+          "body": "## Indexes work like SQL ones\n\nWithout an index MongoDB does a **collection scan** (COLLSCAN). Create indexes for your queries:\n\n```js\ndb.orders.createIndex({ userId: 1, createdAt: -1 });        // compound\ndb.users.createIndex({ email: 1 }, { unique: true });        // uniqueness\ndb.sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }); // TTL: auto-delete\ndb.posts.createIndex({ title: \"text\", body: \"text\" });       // basic text search\n```\n\n- **Compound indexes** follow the **ESR rule**: **E**quality fields first, then **S**ort fields, then **R**ange fields.\n- The leftmost-prefix rule applies, as in SQL.\n- **Multikey** indexes index each array element automatically (one per element, so big arrays make big indexes).\n- **Partial** indexes (`partialFilterExpression`) index only matching documents; **sparse** skips missing fields.\n- **Covered queries** are answered from the index alone when the projection includes only indexed fields.\n- Use `explain(\"executionStats\")` and check `totalDocsExamined` vs `nReturned`: if you examine 1,000,000 documents to return 10, you need an index.\n- For vector or Atlas search use the dedicated Atlas Search / Vector Search indexes.\n\n## The aggregation pipeline\n\nAggregation passes documents through **stages**, each transforming the stream:\n\n```js\ndb.orders.aggregate([\n  { $match: { status: \"paid\", createdAt: { $gte: ISODate(\"2026-01-01\") } } }, // filter early (uses index)\n  { $unwind: \"$items\" },                                                      // one doc per line item\n  { $group: { _id: \"$items.productId\", revenue: { $sum: { $multiply: [\"$items.unitPrice\", \"$items.qty\"] } }, units: { $sum: \"$items.qty\" } } },\n  { $sort: { revenue: -1 } },\n  { $limit: 10 },\n  { $lookup: { from: \"products\", localField: \"_id\", foreignField: \"_id\", as: \"product\" } }, // a \"join\"\n])\n```\n\nRules for fast pipelines: put `$match` and `$limit` as early as possible, so they use indexes and shrink the stream; project away unneeded fields; avoid `$lookup` on huge collections without an index on the foreign field; remember `$group` and `$sort` have a 100 MB in-memory limit per stage unless `allowDiskUse` is set.\n\n## Transactions, consistency and replication\n\n- **Single-document operations are atomic**, including nested fields and arrays. This is why embedding is powerful: updating an order and its items is one atomic write.\n- **Multi-document ACID transactions** exist (replica set or sharded cluster), but they cost performance and lock more; if you need them constantly, your model may be fighting the database.\n- A **replica set** (one primary, several secondaries) provides failover. **Write concern** (`w: \"majority\"`) says how many nodes must acknowledge before success; **read concern** and **read preference** decide how fresh a read is. Reading from secondaries can return stale data.\n- **Sharding** splits a collection across servers by a **shard key**. A good key has high cardinality, spreads writes evenly and appears in most queries; a monotonically increasing key (timestamp, ObjectId) sends all writes to one shard (a hot shard). Hashed shard keys distribute writes but make range queries scatter-gather.\n\n## SQL or MongoDB?\n\n| | choose SQL | choose MongoDB |\n|---|---|---|\n| data shape | highly relational, many-to-many, complex joins | hierarchical, document-shaped, varying attributes |\n| consistency | multi-row invariants are everywhere (money) | mostly single-document operations |\n| queries | ad hoc analytics, reporting | known access patterns, high write volume |\n| team | strong SQL skills, strict schema desired | rapid iteration, JSON everywhere |\n\nChoosing a database is about access patterns and invariants, not fashion. Many systems use both.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "js",
+              "source": "// Mongoose: schema validation, indexes and a safe update (Node)\nimport mongoose from \"mongoose\";\n\nconst orderSchema = new mongoose.Schema(\n  {\n    userId: { type: String, required: true, index: true },\n    status: { type: String, enum: [\"pending\", \"paid\", \"cancelled\"], default: \"pending\" },\n    items: {\n      type: [{ productId: String, name: String, unitPrice: { type: Number, min: 0 }, qty: { type: Number, min: 1, max: 100 } }],\n      validate: (v) => v.length > 0 && v.length <= 100, // bounded embedding\n    },\n    total: { type: Number, required: true },\n  },\n  { timestamps: true },\n);\norderSchema.index({ userId: 1, createdAt: -1 }); // ESR: equality (userId), then sort (createdAt)\n\nconst Order = mongoose.model(\"Order\", orderSchema);\n\n// Atomic conditional update: only move pending -> paid, in a single operation\nexport const markPaid = (id) =>\n  Order.findOneAndUpdate({ _id: id, status: \"pending\" }, { $set: { status: \"paid\" } }, { new: true });\n\n// Keyset pagination\nexport const page = (userId, before, limit = 20) =>\n  Order.find({ userId, ...(before && { createdAt: { $lt: before } }) }).sort({ createdAt: -1 }).limit(limit).lean();"
+            },
+            {
+              "lang": "python",
+              "source": "# PyMongo: aggregation with an early $match (index-friendly) and a computed counter updated atomically\nfrom pymongo import MongoClient, ASCENDING, DESCENDING\n\ndb = MongoClient()[\"shop\"]\ndb.orders.create_index([(\"userId\", ASCENDING), (\"createdAt\", DESCENDING)])\n\ntop = db.orders.aggregate([\n    {\"$match\": {\"status\": \"paid\"}},\n    {\"$unwind\": \"$items\"},\n    {\"$group\": {\"_id\": \"$items.productId\", \"units\": {\"$sum\": \"$items.qty\"}}},\n    {\"$sort\": {\"units\": -1}},\n    {\"$limit\": 10},\n])\n\n# Computed pattern: maintain a counter in the same atomic update that adds the review\ndb.products.update_one({\"_id\": pid}, {\"$inc\": {\"reviewCount\": 1}, \"$push\": {\"latestReviews\": {\"$each\": [rev], \"$slice\": -10}}})"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nThe question behind every MongoDB question is: **do you model for access patterns and know the limits?** Candidates who treat MongoDB as \"SQL without schemas\" or who embed unbounded arrays get caught quickly.\n\n## Questions with model answers\n\n### 1. When do you embed and when do you reference?\n\n**Model answer.** I embed when the child is read with the parent, belongs to one parent and is bounded in size, because one read and one atomic write cover it. I reference when the data is shared, grows without bound, changes independently or is queried on its own. Often it is a hybrid: embed a small subset or a snapshot of the fields I need (like product name and price at purchase time) and keep a reference to the source of truth.\n\n### 2. What is the unbounded array anti-pattern?\n\n**Model answer.** Pushing items into an array inside one document forever (comments on a post, events for a user). The document approaches the 16 MB cap, updates rewrite larger and larger documents, and multikey indexes bloat. The fix is a separate collection with a reference to the parent (or the bucket pattern with bounded arrays per time window), possibly with a subset of the latest items embedded for fast reads.\n\n### 3. What is the ESR rule?\n\n**Model answer.** For compound indexes, order fields as Equality, then Sort, then Range. Equality predicates narrow to a contiguous index range; sort fields next let the index supply the order without an in-memory sort; range fields last because a range breaks the ordering of any later fields. I verify with `explain` that the plan uses `IXSCAN`, has no `SORT` stage, and examines about as many documents as it returns.\n\n### 4. Does MongoDB support transactions? Should you use them?\n\n**Model answer.** Yes, multi-document ACID transactions on replica sets and sharded clusters. Single-document writes are already atomic, so good modelling (embedding what changes together) usually avoids them. I use multi-document transactions sparingly, for genuine cross-document invariants such as moving money between two accounts, keeping them short because they add latency and lock contention.\n\n### 5. How would you choose a shard key?\n\n**Model answer.** I want high cardinality, even write distribution, and the key present in most queries so they target one shard. A monotonically increasing key like a timestamp creates a hot shard. A hashed key spreads writes evenly but turns range queries into scatter-gather. Compound keys (tenant id plus a high-cardinality field) are common in multi-tenant systems. Shard keys are hard to change, so I test with realistic data first.\n\n### 6. A query is slow. How do you debug it in MongoDB?\n\n**Model answer.** Run `explain(\"executionStats\")`: look for `COLLSCAN`, a large gap between `totalDocsExamined` and `nReturned`, an in-memory `SORT`, and unexpected index choice. Then add or reshape a compound index following ESR, use projections to return fewer fields, move `$match` earlier in aggregations, and check the working set fits in RAM.\n\n## Rapid-fire\n\n- **Max document size?** 16 MB.\n- **Auto-expire documents?** A TTL index.\n- **Atomic increment?** `$inc` in an update.\n- **Which operations are atomic by default?** Any single-document write.\n- **Equivalent of a join?** `$lookup`, or better, modelling so it isn't needed.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Indexed query",
+          "time": "O(log n + k)",
+          "space": "index size"
+        },
+        {
+          "op": "COLLSCAN",
+          "time": "O(n)",
+          "space": "-"
+        },
+        {
+          "op": "$lookup (indexed foreign field)",
+          "time": "O(n log m)",
+          "space": "-"
+        },
+        {
+          "op": "Single-document update",
+          "time": "atomic, O(1) plus index maintenance",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Model for access patterns: embed what is read and written together and bounded; reference what is shared, unbounded or independent.",
+        "Single-document writes are atomic, 16 MB is the document cap, and unbounded arrays are an anti-pattern.",
+        "Design compound indexes with ESR (equality, sort, range) and verify with explain (docs examined vs returned).",
+        "Aggregation pipelines should $match and $limit early; $lookup is not a free join.",
+        "Pick shard keys with high cardinality and even writes; choose SQL when multi-row invariants dominate."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Embed all comments in the product document",
+            "Store comments in their own collection referencing the product, optionally embedding the latest few",
+            "Store them in a single giant string",
+            "Use a TTL index"
+          ],
+          "q": "A product's comments grow without limit. What is the better model?",
+          "answer": 1,
+          "why": "Embedding an unbounded array risks the 16 MB limit and costly updates; a separate collection with a subset embedded keeps reads fast and documents small."
+        },
+        {
+          "options": [
+            "Embed, Shard, Replicate",
+            "Equality, Sort, Range",
+            "Exact, Select, Return",
+            "Encode, Store, Read"
+          ],
+          "q": "What does ESR stand for in compound index design?",
+          "answer": 1,
+          "why": "Place equality fields first, then sort fields, then range fields so the index serves the filter and the ordering efficiently."
+        },
+        {
+          "options": [
+            "Updating two documents in different collections",
+            "Updating several fields and an array inside one document",
+            "Inserting into two shards",
+            "A $lookup"
+          ],
+          "q": "Which write is atomic without a multi-document transaction?",
+          "answer": 1,
+          "why": "MongoDB guarantees atomicity for operations on a single document, including nested fields and arrays."
+        }
+      ],
+      "sources": [
+        {
+          "title": "MongoDB: Data modelling",
+          "url": "https://www.mongodb.com/docs/manual/data-modeling/"
+        },
+        {
+          "title": "MongoDB: Schema design patterns",
+          "url": "https://www.mongodb.com/blog/post/building-with-patterns-a-summary"
+        },
+        {
+          "title": "MongoDB: Indexes",
+          "url": "https://www.mongodb.com/docs/manual/indexes/"
+        }
+      ],
+      "practiceRef": "dbms-nosql"
+    },
+    {
+      "id": "caching-redis",
+      "title": "Caching with Redis: patterns, invalidation and pitfalls",
+      "minutes": 40,
+      "summary": "Cache-aside and write-through, TTLs and invalidation, stampedes and penetration, Redis data structures, and the rate limiters and locks built on them.",
+      "parts": [
+        {
+          "id": "patterns",
+          "label": "Patterns and invalidation",
+          "body": "## Why cache?\n\nA cache stores the result of expensive work (a database query, an API call, a rendered page) closer to the caller so repeats are fast and cheap. Reading RAM is about 100 ns, an SSD about 100 µs, a cross-network database query 1 to 10 ms. A good cache can remove 90 percent or more of the load from your database and cut p99 latency dramatically.\n\nThe two hard problems are famous: **cache invalidation** (stale data) and **naming things**. Decide how stale each piece of data is allowed to be before you cache it.\n\n## Where caches live\n\n1. **Browser / HTTP cache** (`Cache-Control`).\n2. **CDN** at the edge.\n3. **Application in-process cache** (a `Map` or LRU in memory): fastest, but each instance has its own copy and they can disagree.\n4. **Distributed cache** (Redis, Memcached): shared by all instances.\n5. **Database internal caches** (buffer pool).\n\n## The patterns\n\n| pattern | how | pros | cons |\n|---|---|---|---|\n| **Cache-aside (lazy loading)** | app reads cache; on miss reads the DB, then writes the cache | simple, cache holds only what is used, cache outage degrades gracefully | first request is slow; staleness until TTL/invalidation |\n| **Read-through** | cache library fetches on miss | simpler app code | cache layer must know how to load |\n| **Write-through** | write DB and cache together | cache always fresh | slower writes, caches data never read |\n| **Write-behind (write-back)** | write cache, flush to DB later | very fast writes | data loss risk if the cache dies; complexity |\n| **Refresh-ahead** | refresh popular keys before they expire | no miss latency | wasted refreshes |\n\nCache-aside is the default for web apps:\n\n```\nread(key):  v = cache.get(key)\n            if v is None: v = db.read(key); cache.set(key, v, ttl)\n            return v\nwrite(key): db.write(key, value); cache.delete(key)   # invalidate, don't update\n```\n\n**Invalidate by deleting, not by updating.** Updating the cache on write has a race: two concurrent writers can update the database in one order and the cache in the other, leaving the cache wrong until the TTL. Deleting forces the next read to repopulate from the source of truth.\n\n## TTLs and eviction\n\n- Always set a **TTL**: it bounds staleness and is your safety net for missed invalidations. Add random **jitter** (± 10 percent) so many keys written together do not all expire at the same instant.\n- When memory is full, Redis evicts according to `maxmemory-policy`: `allkeys-lru` or `allkeys-lfu` for a pure cache; `volatile-*` policies only evict keys with a TTL; `noeviction` returns errors.\n- Pick cache keys that include everything the value depends on: `user:42:profile:v3`. Putting a **version** in the key lets you invalidate a whole class by bumping it.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "failures",
+          "label": "Failure modes",
+          "body": "## Cache stampede (thundering herd)\n\nA hot key expires. Thousands of requests miss at once and all hit the database to rebuild the same value; the database falls over. Defences:\n\n- **Single-flight / request coalescing**: only one request rebuilds, others wait for it (in-process promise map, or a Redis lock).\n- **Lock with `SET key value NX PX 5000`** around the rebuild; losers wait briefly and re-read.\n- **Stale-while-revalidate**: serve the slightly stale value while one worker refreshes in the background.\n- **Jittered TTLs** and **refresh-ahead** for known hot keys.\n\n## Cache penetration\n\nRequests for keys that **do not exist** (random ids, an attack) always miss and always hit the database. Defences: cache the \"not found\" result with a short TTL (**negative caching**), validate ids before querying, put a **Bloom filter** of existing ids in front, and rate limit.\n\n## Cache avalanche\n\nMany keys expire together, or the cache cluster dies, and everything lands on the database. Defences: jitter, multiple cache nodes with replication, **circuit breakers** and load shedding so the database is protected, and a warm-up procedure after restarts.\n\n## Hot keys and big keys\n\nOne key receiving a huge share of traffic overloads a single Redis shard: replicate it in the app (a small in-process cache with a 1 to 5 second TTL in front of Redis) or split it (`key:0..9`). Very large values (multi-MB) block Redis's single thread and clog the network; keep values small and compress or split them.\n\n## Consistency honesty\n\nA cache makes your read path **eventually consistent** with the database. Choose per data type:\n\n- Product descriptions, public profiles: seconds to minutes of staleness is fine.\n- Inventory counts at checkout, balances, permissions: read from the source of truth, or invalidate synchronously and accept the cost.\n- Never cache authorisation decisions for longer than you can tolerate a revoked permission staying valid.\n- Cache **per user** data under a user-specific key; a missing user id in the key leaks one user's data to another (a serious, classic bug).",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "redis",
+          "label": "Redis in practice",
+          "body": "## What Redis is\n\nRedis is an **in-memory data structure server**. Commands execute on a **single thread**, which makes each command atomic and avoids locking, and it is extremely fast (hundreds of thousands of ops per second per node). Persistence is optional (RDB snapshots, AOF log), so treat it as a cache unless you have designed for durability.\n\n## Data structures and what they are for\n\n| type | commands | typical use |\n|---|---|---|\n| String | `GET/SET/INCR/EXPIRE` | cached values, counters, flags, locks |\n| Hash | `HSET/HGETALL` | an object's fields (session, profile) |\n| List | `LPUSH/RPOP/BLPOP` | simple queues |\n| Set | `SADD/SISMEMBER` | unique visitors, tags, dedupe |\n| Sorted set | `ZADD/ZRANGE/ZREVRANK` | leaderboards, delay queues, sliding-window rate limits |\n| Stream | `XADD/XREADGROUP` | durable event log with consumer groups |\n| HyperLogLog | `PFADD/PFCOUNT` | approximate unique counts in 12 KB |\n| Pub/Sub | `PUBLISH/SUBSCRIBE` | fire-and-forget broadcast (no delivery guarantee) |\n\n## Common recipes\n\n**Fixed-window rate limiter** (atomic with `INCR`):\n\n```\nkey = rl:user42:<minute>\nn = INCR key; if n == 1: EXPIRE key 60\nallow if n <= 100\n```\n\nA **token bucket** or **sliding window log** (sorted set of timestamps) smooths the boundary burst of fixed windows. Do multi-step logic in a **Lua script** (or `MULTI`/`EXEC`) so it is atomic.\n\n**Distributed lock:**\n\n```\nSET lock:order:9812 <random-token> NX PX 10000      # acquire with expiry\n... do the work ...\n# release only if still mine, atomically (Lua): if GET == token then DEL\n```\n\nAlways use an expiry (a crashed holder must not block forever) and a unique token (so you never release someone else's lock). Locks with expiry are **not safe for correctness-critical mutual exclusion** if the holder pauses past the TTL (GC pause, network stall); use **fencing tokens** or database constraints for real safety. A lock is for efficiency (avoid duplicate work), the database enforces correctness.\n\n**Leaderboard:** `ZINCRBY board 10 \"alice\"`, then `ZREVRANGE board 0 9 WITHSCORES` for the top ten, `ZREVRANK` for a rank, all `O(log n)`.\n\n**Sessions:** a hash or string with a TTL, refreshed on activity.\n\n## Scaling and high availability\n\n- **Replication** (primary to replicas) gives read scaling and a hot standby; replication is asynchronous, so a failover can lose the last writes.\n- **Sentinel** or managed services automate failover.\n- **Redis Cluster** shards keys across nodes using 16,384 **hash slots**; multi-key commands must hit keys in the same slot (use hash tags like `{user42}:cart`).\n- Monitor memory, evictions, hit ratio, latency, and slow commands. **Never run `KEYS *` in production** (it blocks); use `SCAN`.\n\nRemember the alternatives: Memcached (simple, multi-threaded, strings only), an in-process LRU (zero network cost), and a CDN for public content.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "ts",
+              "source": "// Cache-aside with jittered TTL, negative caching and single-flight (ioredis)\nimport Redis from \"ioredis\";\nconst redis = new Redis(process.env.REDIS_URL!);\nconst inflight = new Map<string, Promise<unknown>>();   // coalesce concurrent misses in this process\n\nconst ttl = (base: number) => Math.round(base * (0.9 + Math.random() * 0.2)); // +/-10% jitter\n\nexport async function getProduct(id: string) {\n  const key = `product:${id}:v1`;\n  const hit = await redis.get(key).catch(() => null);            // cache failure must not break reads\n  if (hit !== null) return hit === \"null\" ? null : JSON.parse(hit);\n\n  if (inflight.has(key)) return inflight.get(key);               // single-flight\n  const p = (async () => {\n    const row = await db.products.find(id);                      // source of truth\n    await redis.set(key, JSON.stringify(row ?? null), \"EX\", row ? ttl(300) : 30).catch(() => {}); // negative caching: 30s\n    return row;\n  })().finally(() => inflight.delete(key));\n  inflight.set(key, p);\n  return p;\n}\n\nexport async function updateProduct(id: string, patch: object) {\n  await db.products.update(id, patch);\n  await redis.del(`product:${id}:v1`);                           // invalidate by delete, not update\n}\n\n// Fixed-window rate limit using INCR + EXPIRE\nexport async function allow(userId: string, limit = 100) {\n  const key = `rl:${userId}:${Math.floor(Date.now() / 60_000)}`;\n  const n = await redis.incr(key);\n  if (n === 1) await redis.expire(key, 60);\n  return n <= limit;\n}"
+            },
+            {
+              "lang": "python",
+              "source": "# redis-py: safe lock with a unique token and an atomic Lua release\nimport redis, uuid\n\nr = redis.Redis.from_url(REDIS_URL, decode_responses=True)\nRELEASE = r.register_script(\"\"\"\nif redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end\n\"\"\")\n\ndef with_lock(name: str, fn, ttl_ms: int = 10_000):\n    token = uuid.uuid4().hex\n    if not r.set(f\"lock:{name}\", token, nx=True, px=ttl_ms):\n        return None                          # someone else is doing it\n    try:\n        return fn()\n    finally:\n        RELEASE(keys=[f\"lock:{name}\"], args=[token])   # only release if still ours"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nCaching questions test whether you understand **consistency trade-offs and failure modes**, not just that \"Redis makes things fast\".\n\n## Questions with model answers\n\n### 1. Explain cache-aside and how you keep it consistent.\n\n**Model answer.** The application checks the cache; on a miss it loads from the database and stores the result with a TTL. On writes it updates the database and **deletes** the cached key so the next read repopulates. Deleting avoids the race where two writers update the database and cache in opposite orders. The TTL bounds staleness if an invalidation is missed. Reads are eventually consistent, which I accept for data that tolerates it and bypass the cache for data that does not, like balances at checkout.\n\n### 2. What is a cache stampede and how do you prevent it?\n\n**Model answer.** When a hot key expires, many concurrent requests miss simultaneously and all rebuild it from the database, overloading it. I prevent it with request coalescing (single-flight) or a short Redis lock so one request rebuilds, serving stale data while refreshing, jittered TTLs so keys do not expire together, and refresh-ahead for known hot keys.\n\n### 3. Cache penetration versus avalanche versus stampede?\n\n**Model answer.** Penetration is repeated requests for keys that do not exist, so they always hit the database; fix with negative caching, input validation and Bloom filters. Avalanche is many keys expiring together or the cache dying so load floods the database; fix with jitter, replication and circuit breakers. Stampede is concurrent rebuilds of one expired hot key; fix with single-flight and locks.\n\n### 4. Why is Redis single-threaded and still fast?\n\n**Model answer.** Data lives in memory, operations are simple and O(1) or O(log n), and one thread avoids locking and context-switching overhead while making each command atomic. I/O multiplexing handles many connections, and newer versions use extra threads for network I/O. The flip side is that a slow command (`KEYS *`, huge values, big Lua scripts) blocks everyone.\n\n### 5. How would you implement a rate limiter with Redis?\n\n**Model answer.** For a fixed window, `INCR` a per-user-per-window key and set `EXPIRE` on first increment, rejecting above the limit; it is simple but allows 2x bursts at window edges. For smoother behaviour, a sliding-window log with a sorted set of timestamps, or a token bucket stored as `(tokens, lastRefill)` updated in a Lua script so the read-modify-write is atomic. Limits are keyed by API key or user, and responses carry `Retry-After`.\n\n### 6. Is a Redis lock safe for mutual exclusion?\n\n**Model answer.** For efficiency, yes: `SET NX PX` with a unique token and a Lua compare-and-delete release prevents duplicate work. For correctness it is not enough: a client can pause beyond the TTL (GC, network partition) and then act as if it still held the lock. Critical invariants need fencing tokens checked by the resource or a database constraint or transaction as the real guard.\n\n### 7. What would you not cache?\n\n**Model answer.** Highly personalised data without a user-specific key, data needing strong consistency (account balances, inventory at purchase), security decisions with long TTLs, and results of non-idempotent operations. I would also avoid caching when the hit ratio would be low, since the cache adds cost and complexity without benefit.\n\n## Rapid-fire\n\n- **Invalidate by update or delete?** Delete.\n- **Eviction policy for a pure cache?** `allkeys-lru` or `allkeys-lfu`.\n- **Redis command never to run in prod?** `KEYS *` (use `SCAN`).\n- **How do you stop synchronized expiry?** TTL jitter.\n- **Does Pub/Sub guarantee delivery?** No; use Streams.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Redis GET/SET",
+          "time": "O(1)",
+          "space": "O(value)"
+        },
+        {
+          "op": "Sorted set add/rank",
+          "time": "O(log n)",
+          "space": "O(n)"
+        },
+        {
+          "op": "INCR",
+          "time": "O(1) atomic",
+          "space": "-"
+        },
+        {
+          "op": "Cache-aside read (hit)",
+          "time": "~1 ms network",
+          "space": "-"
+        },
+        {
+          "op": "Cache-aside read (miss)",
+          "time": "1 ms + DB read + write-back",
+          "space": "-"
+        }
+      ],
+      "keyPoints": [
+        "Cache-aside is the default: read cache, load on miss, write the DB then delete the key; TTLs bound staleness.",
+        "Stampede, penetration and avalanche are different failures with different fixes: single-flight/locks, negative caching/Bloom filters, jitter/replication/circuit breakers.",
+        "Always include everything the value depends on in the key (especially the user) and decide how stale each data type may be.",
+        "Redis commands are atomic on one thread; use INCR for counters, sorted sets for leaderboards and sliding windows, Lua for atomic multi-step logic.",
+        "Redis locks are for efficiency, not correctness; use fencing tokens or database constraints for invariants."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Deleting is faster than reading",
+            "Concurrent writers can leave a stale value if cache updates land out of order",
+            "Redis cannot update keys",
+            "TTLs make updates impossible"
+          ],
+          "q": "Why should a write invalidate (delete) the cache key rather than update it?",
+          "answer": 1,
+          "why": "Two concurrent writes can reach the database and cache in opposite orders, leaving a wrong cached value. Deleting makes the next read reload the truth."
+        },
+        {
+          "options": [
+            "Longer TTLs for existing keys",
+            "Negative caching, id validation and a Bloom filter",
+            "A bigger Redis instance",
+            "Write-behind caching"
+          ],
+          "q": "Thousands of requests ask for ids that do not exist. Which defence fits best?",
+          "answer": 1,
+          "why": "Misses for non-existent keys always reach the database. Caching the 'not found' result and filtering impossible ids stops the repeated work."
+        },
+        {
+          "options": [
+            "It cannot expire",
+            "A client may pause past the TTL and still act as if it holds the lock",
+            "It only works on one key",
+            "It is not atomic"
+          ],
+          "q": "What is the main weakness of a Redis SET NX PX lock for correctness-critical work?",
+          "answer": 1,
+          "why": "After expiry another client can acquire the lock while the first still proceeds. Fencing tokens or database constraints are needed for true safety."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Redis documentation",
+          "url": "https://redis.io/docs/latest/"
+        },
+        {
+          "title": "Redis: Distributed locks",
+          "url": "https://redis.io/docs/latest/develop/use/patterns/distributed-locks/"
+        },
+        {
+          "title": "AWS: Caching best practices",
+          "url": "https://aws.amazon.com/caching/best-practices/"
+        }
+      ],
+      "practiceRef": "hld-building-blocks"
+    }
+  ]
+}

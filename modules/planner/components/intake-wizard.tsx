@@ -25,6 +25,7 @@ import { LEVELS, TIERS, type AvailabilityOverride, type IntakeStep, type Level, 
 import { weeklyHours } from "@/modules/planner/domain/planner-profile";
 import type { DiagnosticCandidate, DiagnosticResult, DiagnosticTopic } from "@/modules/progress/services/diagnostic";
 import { cn } from "@/core/utils";
+import { RolePath, type RoleOption } from "@/modules/planner/components/role-path";
 
 export interface WizardTrack {
   id: string;
@@ -40,7 +41,7 @@ interface RatingDraft {
 }
 
 export interface WizardInitial {
-  goals: { targetRole: string; targetCompany: string; level: Level; focusNotes: string };
+  goals: { targetRole: string; roleId: string; targetCompany: string; level: Level; focusNotes: string };
   interviewDate: string;
   ratings: Array<RatingDraft & { topicId: string }>;
   hoursByDow: number[];
@@ -69,10 +70,11 @@ const HOUR_PRESETS: Array<{ label: string; hours: number[] }> = [
 const NEUTRAL: RatingDraft = { rating: 3, wantToLearn: false, tier: "must", diagnosticScore: null };
 const fmtHours = (min: number) => `${Math.round(min / 60)} h`;
 
-export function IntakeWizard({ tracks, initial }: { tracks: WizardTrack[]; initial: WizardInitial }) {
+export function IntakeWizard({ tracks, roles, initial }: { tracks: WizardTrack[]; roles: RoleOption[]; initial: WizardInitial }) {
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [goals, setGoals] = useState(initial.goals);
+  const selectedRole = roles.find((r) => r.id === goals.roleId) ?? null;
   const [date, setDate] = useState(initial.interviewDate);
   const [ratings, setRatings] = useState<Record<string, RatingDraft>>(() => Object.fromEntries(initial.ratings.map(({ topicId, ...r }) => [topicId, r])));
   const [hours, setHours] = useState<Array<number | "">>(initial.hoursByDow);
@@ -170,6 +172,30 @@ export function IntakeWizard({ tracks, initial }: { tracks: WizardTrack[]; initi
               <Input id="date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
               <p className="text-xs text-muted-foreground">No fixed date? Pick a realistic target. You can move it any time.</p>
             </div>
+            <fieldset className="space-y-2 sm:col-span-2">
+              <legend className="mb-1.5 text-sm font-medium">Study path</legend>
+              <p className="text-xs text-muted-foreground">Picks what you study first and what runs side by side. Language practice and DSA go together, and low-level design always comes before system design.</p>
+              <div role="group" aria-label="Study path" className="flex flex-wrap gap-2">
+                <Chip pressed={goals.roleId === ""} onClick={() => setGoals({ ...goals, roleId: "" })}>
+                  Standard order
+                </Chip>
+                {roles.map((r) => (
+                  <Chip key={r.id} pressed={goals.roleId === r.id} onClick={() => setGoals({ ...goals, roleId: r.id, targetRole: goals.targetRole || r.title })}>
+                    {r.title}
+                  </Chip>
+                ))}
+              </div>
+              {selectedRole ? (
+                <div className="space-y-2 pt-1">
+                  <p className="text-sm">
+                    {selectedRole.blurb} <span className="text-muted-foreground">Best for: {selectedRole.audience}.</span>
+                  </p>
+                  <RolePath path={selectedRole.path} />
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">Standard order follows the 24-week syllabus as it is.</p>
+              )}
+            </fieldset>
             <div className="space-y-1.5 sm:col-span-2">
               <Label htmlFor="notes">What do you most want out of this? (optional)</Label>
               <Input id="notes" value={goals.focusNotes} maxLength={300} placeholder="e.g. finally get comfortable with dynamic programming" onChange={(e) => setGoals({ ...goals, focusNotes: e.target.value })} />

@@ -69,7 +69,7 @@ Modules are not equal. Keep imports pointing at the more stable one.
 
 | Tier | Modules | Rule of thumb |
 |---|---|---|
-| **Leaf** (own one feature) | `ai`, `aptitude`, `course`, `design`, `dsa`, `jobs`, `learn`, `mock`, `news`, `quiz`, `resume`, `roadmap`, `settings`, `targets` | Depend on `settings` and small, stable helpers such as `planner/services/plan#todayIn`. Never on another leaf's components if a prop or `components/shared` will do. |
+| **Leaf** (own one feature) | `ai`, `aptitude`, `course`, `design`, `dsa`, `interview-bank`, `jobs`, `learn`, `mock`, `news`, `quiz`, `resume`, `roadmap`, `settings`, `targets` | Depend on `settings` and small, stable helpers such as `planner/services/plan#todayIn`. Never on another leaf's components if a prop or `components/shared` will do. `interview-bank` imports `ai` (drafting and extraction) and `news` (the shared Markdown renderer). |
 | **Orchestration** (stitch features together) | `planner`, `progress`, `notifications`, `practice` | May read many leaves. `planner`, `progress` and `notifications` already form a knot (`progress` <-> `planner` <-> `notifications`); the architecture test freezes it so it cannot grow. `practice` (the Practice hub) is a read-only aggregator: it points at leaves and nothing may import it. |
 | **Assistant** (read-only aggregator) | `chat` | Like `practice`: its data tools (`services/chat-tools.ts`) read other modules' services so the assistant can answer from your data; nothing may import it, and it never imports `resume`. |
 

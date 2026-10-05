@@ -4,13 +4,14 @@ import { chipClass } from "@/components/shared/chip";
 const TABS = [
   { id: "discover", href: "/jobs", label: "Discover" },
   { id: "tracker", href: "/jobs/tracker", label: "Tracker" },
+  { id: "profiles", href: "/jobs/profiles", label: "Profiles" },
   { id: "sources", href: "/jobs/sources", label: "Sources" },
   { id: "links", href: "/jobs/links", label: "Search links" },
 ] as const;
 
 export type JobsTab = (typeof TABS)[number]["id"];
 
-/** The four views of the job hunt: what is new, what you are tracking, where it comes from, and where to search yourself. */
+/** The views of the job hunt: what is new, what you are tracking, your saved searches, where it comes from, and where to search yourself. */
 export function JobsTabs({ active, trackerCount }: { active: JobsTab; trackerCount?: number }) {
   return (
     <nav aria-label="Jobs sections" className="-mt-1 mb-5 flex flex-wrap gap-1.5">

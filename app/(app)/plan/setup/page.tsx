@@ -6,6 +6,8 @@ import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { orderedTopics, trackById, tracks } from "@/core/content";
 import { formatDate } from "@/core/plan-clock";
+import { rolePathView } from "@/modules/planner/domain/role-path";
+import { roles } from "@/modules/planner/lib/roles";
 import { getIntake } from "@/modules/planner/services/planner-intake";
 import { listSnapshots } from "@/modules/planner/services/planner-snapshot";
 
@@ -38,6 +40,7 @@ export default async function PlanSetupPage() {
       <IntakeWizard
         key={intake.completedAt ? intake.completedAt.getTime() : "draft"}
         tracks={byTrack}
+        roles={roles.map((r) => ({ id: r.id, title: r.title, blurb: r.blurb, audience: r.audience, path: rolePathView(r) }))}
         initial={{
           goals: intake.goals,
           interviewDate: intake.interviewDate ?? "",

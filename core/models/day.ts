@@ -58,7 +58,7 @@ const quizQuestionSchema = new Schema(
       kind: { type: String, enum: ["problem", "subtopic", "pattern", "article", "case"] },
       ref: { type: String },
     },
-    style: { type: String, enum: ["output", "concept", "pattern", "recall", "llm"], default: "llm" },
+    style: { type: String, enum: ["output", "concept", "pattern", "recall", "llm", "scenario", "debug"], default: "llm" },
   },
   { _id: false },
 );

@@ -9,8 +9,8 @@ const text = (max: number, min = 1) => z.string().trim().min(min).max(max);
 const id = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 const https = z.string().url().refine((u) => u.startsWith("https://"), "Use an https link");
 
-export const COURSE_LANGS = ["js", "ts", "python", "java", "cpp", "go"] as const;
-export const LANG_LABEL: Record<(typeof COURSE_LANGS)[number], string> = { js: "JavaScript", ts: "TypeScript", python: "Python", java: "Java", cpp: "C++", go: "Go" };
+export const COURSE_LANGS = ["js", "ts", "python", "java", "cpp", "go", "sql", "bash", "yaml", "dockerfile", "hcl"] as const;
+export const LANG_LABEL: Record<(typeof COURSE_LANGS)[number], string> = { js: "JavaScript", ts: "TypeScript", python: "Python", java: "Java", cpp: "C++", go: "Go", sql: "SQL", bash: "Shell", yaml: "YAML", dockerfile: "Dockerfile", hcl: "Terraform" };
 
 export const courseCheckSchema = z
   .object({ q: text(300, 10), options: z.array(text(200)).min(3).max(4), answer: z.number().int().min(0).max(3), why: text(400, 10) })

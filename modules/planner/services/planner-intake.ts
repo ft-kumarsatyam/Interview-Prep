@@ -14,6 +14,7 @@ import {
 } from "@/modules/planner/domain/planner-intake";
 import { validatePlannerWindow } from "@/modules/planner/domain/planner-profile";
 import { loadPersonalisation } from "@/modules/planner/services/intake-weights";
+import { roleById } from "@/modules/planner/lib/roles";
 import { logPlanChange } from "@/modules/planner/services/plan-log";
 import { loadPlanInputs, todayIn } from "@/modules/planner/services/plan";
 import { PLANNER_INTAKE_ID, PlannerIntake, type PlannerIntakeDoc } from "@/core/models/planner";
@@ -27,6 +28,7 @@ function toState(doc: PlannerIntakeDoc | null, fallback: Awaited<ReturnType<type
   return {
     goals: {
       targetRole: doc?.goals?.targetRole || fallback.profile.targetRole,
+      roleId: doc?.goals?.roleId ?? "",
       targetCompany: doc?.goals?.targetCompany ?? fallback.profile.targetCompany,
       level: doc?.goals?.level ?? "fresher",
       focusNotes: doc?.goals?.focusNotes ?? "",
@@ -66,7 +68,8 @@ export async function saveIntakeStep(raw: unknown, now = new Date()): Promise<In
   if (input.step === "goals") {
     const problem = validatePlannerWindow({ endDate: input.interviewDate }, settings, today);
     if (problem) throw new Error(problem);
-    set.goals = { targetRole: input.targetRole, targetCompany: input.targetCompany, level: input.level, focusNotes: input.focusNotes };
+    if (input.roleId && !roleById.has(input.roleId)) throw new Error(`Unknown role: ${input.roleId}`);
+    set.goals = { targetRole: input.targetRole, roleId: input.roleId, targetCompany: input.targetCompany, level: input.level, focusNotes: input.focusNotes };
     set.interviewDate = input.interviewDate;
   } else if (input.step === "ratings") {
     const unknown = input.ratings.find((r) => !topicById.has(r.topicId));

@@ -1,0 +1,383 @@
+{
+  "chapter": {
+    "id": "database-internals",
+    "title": "Database internals",
+    "summary": "How databases store data on disk, why indexes are trees, how to design tables, and how transactions stay correct under failure and concurrency."
+  },
+  "lessons": [
+    {
+      "id": "storage-btree-lsm",
+      "title": "Storage engines: pages, B-trees and LSM-trees",
+      "minutes": 45,
+      "summary": "How data lives in pages on disk, why B-trees dominate read-heavy databases, how LSM-trees make writes fast, and the trade-offs behind read, write and space amplification.",
+      "parts": [
+        {
+          "id": "pages",
+          "label": "Pages and the buffer pool",
+          "body": "## Disks set the rules\n\nDatabases are designed around one fact: **disk is slow and works in blocks**. A random read from an HDD costs about 10 ms, from an SSD about 100 µs, while RAM costs about 100 ns, a gap of 1,000 to 100,000 times. Disks (and SSDs) read and write whole blocks (4 KB or more), never single bytes. So a storage engine's goal is to **minimise the number of block accesses**, and to turn random I/O into sequential I/O wherever possible.\n\n## Pages\n\nThe database divides its files into fixed-size **pages** (PostgreSQL 8 KB, MySQL InnoDB 16 KB). A page is the unit of I/O and of caching. A **heap/table page** holds many rows using a **slotted page** layout:\n\n```\n| header | slot 0 → | slot 1 → | ... free space ... | row 1 | row 0 |\n```\n\nA slot array at the front points to rows at the back, so rows can move within the page without changing their ID. A row's address is `(page number, slot number)` (PostgreSQL's **ctid**). Rows too large for a page are stored out of line (TOAST in PostgreSQL; overflow pages elsewhere).\n\nRow-oriented storage keeps all columns of a row together: great for transactional lookups (fetch one order). **Columnar** storage keeps each column together: great for analytics (sum one column across a billion rows), compresses well, and powers warehouses (BigQuery, Redshift, Parquet, ClickHouse).\n\n## The buffer pool\n\nReading a page from disk for every access would be hopeless, so the database keeps a **buffer pool** (page cache) in RAM:\n\n1. A query needs page P. If it is in the pool, use it (a hit).\n2. Otherwise read it from disk, evicting another page if the pool is full (usually an LRU/Clock variant).\n3. Pages that were modified are **dirty**; they are written back later, not immediately.\n\nThe **cache hit ratio** (aim for 99 percent plus for OLTP) is the single most important performance number: it determines how often a query touches the slow disk. This is why \"add RAM\" often fixes a database and why a full table scan can poison the cache by evicting useful pages (databases use ring buffers for big scans to limit this).\n\n## Heap files vs index-organised tables\n\n- **Heap table** (PostgreSQL): rows are in arbitrary order; indexes hold pointers to row locations.\n- **Clustered / index-organised table** (InnoDB, SQL Server clustered index): the table **is** a B-tree ordered by the primary key; rows live in the leaves. Primary-key range scans are very fast; secondary indexes store the primary key and need a second lookup. Choose compact, monotonic primary keys: random UUIDs as clustered keys cause page splits and bloat, sequential ids or time-ordered ids (UUIDv7, ULID) append at the right edge.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "btree",
+          "label": "B-trees",
+          "body": "## Why a tree of wide nodes\n\nA binary search tree on a billion keys is ~30 levels deep: 30 random disk reads per lookup. A **B-tree** makes each node an entire **page** holding hundreds of keys, so the tree is very **wide and shallow**: with 500 keys per page, 3 levels cover 125 million keys and 4 levels cover 62 billion. A lookup reads 3 or 4 pages, and the top levels stay permanently in the buffer pool, so often only the leaf is a real disk read.\n\n## Structure (the B+ tree used by databases)\n\n- **Internal nodes** hold separator keys and child pointers: they route the search.\n- **Leaf nodes** hold the keys with their row pointers (or the rows themselves) and are **linked in a chain**, so a range scan walks along the leaves without going back up.\n- The tree is **balanced**: all leaves are at the same depth; lookup cost is `O(log_B n)` page reads for branching factor `B`.\n\nOperations:\n\n- **Search**: descend from the root choosing the child by comparing keys.\n- **Insert**: find the leaf and insert; if the leaf is full it **splits** in two and pushes a separator key up; splits can cascade to the root, which grows the tree by one level.\n- **Delete**: remove the key; if a node becomes too empty it borrows from or merges with a sibling.\n\nEverything stays sorted, so B-trees support equality, **range queries** (`BETWEEN`), `ORDER BY` without sorting, prefix matches (`LIKE 'abc%'`), and min/max.\n\n## Costs and subtleties\n\n- **Write amplification**: changing one row updates the row's page and every index's leaf page; a split writes several pages. To make crashes safe the database also writes a log (WAL, next lesson).\n- **Random writes**: inserting random keys touches random leaves; each is a random I/O if not cached. Sequential keys append to the rightmost leaf and are much friendlier.\n- **Fragmentation / bloat**: after many deletes and updates pages are half empty; `VACUUM`/`REINDEX`/`OPTIMIZE` reclaim space.\n- **Fill factor**: leaving pages partially filled makes room for future inserts, reducing splits.\n- **Hash indexes** give O(1) equality but no ranges or ordering; rarely better than B-trees in practice.\n- **Other index types**: GIN/inverted indexes for text and arrays, GiST/R-trees for geometry, BRIN for huge naturally ordered tables, bitmap indexes for low-cardinality analytics, vector indexes (HNSW, IVF) for embeddings.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "lsm",
+          "label": "LSM-trees",
+          "body": "## Optimising for writes\n\nB-trees update pages **in place**, causing random writes. Log-structured merge-trees turn writes into **sequential appends** and fix up the organisation later. They power Cassandra, RocksDB, LevelDB, HBase, ScyllaDB, and the storage layer of many modern databases (MyRocks, CockroachDB, TiDB).\n\n### Write path\n\n1. Append the write to a **write-ahead log** on disk (sequential, for durability).\n2. Insert it into an in-memory sorted structure, the **memtable** (a skip list or tree).\n3. When the memtable fills, **flush** it to disk as an immutable, sorted file: an **SSTable** (sorted string table). No in-place updates ever.\n\nWrites are therefore sequential and fast; deletes are **tombstone** markers that hide older values.\n\n### Read path\n\nLook in the memtable, then in SSTables from newest to oldest until the key is found. Naively that checks many files, so each SSTable has a **Bloom filter** (a compact structure that answers \"definitely not here\" or \"maybe here\") and a sparse index, which skips most files cheaply.\n\n### Compaction\n\nBackground **compaction** merges SSTables (like merge sort), drops overwritten values and tombstones, and keeps the number of files small. Strategies:\n\n| strategy | idea | favours |\n|---|---|---|\n| **Leveled** | files organised in levels, each ~10x bigger, non-overlapping within a level | reads and space; more write amplification |\n| **Size-tiered** | merge similarly sized files | writes; reads may check more files, more temporary space |\n\n## The three amplifications\n\nEvery engine trades off:\n\n- **Write amplification (WA)**: bytes physically written per byte the application wrote.\n- **Read amplification (RA)**: I/Os needed per read.\n- **Space amplification (SA)**: bytes stored per byte of live data.\n\n| | B-tree | LSM-tree |\n|---|---|---|\n| writes | random, in place; WA from page rewrites and WAL | sequential; WA from compaction |\n| reads | predictable: one tree path | may check several levels (mitigated by Bloom filters) |\n| range scans | excellent | good, but must merge levels |\n| space | fragmentation | stale versions until compaction |\n| latency | steady | can spike during compaction stalls |\n| best for | read-heavy, transactional OLTP (Postgres, MySQL) | write-heavy ingestion, time series, messaging (Cassandra, RocksDB) |\n\nRule of thumb: **B-trees for read-heavy and mixed OLTP; LSM-trees for write-heavy workloads and SSDs.** The **RUM conjecture** says you cannot minimise Read, Update and Memory overhead at once.\n\n## Bloom filter in one minute\n\nTake a bit array of `m` bits and `k` hash functions. To add an item set the `k` bits its hashes select. To query, check those `k` bits: any 0 means **definitely absent**; all 1s means **probably present** (false positives are possible, false negatives are not). About 10 bits per key gives a 1 percent false positive rate. It saves disk reads for keys that are not in a given SSTable.",
+          "diagrams": [
+            {
+              "title": "LSM-tree write and read path",
+              "code": "flowchart LR\n  W[\"Write\"] --> L[\"WAL (sequential append)\"]\n  W --> M[\"Memtable (in memory, sorted)\"]\n  M -->|\"full: flush\"| S0[\"SSTable L0\"]\n  S0 -->|\"compaction\"| S1[\"SSTable L1\"]\n  S1 -->|\"compaction\"| S2[\"SSTable L2\"]\n  R[\"Read\"] --> M\n  R --> BF{\"Bloom filter says maybe?\"}\n  BF -->|yes| S0\n  BF -->|yes| S1"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# A tiny Bloom filter and a toy LSM memtable/SSTable to see the moving parts\nimport hashlib, bisect\n\nclass Bloom:\n    def __init__(self, m=1024, k=3):\n        self.m, self.k, self.bits = m, k, bytearray(m)\n    def _hashes(self, item):\n        for i in range(self.k):\n            h = hashlib.sha256(f\"{i}:{item}\".encode()).digest()\n            yield int.from_bytes(h[:8], \"big\") % self.m\n    def add(self, item):\n        for h in self._hashes(item): self.bits[h] = 1\n    def might_contain(self, item):\n        return all(self.bits[h] for h in self._hashes(item))    # False means definitely absent\n\nclass TinyLSM:\n    def __init__(self, limit=4):\n        self.mem, self.limit, self.sstables = {}, limit, []     # sstables: newest first\n    def put(self, k, v):\n        self.mem[k] = v\n        if len(self.mem) >= self.limit: self._flush()\n    def _flush(self):\n        keys = sorted(self.mem)                                  # SSTable = sorted, immutable\n        bloom = Bloom()\n        for k in keys: bloom.add(k)\n        self.sstables.insert(0, (keys, [self.mem[k] for k in keys], bloom))\n        self.mem = {}\n    def get(self, k):\n        if k in self.mem: return self.mem[k]\n        for keys, vals, bloom in self.sstables:                  # newest to oldest\n            if not bloom.might_contain(k): continue              # skip the file cheaply\n            i = bisect.bisect_left(keys, k)\n            if i < len(keys) and keys[i] == k: return vals[i]\n        return None"
+            },
+            {
+              "lang": "java",
+              "source": "// B+ tree search sketch: descend internal nodes, binary-search inside each node\nstatic final class Node {\n    boolean leaf; int n; long[] keys = new long[ORDER - 1]; Node[] children = new Node[ORDER]; long[] values = new long[ORDER - 1];\n}\nLong search(Node node, long key) {\n    while (!node.leaf) {\n        int i = 0;\n        while (i < node.n && key >= node.keys[i]) i++;   // pick the child whose range contains key\n        node = node.children[i];                          // each hop = one page read in a real engine\n    }\n    int idx = Arrays.binarySearch(node.keys, 0, node.n, key);\n    return idx >= 0 ? node.values[idx] : null;\n}"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nStorage questions probe whether you understand why databases are shaped the way they are: **minimising I/O**, and the trade-off between read-optimised and write-optimised structures.\n\n## Questions with model answers\n\n### 1. Why do databases use B-trees instead of binary search trees?\n\n**Model answer.** Disk access is by page, so the cost metric is page reads, not comparisons. A B-tree node fills a page with hundreds of keys, giving a very high branching factor and a height of 3 or 4 for billions of keys; the root and upper levels stay cached, so a lookup is one or two real disk reads. A binary tree would be about 30 levels deep with each hop a potential random I/O. Leaves are also linked, giving efficient range scans.\n\n### 2. B-tree versus LSM-tree?\n\n**Model answer.** B-trees update pages in place and keep data sorted for fast, predictable reads and range scans, at the cost of random writes and page rewrites; they suit read-heavy and transactional workloads. LSM-trees buffer writes in memory, log them, and flush sorted immutable files that are merged by background compaction, making writes sequential and fast, at the cost of read amplification (mitigated by Bloom filters) and compaction overhead. I'd pick an LSM engine for heavy ingestion such as time series or event logs and a B-tree for general OLTP.\n\n### 3. What is a clustered index and why does primary key choice matter?\n\n**Model answer.** A clustered index stores the table rows in the order of the index, so the table is the B-tree (InnoDB's primary key). Range scans on it are fast, but every secondary index stores the primary key as its pointer, so a wide key bloats all indexes. Random keys like UUIDv4 insert into random leaves, causing page splits and poor cache locality; monotonic or time-ordered keys append at the end and keep the tree compact.\n\n### 4. What is a Bloom filter and where is it used in databases?\n\n**Model answer.** A space-efficient probabilistic set: k hash functions set bits on insert and a membership test checks those bits. It can return false positives but never false negatives. LSM engines keep one per SSTable so reads skip files that definitely don't contain the key, avoiding disk I/O; some systems also use them for join pruning and caching layers to prevent lookups of missing keys.\n\n### 5. Explain write amplification.\n\n**Model answer.** It is the ratio of data physically written to storage versus data logically written by the application. In a B-tree, changing a small row rewrites a whole page plus the WAL entry and index pages; in an LSM-tree, data is rewritten repeatedly during compaction as it moves through levels. High write amplification wears SSDs, consumes I/O bandwidth and increases latency, so engines tune compaction, page sizes and batching to balance it against read and space amplification.\n\n### 6. When would you choose a columnar store?\n\n**Model answer.** For analytical queries that scan a few columns across many rows (aggregations, reporting): storing each column contiguously means reading only needed columns, compressing very effectively (similar values together), and using vectorised execution. It's poor for single-row transactional updates, so OLTP stays row-oriented and a warehouse receives data via ETL or CDC.\n\n## Rapid-fire\n\n- **Typical page sizes?** 8 KB (Postgres), 16 KB (InnoDB).\n- **Why are leaves linked?** Fast range scans.\n- **What does compaction do?** Merges SSTables, drops stale values and tombstones.\n- **False positives in a Bloom filter?** Possible; false negatives, never.\n- **Best key for clustered inserts?** Monotonic or time-ordered.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "B-tree search",
+          "time": "O(log_B n) page reads",
+          "space": "O(n)"
+        },
+        {
+          "op": "B-tree insert (with splits)",
+          "time": "O(log_B n)",
+          "space": "O(n)"
+        },
+        {
+          "op": "LSM write",
+          "time": "O(1) amortised sequential",
+          "space": "memtable + WAL"
+        },
+        {
+          "op": "LSM read",
+          "time": "O(levels) with Bloom filters",
+          "space": "extra for stale versions"
+        },
+        {
+          "op": "Bloom filter lookup",
+          "time": "O(k)",
+          "space": "~10 bits per key"
+        }
+      ],
+      "keyPoints": [
+        "Databases minimise block I/O: data lives in fixed-size pages cached in a buffer pool whose hit ratio drives performance.",
+        "B-trees are wide, shallow, balanced trees of pages with linked leaves: O(log_B n) lookups and efficient range scans.",
+        "LSM-trees append to a log and memtable, flush immutable sorted SSTables, and compact in the background, trading read and space amplification for fast sequential writes.",
+        "Bloom filters let LSM reads skip files that cannot contain a key (no false negatives).",
+        "Choose B-trees for read-heavy OLTP, LSM for write-heavy ingestion, and columnar storage for analytics."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "To make nodes easy to print",
+            "So each node read fetches many keys in one I/O, keeping the tree shallow",
+            "Because pages cannot be smaller than keys",
+            "To avoid using RAM"
+          ],
+          "q": "Why is a B-tree node sized to a disk page?",
+          "answer": 1,
+          "why": "Disk reads are per block; packing hundreds of keys into a node minimises the number of block reads per lookup."
+        },
+        {
+          "options": [
+            "Rewrites the target page in place",
+            "Appends to a log and inserts into an in-memory table, later flushing sorted immutable files",
+            "Locks the entire table",
+            "Deletes old files immediately"
+          ],
+          "q": "What does an LSM-tree do on a write?",
+          "answer": 1,
+          "why": "Writes are sequential: WAL plus memtable, then flushed SSTables merged by compaction, avoiding random in-place updates."
+        },
+        {
+          "options": [
+            "It might be present",
+            "It is definitely absent",
+            "The filter is full",
+            "Nothing; you must check disk"
+          ],
+          "q": "A Bloom filter says an item is not present. What can you conclude?",
+          "answer": 1,
+          "why": "Bloom filters have no false negatives, so a negative answer is certain and lets the engine skip the file."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Use The Index, Luke",
+          "url": "https://use-the-index-luke.com/"
+        },
+        {
+          "title": "RocksDB wiki: Overview",
+          "url": "https://github.com/facebook/rocksdb/wiki/RocksDB-Overview"
+        },
+        {
+          "title": "CMU 15-445 Database Systems",
+          "url": "https://15445.courses.cs.cmu.edu/"
+        }
+      ],
+      "practiceRef": "dbms-storage-indexing"
+    },
+    {
+      "id": "normalization-keys-design",
+      "title": "Relational design: keys, normalization and when to denormalize",
+      "minutes": 40,
+      "summary": "Primary, candidate and foreign keys, functional dependencies, 1NF to BCNF with worked examples, modelling relationships, and the honest trade-offs of denormalization.",
+      "parts": [
+        {
+          "id": "keys",
+          "label": "Keys and anomalies",
+          "body": "## Why design matters\n\nA badly designed schema causes **anomalies**: bugs that are really data-modelling bugs. Consider one flat table:\n\n| order_id | customer | customer_email | product | price |\n|---|---|---|---|---|\n| 1 | Asha | asha@x.com | Pen | 10 |\n| 2 | Asha | asha@x.com | Book | 90 |\n| 3 | Bo | bo@x.com | Pen | 10 |\n\n- **Update anomaly**: Asha changes her email; you must change every row, and missing one leaves contradictory data.\n- **Insertion anomaly**: you can't add a new customer who hasn't ordered yet (there's no order row to hold them).\n- **Deletion anomaly**: deleting Bo's only order erases the fact that Bo exists, and that the Pen costs 10 if no other row has it.\n- **Redundancy**: the email is stored over and over.\n\nNormalisation is the discipline of structuring tables to avoid these.\n\n## Keys\n\n- **Super key**: any set of columns that uniquely identifies a row.\n- **Candidate key**: a *minimal* super key (no column can be removed). A table may have several (`email`, `employee_number`).\n- **Primary key (PK)**: the candidate key chosen as the main identifier; unique and `NOT NULL`.\n- **Alternate key**: a candidate key not chosen as primary (enforce with `UNIQUE`).\n- **Foreign key (FK)**: columns referencing another table's key, enforcing **referential integrity**: no order can point to a customer who doesn't exist. Options on delete/update: `RESTRICT`, `CASCADE`, `SET NULL`.\n- **Composite key**: a key of several columns (`(order_id, product_id)`).\n- **Surrogate vs natural key**: a surrogate key is an artificial id (serial, UUID) with no business meaning; a natural key comes from the domain (ISBN, email). Surrogate keys are stable and compact (emails change); still add `UNIQUE` constraints on the natural identifiers.\n\n## Functional dependencies\n\n`A → B` (\"A determines B\") means: whenever two rows have the same A they have the same B. Here `customer → customer_email` and `product → price`. Normal forms are rules about which dependencies are allowed.\n\n**Attribute closure** `X⁺` is the set of all attributes determined by X. If `X⁺` is all the columns, X is a (super) key. To find candidate keys, start from attributes that never appear on the right side of a dependency.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "forms",
+          "label": "Normal forms",
+          "body": "## First normal form (1NF)\n\nEvery column holds a single **atomic** value, no repeating groups, each row is unique. `phones = \"123, 456\"` or columns `phone1, phone2, phone3` violate it. Fix: a child table `customer_phone(customer_id, phone)`.\n\n## Second normal form (2NF)\n\n1NF **and** no *partial* dependency: a non-key column must depend on the **whole** composite key, not just part of it. In `order_item(order_id, product_id, product_name, qty)` with key `(order_id, product_id)`, `product_name` depends only on `product_id`. Move it to `product(product_id, product_name)`. (2NF only matters for composite keys.)\n\n## Third normal form (3NF)\n\n2NF **and** no *transitive* dependency: non-key columns must depend on the key, not on other non-key columns. In `employee(emp_id, dept_id, dept_name)`, `emp_id → dept_id → dept_name`, so `dept_name` depends on the key only through `dept_id`. Move `dept_name` to `department(dept_id, dept_name)`.\n\nMnemonic: *\"Every non-key attribute must provide a fact about the key, the whole key, and nothing but the key.\"*\n\n## Boyce-Codd normal form (BCNF)\n\nFor every non-trivial dependency `X → Y`, X must be a super key. Stricter than 3NF; they differ only when a table has overlapping candidate keys. Example: `class(student, course, teacher)` where each teacher teaches one course (`teacher → course`) and a student has one teacher per course. `teacher` is not a key but determines `course`: BCNF violation. Decompose into `teaches(teacher, course)` and `enrolled(student, teacher)`. Sometimes BCNF decomposition loses the ability to enforce a dependency with a simple constraint, which is why 3NF is the common practical target.\n\n## 4NF and 5NF in one breath\n\n**4NF** removes multi-valued dependencies (a person with independent sets of skills and languages shouldn't be stored as every skill-language combination). **5NF** handles join dependencies. Interviews mostly stop at BCNF.\n\n## Worked example: normalising the flat table\n\nFrom the first table: `customer → email`, `product → price`, `order_id → customer, product`.\n\n```\ncustomer(customer_id PK, name, email UNIQUE)\nproduct(product_id PK, name, price)\norders(order_id PK, customer_id FK → customer, ordered_at)\norder_item(order_id FK, product_id FK, qty, unit_price,  PRIMARY KEY (order_id, product_id))\n```\n\nNote `unit_price` in `order_item`: this is deliberate. The price **at the time of purchase** is a different fact from the product's current price, so storing it is not redundancy, it's history.\n\n## Modelling relationships\n\n- **One-to-many**: FK on the \"many\" side (`orders.customer_id`).\n- **Many-to-many**: a **junction table** with two FKs and a composite PK (`order_item`, `student_course`), which often carries attributes of its own (qty, grade).\n- **One-to-one**: shared primary key or a unique FK; usually used to split rarely used columns.\n- **Hierarchies**: adjacency list (`parent_id`, simple, recursive CTEs), materialised path (`/1/4/9/`), nested sets, closure table.\n- **Polymorphism** (many entity types): single table with a `type` column, a table per subtype, or JSONB for sparse attributes. Avoid generic entity-attribute-value tables unless you really need them.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "denorm",
+          "label": "Trade-offs and denormalization",
+          "body": "## Normalise to understand, denormalise to scale\n\nA fully normalised schema gives integrity and flexible queries, but reads need **joins**. Joins are cheap with indexes at moderate scale, but expensive across shards or at huge sizes. **Denormalisation** deliberately duplicates data to avoid joins, accepting the cost of keeping copies consistent.\n\n| technique | example | cost |\n|---|---|---|\n| **Redundant column** | `orders.customer_name` copy | must update when the source changes (or accept historical snapshot) |\n| **Precomputed aggregate** | `posts.comment_count`, `accounts.balance` | update on every write; can drift unless done in the same transaction or recomputed |\n| **Materialised view** | stored result of a join/aggregate query | refresh cost and staleness |\n| **Summary / rollup tables** | daily sales per product | batch jobs |\n| **Document embedding** | order with items inside (NoSQL) | duplication, harder cross-entity queries |\n| **Read model (CQRS)** | separate query-optimised store fed by events | eventual consistency |\n\nGuidance:\n\n1. **Start normalised (3NF).** Prove with measurements (EXPLAIN, production metrics) that a join is the bottleneck before denormalising.\n2. Prefer indexes, caching and materialised views first.\n3. Denormalise **read-heavy, rarely changing** data (names, categories), and keep the source of truth normalised.\n4. Maintain duplicates in **one place in code or a trigger**, in the same transaction, and add a reconciliation job that checks for drift.\n5. Analytical systems typically use **star schemas**: a central fact table (events, sales) surrounded by denormalised dimension tables (date, product, customer), which are designed for fast scans rather than update integrity.\n\n## Constraints are part of the design\n\nLet the database defend the model: `NOT NULL`, `UNIQUE`, `CHECK (price >= 0)`, `FOREIGN KEY`, `EXCLUDE` (no overlapping bookings). Application-only checks race under concurrency; a unique index never does. Use appropriate types (`numeric` for money, `timestamptz` for instants, enums or lookup tables for fixed sets), and decide on soft deletes (`deleted_at`) knowingly, since they complicate uniqueness and every query.\n\n## Schema evolution\n\nPlan for change: additive migrations, nullable-then-backfill-then-not-null, avoid reusing columns for new meanings, keep migrations in version control. Good names, comments on tricky columns and an up-to-date ER diagram are cheap and valuable.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "sql",
+              "source": "-- Normalised schema with real constraints; the DB defends the model\nCREATE TABLE customer (\n  customer_id  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  name         TEXT NOT NULL,\n  email        TEXT NOT NULL UNIQUE\n);\nCREATE TABLE product (\n  product_id   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  name         TEXT NOT NULL,\n  price_cents  INTEGER NOT NULL CHECK (price_cents >= 0)\n);\nCREATE TABLE orders (\n  order_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  customer_id  BIGINT NOT NULL REFERENCES customer ON DELETE RESTRICT,\n  ordered_at   TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE TABLE order_item (\n  order_id     BIGINT NOT NULL REFERENCES orders ON DELETE CASCADE,\n  product_id   BIGINT NOT NULL REFERENCES product,\n  qty          INTEGER NOT NULL CHECK (qty > 0),\n  unit_price_cents INTEGER NOT NULL,          -- price at purchase time (history, not redundancy)\n  PRIMARY KEY (order_id, product_id)\n);\nCREATE INDEX order_item_product_idx ON order_item (product_id);   -- index the FK used in joins\nCREATE INDEX orders_customer_idx ON orders (customer_id, ordered_at DESC);"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nNot rote definitions of normal forms, but whether you can **spot redundancy and anomalies in a table**, fix them, and justify a deliberate denormalisation.\n\n## Questions with model answers\n\n### 1. Explain 1NF, 2NF and 3NF with an example.\n\n**Model answer.** 1NF requires atomic values and no repeating groups. 2NF adds that every non-key attribute depends on the whole key, not part of a composite key. 3NF adds that non-key attributes depend only on the key, not on other non-key attributes. For an order line keyed by order and product, a product name violates 2NF because it depends only on the product; for an employee with a department id and department name, the name violates 3NF through a transitive dependency. The cure in both cases is moving the dependent attribute to its own table.\n\n### 2. What is the difference between 3NF and BCNF?\n\n**Model answer.** BCNF requires that for every non-trivial functional dependency X → Y, X is a super key. 3NF is slightly more permissive, allowing Y to be a prime attribute (part of some candidate key). They differ only for tables with overlapping candidate keys. BCNF can eliminate more redundancy but may make some dependencies impossible to enforce with a single-table constraint.\n\n### 3. Why not always normalise to the highest form?\n\n**Model answer.** More normalisation means more tables and joins. At moderate scale with proper indexes this is fine, and integrity benefits are real. At high read volume, across shards, or for analytics, joins become the bottleneck, so I denormalise selectively: copy rarely changing columns, maintain counters or build materialised views, but only after measuring, and with a mechanism to keep copies consistent.\n\n### 4. How do you model a many-to-many relationship?\n\n**Model answer.** With a junction table holding foreign keys to both sides, typically with a composite primary key on the pair so duplicates are impossible, plus any attributes of the relationship itself, like quantity or enrollment date. Index both foreign keys because queries traverse in both directions.\n\n### 5. Surrogate or natural primary key?\n\n**Model answer.** I generally use a surrogate key because natural keys change (emails, names) and can be wide or composite, which bloats foreign keys and indexes. I still declare `UNIQUE` constraints on natural identifiers to protect business rules. Natural keys can be fine for stable, small reference data like country codes.\n\n### 6. What is referential integrity and how can it break?\n\n**Model answer.** It guarantees every foreign key value matches an existing referenced row. Foreign key constraints enforce it in the database, with actions like RESTRICT, CASCADE and SET NULL on delete. It can break if constraints are omitted for \"performance\", if data is loaded with constraints disabled, or across services/shards where the database can't enforce it, in which case you need application checks and reconciliation.\n\n## Rapid-fire\n\n- **Candidate key vs super key?** Candidate keys are minimal super keys.\n- **What is a transitive dependency?** A → B → C where B is not a key.\n- **Why store price at purchase in the order line?** It's historical data, not redundancy.\n- **Star schema?** Central fact table with denormalised dimension tables for analytics.\n- **Constraint that prevents duplicates under concurrency?** A unique index.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Join with indexed FK",
+          "time": "O(n log m)",
+          "space": "-"
+        },
+        {
+          "op": "Maintaining a counter column",
+          "time": "O(1) per write",
+          "space": "extra column"
+        },
+        {
+          "op": "Materialised view refresh",
+          "time": "O(source size)",
+          "space": "stored result"
+        }
+      ],
+      "keyPoints": [
+        "Poor design causes update, insertion and deletion anomalies; normalisation removes redundancy by making every attribute depend on the key, the whole key and nothing but the key.",
+        "1NF atomic values; 2NF no partial dependency on a composite key; 3NF no transitive dependency; BCNF every determinant is a super key.",
+        "Model many-to-many with junction tables, one-to-many with a foreign key on the many side, and let constraints enforce integrity.",
+        "Store purchase-time prices and other historical facts deliberately; that is history, not redundancy.",
+        "Start normalised, measure, then denormalise selectively with a plan to keep copies consistent."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "1NF",
+            "2NF",
+            "3NF",
+            "BCNF only"
+          ],
+          "q": "In order_item(order_id, product_id, product_name, qty) with key (order_id, product_id), which normal form does product_name violate?",
+          "answer": 1,
+          "why": "product_name depends on part of the composite key (product_id alone), which is a partial dependency violating 2NF."
+        },
+        {
+          "options": [
+            "It is easier to write",
+            "It cannot race under concurrent inserts",
+            "It makes queries faster always",
+            "It removes the need for a primary key"
+          ],
+          "q": "Why does a UNIQUE constraint beat an application-level duplicate check?",
+          "answer": 1,
+          "why": "Two requests can both pass an application check before either inserts; the database index enforces uniqueness atomically."
+        },
+        {
+          "options": [
+            "Always, to avoid joins",
+            "After measurement shows joins are the bottleneck, with a plan to keep copies consistent",
+            "Never",
+            "Only for tiny tables"
+          ],
+          "q": "When is denormalisation justified?",
+          "answer": 1,
+          "why": "It trades integrity and write cost for read speed, so it should be a measured, controlled choice."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Database normalization (Wikipedia)",
+          "url": "https://en.wikipedia.org/wiki/Database_normalization"
+        },
+        {
+          "title": "PostgreSQL: Constraints",
+          "url": "https://www.postgresql.org/docs/current/ddl-constraints.html"
+        },
+        {
+          "title": "Kimball: Dimensional modelling techniques",
+          "url": "https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/"
+        }
+      ],
+      "practiceRef": "dbms-normalization"
+    },
+    {
+      "id": "transactions-mvcc-recovery",
+      "title": "Transactions: ACID, MVCC, locking and crash recovery",
+      "minutes": 50,
+      "summary": "What ACID really guarantees, how write-ahead logging survives crashes, how MVCC and locks implement isolation, and which anomalies each isolation level allows.",
+      "parts": [
+        {
+          "id": "acid",
+          "label": "ACID and the log",
+          "body": "## The problem\n\nA bank transfer is two writes: debit A, credit B. If the machine dies between them money vanishes; if two transfers interleave badly, balances are wrong. A **transaction** groups operations into one logical unit with strong guarantees, summarised as **ACID**:\n\n- **Atomicity**: all or nothing. If anything fails, the changes are undone (**rollback**).\n- **Consistency**: the transaction moves the database from one valid state to another, respecting constraints (keys, checks, foreign keys) and application invariants. (Partly the database's job, partly yours.)\n- **Isolation**: concurrent transactions don't see each other's partial work; the result is as if they ran in some serial order (to the degree the isolation level promises).\n- **Durability**: once committed, changes survive crashes and power loss.\n\n## Write-ahead logging (WAL)\n\nThe buffer pool changes pages in memory and writes them to disk lazily. How can a commit be durable if its data pages are still only in RAM, and how can a crash mid-transaction not leave half-written changes on disk?\n\nThe answer is the **write-ahead log**: before any change reaches the data files, a **log record** describing it is appended to a sequential log and flushed to disk. The rules:\n\n1. **Write-ahead**: a data page can't be written to disk before the log records describing its changes are on disk.\n2. **Force at commit**: the commit log record is flushed (`fsync`) before telling the client \"committed\". Sequential appends are fast, and a group commit batches many transactions into one flush.\n\nData pages are written back later in the background (checkpointing). The log makes the data files recoverable.\n\n## Crash recovery (ARIES in outline)\n\nAfter a crash the database replays the log:\n\n1. **Analysis**: find which transactions were active and which pages were dirty at the crash.\n2. **Redo**: reapply all logged changes after the last checkpoint (\"repeat history\"), including those of transactions that didn't commit, so pages are brought to their crash-time state.\n3. **Undo**: roll back transactions that hadn't committed, using the log's undo information (writing compensation records).\n\nResult: committed work survives (durability), uncommitted work vanishes (atomicity). Periodic **checkpoints** bound how much log must be replayed. WAL also powers **replication** (stream the log to replicas), **point-in-time recovery** (restore a backup, replay the log to a chosen moment) and change data capture.\n\nDurability has a cost knob: `fsync` on every commit is safe but slower; relaxing it (`synchronous_commit = off`, `innodb_flush_log_at_trx_commit = 2`) risks losing the last fraction of a second of commits in a crash, but never corrupts the database.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "isolation",
+          "label": "Isolation and anomalies",
+          "body": "## What can go wrong without isolation\n\n| anomaly | what happens |\n|---|---|\n| **Dirty read** | you read another transaction's uncommitted change, which may then be rolled back |\n| **Non-repeatable read** | you read a row twice and it differs because another transaction committed a change in between |\n| **Phantom read** | you run the same range query twice and new rows appear/disappear |\n| **Lost update** | two transactions read the same value, both write based on it; one write overwrites the other |\n| **Write skew** | two transactions read overlapping data, each writes a *different* row based on what it read, and together they break an invariant (two doctors both go off call because each saw the other still on call) |\n\n## Isolation levels (SQL standard)\n\n| level | dirty read | non-repeatable | phantom |\n|---|---|---|---|\n| Read Uncommitted | possible | possible | possible |\n| **Read Committed** | no | possible | possible |\n| **Repeatable Read** | no | no | possible (by the standard; snapshot systems often prevent it) |\n| **Serializable** | no | no | no |\n\nReal systems differ: PostgreSQL's Repeatable Read is **snapshot isolation** (no phantoms, but write skew is possible), and its Serializable adds **SSI**, detecting dangerous patterns and aborting. MySQL InnoDB defaults to Repeatable Read with gap locks. Oracle's \"serializable\" is also snapshot isolation. Always read your database's documentation.\n\n## Two ways to implement isolation\n\n### 1. Locking (two-phase locking, 2PL)\n\nTransactions take **shared (S) locks** to read and **exclusive (X) locks** to write. In *strict* 2PL, all locks are held until commit or abort (a growing phase, then a release at the end). This yields serializability but readers block writers and writers block readers, and it **can deadlock** (the database detects cycles in the wait-for graph and aborts a victim; the application must retry). Range/gap/predicate locks stop phantoms. Granularity matters: row locks allow concurrency; table locks are cheap but block everyone; **intention locks** let the system mix them.\n\n### 2. MVCC (multi-version concurrency control)\n\nInstead of overwriting rows, the database keeps **multiple versions**, each tagged with the transaction that created it (and the one that deleted/replaced it). A transaction reads a consistent **snapshot** as of its start (or statement start): it sees versions committed before the snapshot and ignores later ones.\n\nResult: **readers never block writers and writers never block readers.** Only write-write conflicts on the same row need handling: the second writer waits for the first to commit (then either aborts under snapshot isolation with a \"could not serialize\" error, or proceeds under Read Committed with the updated row).\n\nCosts: old versions pile up and must be cleaned (PostgreSQL's **VACUUM**; InnoDB's purge of undo logs). Long-running transactions hold back cleanup and cause **bloat**, which is why idle-in-transaction sessions are dangerous.\n\nPostgreSQL stores versions in the table itself (each row has `xmin`/`xmax` transaction ids); InnoDB keeps the latest version in the row and older ones in undo logs.\n\n## Choosing and using the right tools\n\n- Default (Read Committed) is fine for most CRUD; protect critical invariants explicitly.\n- `SELECT ... FOR UPDATE` locks selected rows to prevent lost updates; `FOR UPDATE SKIP LOCKED` is the standard way to build a job queue in SQL; `FOR SHARE` blocks changes while you read.\n- **Optimistic concurrency**: a `version` column checked in the `WHERE` of the update.\n- **Serializable** with retry loops for complex multi-row invariants.\n- Advisory locks for application-defined mutual exclusion.\n- Keep transactions short; acquire rows in a consistent order to reduce deadlocks.\n\n## Beyond a single node\n\nDistributed transactions need **two-phase commit** (a coordinator asks all participants to prepare, then commit; blocking if the coordinator fails) or consensus-based protocols (Spanner, CockroachDB). Across services, prefer sagas with compensating actions, idempotency and the outbox pattern. See the System Design course for these.",
+          "diagrams": [
+            {
+              "title": "Write-ahead log commit and recovery",
+              "code": "flowchart LR\n  T[\"Transaction writes\"] --> B[\"Change page in buffer pool (RAM)\"]\n  T --> W[\"Append log record to WAL\"]\n  W -->|\"fsync at COMMIT\"| D[(\"WAL on disk\")]\n  B -->|\"lazy, at checkpoint\"| P[(\"Data files\")]\n  D -->|\"crash: redo committed, undo uncommitted\"| R[\"Recovered consistent state\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "sql",
+              "source": "-- Lost update prevented three ways (PostgreSQL)\n\n-- 1) One atomic statement: the read and write can't interleave\nUPDATE accounts SET balance = balance - 100 WHERE id = 1 AND balance >= 100;\n\n-- 2) Pessimistic: lock the row first\nBEGIN;\nSELECT balance FROM accounts WHERE id = 1 FOR UPDATE;   -- others wait here\nUPDATE accounts SET balance = balance - 100 WHERE id = 1;\nCOMMIT;\n\n-- 3) Optimistic: version check, retry if 0 rows were updated\nUPDATE accounts SET balance = 900, version = version + 1 WHERE id = 1 AND version = 7;\n\n-- Job queue with SKIP LOCKED: many workers, no double-processing\nBEGIN;\nSELECT id, payload FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED;\n-- ... process, then ...\nUPDATE jobs SET status = 'done' WHERE id = :id;\nCOMMIT;"
+            },
+            {
+              "lang": "python",
+              "source": "# Retry loop for serialization failures and deadlocks (the application's part of the bargain)\nimport random, time\nimport psycopg\nfrom psycopg import errors\n\ndef run_in_tx(conninfo, fn, retries=5):\n    for attempt in range(retries):\n        try:\n            with psycopg.connect(conninfo) as conn:\n                conn.isolation_level = psycopg.IsolationLevel.SERIALIZABLE\n                with conn.transaction():\n                    return fn(conn)\n        except (errors.SerializationFailure, errors.DeadlockDetected):\n            time.sleep(random.uniform(0, 0.05 * 2 ** attempt))      # backoff with jitter\n    raise RuntimeError(\"transaction kept conflicting\")"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nThey look for **precision**: can you name the exact anomaly, say which isolation level prevents it in a real database, and explain how durability and recovery actually work.\n\n## Questions with model answers\n\n### 1. Explain ACID with a bank transfer.\n\n**Model answer.** Atomicity: debit and credit both happen or neither does. Consistency: constraints such as non-negative balance and total money conserved hold before and after. Isolation: another transaction sees either the old balances or the new ones, never a state with money debited but not credited. Durability: once the transfer is acknowledged as committed, it survives a crash, because the commit record was flushed to the write-ahead log.\n\n### 2. How does the write-ahead log provide durability and atomicity?\n\n**Model answer.** Every change is logged sequentially and the log is flushed before the data pages and before commit is acknowledged. After a crash, recovery redoes logged changes to rebuild the state and undoes transactions that hadn't committed. Sequential log writes are cheap, so the database can postpone random data-page writes safely.\n\n### 3. What is MVCC and what are its trade-offs?\n\n**Model answer.** Multi-version concurrency control keeps multiple versions of each row and gives each transaction a consistent snapshot, so readers don't block writers and writers don't block readers. Costs are storage for old versions, cleanup (VACUUM or purge), bloat when long-running transactions pin old versions, and write-write conflicts that surface as waits or serialisation failures to be retried.\n\n### 4. Name the isolation anomalies and which levels prevent them.\n\n**Model answer.** Dirty reads are prevented from Read Committed up; non-repeatable reads from Repeatable Read up; phantoms from Serializable in the standard (snapshot-based implementations often prevent them at Repeatable Read). Lost updates and write skew aren't part of the classic table: write skew can still occur under snapshot isolation and requires Serializable, explicit locking or constraints to prevent.\n\n### 5. What is write skew? Give an example.\n\n**Model answer.** Two transactions read overlapping data and update different rows based on what they read, together violating an invariant. Example: a hospital requires at least one doctor on call; two on-call doctors each check that the other is on call and both go off call, leaving none. Prevent with Serializable isolation, `SELECT ... FOR UPDATE` on the shared rows, or a constraint that enforces the invariant.\n\n### 6. How does a database detect and handle deadlocks?\n\n**Model answer.** It maintains a wait-for graph of which transaction waits on which; a cycle means deadlock. It picks a victim, usually the cheapest to roll back, aborts it with a deadlock error, and the application must retry. To reduce them, access rows in a consistent order and keep transactions short.\n\n### 7. Why are long-running transactions harmful?\n\n**Model answer.** They hold locks (blocking others), pin old row versions so vacuum can't clean them (bloat and slower scans), keep snapshots alive, and increase conflict and deadlock probability. I keep transactions short, never wait on user input or remote calls inside them, and monitor for idle-in-transaction sessions.\n\n## Rapid-fire\n\n- **Default PostgreSQL isolation?** Read Committed.\n- **Default InnoDB isolation?** Repeatable Read.\n- **What does fsync at commit buy?** Durability.\n- **Build a queue in SQL?** `FOR UPDATE SKIP LOCKED`.\n- **2PL stands for?** Two-phase locking: grow locks, then release at the end.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [
+        {
+          "op": "Commit (fsync)",
+          "time": "~0.1 to 10 ms (SSD to HDD)",
+          "space": "log record"
+        },
+        {
+          "op": "Group commit",
+          "time": "amortised across transactions",
+          "space": "-"
+        },
+        {
+          "op": "Snapshot read (MVCC)",
+          "time": "O(versions skipped)",
+          "space": "old versions until vacuum"
+        },
+        {
+          "op": "Deadlock detection",
+          "time": "O(V + E) per check",
+          "space": "wait-for graph"
+        }
+      ],
+      "keyPoints": [
+        "ACID: atomic all-or-nothing, consistent with constraints, isolated from concurrent work, durable once committed.",
+        "Write-ahead logging makes durability cheap: log first and flush at commit, write data pages lazily; recovery redoes history and undoes uncommitted work.",
+        "Isolation levels trade anomalies (dirty, non-repeatable, phantom, lost update, write skew) for concurrency; real databases implement them with snapshots or locks.",
+        "MVCC lets readers and writers proceed without blocking at the cost of old-version cleanup; locking gives serializability but can deadlock.",
+        "Keep transactions short, retry on serialization failures and deadlocks, and use row locks, optimistic versions or constraints for critical invariants."
+      ],
+      "problems": [],
+      "check": [
+        {
+          "options": [
+            "Data pages cannot be written",
+            "The log is a sequential append that is enough to recover the changes after a crash",
+            "Logs are smaller than RAM",
+            "It avoids the need for checkpoints"
+          ],
+          "q": "Why does a database flush the log, not the data pages, at commit?",
+          "answer": 1,
+          "why": "A sequential log flush is cheap and contains enough information to redo the transaction, so data pages can be written lazily."
+        },
+        {
+          "options": [
+            "Dirty read",
+            "Write skew",
+            "Non-repeatable read",
+            "Phantom read of committed data in the same snapshot"
+          ],
+          "q": "Under snapshot isolation, which anomaly can still occur?",
+          "answer": 1,
+          "why": "Snapshot isolation prevents dirty and non-repeatable reads, but two transactions writing different rows based on overlapping reads can break an invariant."
+        },
+        {
+          "options": [
+            "It removes the need for transactions",
+            "Readers do not block writers and writers do not block readers",
+            "It guarantees no deadlocks ever",
+            "It makes disk writes unnecessary"
+          ],
+          "q": "What is the main benefit of MVCC?",
+          "answer": 1,
+          "why": "Each transaction reads a consistent snapshot of old versions, so reads proceed without taking locks that conflict with writers."
+        }
+      ],
+      "sources": [
+        {
+          "title": "PostgreSQL: Concurrency control and MVCC",
+          "url": "https://www.postgresql.org/docs/current/mvcc.html"
+        },
+        {
+          "title": "PostgreSQL: Write-ahead logging",
+          "url": "https://www.postgresql.org/docs/current/wal-intro.html"
+        },
+        {
+          "title": "Jepsen: Consistency models",
+          "url": "https://jepsen.io/consistency"
+        }
+      ],
+      "practiceRef": "dbms-transactions"
+    }
+  ]
+}

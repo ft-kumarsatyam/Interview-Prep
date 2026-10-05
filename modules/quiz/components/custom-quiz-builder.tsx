@@ -11,7 +11,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DifficultyPicker } from "@/modules/quiz/components/difficulty-picker";
 import { QuizPlayer, type SubmitFn } from "@/modules/quiz/components/quiz-player";
-import type { Difficulty } from "@/modules/quiz/lib/question";
+import type { Difficulty, QuestionFocus } from "@/modules/quiz/lib/question";
 import type { PracticeStart } from "@/modules/quiz/services/practice";
 
 export interface BuilderSubject {
@@ -22,6 +22,13 @@ export interface BuilderSubject {
 
 type Mode = "studied" | "picked" | "track";
 const SIZES = [5, 10, 15, 20] as const;
+const FOCUS_CHIPS: ReadonlyArray<readonly [QuestionFocus, string]> = [
+  ["any", "Any"],
+  ["concept", "Concepts"],
+  ["scenario", "Real-world scenarios"],
+  ["debug", "Debugging"],
+  ["output", "Predict the output"],
+];
 
 /** Choose what to be quizzed on: what you have studied, topics you pick, or a whole subject. */
 export function CustomQuizBuilder({ subjects, studiedCount, passPct }: { subjects: BuilderSubject[]; studiedCount: number; passPct: number }) {
@@ -31,6 +38,7 @@ export function CustomQuizBuilder({ subjects, studiedCount, passPct }: { subject
   const [query, setQuery] = useState("");
   const [size, setSize] = useState<(typeof SIZES)[number]>(10);
   const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
+  const [focus, setFocus] = useState<QuestionFocus>("any");
   const [run, setRun] = useState<PracticeStart | null>(null);
   const [pending, start] = useTransition();
 
@@ -57,7 +65,7 @@ export function CustomQuizBuilder({ subjects, studiedCount, passPct }: { subject
 
   const begin = () =>
     start(async () => {
-      const res = await startCustomPracticeAction({ mode, ...(mode === "picked" ? { refs: [...picked] } : {}), ...(mode === "track" ? { track } : {}), size, difficulty });
+      const res = await startCustomPracticeAction({ mode, ...(mode === "picked" ? { refs: [...picked] } : {}), ...(mode === "track" ? { track } : {}), size, difficulty, focus });
       if (!res.ok) return void toast.error(`${res.error}.`);
       setRun(res.run);
     });
@@ -198,6 +206,17 @@ export function CustomQuizBuilder({ subjects, studiedCount, passPct }: { subject
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-muted-foreground">Difficulty</p>
           <DifficultyPicker value={difficulty} onChange={setDifficulty} />
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-muted-foreground">Question type</p>
+          <div role="group" aria-label="Question type" className="flex flex-wrap gap-1.5">
+            {FOCUS_CHIPS.map(([id, label]) => (
+              <Chip key={id} pressed={focus === id} onClick={() => setFocus(id)}>
+                {label}
+              </Chip>
+            ))}
+          </div>
+          {focus !== "any" && <p className="text-xs text-muted-foreground">Subtopics with few of this type fill up with other questions.</p>}
         </div>
         <Button size="lg" onClick={begin} disabled={!ready || pending} loading={pending} className="w-full sm:w-auto">
           <Play /> Start quiz

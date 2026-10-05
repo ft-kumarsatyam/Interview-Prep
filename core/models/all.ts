@@ -23,4 +23,7 @@ import "@/core/models/resume";
 import "@/core/models/roadmap";
 import "@/core/models/system";
 import "@/core/models/targets";
+import "@/core/models/job-profiles";
+import "@/core/models/question-flags";
+import "@/core/models/interview-bank";
 import "@/core/models/webdev";

@@ -22,7 +22,8 @@ import { Mastery, PracticeAttempt } from "@/core/models/learning";
 import { SubtopicProgress } from "@/core/models/progress";
 import { bank, questionWeight } from "@/modules/quiz/lib/bank";
 import { fromLlm, subtopicPrompt } from "@/modules/quiz/lib/prompts";
-import { llmQuizSchema, toPublic, toReview, type Difficulty, type PublicQuestion, type QuizOutcome, type QuizQuestion } from "@/modules/quiz/lib/question";
+import { flaggedQuestionIds } from "@/modules/quiz/services/question-flags";
+import { llmQuizSchema, toPublic, toReview, type Difficulty, type PublicQuestion, type QuestionFocus, type QuizOutcome, type QuizQuestion } from "@/modules/quiz/lib/question";
 import { loadQuestionHistory, type AskedQuestion } from "@/modules/quiz/services/question-history";
 import { todayIn } from "@/modules/planner/services/plan";
 import { getSettings } from "@/modules/settings/services/settings";
@@ -96,15 +97,24 @@ export async function topicQuizEligibility(target: PracticeTarget): Promise<{ el
 
 const real = (q: QuizQuestion) => q.style !== "recall";
 
+/** Questions of the chosen type; the whole list when "any", or when fewer than 2 match (a thin subtopic still gets a quiz). */
+export function focusOf(qs: QuizQuestion[], focus: QuestionFocus | undefined): QuizQuestion[] {
+  if (!focus || focus === "any") return qs;
+  const match = qs.filter((q) => (focus === "concept" ? q.style === "concept" || q.style === "llm" : q.style === focus));
+  return match.length >= 2 ? match : qs;
+}
+
 interface PickContext {
   rng: Rng;
   history: QuestionHistory;
   now: number;
   difficulty: Difficulty | null;
+  /** Questions you reported: weight 0, so they are never drawn. */
+  flagged: ReadonlySet<string>;
 }
 
 /** Bank weight × rotation: unseen and previously-missed questions come first on repeat runs. */
-const weightIn = (ctx: PickContext) => (q: QuizQuestion) => questionWeight(q) * rotationWeight(ctx.history.get(q.id), ctx.now);
+const weightIn = (ctx: PickContext) => (q: QuizQuestion) => (ctx.flagged.has(q.id) ? 0 : questionWeight(q) * rotationWeight(ctx.history.get(q.id), ctx.now));
 
 function take(layers: QuizQuestion[][], n: number, ctx: PickContext): QuizQuestion[] {
   const used = new Set<string>();
@@ -234,7 +244,7 @@ export async function startPractice(ref: string, llm: LlmProvider | null = getLl
     throw new Error("Tick every subtopic in this topic to unlock its quiz");
   }
   const { history, asked } = await loadQuestionHistory();
-  const ctx: PickContext = { rng: seededRng(seedFrom(`${ref}:${now.getTime()}`)), history, now: now.getTime(), difficulty: opts.difficulty ?? null };
+  const ctx: PickContext = { rng: seededRng(seedFrom(`${ref}:${now.getTime()}`)), history, now: now.getTime(), difficulty: opts.difficulty ?? null, flagged: await flaggedQuestionIds() };
   let questions: RunQuestion[];
   if (target.scope === "mistakes") {
     const pool = mistakeCandidates(history, asked, target.track || undefined);
@@ -277,6 +287,8 @@ export interface CustomPracticeInput {
   track?: string;
   size: number;
   difficulty?: Difficulty | null;
+  /** Prefer one question type (scenario, debugging...); other types only fill a short run. */
+  focus?: QuestionFocus;
 }
 
 /** The subtopic ids a custom quiz may draw from. Pure given the studied set; unknown ids are dropped. */
@@ -306,15 +318,16 @@ export async function startCustomPractice(input: CustomPracticeInput, now = new 
   if (pool.length === 0) throw new Error("Pick at least one topic");
 
   const { history } = await loadQuestionHistory();
-  const ctx: PickContext = { rng: seededRng(seedFrom(`custom:${now.getTime()}`)), history, now: now.getTime(), difficulty: input.difficulty ?? null };
+  const ctx: PickContext = { rng: seededRng(seedFrom(`custom:${now.getTime()}`)), history, now: now.getTime(), difficulty: input.difficulty ?? null, flagged: await flaggedQuestionIds() };
   const masteries = await Mastery.find({ ref: { $in: pool } }, { ref: 1, score: 1 }).lean();
   const scores = Object.fromEntries(masteries.map((m) => [m.ref, m.score ?? 0]));
   const bySubtopic = new Map(
     pool.flatMap((id) => {
       const all = bank().bySubtopic.get(id) ?? [];
       const qs = all.filter(real).length >= 2 ? all.filter(real) : all;
-      const matching = ctx.difficulty ? qs.filter((q) => q.difficulty === ctx.difficulty) : qs;
-      const use = matching.length >= 2 ? matching : qs;
+      const typed = focusOf(qs, input.focus);
+      const matching = ctx.difficulty ? typed.filter((q) => q.difficulty === ctx.difficulty) : typed;
+      const use = matching.length >= 2 ? matching : typed;
       return use.length > 0 ? [[id, use] as const] : [];
     }),
   );

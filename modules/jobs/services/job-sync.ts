@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { careerSources } from "@/core/content";
 import { connectDb } from "@/core/db";
 import { termsIn } from "@/modules/jobs/domain/ats";
+import { requiredYears } from "@/modules/jobs/domain/job-profile";
 import { AGGREGATORS, postingKey, type Aggregator, type CareerSource, type NormalizedPosting } from "@/modules/jobs/domain/job-postings";
 import { dueSources, MAX_POSTINGS_TOTAL, nextHealth, selectPostings, START_NEW_UNTIL_LEFT_MS } from "@/modules/jobs/domain/job-sync";
 import { bumpVersion } from "@/core/cache";
@@ -77,9 +78,9 @@ export async function storePostings(doc: Pick<SourceDoc, "_id" | "tier" | "compa
           source: p.source, sourceId: p.sourceId, externalId: p.externalId, title: p.title, company: p.company, tier: doc.tier, companyId: doc.companyId, location: p.location, remote: p.remote, department: p.department,
           postedAt: p.postedAt ? new Date(p.postedAt) : null, url: p.url, applyUrl: p.applyUrl, tags: p.tags, lastSeenAt: now, closedAt: null,
           // A list endpoint without descriptions (SmartRecruiters) must not wipe one fetched earlier.
-          ...(p.jd ? { jd: p.jd, terms: termsIn(`${p.title}\n${p.jd}`) } : {}),
+          ...(p.jd ? { jd: p.jd, terms: termsIn(`${p.title}\n${p.jd}`), yearsMin: requiredYears(`${p.title}\n${p.jd}`) } : {}),
         },
-        $setOnInsert: { firstSeenAt: now, dismissed: false, alerted: false, savedJobId: null, ...(p.jd ? {} : { jd: "", terms: termsIn(p.title) }) },
+        $setOnInsert: { firstSeenAt: now, dismissed: false, alerted: false, savedJobId: null, ...(p.jd ? {} : { jd: "", terms: termsIn(p.title), yearsMin: requiredYears(p.title) }) },
       },
       upsert: true,
     },

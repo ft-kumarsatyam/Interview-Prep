@@ -10,6 +10,8 @@ export interface Personalisation {
   weights: Map<string, TopicWeight>;
   overrides: HoursOverride[];
   completed: boolean;
+  /** The chosen role path ("" = standard order). */
+  roleId: string;
 }
 
 /**
@@ -19,8 +21,8 @@ export interface Personalisation {
  */
 export async function loadPersonalisation(opts: { draft?: boolean } = {}): Promise<Personalisation> {
   await connectDb();
-  const doc = await PlannerIntake.findById(PLANNER_INTAKE_ID, { topicRatings: 1, availability: 1, completedAt: 1 }).lean();
-  if (!doc || (!doc.completedAt && !opts.draft)) return { ratings: [], weights: new Map(), overrides: [], completed: false };
+  const doc = await PlannerIntake.findById(PLANNER_INTAKE_ID, { topicRatings: 1, availability: 1, completedAt: 1, "goals.roleId": 1 }).lean();
+  if (!doc || (!doc.completedAt && !opts.draft)) return { ratings: [], weights: new Map(), overrides: [], completed: false, roleId: "" };
   const ratings: TopicRating[] = (doc.topicRatings ?? []).map((r) => ({
     topicId: r.topicId,
     rating: r.rating,
@@ -31,5 +33,5 @@ export async function loadPersonalisation(opts: { draft?: boolean } = {}): Promi
   const rows = ratings.length ? await Mastery.find({ scope: { $in: ["topic", "subtopic"] } }, { ref: 1, scope: 1, score: 1 }).lean() : [];
   const mastery = masteryByTopic(rows.map((m) => ({ ref: m.ref, scope: m.scope, score: m.score ?? 0 })));
   const overrides = (doc.availability?.overrides ?? []).flatMap((o) => (o.from && o.to && o.hours ? [{ from: o.from, to: o.to, hours: o.hours }] : []));
-  return { ratings, weights: topicWeights(ratings, mastery), overrides, completed: !!doc.completedAt };
+  return { ratings, weights: topicWeights(ratings, mastery), overrides, completed: !!doc.completedAt, roleId: doc.goals?.roleId ?? "" };
 }

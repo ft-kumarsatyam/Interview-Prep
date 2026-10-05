@@ -46,6 +46,7 @@ const plannerIntakeSchema = new Schema(
     _id: { type: String, default: PLANNER_INTAKE_ID },
     goals: {
       targetRole: { type: String, default: "" },
+      roleId: { type: String, default: "" },
       targetCompany: { type: String, default: "" },
       level: { type: String, enum: LEVELS, default: "fresher" },
       focusNotes: { type: String, default: "" },
