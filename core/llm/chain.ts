@@ -49,7 +49,7 @@ export interface ChainDeps {
 const providerOf = (def: ProviderDef) => def.provider ?? def.id;
 const slotLabel = (def: ProviderDef) => ((def.keyCount ?? 1) > 1 ? `${def.label} key ${(def.keyIndex ?? 0) + 1}` : def.label);
 
-/** Slots in try order: providers ordered by the feature policy (paid ones last), each provider's keys in the order you listed them. */
+/** Slots in the initial try order: providers ordered by the feature policy (paid ones last), each provider's keys in the order listed. */
 export function orderSlots(defs: readonly ProviderDef[], feature: AiFeature): ProviderDef[] {
   const providers = [...new Set(defs.map(providerOf))];
   const paidIds = [...new Set(defs.filter((d) => d.paid).map(providerOf))];
@@ -76,8 +76,23 @@ function describeState(state: ProviderState): string {
 export function createChain(deps: ChainDeps): LlmProvider {
   let last: string | undefined;
   const policy = FEATURE_POLICY[deps.feature];
-  const slots = orderSlots(deps.defs, deps.feature);
+  const initialSlots = orderSlots(deps.defs, deps.feature);
   const budget = deps.keyBudget ?? 0;
+
+  /**
+   * Spread free traffic across every configured key/provider. Lifetime key usage is
+   * deliberately the signal here: it works across serverless instances and still
+   * preserves the feature preference when two slots have equal usage. Paid slots
+   * remain after every free slot.
+   */
+  function balancedSlots(tokens: Record<string, number>): ProviderDef[] {
+    return [...initialSlots].sort((a, b) => {
+      if (a.paid !== b.paid) return a.paid ? 1 : -1;
+      if (a.paid) return initialSlots.indexOf(a) - initialSlots.indexOf(b);
+      const usageDifference = (tokens[a.fingerprint ?? ""] ?? 0) - (tokens[b.fingerprint ?? ""] ?? 0);
+      return usageDifference || initialSlots.indexOf(a) - initialSlots.indexOf(b);
+    });
+  }
 
   /** The paid-provider rules shared by JSON and streaming calls: blocked, needs your confirmation, or a reserved call. */
   async function gate(def: ProviderDef): Promise<{ skip: string; reserved?: never } | { skip?: never; reserved: boolean }> {
@@ -98,7 +113,7 @@ export function createChain(deps: ChainDeps): LlmProvider {
   /** Per-request snapshot: remembered states, key token totals and the day boundary. */
   async function begin() {
     const now = deps.now?.() ?? new Date();
-    const tracksKeys = budget > 0 && slots.some((d) => d.fingerprint);
+    const tracksKeys = initialSlots.some((d) => d.fingerprint);
     return {
       nowMs: now.getTime(),
       nextDayMs: startOfNextLocalDayMs(now, deps.timeZone),
@@ -136,6 +151,7 @@ export function createChain(deps: ChainDeps): LlmProvider {
     },
     async generateJson<T>(prompt: string, schema: ZodType<T>): Promise<T> {
       const { nowMs, nextDayMs, states, tokens } = await begin();
+      const slots = balancedSlots(tokens);
       const attempts: Array<{ provider: string; outcome: string }> = [];
       const clock = deps.clock ?? Date.now;
       const startedAt = clock();
@@ -187,6 +203,7 @@ export function createChain(deps: ChainDeps): LlmProvider {
      */
     async *streamText(prompt: string): AsyncGenerator<string> {
       const { nowMs, nextDayMs, states, tokens } = await begin();
+      const slots = balancedSlots(tokens);
       const attempts: Array<{ provider: string; outcome: string }> = [];
       const clock = deps.clock ?? Date.now;
       const startedAt = clock();
