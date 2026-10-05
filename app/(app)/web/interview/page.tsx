@@ -10,7 +10,7 @@ import { INTERVIEW_LEVELS, interviewStats } from "@/modules/learn/domain/web-int
 import { WEB_AREA_INFO, WEB_AREAS, type WebArea } from "@/modules/learn/domain/webdev";
 import { getInterviewStatus } from "@/modules/learn/services/webdev";
 
-export const metadata: Metadata = { title: "Interview bank" };
+export const metadata: Metadata = { title: "Interview flashcards" };
 
 const AREA_ICON: Record<WebArea, LucideIcon> = { frontend: Monitor, backend: Server, architecture: Network, ai: Sparkles };
 
@@ -21,10 +21,10 @@ export default async function WebInterviewPage() {
 
   return (
     <>
-      <BackLink href="/web">Web & AI</BackLink>
+      <BackLink href="/interview-bank">Interview bank</BackLink>
       <PageHeader
         icon={MessageCircleQuestion}
-        title="Interview bank"
+        title="Interview flashcards"
         description={`${all.total} interview questions across ${interviewTracks.length} topics, each with a model answer, the mistakes weak answers make and the follow-ups to expect. Practise out loud or type your answer, then compare and rate yourself; the ones you miss come back first.`}
       >
         {all.review > 0 && (

@@ -46,7 +46,7 @@ export function PostingCard({ p }: { p: CardPosting }) {
       const res = await savePostingAction({ id: p.id });
       if (!res.ok) return void toast.error(`${res.error}.`);
       setSaved(true);
-      toast.success(res.duplicate ? "Already in your tracker" : "Saved to your tracker");
+      toast.success(res.duplicate ? "Already in your tracker" : "Added to your tracker");
     });
   const hide = (dismissed: boolean) =>
     start(async () => {
@@ -81,8 +81,8 @@ export function PostingCard({ p }: { p: CardPosting }) {
             <ToneBadge tone={tone(p.score)}>{p.score}% match</ToneBadge>
           </span>
           <div className="flex gap-1">
-            <Button variant="outline" size="sm" onClick={save} disabled={pending || saved} aria-label={saved ? "Saved to tracker" : `Save ${p.title} to tracker`}>
-              {saved ? <BookmarkCheck /> : <Bookmark />} {saved ? "Saved" : "Save"}
+            <Button variant="outline" size="sm" onClick={save} disabled={pending || saved} aria-label={saved ? "In your tracker" : `Track ${p.title}`}>
+              {saved ? <BookmarkCheck /> : <Bookmark />} {saved ? "Tracking" : "Track"}
             </Button>
             <Button variant="ghost" size="sm" onClick={() => hide(!hidden)} disabled={pending} aria-label={hidden ? "Show again" : `Hide ${p.title}`}>
               {hidden ? <Undo2 /> : <EyeOff />}

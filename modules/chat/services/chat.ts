@@ -112,7 +112,10 @@ export async function* runTurn(raw: unknown, deps: { llm?: LlmProvider | null; n
     yield { type: "error", error: parsed.error.issues[0]?.message ?? "Type a message" };
     return;
   }
-  const { message, page } = parsed.data;
+  const { message, page, context } = parsed.data;
+  const groundedQuestion = context
+    ? `${message}\n\n<selected-text source="${context.sourceTitle}" href="${context.sourceHref}">\n${context.selection}\n</selected-text>`
+    : message;
   await connectDb();
 
   let thread: ThreadRow | null = parsed.data.threadId ? await ChatThread.findById(parsed.data.threadId).lean<ThreadRow>() : null;
@@ -129,7 +132,7 @@ export async function* runTurn(raw: unknown, deps: { llm?: LlmProvider | null; n
 
   const prior = created ? [] : await ChatMessage.find({ threadId: thread._id, failed: false }, { role: 1, text: 1 }).sort({ createdAt: -1 }).limit(CONTEXT_MESSAGES).lean();
   const history: ChatTurn[] = prior.reverse().map((m) => ({ role: m.role as ChatTurn["role"], text: m.text }));
-  await appendMessage(thread._id, { role: "user", text: message });
+  await appendMessage(thread._id, { role: "user", text: context ? `${message}\n\nSelected from: ${context.sourceTitle}\n${context.selection}` : message });
 
   const llm = deps.llm === undefined ? await getAiFor("chat") : deps.llm;
   if (!llm?.streamText) {
@@ -139,7 +142,7 @@ export async function* runTurn(raw: unknown, deps: { llm?: LlmProvider | null; n
 
   let plan: ToolPlan;
   try {
-    plan = await planTools(llm, message, history, page);
+    plan = await planTools(llm, groundedQuestion, history, page);
   } catch (err) {
     yield { type: "error", error: err instanceof AllProvidersFailedError ? err.message : "The assistant is unavailable right now. Try again." };
     return;
@@ -150,7 +153,7 @@ export async function* runTurn(raw: unknown, deps: { llm?: LlmProvider | null; n
   const today = toLocalDate(deps.now ?? new Date(), env().APP_TIMEZONE);
   let text = "";
   try {
-    for await (const chunk of llm.streamText(buildAnswerPrompt({ question: message, history, results, today, page }))) {
+    for await (const chunk of llm.streamText(buildAnswerPrompt({ question: groundedQuestion, history, results, today, page }))) {
       text += chunk;
       yield { type: "token", text: chunk };
     }

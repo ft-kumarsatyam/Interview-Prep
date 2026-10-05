@@ -5,7 +5,7 @@ import { PracticeAttempt } from "@/core/models/learning";
 import { ProblemProgress } from "@/core/models/progress";
 import { RoadmapEnrollment, RoadmapNodeProgress } from "@/core/models/roadmap";
 import { getAllDoneKeys } from "@/modules/course/services/progress";
-import { allNodes, nodeStatus, roadmapProgress, type NodeStatus, type Roadmap, type RoadmapProgress } from "@/modules/roadmap/domain/roadmap";
+import { allNodes, nextNode, nodeStatus, roadmapProgress, type NodeStatus, type Roadmap, type RoadmapProgress } from "@/modules/roadmap/domain/roadmap";
 import { getDoneLessons } from "@/modules/learn/services/webdev";
 import { getSettings } from "@/modules/settings/services/settings";
 
@@ -60,13 +60,16 @@ export interface RoadmapSummary {
   roadmap: Roadmap;
   joinedOn: string | null;
   progress: RoadmapProgress;
+  /** The next node to work on, for the "Continue" link. */
+  next: { id: string; title: string } | null;
 }
 
 /** Every roadmap with whether you joined it and how far you are. */
 export async function listRoadmaps(): Promise<RoadmapSummary[]> {
   return Promise.all(roadmaps.map(async (roadmap) => {
     const state = await getRoadmapState(roadmap);
-    return { roadmap, joinedOn: state.joinedOn, progress: state.progress };
+    const n = nextNode(roadmap, state.statuses);
+    return { roadmap, joinedOn: state.joinedOn, progress: state.progress, next: n ? { id: n.id, title: n.title } : null };
   }));
 }
 

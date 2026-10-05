@@ -84,6 +84,29 @@ export function trackCategory(trackId: string, area: string): Category {
   return AREA_CATEGORY[area] ?? "other";
 }
 
+/** Label for the Practise button, by where the question's href leads. */
+export function practiceLabel(href: string): string {
+  if (href.startsWith("/dsa/")) return "Open in editor";
+  if (href.startsWith("/design/")) return "Open case";
+  if (href.startsWith("/web/interview/")) return "Flashcards";
+  return "Practise";
+}
+
+/** Where a question with no link of its own can be practised, by category. */
+export function fallbackHref(category: Category): string | null {
+  const map: Partial<Record<Category, string>> = {
+    dsa: "/dsa",
+    "system-design": "/design",
+    "lld-oop": "/learn",
+    database: "/design/dbms",
+    "os-networks": "/design/os",
+    "web-frontend": "/web/interview",
+    "web-backend": "/web/interview",
+    "ai-ml": "/web/interview",
+  };
+  return map[category] ?? null;
+}
+
 export function seedWebInterview(questions: ReadonlyArray<{ id: string; track: string; level: BankLevel; q: string; answer: string }>, tracks: ReadonlyArray<{ id: string; name: string; area: string }>): BankItem[] {
   const track = new Map(tracks.map((t) => [t.id, t]));
   return questions.map((q) => {
@@ -95,7 +118,7 @@ export function seedWebInterview(questions: ReadonlyArray<{ id: string; track: s
 const DSA_LEVEL: Record<string, BankLevel> = { Easy: "junior", Medium: "mid", Hard: "senior" };
 
 export function seedDsa(problems: ReadonlyArray<{ slug: string; title: string; difficulty: string; pattern: string }>): BankItem[] {
-  return problems.map((p) => ({ id: `seed:dsa:${p.slug}`, category: "dsa", question: p.title, answer: null, level: DSA_LEVEL[p.difficulty] ?? null, company: null, role: null, round: "coding", tags: [p.pattern.toLowerCase()], source: "seed", sourceUrl: null, href: `/problems/${p.slug}` }));
+  return problems.map((p) => ({ id: `seed:dsa:${p.slug}`, category: "dsa", question: p.title, answer: null, level: DSA_LEVEL[p.difficulty] ?? null, company: null, role: null, round: "coding", tags: [p.pattern.toLowerCase()], source: "seed", sourceUrl: null, href: `/dsa/${p.slug}` }));
 }
 
 export function seedDesign(cases: ReadonlyArray<{ slug: string; title: string; level: string; category: string; summary: string }>): BankItem[] {
@@ -138,7 +161,7 @@ export function filterBank(items: readonly BankItem[], f: BankFilter): BankItem[
     if (f.level && i.level !== f.level) return false;
     if (f.source && i.source !== f.source) return false;
     if (f.company && norm(i.company ?? "") !== norm(f.company)) return false;
-    if (q && !`${i.question} ${i.company ?? ""} ${i.tags.join(" ")}`.toLowerCase().includes(q)) return false;
+    if (q && !`${i.question} ${i.answer ?? ""} ${i.company ?? ""} ${i.role ?? ""} ${i.tags.join(" ")}`.toLowerCase().includes(q)) return false;
     return true;
   });
 }

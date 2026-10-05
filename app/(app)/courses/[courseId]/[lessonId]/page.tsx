@@ -6,6 +6,7 @@ import { BackLink } from "@/components/shared/back-link";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { courseLessonByKey, courseById } from "@/core/courses";
 import { problemBySlug } from "@/core/content";
+import { roadmapNodesByLesson } from "@/core/roadmaps";
 import { CodeTabs } from "@/modules/course/components/code-tabs";
 import { CourseCheck } from "@/modules/course/components/course-check";
 import { PartTabs } from "@/modules/course/components/part-tabs";
@@ -29,6 +30,7 @@ export default async function CourseLessonPage({ params }: PageProps<"/courses/[
   if (!course || !lesson) notFound();
   const [done, subtopic] = await Promise.all([getDoneLessons(courseId), getLessonSubtopic(courseId, lessonId)]);
   const { prev, next } = courseNeighbours(course, lessonId);
+  const nodes = roadmapNodesByLesson.get(`${courseId}/${lessonId}`) ?? [];
   const problems = lesson.problems.flatMap((s) => {
     const p = problemBySlug.get(s);
     return p ? [p] : [];
@@ -64,6 +66,20 @@ export default async function CourseLessonPage({ params }: PageProps<"/courses/[
         <p className="mt-1 text-sm text-muted-foreground">
           {lesson.chapterTitle} · {lesson.minutes} min · {lesson.summary}
         </p>
+        {(subtopic || nodes.length > 0) && (
+          <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {subtopic && (
+              <Link href={`/learn/${encodeURIComponent(subtopic.id.split(":")[0] ?? "")}`} className="text-primary underline-offset-2 hover:underline">
+                Teaches: {subtopic.title}
+              </Link>
+            )}
+            {nodes.slice(0, 3).map((n) => (
+              <Link key={`${n.roadmapId}/${n.nodeId}`} href={`/roadmaps/${n.roadmapId}#node-${n.nodeId}`} className="text-primary underline-offset-2 hover:underline">
+                Roadmap: {n.roadmapTitle} › {n.nodeTitle}
+              </Link>
+            ))}
+          </p>
+        )}
       </div>
 
       <PartTabs parts={parts} />
@@ -148,9 +164,13 @@ export default async function CourseLessonPage({ params }: PageProps<"/courses/[
         ) : (
           <span />
         )}
-        {next && (
-          <Link href={`/courses/${courseId}/${next.id}`} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
-            {next.title} <ChevronRight className="size-4" aria-hidden />
+        {next ? (
+          <Link href={`/courses/${courseId}/${next.id}`} className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
+            Next: {next.title} <ChevronRight className="size-4" aria-hidden />
+          </Link>
+        ) : (
+          <Link href={`/courses/${courseId}`} className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
+            Course complete: back to {course.title}
           </Link>
         )}
       </nav>

@@ -3,6 +3,12 @@ export interface Drill {
   title: string;
   topic: string;
   code: string;
+  track?: "javascript" | "dsa" | "dbms" | "sql";
+  difficulty?: "easy" | "medium" | "hard";
+  expected?: string;
+  explanation?: string;
+  hints?: string[];
+  followUp?: string;
 }
 
 /** Predict-the-output puzzles. The answer is whatever the runner prints. */
@@ -287,5 +293,85 @@ console.log(parseInt("08"), parseInt("0x1f"), parseInt("12px"), Number("12px"));
 console.log([10, 1, 5].sort(), [10, 1, 5].sort((a, b) => a - b));
 console.log("b" > "a", "B" > "a", "10" < "9", 10 < "9");
 console.log(typeof NaN, typeof null, typeof [], Array.isArray([]));`,
+  },
+  {
+    id: "dsa-two-pointers",
+    title: "Two pointers: which pairs survive?",
+    topic: "DSA · Two pointers",
+    track: "dsa",
+    difficulty: "easy",
+    code: `const a = [1, 2, 2, 3, 4, 6];
+let l = 0, r = a.length - 1, steps = 0;
+while (l < r) {
+  const sum = a[l] + a[r];
+  if (sum === 7) console.log(a[l], a[r]);
+  if (sum < 7) l++;
+  else r--;
+  steps++;
+}
+console.log("steps", steps);`,
+    explanation: "The array is sorted. A sum below the target can only increase by moving the left pointer; a sum above it can only decrease by moving the right pointer.",
+    hints: ["Write the first sum and decide which pointer can move safely.", "Track the pointer pair after every iteration.", "The first log happens before the pointer moves for that iteration."],
+    followUp: "How would the algorithm change if the array were not sorted?",
+  },
+  {
+    id: "dsa-sliding-window",
+    title: "Sliding window: longest unique substring",
+    topic: "DSA · Sliding window",
+    track: "dsa",
+    difficulty: "medium",
+    code: `const s = "abca";
+const seen = new Set(), out = [];
+let left = 0;
+for (const ch of s) {
+  while (seen.has(ch)) seen.delete(s[left++]);
+  seen.add(ch);
+  out.push(seen.size);
+}
+console.log(out);`,
+    explanation: "The window always contains unique characters. When a duplicate arrives, remove from the left until the incoming character is unique.",
+    hints: ["The set is the current window, not the entire string.", "The duplicate 'a' removes the first 'a' before it is added again.", "Record the size after each character is processed."],
+    followUp: "What is the time complexity and why does each character move left at most once?",
+  },
+  {
+    id: "dbms-isolation",
+    title: "DBMS: read phenomena under isolation",
+    topic: "DBMS · Transactions",
+    track: "dbms",
+    difficulty: "medium",
+    code: `-- T1                         -- T2
+BEGIN;                       BEGIN;
+UPDATE accounts SET balance = balance - 10 WHERE id = 1;
+                             SELECT balance FROM accounts WHERE id = 1;
+COMMIT;`,
+    expected: "T2 may block or read the previous committed balance, depending on the database and isolation level; it must not read T1's uncommitted value under READ COMMITTED.",
+    explanation: "Isolation controls visibility of concurrent writes. READ COMMITTED prevents dirty reads but does not by itself prevent non-repeatable reads or phantoms.",
+    hints: ["Ask whether T1 has committed when T2 reads.", "Separate dirty reads from stale-but-committed reads.", "The exact behavior depends on the engine's locking/MVCC implementation."],
+    followUp: "Compare READ COMMITTED with REPEATABLE READ for this sequence.",
+  },
+  {
+    id: "sql-left-join-count",
+    title: "SQL: COUNT with a LEFT JOIN",
+    topic: "SQL · Joins",
+    track: "sql",
+    difficulty: "medium",
+    code: `customers
+id | name
+1  | Ada
+2  | Lin
+
+orders
+id | customer_id
+10 | 1
+
+SELECT c.name, COUNT(o.id)
+FROM customers c
+LEFT JOIN orders o ON o.customer_id = c.id
+GROUP BY c.name
+ORDER BY c.id;`,
+    expected: "Ada | 1\nLin | 0",
+    explanation: "A LEFT JOIN keeps Lin's customer row. COUNT(o.id) counts only non-null order ids, so the unmatched row produces zero.",
+    hints: ["The joined columns for Lin are NULL.", "COUNT(*) would count the preserved customer row.", "Use COUNT(o.id) when counting matched children."],
+    followUp: "What result changes if COUNT(*) replaces COUNT(o.id)?",
   },
 ];

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { usePathname } from "next/navigation";
 import { BookOpen, Copy, Highlighter, LoaderCircle, Sparkles, StickyNote, X } from "lucide-react";
 import { toast } from "sonner";
@@ -32,30 +33,82 @@ function markClass(color: NoteColor): string {
   return `${COLOR_CLASS[color]} rounded-sm px-0.5 text-foreground`;
 }
 
-function findExcerptTextNode(excerpt: string): Text | null {
+function textNodesInMain(): Text[] {
   const main = document.querySelector("main");
-  if (!main) return null;
+  if (!main) return [];
   const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
   let node: Node | null;
   while ((node = walker.nextNode())) {
-    if (node.parentElement?.closest("[data-selection-toolbar], mark, input, textarea, button")) continue;
-    if ((node as Text).data.includes(excerpt)) return node as Text;
+    const text = node as Text;
+    if (!text.data || text.parentElement?.closest("[data-selection-toolbar], mark, input, textarea, button, [data-no-selection-toolbar]")) continue;
+    nodes.push(text);
   }
-  return null;
+  return nodes;
+}
+
+function normalizedRange(excerpt: string, nodes: Text[]): Range | null {
+  const wanted = excerpt.trim().replace(/\s+/g, " ");
+  if (!wanted) return null;
+  let normalized = "";
+  const positions: Array<{ node: Text; offset: number }> = [];
+  let pendingSpace: { node: Text; offset: number } | null = null;
+  for (const node of nodes) {
+    for (let offset = 0; offset < node.data.length; offset += 1) {
+      const char = node.data[offset]!;
+      if (/\s/.test(char)) {
+        pendingSpace ??= { node, offset };
+        continue;
+      }
+      if (pendingSpace && normalized) {
+        normalized += " ";
+        positions.push(pendingSpace);
+      }
+      pendingSpace = null;
+      normalized += char;
+      positions.push({ node, offset });
+    }
+  }
+  const start = normalized.indexOf(wanted);
+  if (start < 0 || !positions[start] || !positions[start + wanted.length - 1]) return null;
+  const first = positions[start]!;
+  const last = positions[start + wanted.length - 1]!;
+  const range = document.createRange();
+  range.setStart(first.node, first.offset);
+  range.setEnd(last.node, last.offset + 1);
+  return range;
+}
+
+/** Wraps every text-node fragment in a selection, so inline markup and multi-node selections work. */
+function wrapRange(range: Range, color: NoteColor): boolean {
+  const nodes = textNodesInMain().filter((node) => {
+    try {
+      return range.intersectsNode(node) && !node.parentElement?.closest("mark");
+    } catch {
+      return false;
+    }
+  });
+  if (!nodes.length) return false;
+  for (const node of [...nodes].reverse()) {
+    const nodeRange = document.createRange();
+    nodeRange.selectNodeContents(node);
+    const start = range.compareBoundaryPoints(Range.START_TO_START, nodeRange) > 0 ? range.startOffset : 0;
+    const end = range.compareBoundaryPoints(Range.END_TO_END, nodeRange) < 0 ? range.endOffset : node.data.length;
+    if (end <= start) continue;
+    const selected = node.splitText(start);
+    selected.splitText(end - start);
+    const mark = document.createElement("mark");
+    mark.className = markClass(color);
+    mark.title = "Saved highlight";
+    selected.replaceWith(mark);
+    mark.appendChild(selected);
+  }
+  return true;
 }
 
 function applyHighlight(excerpt: string, color: NoteColor): boolean {
-  const textNode = findExcerptTextNode(excerpt);
-  if (!textNode) return false;
-  const start = textNode.data.indexOf(excerpt);
-  const range = document.createRange();
-  range.setStart(textNode, start);
-  range.setEnd(textNode, start + excerpt.length);
-  const mark = document.createElement("mark");
-  mark.className = markClass(color);
-  mark.title = "Saved highlight";
-  range.surroundContents(mark);
-  return true;
+  const range = normalizedRange(excerpt, textNodesInMain());
+  return range ? wrapRange(range, color) : false;
 }
 
 function restoreHighlights(highlights: Array<{ href: string; excerpt: string; highlightColor: NoteColor }>): number {
@@ -91,6 +144,7 @@ function selectionFromWindow(): SelectionInfo | null {
 }
 
 export function SelectionToolbar({ highlights = [] }: { highlights?: Array<{ href: string; excerpt: string; highlightColor: NoteColor }> }) {
+  const router = useRouter();
   const pathname = usePathname();
   const [selection, setSelection] = useState<SelectionInfo | null>(null);
   const [ai, setAi] = useState<AiState>(null);
@@ -164,7 +218,9 @@ export function SelectionToolbar({ highlights = [] }: { highlights?: Array<{ hre
       toast.error(result.error);
       return;
     }
-    applyHighlight(selection.text, color);
+    if (!applyHighlight(selection.text, color)) {
+      toast.error("Saved the highlight, but it will appear when this page finishes rendering.");
+    }
     toast.success("Highlight saved");
     setSelection(null);
     window.getSelection()?.removeAllRanges();
@@ -181,6 +237,18 @@ export function SelectionToolbar({ highlights = [] }: { highlights?: Array<{ hre
       if (!response.ok) throw new Error(data.error ?? "AI could not answer");
       setAi({ text: data.text ?? "", pending: false, action });
     }).catch((error: unknown) => setAi({ text: error instanceof Error ? error.message : "AI could not answer", pending: false, action }));
+  };
+
+  const continueInChat = () => {
+    try {
+      window.sessionStorage.setItem(
+        "prepos:chat-selection",
+        JSON.stringify({ selection: selection.text, sourceTitle: selection.title, sourceHref: selection.href }),
+      );
+      router.push("/chat");
+    } catch {
+      toast.error("Could not open the discussion. Try opening Assistant from the sidebar.");
+    }
   };
 
   return (
@@ -204,7 +272,10 @@ export function SelectionToolbar({ highlights = [] }: { highlights?: Array<{ hre
           {ai.pending ? <span className="inline-flex items-center gap-1.5"><LoaderCircle className="size-3.5 animate-spin" /> Thinking about this selection…</span> : (
             <div className="space-y-2">
               <p>{ai.text}</p>
-              <Button size="xs" variant="outline" disabled={pending} onClick={() => save({ body: `> ${selection.text}\n\n${ai.text}`, ...(ai.action === "flashcard" ? { flashcard: { question: selection.text, answer: ai.text }, reviewOn: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10) } : {}) })}><StickyNote /> Save result to Notes</Button>
+              <div className="flex flex-wrap gap-2">
+                <Button size="xs" variant="outline" onClick={continueInChat}><Sparkles /> Discuss in Assistant</Button>
+                <Button size="xs" variant="outline" disabled={pending} onClick={() => save({ body: `> ${selection.text}\n\n${ai.text}`, ...(ai.action === "flashcard" ? { flashcard: { question: selection.text, answer: ai.text }, reviewOn: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10) } : {}) })}><StickyNote /> Save result to Notes</Button>
+              </div>
             </div>
           )}
         </div>

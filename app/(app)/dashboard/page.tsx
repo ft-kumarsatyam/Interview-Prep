@@ -42,8 +42,6 @@ const CardSkeleton = ({ className = "h-32" }: { className?: string }) => <Skelet
 
 export default async function DashboardPage() {
   const elapsed = startTimer();
-  // Throttled to once per 10 min; a LeetCode outage must never break the dashboard.
-  await syncLeetCode().catch(() => null);
   const session = await currentSession();
   const data = await getDashboard();
   const [mistakes, targets] = await Promise.all([getMistakesOverview(5), getTargetsOverview()]);
@@ -109,7 +107,11 @@ export default async function DashboardPage() {
   const hasBonus = data.bonus.problems.length + data.bonus.theory.length > 0;
   const showLeetCode = !settings.leetcodeUsername || data.needsDetails.length > 0;
   // Server time of the work the page waits for (the streamed sections are separate). Feeds the dashboard SLO on /setup.
-  after(() => recordLatency("dashboard", elapsed(), { timeZone: settings.timezone }));
+  // LeetCode is an enrichment and must never delay the plan or today's actions.
+  after(() => {
+    void syncLeetCode().catch(() => null);
+    recordLatency("dashboard", elapsed(), { timeZone: settings.timezone });
+  });
   const lastSyncLabel = settings.leetcodeLastSyncAt
     ? new Intl.DateTimeFormat("en-IN", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: settings.timezone }).format(settings.leetcodeLastSyncAt)
     : null;

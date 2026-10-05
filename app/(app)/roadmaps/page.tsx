@@ -12,12 +12,13 @@ import { listRoadmaps } from "@/modules/roadmap/services/roadmap";
 export const metadata: Metadata = { title: "Roadmaps" };
 
 export default async function RoadmapsPage() {
-  const items = await listRoadmaps();
+  // started roadmaps first, then joined ones, then the rest in catalogue order
+  const items = (await listRoadmaps()).toSorted((a, b) => Number(!!b.joinedOn || b.progress.pct > 0) - Number(!!a.joinedOn || a.progress.pct > 0));
   return (
     <>
       <PageHeader icon={Route} title="Roadmaps" description="Pick a path, join it, and follow the must-do nodes. A node ticks itself when you have ticked its topics, read its links, solved its problems and passed its quiz. This never affects your daily plan or streak." />
       <ul className="grid gap-4 md:grid-cols-2">
-        {items.map(({ roadmap, joinedOn, progress }) => {
+        {items.map(({ roadmap, joinedOn, progress, next }) => {
           const nodes = allNodes(roadmap);
           return (
             <li key={roadmap.id} className="flex flex-col gap-3 rounded-xl border bg-card p-4 ring-1 ring-foreground/5">
@@ -37,6 +38,11 @@ export default async function RoadmapsPage() {
                   {progress.must.done}/{progress.must.total} must do
                 </span>
               </div>
+              {next && (joinedOn || progress.pct > 0) && (
+                <p className="truncate text-xs text-muted-foreground">
+                  Next: <Link href={`/roadmaps/${roadmap.id}#node-${next.id}`} className="text-primary underline-offset-2 hover:underline">{next.title}</Link>
+                </p>
+              )}
               <div className="flex flex-wrap gap-2">
                 <Button asChild variant={joinedOn ? "default" : "outline"}>
                   <Link href={`/roadmaps/${roadmap.id}`}>{joinedOn ? "Continue" : "View roadmap"}</Link>

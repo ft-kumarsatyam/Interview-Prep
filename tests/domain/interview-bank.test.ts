@@ -60,7 +60,7 @@ describe("seed adapters", () => {
     const [w] = seedWebInterview([{ id: "q1", track: "sql", level: "mid", q: "What is an index?", answer: "…" }], [{ id: "sql", name: "SQL", area: "backend" }]);
     expect(w).toMatchObject({ category: "database", source: "seed", href: "/web/interview/sql", level: "mid" });
     const [d] = seedDsa([{ slug: "two-sum", title: "Two Sum", difficulty: "Easy", pattern: "Hash Map" }]);
-    expect(d).toMatchObject({ category: "dsa", level: "junior", href: "/problems/two-sum" });
+    expect(d).toMatchObject({ category: "dsa", level: "junior", href: "/dsa/two-sum" });
   });
 });
 
@@ -103,5 +103,16 @@ describe("importing from a page", () => {
     const mk = (question: string) => ({ question, answer: "", category: "other" as const, level: null, company: "", round: "" });
     const out = markDuplicates([mk("What is CAP theorem?"), mk("What is a mutex?"), mk("what is cap theorem")], new Set([questionKey("What is a mutex")]));
     expect(out.map((c) => c.duplicate)).toEqual([false, true, true]);
+  });
+});
+
+describe("practice links", () => {
+  it("labels each target and falls back by category", async () => {
+    const { practiceLabel, fallbackHref } = await import("@/modules/interview-bank/domain/bank");
+    expect(practiceLabel("/dsa/two-sum")).toBe("Open in editor");
+    expect(practiceLabel("/design/url-shortener")).toBe("Open case");
+    expect(practiceLabel("/web/interview/react")).toBe("Flashcards");
+    expect(fallbackHref("dsa")).toBe("/dsa");
+    expect(fallbackHref("behavioral")).toBeNull();
   });
 });

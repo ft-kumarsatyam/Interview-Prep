@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { GraduationCap, Network } from "lucide-react";
+import { GraduationCap, Network, Route } from "lucide-react";
 import { LearnIndex, type TopicRow } from "@/modules/learn/components/learn-index";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
@@ -52,6 +52,16 @@ export default async function LearnPage({ searchParams }: PageProps<"/learn">) {
   return (
     <>
       <PageHeader title="Learn" icon={GraduationCap} description="Pick a topic, tick subtopics as you study, then pass the topic quiz to earn Mastered.">
+        <Button asChild variant="outline" size="sm">
+          <Link href="/courses">
+            <GraduationCap /> Courses
+          </Link>
+        </Button>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/roadmaps">
+            <Route /> Roadmaps
+          </Link>
+        </Button>
         <Button asChild variant="outline" size="sm">
           <Link href="/design">
             <Network /> System Design studio

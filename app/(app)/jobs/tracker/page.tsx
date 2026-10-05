@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Briefcase } from "lucide-react";
 import { AddJob } from "@/modules/jobs/components/add-job";
 import { JobsBoard } from "@/modules/jobs/components/jobs-board";
@@ -28,7 +29,7 @@ export default async function JobsPage() {
 
   return (
     <>
-      <PageHeader icon={Briefcase} title="Jobs" description="Every job you are chasing, from first look to offer. Capture a posting from Naukri, LinkedIn, Indeed or Wellfound with the PrepOS extension, tailor your resume to it, then apply on the real site and track it here." />
+      <PageHeader icon={Briefcase} title="Job tracker" description="Every job you are chasing, from first look to offer. Capture a posting from Naukri, LinkedIn, Indeed or Wellfound with the PrepOS extension, tailor your resume to it, then apply on the real site and track it here." />
       <JobsTabs active="tracker" trackerCount={jobs.length} />
       <div className="space-y-6">
         <NextStep next={next} />
@@ -38,15 +39,15 @@ export default async function JobsPage() {
             <AddJob disabled={jobs.length >= MAX_JOBS} />
           </div>
         </details>
-        {jobs.length > 0 && (
+        {jobs.length >= 3 && (
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatTile label="Saved" value={String(counts.saved)} />
+            <StatTile label="Shortlisted" value={String(counts.saved)} />
             <StatTile label="Applied" value={String(counts.applied + counts.screening)} hint={`${counts.screening} screening`} />
             <StatTile label="Interviewing" value={String(counts.interview)} tone={counts.interview ? "warning" : "neutral"} />
             <StatTile label="Offers" value={String(counts.offer)} tone={counts.offer ? "success" : "neutral"} />
           </div>
         )}
-        {funnel.applied > 0 && (
+        {jobs.length >= 3 && funnel.applied > 0 && (
           <section aria-label="Application funnel" className="space-y-2">
             <SectionHeading title="Your funnel" hint="How far your applications get" />
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -59,7 +60,7 @@ export default async function JobsPage() {
         )}
         {jobs.length === 0 ? (
           <EmptyState icon={Briefcase} title="No jobs tracked yet" compact>
-            <p>Add one below, or install the extension (see Settings) and press its icon on any job page.</p>
+            <p>Use “Add a job” above, track one from <Link href="/jobs" className="text-primary underline-offset-2 hover:underline">Find</Link>, or press the PrepOS extension icon on any job page.</p>
           </EmptyState>
         ) : (
           <JobsBoard jobs={board} />

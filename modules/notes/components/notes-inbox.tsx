@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { deleteCapturedNoteAction, updateCapturedNoteAction } from "@/app/(app)/notes/actions";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { useAutosave } from "@/components/shared/use-autosave";
 import type { CapturedNoteView } from "@/modules/notes/services/notes";
 import { NOTE_COLORS, type NoteColor } from "@/modules/notes/domain/notes";
 
@@ -29,17 +30,6 @@ export function NotesInbox({ initial }: { initial: CapturedNoteView[] }) {
   const [notes, setNotes] = useState(initial);
   const [editing, setEditing] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-
-  const save = (note: CapturedNoteView, body: string, title: string) => startTransition(async () => {
-    const result = await updateCapturedNoteAction({ id: note.id, body, title });
-    if (!result.ok) {
-      toast.error(result.error);
-      return;
-    }
-    setNotes((rows) => rows.map((row) => row.id === note.id ? { ...row, body, title } : row));
-    setEditing(null);
-    toast.success("Note saved");
-  });
 
   const review = (note: CapturedNoteView) => startTransition(async () => {
     const date = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -82,14 +72,12 @@ export function NotesInbox({ initial }: { initial: CapturedNoteView[] }) {
           </div>
           <blockquote className="mt-3 border-l-2 border-primary/40 pl-3 text-sm text-muted-foreground">{note.excerpt}</blockquote>
           {editing === note.id ? (
-            <div className="mt-3 space-y-2">
-              <Textarea defaultValue={note.body} id={`body-${note.id}`} aria-label="Note body" className="min-h-28" />
-              <Button size="sm" disabled={pending} onClick={() => {
-                const title = document.getElementById(`title-${note.id}`) as HTMLInputElement | null;
-                const body = document.getElementById(`body-${note.id}`) as HTMLTextAreaElement | null;
-                if (title && body) save(note, body.value, title.value);
-              }}><Save /> Save note</Button>
-            </div>
+            <NoteEditor
+              note={note}
+              disabled={pending}
+              onSaved={(patch) => setNotes((rows) => rows.map((row) => row.id === note.id ? { ...row, ...patch } : row))}
+              onClose={() => setEditing(null)}
+            />
           ) : (
             <button type="button" className="mt-3 block w-full text-left text-sm whitespace-pre-wrap text-foreground/80 hover:text-foreground" onClick={() => setEditing(note.id)}>{note.body || "Click to add your own explanation…"}</button>
           )}
@@ -100,5 +88,42 @@ export function NotesInbox({ initial }: { initial: CapturedNoteView[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+function NoteEditor({
+  note,
+  disabled,
+  onSaved,
+  onClose,
+}: {
+  note: CapturedNoteView;
+  disabled: boolean;
+  onSaved: (patch: { title: string; body: string }) => void;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState(note.title);
+  const [body, setBody] = useState(note.body);
+  const status = useAutosave(
+    { title, body },
+    async (draft) => {
+      const result = await updateCapturedNoteAction({ id: note.id, ...draft });
+      if (!result.ok) throw new Error(result.error);
+      onSaved(draft);
+    },
+    { delayMs: 900 },
+  );
+
+  return (
+    <div className="mt-3 space-y-2">
+      <input value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" className="h-9 w-full rounded-lg border bg-background px-3 text-sm font-medium" />
+      <Textarea value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note body" className="min-h-28" />
+      <div className="flex items-center gap-2">
+        <Button size="sm" disabled={disabled} onClick={onClose}><Save /> Done</Button>
+        <span className="text-xs text-muted-foreground" aria-live="polite">
+          {status === "saving" ? "Saving…" : status === "error" ? "Couldn’t autosave — try again" : status === "saved" ? "Saved" : "Draft"}
+        </span>
+      </div>
+    </div>
   );
 }

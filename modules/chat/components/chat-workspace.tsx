@@ -29,6 +29,8 @@ export interface ChatWorkspaceProps {
   aiAvailable: boolean;
 }
 
+type SelectionContext = { selection: string; sourceTitle: string; sourceHref: string };
+
 /**
  * The assistant: thread list (a sheet on mobile) and the conversation. Replies stream from /api/ai/chat as
  * newline-delimited JSON and render as plain text. A new thread updates the URL in place, without a reload.
@@ -40,6 +42,7 @@ export function ChatWorkspace({ threads: initialThreads, thread, messages: initi
   const [title, setTitle] = useState(thread?.title ?? "New chat");
   const [messages, setMessages] = useState<ChatMessageView[]>(initialMessages);
   const [input, setInput] = useState(initialPage ? "What can I do on this page, and what should I focus on here?" : "");
+  const [selectionContext, setSelectionContext] = useState<SelectionContext | null>(null);
   const [page, setPage] = useState(initialPage);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +54,27 @@ export function ChatWorkspace({ threads: initialThreads, thread, messages: initi
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messages]);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    try {
+      const raw = window.sessionStorage.getItem("prepos:chat-selection");
+      if (!raw) return;
+      const context = JSON.parse(raw) as Partial<SelectionContext>;
+      if (typeof context.selection !== "string" || typeof context.sourceTitle !== "string" || typeof context.sourceHref !== "string") return;
+      const next = { selection: context.selection, sourceTitle: context.sourceTitle, sourceHref: context.sourceHref };
+      timer = window.setTimeout(() => {
+        setSelectionContext(next);
+        setInput("Explain this selection and help me discuss it for an interview.");
+      }, 0);
+      window.sessionStorage.removeItem("prepos:chat-selection");
+    } catch {
+      // A malformed local draft should never stop the chat page from working.
+    }
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => () => abort.current?.abort(), []);
 
@@ -71,7 +95,7 @@ export function ChatWorkspace({ threads: initialThreads, thread, messages: initi
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, ...(threadId ? { threadId } : {}), ...(page ? { page } : {}) }),
+        body: JSON.stringify({ message, ...(threadId ? { threadId } : {}), ...(page ? { page } : {}), ...(selectionContext ? { context: selectionContext } : {}) }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) {
@@ -107,6 +131,7 @@ export function ChatWorkspace({ threads: initialThreads, thread, messages: initi
           } else if (ev.type === "done") {
             patchLast({ id: ev.messageId, pending: false, provider: ev.provider ?? null });
             setPage(null);
+            setSelectionContext(null);
           } else {
             setError(ev.error);
             if (reply) patchLast({ pending: false, failed: true });
@@ -220,6 +245,18 @@ export function ChatWorkspace({ threads: initialThreads, thread, messages: initi
             <p role="alert" className="mb-2 flex items-start gap-1.5 text-sm text-destructive">
               <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden /> {error}
             </p>
+          )}
+          {selectionContext && (
+            <div className="mb-2 flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+              <MapPin className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-primary">Discussing selected text from {selectionContext.sourceTitle}</p>
+                <p className="mt-0.5 line-clamp-2 text-muted-foreground">{selectionContext.selection}</p>
+              </div>
+              <button type="button" onClick={() => setSelectionContext(null)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Remove selected text context">
+                <X className="size-3.5" aria-hidden />
+              </button>
+            </div>
           )}
           {page && (
             <p className="mb-2 inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">

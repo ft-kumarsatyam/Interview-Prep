@@ -42,7 +42,7 @@ export default async function InterviewBankPage({ searchParams }: PageProps<"/in
         description={`${all.length.toLocaleString()} questions in one place: DSA, system design, OOP and low-level design, databases, OS and networks, frontend, backend, AI and behavioural. Filter by topic, company and level, add your own, import the questions on a page you paste, or draft practice questions for a company.`}
       >
         <Button asChild variant="outline">
-          <Link href="/web/interview">Flashcard practice</Link>
+          <Link href="/web/interview">Flashcard mode</Link>
         </Button>
       </PageHeader>
       <div className="space-y-5">

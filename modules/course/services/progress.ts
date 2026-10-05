@@ -15,6 +15,19 @@ export async function getDoneLessons(courseId: string): Promise<Map<string, Less
   return new Map(rows.map((r) => [r.lessonId, { doneOn: r.doneOn, bestScore: r.bestScore ?? null }]));
 }
 
+/** Finished lessons of every course in one query: courseId → lessonId → result. */
+export async function getDoneByCourse(): Promise<Map<string, Map<string, LessonDone>>> {
+  await connectDb();
+  const rows = await CourseLessonProgress.find({}).lean();
+  const out = new Map<string, Map<string, LessonDone>>();
+  for (const r of rows) {
+    const m = out.get(r.courseId) ?? new Map<string, LessonDone>();
+    m.set(r.lessonId, { doneOn: r.doneOn, bestScore: r.bestScore ?? null });
+    out.set(r.courseId, m);
+  }
+  return out;
+}
+
 /** Every finished lesson as `courseId/lessonId` keys (used by roadmaps). */
 export async function getAllDoneKeys(): Promise<Set<string>> {
   await connectDb();

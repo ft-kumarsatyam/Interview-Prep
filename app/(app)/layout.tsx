@@ -7,40 +7,34 @@ import { CaptureListener } from "@/modules/jobs/components/capture-listener";
 import { AskPageButton } from "@/modules/chat/components/ask-page-button";
 import { LiveProvider } from "@/core/components/live/live-provider";
 import { LiveRefresh } from "@/core/components/live/live-refresh";
+import { CapturedNotesSection } from "@/components/layout/captured-notes-section";
+import { NotificationBellSection } from "@/components/layout/notification-bell-section";
 import { HubTabs, MobileTabBar, TopBarTitle } from "@/components/layout/app-nav";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { CommandPalette } from "@/components/layout/command-palette";
 import { SIDEBAR_COOKIE } from "@/components/layout/nav-items";
 import { InstallHint } from "@/components/layout/install-hint";
-import { NotificationEffects } from "@/components/layout/notification-effects";
-import { NotificationBell, type BellItem } from "@/components/layout/notification-bell";
 import { RouteProgress } from "@/components/layout/route-progress";
 import { SessionBar } from "@/components/layout/session-bar";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { FocusWidget } from "@/components/layout/focus-widget";
 import { MusicPlayer } from "@/modules/music/components/music-player";
-import { SelectionToolbar } from "@/components/shared/selection-toolbar";
-import { StickyNotesDock } from "@/components/layout/sticky-notes-dock";
 import { requireSession } from "@/core/auth/dal";
-import { timeAgo } from "@/modules/news/domain/news";
 import { env } from "@/core/env";
 import { resolveProviders } from "@/core/llm/providers";
 import { formatDate } from "@/core/plan-clock";
 import { getNavState } from "@/core/services/nav";
 import { todayIn } from "@/modules/planner/services/plan";
 import { getSettings } from "@/modules/settings/services/settings";
-import { listNotifications } from "@/modules/notifications/services/notifications";
-import { listCapturedNotes } from "@/modules/notes/services/notes";
 import { logout } from "./actions";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await requireSession();
   // If MongoDB is unreachable the shell still renders, so /setup can say what is wrong instead of an opaque error.
-  const loaded = await Promise.all([listNotifications(20), getNavState(), getSettings(), listCapturedNotes()]).catch(() => null);
-  const [notes, nav, settings, capturedNotes] = loaded ?? [{ items: [], unread: 0 }, { badges: {}, today: null }, null, []];
+  const loaded = await Promise.all([getNavState(), getSettings()]).catch(() => null);
+  const [nav, settings] = loaded ?? [{ badges: {}, today: null }, null];
   const aiAvailable = resolveProviders(env()).length > 0;
   const now = new Date();
-  const bellItems: BellItem[] = notes.items.map((n) => ({ ...n, age: timeAgo(new Date(n.createdAt), now) }));
   const sidebarCollapsed = (await cookies()).get(SIDEBAR_COOKIE)?.value === "collapsed";
   const todayLabel = settings ? formatDate(todayIn(settings, now), { weekday: "short", day: "numeric", month: "short" }) : "";
 
@@ -48,7 +42,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <AiProvider links={settings?.geminiLinks ?? {}} aiAvailable={aiAvailable}>
     <LiveProvider>
     <CaptureListener />
-    <NotificationEffects unread={notes.unread} />
     <LiveRefresh types={["notification", "capture"]} />
     <Suspense fallback={null}>
       <RouteProgress />
@@ -74,7 +67,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
             <CommandPalette />
             <AskPageButton />
-            <NotificationBell items={bellItems} unread={notes.unread} />
+            <Suspense fallback={null}>
+              <NotificationBellSection />
+            </Suspense>
             <ThemeToggle className="hidden sm:inline-flex" />
           </div>
         </header>
@@ -86,8 +81,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </main>
       </div>
       <FocusWidget timezone={settings?.timezone ?? env().APP_TIMEZONE} />
-      <SelectionToolbar highlights={capturedNotes.map((note) => ({ href: note.source.href, excerpt: note.excerpt, highlightColor: note.highlightColor }))} />
-      <StickyNotesDock notes={capturedNotes.slice(0, 12)} />
+      <Suspense fallback={null}>
+        <CapturedNotesSection />
+      </Suspense>
       <MusicPlayer compact />
       <MobileTabBar badges={nav.badges} today={nav.today} logout={logout} />
     </div>

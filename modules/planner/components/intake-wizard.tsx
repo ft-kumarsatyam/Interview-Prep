@@ -25,6 +25,7 @@ import { LEVELS, TIERS, type AvailabilityOverride, type IntakeStep, type Level, 
 import { weeklyHours } from "@/modules/planner/domain/planner-profile";
 import type { DiagnosticCandidate, DiagnosticResult, DiagnosticTopic } from "@/modules/progress/services/diagnostic";
 import { cn } from "@/core/utils";
+import { useAutosave } from "@/components/shared/use-autosave";
 import { RolePath, type RoleOption } from "@/modules/planner/components/role-path";
 
 export interface WizardTrack {
@@ -86,6 +87,20 @@ export function IntakeWizard({ tracks, roles, initial }: { tracks: WizardTrack[]
   const rated = Object.keys(ratings).length;
   const totalTopics = useMemo(() => tracks.reduce((n, t) => n + t.topics.length, 0), [tracks]);
   const weekly = weeklyHours(hours.map((h) => (h === "" || !Number.isFinite(Number(h)) ? 0 : Number(h))));
+  const draftPayload = useMemo(() => {
+    if (step === 0) return { step: "goals" as const, ...goals, interviewDate: date };
+    if (step === 1) return { step: "ratings" as const, ratings: Object.entries(ratings).map(([topicId, rating]) => ({ topicId, rating: rating.rating, wantToLearn: rating.wantToLearn, tier: rating.tier })) };
+    return { step: "availability" as const, hoursByDow: hours.map((hour) => Number(hour)), overrides };
+  }, [date, goals, hours, overrides, ratings, step]);
+  const draftValid = step < 2 || !hours.some((hour) => hour === "" || !Number.isFinite(Number(hour)) || Number(hour) < 0 || Number(hour) > 12);
+  const autosaveState = useAutosave(
+    draftPayload,
+    async (payload) => {
+      const result = await saveIntakeStepAction(payload);
+      if (!result.ok) throw new Error(result.error);
+    },
+    { delayMs: 900, enabled: step < 3 && draftValid },
+  );
 
   const go = (next: number) => {
     setStep(next);
@@ -140,6 +155,7 @@ export function IntakeWizard({ tracks, roles, initial }: { tracks: WizardTrack[]
         <p className="text-sm text-muted-foreground md:hidden">
           Step {step + 1} of {STEPS.length} · <span className="font-medium text-foreground">{STEPS[step].label}</span> · {STEPS[step].hint}
         </p>
+        {step < 3 && <p className="text-xs text-muted-foreground" aria-live="polite">{autosaveState === "saving" ? "Draft saving…" : autosaveState === "error" ? "Draft could not be saved" : autosaveState === "saved" ? "Draft saved" : "Draft autosave is ready"}</p>}
       </nav>
 
       {step === 0 && (

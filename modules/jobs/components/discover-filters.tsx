@@ -38,6 +38,7 @@ export function DiscoverFilters({ tiers, profiles = [] }: { tiers: Array<{ id: s
   useEffect(() => () => clearTimeout(timer.current), []);
 
   const get = (k: string) => params.get(k) ?? "";
+  const extra = ["kind", "min", "tier"].filter((k) => get(k)).length;
   const toggle = (k: string, v: string) => set({ [k]: get(k) === v ? null : v });
 
   return (
@@ -69,18 +70,7 @@ export function DiscoverFilters({ tiers, profiles = [] }: { tiers: Array<{ id: s
           ))}
         </div>
       )}
-      <div className="flex flex-wrap gap-x-5 gap-y-2">
-        <div role="group" aria-label="Where from" className="flex flex-wrap gap-1.5">
-          <Chip pressed={!get("kind")} onClick={() => set({ kind: null })}>
-            All sources
-          </Chip>
-          <Chip pressed={get("kind") === "boards"} onClick={() => toggle("kind", "boards")}>
-            Company pages
-          </Chip>
-          <Chip pressed={get("kind") === "remote"} onClick={() => toggle("kind", "remote")}>
-            Remote feeds
-          </Chip>
-        </div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
         <div role="group" aria-label="Posted" className="flex flex-wrap gap-1.5">
           {DAYS.map((d) => (
             <Chip key={d.v} pressed={get("days") === d.v} onClick={() => set({ days: d.v || null })}>
@@ -88,24 +78,54 @@ export function DiscoverFilters({ tiers, profiles = [] }: { tiers: Array<{ id: s
             </Chip>
           ))}
         </div>
-        <div role="group" aria-label="Match" className="flex flex-wrap gap-1.5">
-          {MIN.map((d) => (
-            <Chip key={d.v} pressed={get("min") === d.v} onClick={() => set({ min: d.v || null })}>
-              {d.label}
-            </Chip>
-          ))}
+        <div role="group" aria-label="Quick filters" className="flex flex-wrap gap-1.5">
           <Chip pressed={get("remote") === "1"} onClick={() => toggle("remote", "1")}>
             Remote only
           </Chip>
+          <Chip pressed={get("dismissed") === "1"} onClick={() => toggle("dismissed", "1")}>
+            Show hidden
+          </Chip>
         </div>
       </div>
-      <div role="group" aria-label="Kind of company" className="flex flex-wrap gap-1.5">
-        {tiers.map((t) => (
-          <Chip key={t.id} pressed={get("tier") === t.id} onClick={() => toggle("tier", t.id)}>
-            {t.name}
-          </Chip>
-        ))}
-      </div>
+      <details className="group" open={Boolean(get("kind") || get("min") || get("tier"))}>
+        <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+          More filters{extra > 0 ? ` (${extra} on)` : ""}
+        </summary>
+        <div className="mt-3 space-y-3">
+          <div className="flex flex-wrap gap-x-5 gap-y-2">
+            <div role="group" aria-label="Where from" className="flex flex-wrap gap-1.5">
+              <Chip pressed={!get("kind")} onClick={() => set({ kind: null })}>
+                All sources
+              </Chip>
+              <Chip pressed={get("kind") === "boards"} onClick={() => toggle("kind", "boards")}>
+                Company pages
+              </Chip>
+              <Chip pressed={get("kind") === "remote"} onClick={() => toggle("kind", "remote")}>
+                Remote feeds
+              </Chip>
+            </div>
+            <div role="group" aria-label="Match" className="flex flex-wrap gap-1.5">
+              {MIN.map((d) => (
+                <Chip key={d.v} pressed={get("min") === d.v} onClick={() => set({ min: d.v || null })}>
+                  {d.label}
+                </Chip>
+              ))}
+            </div>
+          </div>
+          <div role="group" aria-label="Kind of company" className="flex flex-wrap gap-1.5">
+            {tiers.map((t) => (
+              <Chip key={t.id} pressed={get("tier") === t.id} onClick={() => toggle("tier", t.id)}>
+                {t.name}
+              </Chip>
+            ))}
+          </div>
+        </div>
+      </details>
+      {Boolean(params.toString()) && (
+        <button type="button" onClick={() => { setQ(""); router.replace(path, { scroll: false }); }} className="text-xs text-primary underline-offset-2 hover:underline">
+          Clear all filters
+        </button>
+      )}
     </div>
   );
 }

@@ -52,11 +52,12 @@ export async function getPracticeCatalog(): Promise<PracticeCatalog> {
     title: g.step,
     total: g.problems.length,
     solved: g.problems.filter((p) => solved.has(p.slug)).length,
-    href: "/dsa",
+    // straight into the editor on the first problem you have not solved
+    href: `/dsa/${(g.problems.find((p) => !solved.has(p.slug)) ?? g.problems[0])?.slug ?? ""}`,
   }));
   for (const [track, subject, title] of [["js", "js", "JavaScript: 30 Days of JS"], ["sql", "dbms", "SQL problems"]] as const) {
     const own = problems.filter((p) => p.track === track);
-    if (own.length) code.push({ id: `${track}:all`, subject, title, total: own.length, solved: own.filter((p) => solved.has(p.slug)).length, href: "/dsa" });
+    if (own.length) code.push({ id: `${track}:all`, subject, title, total: own.length, solved: own.filter((p) => solved.has(p.slug)).length, href: `/dsa/${(own.find((p) => !solved.has(p.slug)) ?? own[0])?.slug ?? ""}` });
   }
 
   const input: CatalogInput = {

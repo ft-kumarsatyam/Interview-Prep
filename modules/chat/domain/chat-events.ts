@@ -15,6 +15,13 @@ export const chatRequestSchema = z.object({
     .max(200)
     .regex(/^\/[\w\-/.%?=&]*$/, "Invalid page")
     .optional(),
+  context: z
+    .object({
+      selection: z.string().trim().min(1).max(8_000),
+      sourceTitle: z.string().trim().min(1).max(200),
+      sourceHref: z.string().url().max(500),
+    })
+    .optional(),
 });
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
 

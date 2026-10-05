@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { Save } from "lucide-react";
 import { Chip } from "@/components/shared/chip";
+import { useAutosave } from "@/components/shared/use-autosave";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,6 +29,15 @@ export function QuestionForm({ initial = BLANK_QUESTION, submitLabel, companies 
   const [pending, start] = useTransition();
   const set = <K extends keyof QuestionDraft>(k: K, v: QuestionDraft[K]) => setD((p) => ({ ...p, [k]: v }));
   const listId = `bank-companies-${initial.question.length}`;
+  const draft = useMemo(() => ({ question: d.question, answer: d.answer, category: d.category, level: d.level, company: d.company, role: d.role, round: d.round, tags }), [d, tags]);
+  const draftStatus = useAutosave(
+    draft,
+    (value) => {
+      if (initial.question) return;
+      window.localStorage.setItem("prepos:interview-bank:draft", JSON.stringify(value));
+    },
+    { delayMs: 500, enabled: !initial.question },
+  );
 
   return (
     <form
@@ -39,6 +49,7 @@ export function QuestionForm({ initial = BLANK_QUESTION, submitLabel, companies 
           if (!onCancel) {
             setD(BLANK_QUESTION);
             setTags("");
+            window.localStorage.removeItem("prepos:interview-bank:draft");
           }
         });
       }}
@@ -102,6 +113,7 @@ export function QuestionForm({ initial = BLANK_QUESTION, submitLabel, companies 
             Cancel
           </Button>
         )}
+        {!initial.question && <span className="self-center text-xs text-muted-foreground" aria-live="polite">{draftStatus === "saving" ? "Draft saving…" : draftStatus === "error" ? "Draft unavailable" : "Draft autosaved"}</span>}
       </div>
     </form>
   );

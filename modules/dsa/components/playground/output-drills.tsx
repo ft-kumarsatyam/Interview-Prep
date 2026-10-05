@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CheckCircle2, Code2, Eye, Loader2, Play, RotateCcw, XCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CheckCircle2, Code2, Eye, Lightbulb, Loader2, MessageCircle, Play, RotateCcw, XCircle } from "lucide-react";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Chip } from "@/components/shared/chip";
 import { Button } from "@/components/ui/button";
@@ -13,10 +14,13 @@ import { cn } from "@/core/utils";
 type Outcome = "correct" | "wrong" | "revealed";
 
 export function OutputDrills({ onOpenInEditor, modKey }: { onOpenInEditor: (drill: Drill) => void; modKey: string }) {
+  const router = useRouter();
+  const tracks = useMemo(() => [...new Set(DRILLS.map((d) => d.track ?? "javascript"))], []);
   const topics = useMemo(() => [...new Set(DRILLS.map((d) => d.topic))], []);
+  const [track, setTrack] = useState<string | null>(null);
   const [topic, setTopic] = useState<string | null>(null);
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({});
-  const visible = topic ? DRILLS.filter((d) => d.topic === topic) : DRILLS;
+  const visible = DRILLS.filter((d) => (!track || (d.track ?? "javascript") === track) && (!topic || d.topic === topic));
   const correct = Object.values(outcomes).filter((o) => o === "correct").length;
   const attempted = Object.keys(outcomes).length;
 
@@ -43,7 +47,16 @@ export function OutputDrills({ onOpenInEditor, modKey }: { onOpenInEditor: (dril
 
       <div className="-mx-4 overflow-x-auto px-4 scrollbar-none sm:mx-0 sm:px-0">
         <div className="flex w-max gap-2 sm:w-auto sm:flex-wrap" role="group" aria-label="Filter drills by topic">
-          {[null, ...topics].map((t) => (
+          {[null, ...tracks].map((t) => (
+            <Chip key={`track-${t ?? "all"}`} className="shrink-0 capitalize" pressed={track === t} onClick={() => { setTrack(t); setTopic(null); }}>
+              {t ?? "All tracks"}
+            </Chip>
+          ))}
+        </div>
+      </div>
+      <div className="-mx-4 overflow-x-auto px-4 scrollbar-none sm:mx-0 sm:px-0">
+        <div className="flex w-max gap-2 sm:w-auto sm:flex-wrap" role="group" aria-label="Filter drills by topic">
+          {[null, ...topics.filter((t) => !track || (DRILLS.find((d) => d.topic === t)?.track ?? "javascript") === track)].map((t) => (
             <Chip key={t ?? "all"} className="shrink-0" pressed={topic === t} onClick={() => setTopic(t)}>
               {t ?? "All"}
             </Chip>
@@ -66,6 +79,18 @@ export function OutputDrills({ onOpenInEditor, modKey }: { onOpenInEditor: (dril
                   return next;
                 })
               }
+              onDiscuss={() => {
+                try {
+                  window.sessionStorage.setItem("prepos:chat-selection", JSON.stringify({
+                    selection: `${d.title}\n\n${d.code}\n\nExpected reasoning: ${d.explanation ?? "Discuss the output and the underlying concept."}`,
+                    sourceTitle: `Output drill: ${d.title}`,
+                    sourceHref: `${window.location.origin}/playground`,
+                  }));
+                  router.push("/chat");
+                } catch {
+                  // The drill remains usable if storage is unavailable.
+                }
+              }}
               onOpenInEditor={() => onOpenInEditor(d)}
             />
           </li>
@@ -81,6 +106,7 @@ function DrillCard({
   modKey,
   onOutcome,
   onReset,
+  onDiscuss,
   onOpenInEditor,
 }: {
   drill: Drill;
@@ -88,18 +114,19 @@ function DrillCard({
   modKey: string;
   onOutcome: (o: Outcome) => void;
   onReset: () => void;
+  onDiscuss: () => void;
   onOpenInEditor: () => void;
 }) {
   const [prediction, setPrediction] = useState("");
   const [actual, setActual] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [hint, setHint] = useState(0);
 
   async function check(reveal = false) {
     if (running || (!reveal && !prediction.trim())) return;
     setRunning(true);
     try {
-      const res = await runCode(drill.code);
-      const out = res.logs.map((l) => l.text).join("\n");
+      const out = drill.expected ?? (await runCode(drill.code)).logs.map((l) => l.text).join("\n");
       setActual(out);
       onOutcome(reveal ? "revealed" : normalizeOutput(prediction) === normalizeOutput(out) ? "correct" : "wrong");
     } finally {
@@ -110,6 +137,7 @@ function DrillCard({
   function reset() {
     setActual(null);
     setPrediction("");
+    setHint(0);
     onReset();
   }
 
@@ -127,7 +155,7 @@ function DrillCard({
     >
       <header className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <p className="text-xs text-muted-foreground">{drill.topic}</p>
+          <p className="text-xs capitalize text-muted-foreground">{drill.track ?? "javascript"} · {drill.topic} · {drill.difficulty ?? "medium"}</p>
           <h3 className="font-medium">{drill.title}</h3>
         </div>
         {outcome === "correct" && (
@@ -145,6 +173,12 @@ function DrillCard({
 
       {actual === null ? (
         <>
+          {drill.hints && hint < drill.hints.length && (
+            <div className="rounded-lg bg-warning/10 p-3 text-sm">
+              <p className="font-medium text-warning">Need a hint?</p>
+              <p className="mt-1 text-muted-foreground">{drill.hints[hint]}</p>
+            </div>
+          )}
           <Textarea
             value={prediction}
             onChange={(e) => setPrediction(e.target.value)}
@@ -165,6 +199,11 @@ function DrillCard({
             <Button variant="ghost" onClick={() => check(true)} disabled={running} className="h-9 text-muted-foreground">
               <Eye /> Reveal
             </Button>
+            {drill.hints && hint < drill.hints.length && (
+              <Button variant="ghost" onClick={() => setHint((value) => value + 1)} disabled={running} className="h-9 text-muted-foreground">
+                <Lightbulb /> Hint {hint + 1}/{drill.hints.length}
+              </Button>
+            )}
             <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">{modKey}+Enter</span>
           </div>
         </>
@@ -206,7 +245,17 @@ function DrillCard({
             <Button variant="ghost" onClick={onOpenInEditor} className="h-9">
               <Code2 /> Open in editor
             </Button>
+            <Button variant="ghost" onClick={onDiscuss} className="h-9">
+              <MessageCircle /> Discuss
+            </Button>
           </div>
+          {drill.explanation && (
+            <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+              <p className="font-medium">Why this happens</p>
+              <p className="mt-1 text-muted-foreground">{drill.explanation}</p>
+              {drill.followUp && <p className="mt-2 text-primary"><span className="font-medium">Follow-up:</span> {drill.followUp}</p>}
+            </div>
+          )}
         </>
       )}
     </article>

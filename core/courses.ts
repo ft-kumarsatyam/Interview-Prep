@@ -75,3 +75,9 @@ export const courseById = new Map(courses.map((c) => [c.id, c]));
 export const courseLessonByKey = new Map<string, CourseLesson & { courseId: string; chapterId: string; chapterTitle: string }>(
   courses.flatMap((c) => c.chapters.flatMap((ch) => ch.lessons.map((l) => [`${c.id}/${l.id}`, { ...l, courseId: c.id, chapterId: ch.id, chapterTitle: ch.title }] as const))),
 );
+
+/** Problem slug → the first course lesson that practises it, so a problem can link back to where it is taught. */
+export const lessonByProblem = new Map<string, { courseId: string; lessonId: string; title: string }>();
+for (const [key, l] of courseLessonByKey) {
+  for (const slug of l.problems) if (!lessonByProblem.has(slug)) lessonByProblem.set(slug, { courseId: key.split("/")[0] ?? "", lessonId: l.id, title: l.title });
+}

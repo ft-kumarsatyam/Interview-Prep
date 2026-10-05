@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button";
 import { tierProfiles } from "@/core/content";
 import { discoverJobs, getJobPrefs, listSources } from "@/modules/jobs/services/job-discovery";
 import { listProfiles } from "@/modules/jobs/services/job-profiles";
-import { listJobs } from "@/modules/jobs/services/jobs";
 import { NextStep } from "@/modules/jobs/components/next-step";
 import { getJobOverview } from "@/modules/jobs/services/job-overview";
 import { todayIn } from "@/modules/planner/services/plan";
@@ -35,19 +34,19 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
   const kind = one(sp.kind);
   const now = new Date();
   const pageSize = Math.min(150, Math.max(30, num(sp.n) ?? 30));
-  const overview = await getJobOverview(todayIn(await getSettings()));
-  const profiles = await listProfiles();
+  const [settings, profiles] = await Promise.all([getSettings(), listProfiles()]);
   const profileId = profiles.find((p) => p.id === one(sp.profile))?.id;
-  const [prefs, found, sources, tracked] = await Promise.all([
+  const [overview, prefs, found, sources] = await Promise.all([
+    getJobOverview(todayIn(settings)),
     getJobPrefs(),
     discoverJobs({ q: one(sp.q), kind: kind === "boards" || kind === "remote" ? kind : "all", tier: one(sp.tier) || undefined, remote: one(sp.remote) === "1", days: num(sp.days), min: num(sp.min), showDismissed: one(sp.dismissed) === "1", ...(profileId ? { profileId } : {}), limit: pageSize }, now),
     listSources(now),
-    listJobs(),
   ]);
+  const tracked = overview.jobs;
   const tierName = new Map<string, string>(tierProfiles.map((t) => [t.id, t.name]));
   const active = sources.filter((s) => s.enabled);
   const lastOk = sources.map((s) => s.lastOkAt).filter((x): x is string => x !== null).toSorted().at(-1);
-  const filtering = Boolean(one(sp.q) || kind || one(sp.tier) || one(sp.remote) || one(sp.days) || one(sp.min) || profileId);
+  const filtering = Boolean(one(sp.q) || kind || one(sp.tier) || one(sp.remote) || one(sp.days) || one(sp.min) || one(sp.dismissed) || profileId);
 
   return (
     <>
@@ -56,7 +55,23 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
       </PageHeader>
       <JobsTabs active="discover" trackerCount={tracked.length} />
       <PageStack>
-        <NextStep next={overview.next} />
+        {(!found.hasPrefs || !found.hasResume || !lastOk) && (
+          <ol aria-label="Get started" className="grid gap-2 rounded-xl border bg-card p-4 text-sm sm:grid-cols-3">
+            <li className="flex items-start gap-2">
+              <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border text-xs ${found.hasResume ? "border-success bg-success text-white" : ""}`}>{found.hasResume ? "✓" : "1"}</span>
+              <span>{found.hasResume ? "Resume saved" : <Link href="/resume" className="text-primary underline-offset-2 hover:underline">Save your resume</Link>}<span className="block text-xs text-muted-foreground">So jobs can be ranked by your skills</span></span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border text-xs ${found.hasPrefs ? "border-success bg-success text-white" : ""}`}>{found.hasPrefs ? "✓" : "2"}</span>
+              <span>{found.hasPrefs ? "Roles and places set" : "Tell us the roles and places you want"}<span className="block text-xs text-muted-foreground">Use the form just below</span></span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border text-xs ${lastOk ? "border-success bg-success text-white" : ""}`}>{lastOk ? "✓" : "3"}</span>
+              <span>{lastOk ? "Jobs loaded" : "Press Refresh to load jobs"}<span className="block text-xs text-muted-foreground">After that it updates by itself</span></span>
+            </li>
+          </ol>
+        )}
+        {found.hasPrefs && found.hasResume && lastOk && <NextStep next={overview.next} />}
         <LiveJobsBanner />
         <details className="rounded-xl border bg-card" open={!found.hasPrefs}>
           <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
@@ -83,11 +98,18 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
         {found.items.length === 0 ? (
           <EmptyState icon={Compass} title={filtering ? "No jobs match these filters" : lastOk ? "Nothing here yet" : "No jobs loaded yet"} compact>
             <p>{filtering ? "Loosen a filter or clear the search." : lastOk ? "Everything found is hidden or filtered out." : "Press Refresh to read the company career pages and remote feeds. After that it updates every few hours by itself."}</p>
-            {filtering && (
-              <Button asChild variant="outline" className="mt-3">
-                <Link href="/jobs">Clear filters</Link>
+            <div className="mt-3 flex flex-wrap justify-center gap-2">
+              {filtering ? (
+                <Button asChild variant="outline">
+                  <Link href="/jobs">Clear filters</Link>
+                </Button>
+              ) : (
+                <RefreshButton />
+              )}
+              <Button asChild variant="ghost">
+                <Link href="/jobs/links">Search elsewhere</Link>
               </Button>
-            )}
+            </div>
           </EmptyState>
         ) : (
           <ul className="space-y-3" aria-label="Jobs">

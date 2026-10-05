@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { AArrowDown, AArrowUp, Code2, FolderOpen, Link2, Loader2, PanelLeftClose, PanelLeftOpen, Pencil, Play, Save, Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { deleteSnippetAction, saveSnippetAction } from "@/app/(app)/playground/actions";
@@ -20,6 +20,7 @@ import { playgroundHref } from "@/modules/dsa/lib/playground/share";
 import { runFreeIn } from "@/core/sandbox/languages";
 import type { SnippetSummary } from "@/modules/dsa/services/snippets";
 import { cn } from "@/core/utils";
+import { useAutosave } from "@/components/shared/use-autosave";
 import { CodeEditor } from "@/modules/dsa/components/playground/lazy-code-editor";
 import { ConsoleOutput } from "@/modules/dsa/components/playground/console-output";
 import { OutputDrills } from "@/modules/dsa/components/playground/output-drills";
@@ -99,19 +100,17 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
   const [showSidebar, setShowSidebar] = useState(() => readPref("playground:sidebar") !== "hidden");
   const [fontSize, setFontSize] = useState(() => Number(readPref("playground:font")) || 14);
   const [pending, startTransition] = useTransition();
-  const scratchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const dirty = code !== baseline;
   const errorCount = result?.logs.filter((l) => l.level === "error").length ?? 0;
   const lines = code.split("\n").length;
 
-  // Unsaved scratch work survives a refresh; a saved snippet's edits are kept until you discard them.
-  useEffect(() => {
-    if (current.id) return;
-    clearTimeout(scratchTimer.current);
-    scratchTimer.current = setTimeout(() => writePref(SCRATCH_KEY, JSON.stringify({ code, language })), 400);
-    return () => clearTimeout(scratchTimer.current);
-  }, [code, language, current.id]);
+  const scratch = useMemo(() => ({ code, language }), [code, language]);
+  const scratchStatus = useAutosave(
+    scratch,
+    (value) => writePref(SCRATCH_KEY, JSON.stringify(value)),
+    { delayMs: 400, enabled: !current.id },
+  );
 
   function confirmDiscard(): boolean {
     return !dirty || window.confirm("Discard your unsaved changes?");
@@ -236,7 +235,9 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
   }
 
   const list = <SnippetList snippets={snippets} currentId={current.id} onOpen={openSnippet} onNew={newSnippet} onDelete={remove} deleting={pending} />;
-  const status = current.id ? (dirty ? "Unsaved changes" : "Saved") : "Scratch · autosaved on this device";
+  const status = current.id
+    ? dirty ? "Unsaved changes" : "Saved"
+    : `Scratch · ${scratchStatus === "saving" ? "saving…" : scratchStatus === "error" ? "save failed" : "autosaved on this device"}`;
 
   const languagePills = (
     <div role="group" aria-label="Language" className="flex shrink-0 rounded-md bg-muted p-0.5" title="TypeScript: types are stripped and syntax errors reported (no type checking). Python: Pyodide, downloaded on first run.">

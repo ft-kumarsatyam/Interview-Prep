@@ -29,3 +29,25 @@ export function roadmapLesson(key: string): { title: string; href: string } | un
   const c = courseLessonByKey.get(key);
   return c ? { title: c.title, href: `/courses/${c.courseId}/${c.id}` } : undefined;
 }
+
+export interface RoadmapNodeRef {
+  roadmapId: string;
+  roadmapTitle: string;
+  nodeId: string;
+  nodeTitle: string;
+}
+
+const addRef = (map: Map<string, RoadmapNodeRef[]>, key: string, ref: RoadmapNodeRef) => map.set(key, [...(map.get(key) ?? []), ref]);
+
+/** `courseId/lessonId` and problem slug → the roadmap nodes that include them (the reverse of node.lesson / node.problems). */
+export const roadmapNodesByLesson = new Map<string, RoadmapNodeRef[]>();
+export const roadmapNodesByProblem = new Map<string, RoadmapNodeRef[]>();
+for (const r of roadmaps) {
+  for (const s of r.sections) {
+    for (const n of s.nodes) {
+      const ref = { roadmapId: r.id, roadmapTitle: r.title, nodeId: n.id, nodeTitle: n.title };
+      if (n.lesson) addRef(roadmapNodesByLesson, n.lesson, ref);
+      for (const p of n.problems) addRef(roadmapNodesByProblem, p, ref);
+    }
+  }
+}

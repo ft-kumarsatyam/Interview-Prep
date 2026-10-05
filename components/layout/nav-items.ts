@@ -85,7 +85,6 @@ export const NAV_HUBS: NavHub[] = [
       { href: "/calendar", label: "Calendar", icon: CalendarDays },
       { href: "/targets", label: "Targets", icon: Target },
       { href: "/stats", label: "Stats", icon: BarChart3 },
-      { href: "/focus", label: "Focus history", icon: Timer },
     ],
   },
   {
@@ -116,8 +115,7 @@ export const NAV_HUBS: NavHub[] = [
       { href: "/roadmaps", label: "Roadmaps", icon: Route },
       { href: "/design", label: "System Design", icon: Network },
       { href: "/web", label: "Web & AI", icon: Globe },
-      { href: "/web/interview", label: "Interview bank", icon: MessageCircleQuestion },
-      { href: "/interview-bank", label: "All questions", icon: MessageCircleQuestion },
+      { href: "/interview-bank", label: "Interview bank", icon: MessageCircleQuestion },
       { href: "/projects", label: "Projects", icon: Hammer },
       { href: "/blogs", label: "Eng blogs", icon: PenLine },
       { href: "/ask", label: "Ask notes", icon: Sparkles },
