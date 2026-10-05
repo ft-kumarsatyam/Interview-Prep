@@ -108,6 +108,7 @@ export type ProviderHealth = "ok" | "cooldown" | "disabled";
 /** One API key of a provider, identified only by its fingerprint. */
 export interface KeyRow {
   fingerprint: string;
+  model: string | undefined;
   index: number;
   health: ProviderHealth;
   tokens: number;
@@ -177,7 +178,7 @@ export async function providerRows(now = new Date()): Promise<ProviderRow[]> {
               ? cooldownNote(states[d.id]!, e.APP_TIMEZONE)
               : null;
         const note = budgetNote({ label: p.label, keyIndex: d.keyIndex ?? 0, keyCount: d.keyCount ?? 1, envVar: d.envVar ?? p.id, tokensUsed: used, budget }) ?? stateNote;
-        return { fingerprint: d.fingerprint ?? "", index: d.keyIndex ?? 0, health, tokens: used, budget, level, note };
+        return { fingerprint: d.fingerprint ?? "", model: d.cfg.model, index: d.keyIndex ?? 0, health, tokens: used, budget, level, note };
       });
     const usable = keys.filter((k) => k.health === "ok" && k.level !== "spent");
     const health: ProviderHealth = keys.length === 0 || usable.length > 0 ? "ok" : keys.every((k) => k.health === "disabled") ? "disabled" : "cooldown";

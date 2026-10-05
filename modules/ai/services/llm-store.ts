@@ -8,7 +8,7 @@ import { AiUsage, LlmKeyUsage, LlmState, PaidApproval, PaidCap } from "@/core/mo
 
 const USAGE_TTL_MS = 90 * 86_400_000;
 /** A provider id, optionally `#fingerprint` for one of several keys. */
-const SLOT_ID = /^[a-z][a-z0-9-]{1,30}(#[0-9a-f]{6,16})?$/;
+const SLOT_ID = /^[a-z][a-z0-9-]{1,30}(#[0-9a-f]{6,16})?(#m[0-9a-f]{10})?$/;
 const APPROVAL_TTL_MS = 3 * 86_400_000;
 
 /** The counters one call adds: calls, failures, tokens, failovers and its latency histogram buckets. */

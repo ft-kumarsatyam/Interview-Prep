@@ -84,6 +84,14 @@ describe("new providers, key lists and extras", () => {
     expect(defs.map((d) => d.keyIndex)).toEqual([0, 1]);
   });
 
+  it("expands model candidates into independently health-tracked slots", () => {
+    const defs = resolveProviders({ NVIDIA_API_KEYS: "key-one", NVIDIA_MODELS: "model-a,model-b" });
+    expect(defs).toHaveLength(2);
+    expect(defs.map((d) => d.cfg.model)).toEqual(["model-a", "model-b"]);
+    expect(new Set(defs.map((d) => d.id)).size).toBe(2);
+    expect(defs.every((d) => d.id.startsWith("nvidia#"))).toBe(true);
+  });
+
   it("reads extra providers from JSON with keys from LLM_EXTRA_<ID>_KEYS, paid by default", () => {
     const extras = JSON.stringify([
       { id: "dahl", baseUrl: "https://api.dahl.example/v1", model: "m1" },

@@ -90,8 +90,8 @@ export function AiPanel({ providers, usage }: { providers: ProviderRow[]; usage:
                   {p.keys && p.keys.length > 1 && (
                     <ul className="mt-2 space-y-1">
                       {p.keys.map((k) => (
-                        <li key={k.fingerprint} className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-                          <span className="font-mono">key {k.index + 1} · {k.fingerprint.slice(0, 6)}</span>
+                        <li key={`${k.fingerprint}:${k.model ?? "default"}`} className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                          <span className="font-mono">key {k.index + 1} · {k.fingerprint.slice(0, 6)}{k.model ? ` · ${k.model}` : ""}</span>
                           <span className={cn("tabular font-mono", k.level === "spent" ? "text-destructive" : k.level === "warn" ? "text-warning" : "")}>
                             {formatTokens(k.tokens)} / {formatTokens(k.budget)} tokens
                           </span>
@@ -102,7 +102,7 @@ export function AiPanel({ providers, usage }: { providers: ProviderRow[]; usage:
                   )}
                   {p.keys?.length === 1 && p.keys[0]!.tokens > 0 && (
                     <p className="tabular mt-1 font-mono text-xs text-muted-foreground">
-                      {formatTokens(p.keys[0]!.tokens)} / {formatTokens(p.keys[0]!.budget)} tokens on this key
+                      {p.keys[0]!.model ? `${p.keys[0]!.model} · ` : ""}{formatTokens(p.keys[0]!.tokens)} / {formatTokens(p.keys[0]!.budget)} tokens on this key
                     </p>
                   )}
                 </div>

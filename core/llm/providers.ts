@@ -14,10 +14,14 @@ export interface LlmEnv {
   GEMINI_MODEL?: string;
   GROQ_API_KEY?: string;
   GROQ_MODEL?: string;
+  GROQ_MODELS?: string;
   NVIDIA_API_KEYS?: string;
   NVIDIA_MODEL?: string;
+  NVIDIA_MODELS?: string;
   OPENROUTER_API_KEYS?: string;
   OPENROUTER_MODEL?: string;
+  OPENROUTER_MODELS?: string;
+  GEMINI_MODELS?: string;
   OPENAI_API_KEYS?: string;
   OPENAI_MODEL?: string;
   META_LLAMA_API_KEY?: string;
@@ -55,6 +59,8 @@ export const OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const DEFAULT_NVIDIA_MODEL = "meta/muse-glimmer-30b";
 /** Current free OpenRouter model; the former Llama 3.3 free variant is no longer available. */
 export const DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
+export const DEFAULT_GEMINI_MODEL = "gemini-flash-latest";
+export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 export const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
 export const DEFAULT_CHAIN: readonly ProviderId[] = ["nvidia", "openrouter", "gemini", "groq", "openai", "meta"];
 /** Output cap per paid call, so one call can't run long. */
@@ -74,6 +80,7 @@ const LABELS: Record<ProviderId, string> = {
 const isHttps = (u: string | undefined): u is string => !!u && /^https:\/\/\S+$/.test(u);
 
 export const keyFingerprint = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 10);
+const modelFingerprint = (model: string) => createHash("sha256").update(model).digest("hex").slice(0, 10);
 
 const extraSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/, "lowercase letters, digits and dashes"),
@@ -130,6 +137,12 @@ export function keyTokenBudget(e: LlmEnv): number {
   return e.LLM_KEY_TOKEN_BUDGET ?? DEFAULT_KEY_TOKEN_BUDGET;
 }
 
+/** Comma/newline-separated model candidates. The first candidate is the primary. */
+export function splitModels(raw: string | undefined, fallback: string | undefined): string[] {
+  const models = raw?.split(/[,\n]+/).map((model) => model.trim()).filter(Boolean) ?? [];
+  return [...new Set(models.length ? models : fallback ? [fallback] : [])];
+}
+
 interface ProviderEntry {
   id: string;
   label: string;
@@ -137,20 +150,21 @@ interface ProviderEntry {
   envVar: string;
   keys: string[];
   cfg: Omit<LlmConfig, "apiKey">;
+  models: string[];
 }
 
 function entries(e: LlmEnv, extraEnv: ExtraKeyEnv): Map<string, ProviderEntry> {
   const map = new Map<string, ProviderEntry>();
-  const add = (id: string, envVar: string, keys: string[], cfg: Omit<LlmConfig, "apiKey">, opts: { label?: string; paid?: boolean } = {}) => {
+  const add = (id: string, envVar: string, keys: string[], cfg: Omit<LlmConfig, "apiKey">, opts: { label?: string; paid?: boolean } = {}, models = cfg.model ? [cfg.model] : []) => {
     if (keys.length === 0) return;
     const paid = opts.paid ?? PAID_PROVIDERS.includes(id);
-    map.set(id, { id, label: opts.label ?? LABELS[id as ProviderId] ?? id, paid, envVar, keys, cfg: paid ? { ...cfg, maxTokens: PAID_MAX_TOKENS } : cfg });
+    map.set(id, { id, label: opts.label ?? LABELS[id as ProviderId] ?? id, paid, envVar, keys, cfg: paid ? { ...cfg, maxTokens: PAID_MAX_TOKENS } : cfg, models: models.length ? models : [""] });
   };
 
-  add("nvidia", "NVIDIA_API_KEYS", splitKeys(e.NVIDIA_API_KEYS), { provider: "openai-compatible", baseUrl: NVIDIA_BASE_URL, model: e.NVIDIA_MODEL ?? DEFAULT_NVIDIA_MODEL, jsonMode: false });
-  add("openrouter", "OPENROUTER_API_KEYS", splitKeys(e.OPENROUTER_API_KEYS), { provider: "openai-compatible", baseUrl: OPENROUTER_BASE_URL, model: e.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL });
-  add("gemini", "GEMINI_API_KEY", splitKeys(e.GEMINI_API_KEY), { provider: "gemini", model: e.GEMINI_MODEL });
-  add("groq", "GROQ_API_KEY", splitKeys(e.GROQ_API_KEY), { provider: "openai-compatible", model: e.GROQ_MODEL, baseUrl: GROQ_BASE_URL });
+  add("nvidia", "NVIDIA_API_KEYS", splitKeys(e.NVIDIA_API_KEYS), { provider: "openai-compatible", baseUrl: NVIDIA_BASE_URL, model: e.NVIDIA_MODEL ?? DEFAULT_NVIDIA_MODEL, jsonMode: false }, {}, splitModels(e.NVIDIA_MODELS, e.NVIDIA_MODEL ?? DEFAULT_NVIDIA_MODEL));
+  add("openrouter", "OPENROUTER_API_KEYS", splitKeys(e.OPENROUTER_API_KEYS), { provider: "openai-compatible", baseUrl: OPENROUTER_BASE_URL, model: e.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL }, {}, splitModels(e.OPENROUTER_MODELS, e.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL));
+  add("gemini", "GEMINI_API_KEY", splitKeys(e.GEMINI_API_KEY), { provider: "gemini", model: e.GEMINI_MODEL }, {}, splitModels(e.GEMINI_MODELS, e.GEMINI_MODEL ?? DEFAULT_GEMINI_MODEL));
+  add("groq", "GROQ_API_KEY", splitKeys(e.GROQ_API_KEY), { provider: "openai-compatible", model: e.GROQ_MODEL, baseUrl: GROQ_BASE_URL }, {}, splitModels(e.GROQ_MODELS, e.GROQ_MODEL ?? DEFAULT_GROQ_MODEL));
 
   if (e.LLM_API_KEY) {
     const legacy = e.LLM_PROVIDER ?? "gemini";
@@ -192,12 +206,18 @@ export function resolveProviders(e: LlmEnv, extraEnv: ExtraKeyEnv = process.env)
   const rest = [...map.values()].filter((p) => !wanted.includes(p.id));
   const ordered = [...listed, ...rest];
   const all = [...ordered.filter((p) => !p.paid), ...ordered.filter((p) => p.paid)];
-  return all.flatMap((p) =>
-    p.keys.map((apiKey, keyIndex) => {
+  const defs: ProviderDef[] = [];
+  for (const p of all) {
+    for (const [keyIndex, apiKey] of p.keys.entries()) {
       const fingerprint = keyFingerprint(apiKey);
-      return { id: slotId(p.id, fingerprint, p.keys.length), provider: p.id, label: p.label, paid: p.paid, cfg: { ...p.cfg, apiKey }, fingerprint, keyIndex, keyCount: p.keys.length, envVar: p.envVar };
-    }),
-  );
+      for (const model of p.models) {
+        const baseId = slotId(p.id, fingerprint, p.keys.length);
+        const id = p.models.length > 1 ? `${baseId}#m${modelFingerprint(model)}` : baseId;
+        defs.push({ id, provider: p.id, label: p.label, paid: p.paid, cfg: { ...p.cfg, apiKey, model: model || undefined }, fingerprint, keyIndex, keyCount: p.keys.length, envVar: p.envVar });
+      }
+    }
+  }
+  return defs;
 }
 
 export interface ProviderSetupStatus {
