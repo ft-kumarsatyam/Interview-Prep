@@ -70,7 +70,7 @@ Modules are not equal. Keep imports pointing at the more stable one.
 | Tier | Modules | Rule of thumb |
 |---|---|---|
 | **Leaf** (own one feature) | `ai`, `aptitude`, `course`, `design`, `dsa`, `interview-bank`, `jobs`, `learn`, `mock`, `news`, `quiz`, `resume`, `roadmap`, `settings`, `targets` | Depend on `settings` and small, stable helpers such as `planner/services/plan#todayIn`. Never on another leaf's components if a prop or `components/shared` will do. `interview-bank` imports `ai` (drafting and extraction) and `news` (the shared Markdown renderer). |
-| **Orchestration** (stitch features together) | `planner`, `progress`, `notifications`, `practice` | May read many leaves. `planner`, `progress` and `notifications` already form a knot (`progress` <-> `planner` <-> `notifications`); the architecture test freezes it so it cannot grow. `practice` (the Practice hub) is a read-only aggregator: it points at leaves and nothing may import it. |
+| **Orchestration** (stitch features together) | `planner`, `progress`, `notifications`, `practice`, `study-flow` | May read many leaves. `planner`, `progress` and `notifications` already form a knot (`progress` <-> `planner` <-> `notifications`); the architecture test freezes it so it cannot grow. `practice` (the Practice hub) is a read-only aggregator: it points at leaves and nothing may import it. `study-flow` is also read-only: it orders existing planner, course, roadmap and practice work without owning progress. |
 | **Assistant** (read-only aggregator) | `chat` | Like `practice`: its data tools (`services/chat-tools.ts`) read other modules' services so the assistant can answer from your data; nothing may import it, and it never imports `resume`. |
 
 When you need something from an orchestration module in a leaf, prefer moving the small shared piece **down** (a pure function in the leaf's or `core`'s `domain/`) over adding an upward import.
@@ -117,7 +117,7 @@ extension/                  plain-JS Chrome extension (reads only the page you c
 docs/                       this file, ARCHITECTURE, DESIGN, BUILD_PLAN, ROADMAP, GRAPH
 ```
 
-Modules today: `ai, aptitude, chat, course, design, dsa, jobs, learn, mock, news, notes, notifications, planner, practice, progress, quiz, resume, roadmap, settings, targets`.
+Modules today: `ai, aptitude, chat, course, design, dsa, jobs, learn, mock, news, notes, notifications, planner, practice, progress, quiz, resume, roadmap, settings, study-flow, targets`.
 
 ---
 

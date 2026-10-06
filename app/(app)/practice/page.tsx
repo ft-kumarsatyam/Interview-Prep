@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { PracticeEntryCard } from "@/modules/practice/components/entry-card";
 import { filterCatalog, KIND_LABEL, KINDS, recommend, STATUS_LABEL, STATUSES, SUBJECT_NAME, SUBJECTS, subjectCounts, type EntryStatus, type PracticeKind, type SubjectId } from "@/modules/practice/domain/catalog";
 import { getPracticeCatalog } from "@/modules/practice/services/catalog";
+import { getStudyFlow } from "@/modules/study-flow/services/study-flow";
+import { StudyFlowCard } from "@/modules/study-flow/components/study-flow-card";
 
 export const metadata: Metadata = { title: "Practice" };
 
@@ -17,6 +19,7 @@ const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : u
 export default async function PracticePage({ searchParams }: PageProps<"/practice">) {
   const sp = await searchParams;
   const { entries, studiedTopics } = await getPracticeCatalog();
+  const studyFlow = await getStudyFlow();
 
   const subject = SUBJECTS.find((s) => s.id === one(sp.subject))?.id as SubjectId | undefined;
   const kind = KINDS.find((k) => k === one(sp.kind)) as PracticeKind | undefined;
@@ -63,6 +66,7 @@ export default async function PracticePage({ searchParams }: PageProps<"/practic
       </PageHeader>
 
       <PageStack>
+      <StudyFlowCard items={studyFlow.items} nextId={studyFlow.next?.id} />
       {picks.length > 0 && (
         <section aria-label="Suggested next" className="space-y-3">
           <SectionHeading title="Suggested next" hint={studiedTopics.size > 0 ? "Topics you have studied but not mastered come first." : "Study a topic, then practise it here."} />

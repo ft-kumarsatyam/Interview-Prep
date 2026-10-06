@@ -31,6 +31,8 @@ export type SettingsFormValues = Omit<
   googleNewsQueries: string[];
   /** Study hours per day of week, Sunday first. */
   hoursByDow: Array<number | "">;
+  studyFlowRoadmaps?: string[];
+  studyFlowCourses?: boolean;
 };
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -134,7 +136,7 @@ function Chip({ children, onRemove, locked, label }: { children: React.ReactNode
   );
 }
 
-export function SettingsForm({ initial, today, defaultQueries, timezone }: { initial: SettingsFormValues; today: string; defaultQueries: string[]; timezone: string }) {
+export function SettingsForm({ initial, today, defaultQueries, timezone, roadmapOptions = [] }: { initial: SettingsFormValues; today: string; defaultQueries: string[]; timezone: string; roadmapOptions?: Array<{ id: string; title: string }> }) {
   const [v, setV] = useState(initial);
   const [baseline, setBaseline] = useState(initial);
   const [attempted, setAttempted] = useState(false);
@@ -391,6 +393,33 @@ export function SettingsForm({ initial, today, defaultQueries, timezone }: { ini
               </time>
             </Chip>
           ))}
+        </div>
+      </Section>
+
+      <Section
+        id="study-flow"
+        icon={Sparkles}
+        title="Unified study flow"
+        description="The dashboard can guide you through required work, then one selected roadmap node and the next course lesson. These additions never change the DSA, theory or quiz streak requirements."
+        contentClassName="space-y-4"
+      >
+        <Label htmlFor="studyFlowCourses" className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border p-3 font-normal has-data-[state=checked]:border-primary/50 has-data-[state=checked]:bg-primary/5">
+          <Checkbox id="studyFlowCourses" checked={v.studyFlowCourses ?? false} onCheckedChange={(checked) => set("studyFlowCourses", checked === true)} className={CHECKBOX} />
+          <span className="space-y-0.5">
+            <span className="block text-sm font-medium">Continue courses in optional capacity</span>
+            <span className="block text-xs text-muted-foreground">Adds the next unfinished lesson after today&apos;s required work.</span>
+          </span>
+        </Label>
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Roadmaps included in the flow</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {roadmapOptions.map((roadmap) => (
+              <Label key={roadmap.id} htmlFor={`flow-roadmap-${roadmap.id}`} className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg border p-3 font-normal has-data-[state=checked]:border-primary/50 has-data-[state=checked]:bg-primary/5">
+                <Checkbox id={`flow-roadmap-${roadmap.id}`} checked={(v.studyFlowRoadmaps ?? []).includes(roadmap.id)} onCheckedChange={(checked) => set("studyFlowRoadmaps", checked === true ? [...(v.studyFlowRoadmaps ?? []), roadmap.id] : (v.studyFlowRoadmaps ?? []).filter((id) => id !== roadmap.id))} className={CHECKBOX} />
+                <span className="text-sm">{roadmap.title}</span>
+              </Label>
+            ))}
+          </div>
         </div>
       </Section>
 

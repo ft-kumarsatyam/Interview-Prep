@@ -32,6 +32,8 @@ import { proposeRebalance } from "@/modules/planner/services/rebalance";
 import { listStudySessions } from "@/modules/planner/services/study";
 import { MocksSection } from "@/modules/progress/components/dashboard/mocks-section";
 import { Suspense } from "react";
+import { getStudyFlow } from "@/modules/study-flow/services/study-flow";
+import { StudyFlowCard } from "@/modules/study-flow/components/study-flow-card";
 
 export const metadata: Metadata = { title: "Planner" };
 
@@ -44,7 +46,7 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
   const settings = state.settings;
   const personal = await loadPersonalisation();
   if (!personal.completed && !settings.plannerSetupAt) redirect("/plan/setup");
-  const [sprint, indicators, changes, feasibility, proposal, todayReasons, snapshots] = await Promise.all([
+  const [sprint, indicators, changes, feasibility, proposal, todayReasons, snapshots, studyFlow] = await Promise.all([
     getSprintView(requested, undefined, state),
     getIndicators(undefined, state),
     listPlanChanges(20),
@@ -52,6 +54,7 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
     personal.completed ? proposeRebalance() : Promise.resolve(null),
     getDayExplanation(state.today),
     listSnapshots(),
+    getStudyFlow(state),
   ]);
   const strengths = [...personal.weights.values()].sort((a, b) => a.strength - b.strength).slice(0, 12);
   const todaySessions = await listStudySessions(sprint.today, sprint.today);
@@ -76,6 +79,7 @@ export default async function PlanPage({ searchParams }: PageProps<"/plan">) {
               <RemedyActions remedies={feasibility.remedies} />
             </CardContent>
           </Card>
+          <StudyFlowCard items={studyFlow.items} nextId={studyFlow.next?.id} />
           <Suspense fallback={null}>
             <MocksSection today={state.today} schedule={settings.mockSchedule} />
           </Suspense>

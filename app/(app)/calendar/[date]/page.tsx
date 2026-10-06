@@ -17,6 +17,8 @@ import { getBacklogForDay } from "@/modules/progress/services/backlog";
 import { getDayExplanation } from "@/modules/planner/services/explain-day";
 import { getCalendarDay, type CalendarDayDetail, type PlanItem } from "@/modules/planner/services/calendar";
 import { cn } from "@/core/utils";
+import { getStudyFlow } from "@/modules/study-flow/services/study-flow";
+import { StudyFlowCard } from "@/modules/study-flow/components/study-flow-card";
 
 export async function generateMetadata({ params }: PageProps<"/calendar/[date]">): Promise<Metadata> {
   const { date } = await params;
@@ -113,6 +115,7 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
   if (!isDateStr(date)) notFound();
   const d = await getCalendarDay(date);
   const state = await ensureToday();
+  const studyFlow = date === state.today ? await getStudyFlow(state) : null;
   const pullable = isPullableDay(date, state.today, state.settings);
   const dayBacklog = pullable || date === state.today ? await getBacklogForDay({ today: state.today, plan: state.plan, settings: state.settings }, date).catch(() => null) : null;
   const dayLabel = formatDate(date, { weekday: "short", day: "numeric", month: "short" });
@@ -194,6 +197,7 @@ export default async function CalendarDayPage({ params }: PageProps<"/calendar/[
           )}
         </div>
       )}
+      {studyFlow && <StudyFlowCard items={studyFlow.items} nextId={studyFlow.next?.id} />}
       {d.catchUp && past && date < d.today && (
         <section aria-label="Left over from this day" className="space-y-2 rounded-xl border bg-card p-4 text-sm">
           {d.catchUp.caughtUp ? (

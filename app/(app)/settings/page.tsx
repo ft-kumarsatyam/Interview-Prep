@@ -16,6 +16,7 @@ import { providerRows, usageToday } from "@/modules/ai/services/ai";
 import { todayIn } from "@/modules/planner/services/plan";
 import { listPushDevices } from "@/modules/notifications/services/push-subscriptions";
 import { getSettings } from "@/modules/settings/services/settings";
+import { roadmaps } from "@/core/roadmaps";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -55,7 +56,10 @@ export default async function SettingsPage() {
               hoursByDow: s.hoursByDow ? [...s.hoursByDow] : [...DEFAULT_HOURS],
               googleNewsQueries: s.googleNewsQueries ?? defaultQueries,
               leetcodeUsername: s.leetcodeUsername ?? "",
+              studyFlowRoadmaps: [...s.studyFlowRoadmaps],
+              studyFlowCourses: s.studyFlowCourses,
             }}
+            roadmapOptions={roadmaps.map((roadmap) => ({ id: roadmap.id, title: roadmap.title }))}
           />
           <AiPanel providers={providers} usage={usage} />
           <DesiModeCard />

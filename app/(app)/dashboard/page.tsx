@@ -35,6 +35,8 @@ import { FixNextCard } from "@/modules/progress/components/dashboard/fix-next-ca
 import { ReadinessStrip } from "@/modules/progress/components/dashboard/readiness-strip";
 import { getTargetsOverview } from "@/modules/targets/services/targets";
 import { studyGuidance } from "@/modules/progress/domain/study-guidance";
+import { getStudyFlow } from "@/modules/study-flow/services/study-flow";
+import { StudyFlowCard } from "@/modules/study-flow/components/study-flow-card";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -44,7 +46,7 @@ export default async function DashboardPage() {
   const elapsed = startTimer();
   const session = await currentSession();
   const data = await getDashboard();
-  const [mistakes, targets] = await Promise.all([getMistakesOverview(5), getTargetsOverview()]);
+  const [mistakes, targets, studyFlow] = await Promise.all([getMistakesOverview(5), getTargetsOverview(), getStudyFlow(data)]);
   const { day, plan, settings, today } = data;
 
   const clock = planClock(settings);
@@ -130,6 +132,7 @@ export default async function DashboardPage() {
         <CarrySection today={today} plan={plan} settings={settings} />
       </Suspense>
       <NotificationBanner notification={data.unreadNotifications[0]} />
+      <StudyFlowCard items={studyFlow.items} nextId={studyFlow.next?.id} />
 
       <div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
         <TodayCard

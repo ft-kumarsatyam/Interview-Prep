@@ -7,7 +7,8 @@ import { migration as jobProfiles } from "@/core/db/migrations/006-job-profiles"
 import { migration as postingYears } from "@/core/db/migrations/007-posting-years";
 import { migration as questionFlags } from "@/core/db/migrations/008-question-flags";
 import { migration as interviewBank } from "@/core/db/migrations/009-interview-bank";
+import { migration as studyFlowSettings } from "@/core/db/migrations/010-study-flow-settings";
 import type { Migration } from "@/core/db/migrations/types";
 
 /** Append new migrations to the end. Ids must be in order (a test checks it). */
-export const MIGRATIONS: Migration[] = [ownerId, eventIndexes, vectorIndex, aiChatIndexes, capturedNotes, jobProfiles, postingYears, questionFlags, interviewBank];
+export const MIGRATIONS: Migration[] = [ownerId, eventIndexes, vectorIndex, aiChatIndexes, capturedNotes, jobProfiles, postingYears, questionFlags, interviewBank, studyFlowSettings];

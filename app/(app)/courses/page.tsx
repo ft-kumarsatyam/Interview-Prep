@@ -7,6 +7,8 @@ import { Progress } from "@/components/ui/progress";
 import { courses } from "@/core/courses";
 import { courseProgress, flatLessons, nextCourseLesson } from "@/modules/course/domain/course";
 import { getDoneByCourse } from "@/modules/course/services/progress";
+import { getStudyFlow } from "@/modules/study-flow/services/study-flow";
+import { StudyFlowCard } from "@/modules/study-flow/components/study-flow-card";
 
 export const metadata: Metadata = { title: "Courses" };
 
@@ -22,6 +24,7 @@ export default async function CoursesPage({ searchParams }: PageProps<"/courses"
   const raw = Array.isArray(sp.show) ? sp.show[0] : sp.show;
   const show = FILTERS.find((f) => f.id === raw)?.id ?? "all";
   const doneBy = await getDoneByCourse();
+  const studyFlow = await getStudyFlow();
   const all = courses.map((c) => {
     const lessons = flatLessons(c);
     const doneMap = doneBy.get(c.id) ?? new Map();
@@ -45,6 +48,7 @@ export default async function CoursesPage({ searchParams }: PageProps<"/courses"
           <span className="text-sm font-medium text-primary">Continue</span>
         </Link>
       )}
+      <div className="mb-4"><StudyFlowCard items={studyFlow.items} nextId={studyFlow.next?.id} /></div>
       <nav aria-label="Filter courses" className="mb-4 flex flex-wrap gap-2">
         {FILTERS.map((f) => (
           <Link key={f.id} href={f.id === "all" ? "/courses" : `/courses?show=${f.id}`} aria-current={show === f.id ? "page" : undefined} className={`rounded-full border px-3 py-1 text-xs ${show === f.id ? "border-primary bg-primary text-primary-foreground" : "hover:bg-muted"}`}>

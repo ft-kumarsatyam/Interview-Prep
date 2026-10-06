@@ -39,6 +39,8 @@ export interface AppSettings extends PlanSettings {
   mail: MailPrefs;
   /** Backlog items queued into each day (0 = off). */
   backlogBudget: number;
+  studyFlowRoadmaps: string[];
+  studyFlowCourses: boolean;
   /** How much unfinished work may be pushed forward before the app warns you. */
   carryLimits: CarryLimits;
   lastMorningRunAt: Date | null;
@@ -114,6 +116,8 @@ async function loadSettings(): Promise<AppSettings> {
     roastLevel: effectiveRoastLevel(doc.roastLevel as RoastLevel | null, doc.roastMode),
     mail: mailPrefsFrom(doc),
     backlogBudget: typeof doc.backlogBudget === "number" ? doc.backlogBudget : 2,
+    studyFlowRoadmaps: doc.studyFlowRoadmaps ?? [],
+    studyFlowCourses: doc.studyFlowCourses ?? false,
     carryLimits: cleanLimits({ perDay: doc.carryPerDay, perWeek: doc.carryPerWeek, total: doc.carryTotal }),
     lastMorningRunAt: doc.lastMorningRunAt ?? null,
     lastEveningRunAt: doc.lastEveningRunAt ?? null,
@@ -186,6 +190,8 @@ export type SettingsPatch = Partial<
     | "topicMasteryPct"
     | "leetcodeUsername"
     | "googleNewsQueries"
+    | "studyFlowRoadmaps"
+    | "studyFlowCourses"
   >
 >;
 
@@ -227,6 +233,8 @@ export async function saveSettings(input: SettingsInput, now = new Date()): Prom
         ...(input.mockHldWeekday !== undefined ? { mockHldWeekday: input.mockHldWeekday } : {}),
         googleNewsQueries: normaliseQueries(input.googleNewsQueries, news.googleNews.defaultQueries.map((q) => q.query)),
         leetcodeUsername: input.leetcodeUsername,
+        ...(input.studyFlowRoadmaps ? { studyFlowRoadmaps: input.studyFlowRoadmaps } : {}),
+        ...(input.studyFlowCourses !== undefined ? { studyFlowCourses: input.studyFlowCourses } : {}),
         ...(leetcodeChanged ? { leetcodeLastSyncAt: null, leetcodeSeenIds: [], leetcodeLastError: null } : {}),
       },
     },

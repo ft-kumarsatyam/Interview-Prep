@@ -8,15 +8,19 @@ import { Progress } from "@/components/ui/progress";
 import { allNodes } from "@/modules/roadmap/domain/roadmap";
 import { JoinButton } from "@/modules/roadmap/components/roadmap-controls";
 import { listRoadmaps } from "@/modules/roadmap/services/roadmap";
+import { getStudyFlow } from "@/modules/study-flow/services/study-flow";
+import { StudyFlowCard } from "@/modules/study-flow/components/study-flow-card";
 
 export const metadata: Metadata = { title: "Roadmaps" };
 
 export default async function RoadmapsPage() {
   // started roadmaps first, then joined ones, then the rest in catalogue order
   const items = (await listRoadmaps()).toSorted((a, b) => Number(!!b.joinedOn || b.progress.pct > 0) - Number(!!a.joinedOn || a.progress.pct > 0));
+  const studyFlow = await getStudyFlow();
   return (
     <>
       <PageHeader icon={Route} title="Roadmaps" description="Pick a path, join it, and follow the must-do nodes. A node ticks itself when you have ticked its topics, read its links, solved its problems and passed its quiz. This never affects your daily plan or streak." />
+      <div className="mb-4"><StudyFlowCard items={studyFlow.items} nextId={studyFlow.next?.id} /></div>
       <ul className="grid gap-4 md:grid-cols-2">
         {items.map(({ roadmap, joinedOn, progress, next }) => {
           const nodes = allNodes(roadmap);

@@ -72,6 +72,10 @@ const settingsSchema = new Schema(
     mailWeekly: { type: Boolean, default: true },
     /** How many backlog items the daily plan queues for you each day (0 turns the automatic queue off). */
     backlogBudget: { type: Number, default: 2, min: 0, max: 10 },
+    /** Roadmaps explicitly included in the adaptive study queue. */
+    studyFlowRoadmaps: { type: [String], default: [] },
+    /** When enabled, the next course lesson can use optional daily capacity. */
+    studyFlowCourses: { type: Boolean, default: false },
     /** When unfinished work pushed forward passes these, the app warns and offers fixes (it never blocks). */
     carryPerDay: { type: Number, default: 4, min: 1, max: 200 },
     carryPerWeek: { type: Number, default: 10, min: 1, max: 200 },
