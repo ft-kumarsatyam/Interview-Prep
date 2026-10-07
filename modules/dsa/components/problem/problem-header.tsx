@@ -7,6 +7,8 @@ import { SolveButton } from "@/modules/progress/components/solve-button";
 import type { ProblemDetail } from "@/modules/dsa/services/problems";
 import { ProblemStatusChip } from "./problem-status-chip";
 import { SiblingButton } from "./sibling-button";
+import { ExternalQuestionTimer } from "@/modules/dsa/components/external-question-timer";
+import { saveTimedSolveAction } from "@/app/(app)/dsa/[slug]/actions";
 
 type Props = {
   problem: ContentProblem;
@@ -45,6 +47,7 @@ export function ProblemHeader({ problem, progress, backHref, siblings, position 
           label={progress?.needsDetails ? "Fill in details" : solved ? "Log re-solve" : "Mark solved"}
           variant={solved && !progress?.needsDetails ? "secondary" : "outline"}
         />
+        <ExternalQuestionTimer itemId={`local:${problem.slug}`} saveAction={(minutes) => saveTimedSolveAction({ slug: problem.slug, timeTakenMin: minutes })} />
         <Button size="icon" variant="outline" className="size-8" asChild>
           <a href={problem.url} target="_blank" rel="noreferrer" aria-label="Open on LeetCode" title="Open on LeetCode">
             <ExternalLink />

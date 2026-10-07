@@ -6,6 +6,7 @@ import { LinkCard } from "@/components/shared/link-card";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { LEVELS, StatusRing } from "@/modules/learn/components/topic-meta";
 import { TopicStudy } from "@/modules/learn/components/topic-study";
+import { LearningPath } from "@/modules/learn/components/learning-path";
 import { BackLink } from "@/components/shared/back-link";
 import { TrackChip } from "@/components/shared/badges";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,7 @@ import { Progress } from "@/components/ui/progress";
 import { practiceCases, subtopicNotes, systemDesign, topicById, topics, trackById } from "@/core/content";
 import { casePath } from "@/modules/design/domain/case-quiz";
 import { neighbours, topicProgress } from "@/modules/learn/domain/learn";
+import { learningPath } from "@/modules/learn/domain/learning-flow";
 import { planClock } from "@/core/plan-clock";
 import { getSubtopicProgressMap } from "@/modules/learn/services/learn";
 import { courseLessonByKey } from "@/core/courses";
@@ -48,6 +50,12 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
   const allTicked = p.done === p.total;
   const { prev, next } = neighbours(topics, topic.id);
   const nextId = p.next === null ? null : `${topic.id}:${p.next}`;
+  const path = learningPath({
+    doneSubtopics: p.done,
+    totalSubtopics: p.total,
+    practiceAttempts: topicMastery?.attempts ?? 0,
+    mastered: !!topicMastery?.masteredOn,
+  });
 
   const items = topic.subtopics.map((title, i) => {
     const id = `${topic.id}:${i}`;
@@ -99,6 +107,16 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
           </span>
         </div>
       </header>
+
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle>Study path</CardTitle>
+          <CardDescription>Move from understanding to recall, then prove mastery with the topic quiz.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <LearningPath stages={path} />
+        </CardContent>
+      </Card>
 
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <Card>

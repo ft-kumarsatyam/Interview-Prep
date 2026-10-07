@@ -56,6 +56,8 @@ export default async function SettingsPage() {
               hoursByDow: s.hoursByDow ? [...s.hoursByDow] : [...DEFAULT_HOURS],
               googleNewsQueries: s.googleNewsQueries ?? defaultQueries,
               leetcodeUsername: s.leetcodeUsername ?? "",
+              gfgUsername: s.gfgUsername ?? "",
+              gfgProfileUrl: s.gfgProfileUrl ?? "",
               studyFlowRoadmaps: [...s.studyFlowRoadmaps],
               studyFlowCourses: s.studyFlowCourses,
             }}

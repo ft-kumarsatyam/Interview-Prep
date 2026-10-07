@@ -27,8 +27,9 @@ const problemProgressSchema = new Schema(
   { timestamps: true },
 );
 ownerScope(problemProgressSchema, [{ fields: { slug: 1 } }]);
-problemProgressSchema.index({ nextReviewAt: 1 });
-problemProgressSchema.index({ solveDates: 1 });
+problemProgressSchema.index({ ownerId: 1, nextReviewAt: 1 });
+problemProgressSchema.index({ ownerId: 1, solveDates: 1 });
+problemProgressSchema.index({ ownerId: 1, needsDetails: 1, lastSolvedOn: -1 });
 
 const subtopicProgressSchema = new Schema(
   {
@@ -41,7 +42,7 @@ const subtopicProgressSchema = new Schema(
   { timestamps: true },
 );
 ownerScope(subtopicProgressSchema, [{ fields: { subtopicId: 1 } }]);
-subtopicProgressSchema.index({ doneOn: 1 });
+subtopicProgressSchema.index({ ownerId: 1, doneOn: 1 });
 
 export type ProblemProgressDoc = InferSchemaType<typeof problemProgressSchema>;
 export type SubtopicProgressDoc = InferSchemaType<typeof subtopicProgressSchema>;

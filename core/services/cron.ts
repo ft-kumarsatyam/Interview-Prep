@@ -35,8 +35,9 @@ export async function runMorning(
 ) {
   const { channels, fetcher, extractor } = deps;
   let today: string | null = null;
+  let state: Awaited<ReturnType<typeof ensureToday>> | null = null;
   const plan = await step(async () => {
-    const state = await ensureToday(now);
+    state = await ensureToday(now);
     today = state.today;
     const mail = await buildMorningMail(state);
     if (!mail) return { kind: state.plan.kind, notified: false };
@@ -55,15 +56,16 @@ export async function runMorning(
   ]);
   const { news, articles } = newsChain;
   // The single-purpose pings: today's system design case and the monthly resume check.
-  const design = await step(async () => sendDesignTopic(await ensureToday(now), channels));
-  const resume = await step(async () => sendResumeCheck(await ensureToday(now), channels));
+  const current = state ?? (await ensureToday(now));
+  const design = await step(async () => sendDesignTopic(current, channels));
+  const resume = await step(async () => sendResumeCheck(current, channels));
   // Deliver events queued by the steps above (article indexing) and any retries that are due.
   const events = await step(async () => {
     ensureEventHandlers();
     return relayOutbox({ broker: getBroker(), limit: 50 });
   });
   // The briefing needs fresh news, so it follows the refresh. The briefing job sends it too if this run slips.
-  const briefing = await step(async () => sendBriefing(await ensureToday(now), now, channels));
+  const briefing = await step(async () => sendBriefing(current, now, channels));
   await markRun("lastMorningRunAt", now);
   return { today, news, articles, plan, briefing, design, resume, rebalance, leetcode, events };
 }

@@ -6,7 +6,9 @@ import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/core/auth/dal";
 import { problemBySlug } from "@/core/content";
 import { checkAccepted, type AcceptedCheck } from "@/modules/dsa/services/leetcode-sync";
-import { markAttempted, revealHiddenCase } from "@/modules/progress/services/progress";
+import { markAttempted, recordSolve, revealHiddenCase } from "@/modules/progress/services/progress";
+import { getSettings } from "@/modules/settings/services/settings";
+import { todayIn } from "@/modules/planner/services/plan";
 
 const slugSchema = z.string().min(1).max(120);
 
@@ -43,6 +45,18 @@ export async function revealCaseAction(input: z.input<typeof revealSchema>): Pro
   const parsed = revealSchema.safeParse(input);
   if (!parsed.success || !problemBySlug.has(parsed.data.slug)) return { ok: false, error: "Unknown problem" };
   if (!(await revealHiddenCase(parsed.data.slug, parsed.data.index))) return { ok: false, error: "That case isn't hidden" };
+  refresh();
+  return { ok: true };
+}
+
+const timedSolveSchema = z.object({ slug: slugSchema, timeTakenMin: z.number().int().min(0).max(600) });
+
+export async function saveTimedSolveAction(input: z.input<typeof timedSolveSchema>): Promise<ActionResult> {
+  await requireSession();
+  const parsed = timedSolveSchema.safeParse(input);
+  if (!parsed.success || !problemBySlug.has(parsed.data.slug)) return { ok: false, error: "Unknown problem" };
+  const settings = await getSettings();
+  await recordSolve({ slug: parsed.data.slug, date: todayIn(settings), source: "manual", details: { confidence: "ok", timeTakenMin: parsed.data.timeTakenMin } });
   refresh();
   return { ok: true };
 }

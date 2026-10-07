@@ -43,6 +43,8 @@ const settingsSchema = new Schema(
     googleNewsQueries: { type: [String], default: undefined },
     topicMasteryPct: { type: Number, default: 70 },
     leetcodeUsername: { type: String, default: null },
+    gfgUsername: { type: String, default: null },
+    gfgProfileUrl: { type: String, default: null },
     leetcodeLastSyncAt: { type: Date, default: null },
     /** Last "did my submission land?" check from a problem page, so polling can't hammer LeetCode. */
     leetcodeLastCheckAt: { type: Date, default: null },

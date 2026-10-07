@@ -12,6 +12,7 @@ import { GeneratedInterviewDoc, WebInterviewProgress, WebLessonProgress, WebProj
 import { Resume } from "@/core/models/resume";
 import { Article, Notification, Settings } from "@/core/models/system";
 import { CapturedNote } from "@/core/models/notes";
+import { ExternalProgressModel } from "@/core/models/external-progress";
 
 export const EXPORT_VERSION = 1;
 
@@ -22,10 +23,11 @@ export const EXPORT_VERSION = 1;
  */
 export async function exportBackup(now = new Date()) {
   await connectDb();
-  const [settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews, capturednotes] =
+  const [settings, problemprogress, externalprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews, capturednotes] =
     await Promise.all([
       Settings.find().lean(),
       ProblemProgress.find().lean(),
+      ExternalProgressModel.find().lean(),
       SubtopicProgress.find().lean(),
       DailyPlan.find().sort({ date: 1 }).lean(),
       DayLog.find().sort({ date: 1 }).lean(),
@@ -59,6 +61,6 @@ export async function exportBackup(now = new Date()) {
     app: "PrepOS",
     version: EXPORT_VERSION,
     exportedAt: now.toISOString(),
-    collections: { settings, problemprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews, capturednotes },
+    collections: { settings, problemprogress, externalprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews, capturednotes },
   };
 }

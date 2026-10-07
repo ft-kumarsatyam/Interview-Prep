@@ -25,6 +25,8 @@ export function settingsToInput(s: AppSettings): SettingsInput {
     hoursByDow: s.hoursByDow ? [...s.hoursByDow] : [...DEFAULT_HOURS],
     googleNewsQueries: s.googleNewsQueries ?? null,
     leetcodeUsername: s.leetcodeUsername ?? null,
+    gfgUsername: s.gfgUsername ?? null,
+    gfgProfileUrl: s.gfgProfileUrl ?? null,
     studyFlowRoadmaps: [...(s.studyFlowRoadmaps ?? [])],
     studyFlowCourses: s.studyFlowCourses ?? false,
   };

@@ -5,6 +5,9 @@
 import aptitudeBankJson from "@/data/aptitude-bank.json";
 import problemsJson from "@/data/dsa-problems.json";
 import sheetsJson from "@/data/dsa-sheets.json";
+import cheatSheetsJson from "@/data/dsa-cheat-sheets.json";
+import externalCatalogueJson from "@/data/dsa-external.json";
+import externalResourcesJson from "@/data/external-resources.json";
 import testcasesJson from "@/data/dsa-testcases.json";
 import practiceCasesJson from "@/data/os-dbms-cases.json";
 import blogsJson from "@/data/engineering-blogs.json";
@@ -98,6 +101,8 @@ import type { InterviewFile, TrackedQuestion } from "@/modules/learn/domain/web-
 import { normaliseHints, type ArgType, type CompareMode, type HintLevel, type ReturnKind, type TestCase } from "@/modules/dsa/domain/dsa-runner";
 import type { PracticeKind } from "@/modules/design/domain/practice-cases";
 import type { Language } from "@/modules/dsa/domain/starters";
+import { cheatSheetsSchema, type CheatSheet } from "@/modules/dsa/domain/dsa-cheat-sheet";
+import { externalCatalogueSchema, externalResourcesSchema, type ExternalResource, type ExternalSheet } from "@/modules/dsa/domain/external-catalogue";
 import type { ProblemTrack } from "@/modules/planner/domain/planner";
 
 export type Difficulty = "Easy" | "Medium" | "Hard";
@@ -268,6 +273,9 @@ function loadTestcases(raw: Record<string, RawTestcaseEntry>): Map<string, Probl
 
 export const problems = problemsJson as ContentProblem[];
 export const dsaSheets = sheetsJson.sheets as ContentSheet[];
+export const dsaCheatSheets: CheatSheet[] = cheatSheetsSchema.parse(cheatSheetsJson).sheets;
+export const externalDsaSheets: ExternalSheet[] = externalCatalogueSchema.parse(externalCatalogueJson).sheets;
+export const externalResources: ExternalResource[] = externalResourcesSchema.parse(externalResourcesJson).resources;
 export const testcaseBySlug = loadTestcases(testcasesJson as unknown as Record<string, RawTestcaseEntry>);
 export const tracks = (syllabusJson.tracks as ContentTrack[]).toSorted((a, b) => a.order - b.order);
 export const topics = syllabusJson.topics as ContentTopic[];

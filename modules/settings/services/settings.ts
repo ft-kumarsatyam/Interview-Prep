@@ -27,6 +27,8 @@ export interface AppSettings extends PlanSettings {
   settledThrough: string | null;
   topicMasteryPct: number;
   leetcodeUsername: string | null;
+  gfgUsername: string | null;
+  gfgProfileUrl: string | null;
   leetcodeLastSyncAt: Date | null;
   leetcodeSeenIds: string[];
   googleNewsQueries: string[] | null;
@@ -106,6 +108,8 @@ async function loadSettings(): Promise<AppSettings> {
     settledThrough: doc.settledThrough ?? null,
     topicMasteryPct: doc.topicMasteryPct ?? 70,
     leetcodeUsername: doc.leetcodeUsername ?? e.LEETCODE_USERNAME ?? null,
+    gfgUsername: doc.gfgUsername ?? null,
+    gfgProfileUrl: doc.gfgProfileUrl ?? null,
     leetcodeLastSyncAt: doc.leetcodeLastSyncAt ?? null,
     leetcodeSeenIds: doc.leetcodeSeenIds ?? [],
     googleNewsQueries: doc.googleNewsQueries?.length ? doc.googleNewsQueries : null,
@@ -189,6 +193,8 @@ export type SettingsPatch = Partial<
     | "hoursByDow"
     | "topicMasteryPct"
     | "leetcodeUsername"
+    | "gfgUsername"
+    | "gfgProfileUrl"
     | "googleNewsQueries"
     | "studyFlowRoadmaps"
     | "studyFlowCourses"
@@ -233,6 +239,8 @@ export async function saveSettings(input: SettingsInput, now = new Date()): Prom
         ...(input.mockHldWeekday !== undefined ? { mockHldWeekday: input.mockHldWeekday } : {}),
         googleNewsQueries: normaliseQueries(input.googleNewsQueries, news.googleNews.defaultQueries.map((q) => q.query)),
         leetcodeUsername: input.leetcodeUsername,
+        ...(input.gfgUsername !== undefined ? { gfgUsername: input.gfgUsername } : {}),
+        ...(input.gfgProfileUrl !== undefined ? { gfgProfileUrl: input.gfgProfileUrl } : {}),
         ...(input.studyFlowRoadmaps ? { studyFlowRoadmaps: input.studyFlowRoadmaps } : {}),
         ...(input.studyFlowCourses !== undefined ? { studyFlowCourses: input.studyFlowCourses } : {}),
         ...(leetcodeChanged ? { leetcodeLastSyncAt: null, leetcodeSeenIds: [], leetcodeLastError: null } : {}),

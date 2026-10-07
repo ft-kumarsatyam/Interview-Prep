@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { mainProblemCount, problemBySlug, subtopicById, type ContentProblem, type SubtopicInfo } from "@/core/content";
 import { connectDb } from "@/core/db";
 import { heatmapCells, type HeatCell } from "@/modules/progress/domain/heatmap";
@@ -29,7 +30,7 @@ export interface DashboardData extends TodayState {
   unreadNotifications: Array<{ id: string; title: string; body: string }>;
 }
 
-export async function getDashboard(): Promise<DashboardData> {
+export const getDashboard = cache(async function getDashboard(): Promise<DashboardData> {
   const state = await ensureToday();
   await connectDb();
   const { plan, today, settings } = state;
@@ -93,7 +94,7 @@ export async function getDashboard(): Promise<DashboardData> {
     })),
     unreadNotifications: notes.map((n) => ({ id: String(n._id), title: n.title, body: n.body ?? "" })),
   };
-}
+});
 
 export async function countSolvedMain(): Promise<number> {
   await connectDb();

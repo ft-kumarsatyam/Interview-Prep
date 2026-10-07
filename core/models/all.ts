@@ -7,6 +7,7 @@ import "@/core/models/content";
 import "@/core/models/course";
 import "@/core/models/day";
 import "@/core/models/embedding";
+import "@/core/models/external-progress";
 import "@/core/models/job-postings";
 import "@/core/models/jobs";
 import "@/core/models/kv";

@@ -18,7 +18,7 @@ import { cn } from "@/core/utils";
 
 export type SettingsFormValues = Omit<
   SettingsInput,
-  "leetcodeUsername" | "googleNewsQueries" | "hoursByDow" | "llmPaidEnabled" | "llmPaidDailyCap" | "llmPaidRequireConfirm" | "geminiLinks" | "mockDsaWeekday" | "mockHldWeekday"
+  "leetcodeUsername" | "gfgUsername" | "gfgProfileUrl" | "googleNewsQueries" | "hoursByDow" | "llmPaidEnabled" | "llmPaidDailyCap" | "llmPaidRequireConfirm" | "geminiLinks" | "mockDsaWeekday" | "mockHldWeekday"
 > & {
   mockDsaWeekday: number;
   mockHldWeekday: number;
@@ -28,6 +28,8 @@ export type SettingsFormValues = Omit<
   llmPaidDailyCap: number | "";
   llmPaidRequireConfirm: boolean;
   leetcodeUsername: string;
+  gfgUsername?: string;
+  gfgProfileUrl?: string;
   googleNewsQueries: string[];
   /** Study hours per day of week, Sunday first. */
   hoursByDow: Array<number | "">;
@@ -462,6 +464,48 @@ export function SettingsForm({ initial, today, defaultQueries, timezone, roadmap
         >
           Test username
         </Button>
+      </Section>
+
+      <Section
+        id="gfg"
+        icon={Code2}
+        title="GeeksforGeeks"
+        description="Save your public profile and manually track GFG questions from the external sheets. PrepOS does not sync accepted submissions."
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field id="gfgUsername" label="GFG username" hint="Optional public handle." error={err("gfgUsername")}>
+            <Input
+              id="gfgUsername"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              placeholder="your-gfg-handle"
+              value={v.gfgUsername ?? ""}
+              onChange={(e) => set("gfgUsername", e.target.value)}
+              {...aria("gfgUsername")}
+            />
+          </Field>
+          <Field id="gfgProfileUrl" label="Profile URL" hint="Optional; leave blank to use the standard GFG profile URL." error={err("gfgProfileUrl")}>
+            <Input
+              id="gfgProfileUrl"
+              type="url"
+              placeholder="https://www.geeksforgeeks.org/user/..."
+              value={v.gfgProfileUrl ?? ""}
+              onChange={(e) => set("gfgProfileUrl", e.target.value)}
+              {...aria("gfgProfileUrl")}
+            />
+          </Field>
+        </div>
+        {(v.gfgProfileUrl || v.gfgUsername) && (
+          <a
+            href={v.gfgProfileUrl || `https://www.geeksforgeeks.org/user/${encodeURIComponent(v.gfgUsername ?? "")}/`}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 inline-flex text-sm text-primary underline-offset-2 hover:underline"
+          >
+            Open public GFG profile
+          </a>
+        )}
       </Section>
 
       <Section

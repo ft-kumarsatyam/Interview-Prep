@@ -8,6 +8,9 @@ PrepOS is a private, single-user web app for a 24-week, zero-to-interview-ready 
 
 > Code shape (layers, module tiers, component taxonomy, recipes) lives in [`STRUCTURE.md`](./STRUCTURE.md); the code graph is described in [`GRAPH.md`](./GRAPH.md). This file keeps the product rules, data model and routes.
 
+Runtime flow, performance budgets, cache policy, and sync hardening guidance
+live in [`ARCHITECTURE-HARDENING.md`](./ARCHITECTURE-HARDENING.md).
+
 ## Code layout
 
 ```

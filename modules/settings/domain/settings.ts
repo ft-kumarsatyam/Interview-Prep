@@ -50,6 +50,19 @@ export const settingsInputSchema = z
       .transform((v) => v.replace(/^@/, ""))
       .refine((v) => v === "" || /^[\w-]{1,40}$/.test(v), "Letters, digits, _ and - only")
       .transform((v) => v || null),
+    gfgUsername: z
+      .string()
+      .trim()
+      .transform((v) => v.replace(/^@/, ""))
+      .refine((v) => v === "" || /^[\w-]{1,40}$/.test(v), "Letters, digits, _ and - only")
+      .transform((v) => v || null)
+      .optional(),
+    gfgProfileUrl: z
+      .string()
+      .trim()
+      .refine((v) => v === "" || /^https:\/\/(www\.)?geeksforgeeks\.org\//.test(v), "Use a public GeeksforGeeks profile URL")
+      .transform((v) => v || null)
+      .optional(),
     studyFlowRoadmaps: z.array(z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)).max(20).optional(),
     studyFlowCourses: z.boolean().optional(),
   })
@@ -89,7 +102,7 @@ export const SETTINGS_SECTION_KEYS = {
   plan: ["startDate", "endDate", "revisionWeeks", "restDays", "hoursByDow"],
   targets: ["quizPassPct", "topicMasteryPct", "minDailyDsa", "maxDailyDsa", "maxSaturdayDsa", "maxDailyTheory", "mockDsaWeekday", "mockHldWeekday"],
   flow: ["studyFlowRoadmaps", "studyFlowCourses"],
-  integrations: ["leetcodeUsername", "googleNewsQueries", "geminiLinks"],
+  integrations: ["leetcodeUsername", "gfgUsername", "gfgProfileUrl", "googleNewsQueries", "geminiLinks"],
   ai: ["llmPaidEnabled", "llmPaidDailyCap", "llmPaidRequireConfirm"],
 } as const satisfies Record<string, readonly (keyof SettingsInput)[]>;
 
@@ -100,7 +113,7 @@ export const SETTINGS_SECTION_LABEL: Record<SettingsSectionId, string> = {
   plan: "Plan window and hours",
   targets: "Daily targets and mocks",
   flow: "Unified study flow",
-  integrations: "LeetCode, news and Gemini",
+  integrations: "LeetCode, GFG, news and Gemini",
   ai: "Paid AI fallback",
 };
 

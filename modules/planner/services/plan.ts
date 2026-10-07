@@ -29,8 +29,13 @@ export function todayIn(settings: Pick<AppSettings, "timezone">, now = new Date(
   return toLocalDate(now, settings.timezone);
 }
 
-async function loadRecords(): Promise<Map<DateStr, DayRecord>> {
-  const logs = await DayLog.find({}, { date: 1, complete: 1, freezeUsed: 1 }).lean();
+async function loadRecords(range?: { from?: DateStr; to?: DateStr }): Promise<Map<DateStr, DayRecord>> {
+  const filter = {
+    ...(range?.from || range?.to
+      ? { date: { ...(range.from ? { $gte: range.from } : {}), ...(range.to ? { $lte: range.to } : {}) } }
+      : {}),
+  };
+  const logs = await DayLog.find(filter, { date: 1, complete: 1, freezeUsed: 1 }).lean();
   return new Map(logs.map((l) => [l.date, { date: l.date, complete: !!l.complete, freezeUsed: !!l.freezeUsed }]));
 }
 
@@ -58,7 +63,7 @@ async function settlePastDays(s: AppSettings, today: DateStr): Promise<number> {
     if (dayKind(date, s) === "rest") await recomputeDay(date);
   }
 
-  const result = settleDays({ records: await loadRecords(), from, to, freezeTokens: s.freezeTokens });
+  const result = settleDays({ records: await loadRecords({ from: s.startDate, to }), from, to, freezeTokens: s.freezeTokens });
   const claimed = await Settings.updateOne(
     { _id: SETTINGS_ID, settledThrough: s.settledThrough },
     { $set: { settledThrough: to, freezeTokens: result.freezeTokens } },
@@ -250,7 +255,7 @@ export async function ensureToday(now = new Date()): Promise<TodayState & { plan
   const hadPlan = !!(await DailyPlan.exists({ date: today }));
   const plan = await createPlanIfMissing(settings, today);
   const { day } = await recomputeDay(today);
-  const records = await loadRecords();
+  const records = await loadRecords({ from: settings.startDate, to: settings.endDate });
   return {
     today,
     settings: { ...settings, freezeTokens },

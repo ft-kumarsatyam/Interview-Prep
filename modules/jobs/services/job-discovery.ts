@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { bumpVersion, readThrough } from "@/core/cache";
+import { CACHE_POLICY } from "@/core/cache/policy";
 import { stableName } from "@/core/domain/cache";
 import { connectDb } from "@/core/db";
 import { termsIn } from "@/modules/jobs/domain/ats";
@@ -91,7 +92,8 @@ export type DiscoverResult = { items: DiscoverItem[]; matching: number; scanned:
  */
 export async function discoverJobs(filter: DiscoverFilter = {}, now?: Date): Promise<DiscoverResult> {
   if (now) return computeDiscover(filter, now);
-  return readThrough("jobs", `discover:${stableName({ ...filter })}`, () => computeDiscover(filter, new Date()), { ttlSec: 120, staleSec: 600 });
+  const policy = CACHE_POLICY.jobsDiscover;
+  return readThrough(policy.scope, `discover:${stableName({ ...filter })}`, () => computeDiscover(filter, new Date()), policy);
 }
 
 async function computeDiscover(filter: DiscoverFilter, now: Date): Promise<DiscoverResult> {

@@ -1,4 +1,5 @@
 import { readThrough } from "@/core/cache";
+import { CACHE_POLICY } from "@/core/cache/policy";
 import { createHash } from "node:crypto";
 import { env } from "@/core/env";
 import { runAi } from "@/modules/ai/services/ai";
@@ -28,7 +29,8 @@ export async function readProject(input: { repoUrl: string; siteUrl?: string }, 
       return { brief: buildBrief({ meta: snap.meta, tree: snap.tree, files: snap.files, site }), siteRead: Boolean(site) };
     };
     // The test seam (an injected fetcher) skips the cache so tests stay independent.
-    const loaded = deps.get ? await load() : await readThrough("project", key, load, { ttlSec: 6 * 3600 });
+    const policy = CACHE_POLICY.publicProject;
+    const loaded = deps.get ? await load() : await readThrough(policy.scope, key, load, policy);
     return { ok: true, brief: loaded.brief, siteRead: loaded.siteRead, siteSkipped: siteUrl && !loaded.siteRead ? "The website couldn't be read, so questions come from the code only" : null };
   } catch (err: unknown) {
     return { ok: false, error: err instanceof RepoReadError ? err.message : "The project couldn't be read. Check the link and try again" };
