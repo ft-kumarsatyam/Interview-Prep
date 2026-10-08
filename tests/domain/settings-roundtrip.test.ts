@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSections, settingsInputSchema } from "@/modules/settings/domain/settings";
+import { blankUnsetHandles, mergeSections, settingsInputSchema } from "@/modules/settings/domain/settings";
 import { settingsToInput } from "@/modules/settings/services/settings-input";
 import type { AppSettings } from "@/modules/settings/services/settings";
 
@@ -27,7 +27,7 @@ describe("settingsToInput", () => {
   it("round-trips stored settings through the schema, including a missing LeetCode username", () => {
     const input = settingsToInput(stored);
     expect(input.hoursByDow).toHaveLength(7);
-    const parsed = settingsInputSchema.safeParse({ ...input, leetcodeUsername: input.leetcodeUsername ?? "" });
+    const parsed = settingsInputSchema.safeParse(blankUnsetHandles(input));
     expect(parsed.success).toBe(true);
     if (parsed.success) expect(parsed.data.leetcodeUsername).toBeNull();
   });
@@ -35,8 +35,8 @@ describe("settingsToInput", () => {
   it("lets one section save while another section holds an invalid value", () => {
     const base = settingsToInput(stored);
     const submitted = { ...base, maxDailyDsa: 1, minDailyDsa: 9, quizPassPct: 90 };
-    const targets = settingsInputSchema.safeParse({ ...mergeSections(base, submitted, ["targets"]), leetcodeUsername: "" });
-    const plan = settingsInputSchema.safeParse({ ...mergeSections(base, { ...submitted, endDate: "2027-05-01" }, ["plan"]), leetcodeUsername: "" });
+    const targets = settingsInputSchema.safeParse(blankUnsetHandles(mergeSections(base, submitted, ["targets"])));
+    const plan = settingsInputSchema.safeParse(blankUnsetHandles(mergeSections(base, { ...submitted, endDate: "2027-05-01" }, ["plan"])));
     expect(targets.success).toBe(false);
     expect(plan.success).toBe(true);
   });

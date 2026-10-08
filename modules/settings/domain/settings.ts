@@ -75,6 +75,11 @@ export const settingsInputSchema = z
 
 export type SettingsInput = z.infer<typeof settingsInputSchema>;
 
+/** Stored settings hold null for an unset handle; the schema reads "" as unset, so re-validating needs blanks. */
+export function blankUnsetHandles<T extends Pick<SettingsInput, "leetcodeUsername" | "gfgUsername" | "gfgProfileUrl">>(values: T) {
+  return { ...values, leetcodeUsername: values.leetcodeUsername ?? "", gfgUsername: values.gfgUsername ?? "", gfgProfileUrl: values.gfgProfileUrl ?? "" };
+}
+
 /**
  * Rest days on or before today are frozen: those days are already planned or
  * settled, so changing them would rewrite the streak. Only future days move.

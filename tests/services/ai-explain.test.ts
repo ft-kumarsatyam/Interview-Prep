@@ -53,7 +53,7 @@ describe("explainAnswer", () => {
 
   it("a different wrong answer is a different explanation", async () => {
     keys();
-    const fetchMock = vi.fn(async () => chat(answer));
+    const fetchMock = vi.fn(async (u: unknown) => (host(u).includes("groq") ? chat(answer) : gemini(answer)));
     vi.stubGlobal("fetch", fetchMock);
     await explainAnswer(question);
     await explainAnswer({ ...question, chosen: [2] });

@@ -4,7 +4,7 @@ import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/core/auth/dal";
-import { SETTINGS_SECTION_IDS, mergeSections, settingsInputSchema, type SettingsInput, type SettingsSectionId } from "@/modules/settings/domain/settings";
+import { SETTINGS_SECTION_IDS, blankUnsetHandles, mergeSections, settingsInputSchema, type SettingsInput, type SettingsSectionId } from "@/modules/settings/domain/settings";
 import { settingsToInput } from "@/modules/settings/services/settings-input";
 import { lookupLeetCodeStats } from "@/modules/dsa/services/leetcode-sync";
 import { seedContent } from "@/core/services/seed";
@@ -42,8 +42,7 @@ export async function saveSettingsSectionsAction(input: unknown): Promise<Action
   for (const section of parsed.data.sections) {
     // The interview date and weekly hours are edited on the Planner only: whatever the form sent, the stored values stand.
     const merged = { ...mergeSections(working, parsed.data.values, [section]), endDate: stored.endDate, hoursByDow: stored.hoursByDow };
-    // The schema reads "" as no username; stored settings hold null.
-    const result = settingsInputSchema.safeParse({ ...merged, leetcodeUsername: merged.leetcodeUsername ?? "" });
+    const result = settingsInputSchema.safeParse(blankUnsetHandles(merged));
     if (!result.success) {
       failed.push({ section, fields: Object.fromEntries(result.error.issues.map((i) => [i.path.join("."), i.message])) });
       continue;
