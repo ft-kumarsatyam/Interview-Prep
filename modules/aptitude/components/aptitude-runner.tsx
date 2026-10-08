@@ -1,11 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Check, Clock, Gauge, Play, RotateCcw, SkipForward, Target, Trophy, X } from "lucide-react";
 import { toast } from "sonner";
 import { saveAptitudeSession } from "@/app/(app)/aptitude/actions";
+import { HistoryBackLink } from "@/components/shared/history-back-link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -207,7 +207,7 @@ export function AptitudeRunner({ questions: initialQuestions, mode, topics, time
                   <RotateCcw /> Try a new set
                 </Button>
                 <Button variant="outline" asChild>
-                  <Link href={backHref}>Back</Link>
+                  <HistoryBackLink href={backHref}>Back</HistoryBackLink>
                 </Button>
               </div>
             </div>

@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { elapsedSecondsAt, minutesFromSeconds, toggleTimer, type TimerState } from "@/modules/dsa/domain/external-catalogue";
+import { problems } from "@/core/content";
+import { COMPANY_BY_SLUG, attachCompanyTags, companyNames } from "@/modules/dsa/domain/company-tags";
+import { elapsedSecondsAt, minutesFromSeconds, toggleTimer, type ExternalQuestion, type TimerState } from "@/modules/dsa/domain/external-catalogue";
+
+describe("company tags", () => {
+  it("falls back to the NeetCode list without a dataset", () => {
+    const question = { id: "two-sum", sheetId: "sheet", order: 1, section: "Arrays", category: "Arrays & Hashing", difficulty: "Easy", title: "Two Sum", localSlug: "two-sum", links: [], companies: [], sourceCoverage: "exact" } satisfies ExternalQuestion;
+    const tagged = attachCompanyTags(question, problems);
+    expect(companyNames([tagged])).toContain("Amazon");
+    expect(attachCompanyTags({ ...question, localSlug: undefined, title: "Pattern 1" }, problems).companies).toEqual([]);
+    expect(Object.keys(COMPANY_BY_SLUG).every((slug) => problems.some((problem) => problem.slug === slug))).toBe(true);
+  });
+});
 
 describe("external question timer", () => {
   it("starts, pauses, and rounds saved time to minutes", () => {

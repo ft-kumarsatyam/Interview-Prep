@@ -1,9 +1,18 @@
 import type { EdgeId } from "@/modules/dsa/domain/edge-cases";
 
-export type ArgType = "value" | "ListNode" | "TreeNode" | "cycleList";
-export type ReturnKind = "value" | "ListNode" | "TreeNode" | "arg0";
+/** "DListNode": a doubly linked list, ListNode objects that also carry `prev`. "TreeNodeRef": a node value, passed as
+ * that node of the first TreeNode argument (LeetCode's p, q and target). */
+export type ArgType = "value" | "ListNode" | "DListNode" | "TreeNode" | "TreeNodeRef" | "cycleList" | "ListNode[]";
+/** "arg0Prefix": the function returns a length k and the first k slots of its first argument are the answer.
+ * "TreeNodeVal": the function returns a tree node and the answer is its value (null for no node). */
+export type ReturnKind = "value" | "ListNode" | "DListNode" | "TreeNode" | "TreeNodeVal" | "ListNode[]" | "TreeNode[]" | "arg0" | "arg0Prefix";
 /** "unordered": arrays are compared ignoring order at every level (several valid answers, e.g. Two Sum's [0,1] or [1,0]). */
-export type CompareMode = "exact" | "unordered";
+/** "unordered-outer": only the outer array's order is ignored; each element must match exactly (permutations, boards). */
+/** "no-adjacent-repeat" / "no-triple-repeat": any rearrangement of the expected string or array is accepted as long as
+ * no value repeats 2 (or 3) times in a row (Reorganize String, Longest Happy String).
+ * "same-inorder" / "balanced-same-inorder": tree answers (level order) are accepted when their inorder sequence matches
+ * the expected tree's (any valid BST after an insert or delete), and for the second also height-balanced. */
+export type CompareMode = "exact" | "unordered" | "unordered-outer" | "no-adjacent-repeat" | "no-triple-repeat" | "same-inorder" | "balanced-same-inorder";
 
 export interface TestCase {
   input: unknown[];

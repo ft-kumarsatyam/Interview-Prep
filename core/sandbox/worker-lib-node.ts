@@ -5,13 +5,13 @@
  */
 import { WORKER_LIB_SOURCE } from "@/core/sandbox/worker-lib";
 
-export type ArgType = "value" | "ListNode" | "TreeNode" | "cycleList";
-export type ReturnKind = "value" | "ListNode" | "TreeNode" | "arg0";
+export type ArgType = "value" | "ListNode" | "DListNode" | "TreeNode" | "TreeNodeRef" | "cycleList" | "ListNode[]";
+export type ReturnKind = "value" | "ListNode" | "DListNode" | "TreeNode" | "TreeNodeVal" | "ListNode[]" | "TreeNode[]" | "arg0" | "arg0Prefix";
 
 export interface WorkerLib {
   deepEqual(a: unknown, b: unknown): boolean;
   canonical(v: unknown): unknown;
-  matches(actual: unknown, expected: unknown, compare?: "exact" | "unordered"): boolean;
+  matches(actual: unknown, expected: unknown, compare?: "exact" | "unordered" | "unordered-outer" | "no-adjacent-repeat" | "no-triple-repeat" | "same-inorder" | "balanced-same-inorder"): boolean;
   ListNode: new (val?: number, next?: unknown) => { val: number; next: unknown };
   TreeNode: new (val?: number, left?: unknown, right?: unknown) => { val: number; left: unknown; right: unknown };
   listFromArray(arr: unknown): unknown;
@@ -20,6 +20,7 @@ export interface WorkerLib {
   treeFromLevelOrder(arr: unknown): unknown;
   treeToLevelOrder(root: unknown): unknown[];
   buildArg(type: ArgType, value: unknown): unknown;
+  buildArgs(types: readonly ArgType[], input: unknown[]): unknown[];
   encodeResult(returns: ReturnKind, out: unknown, args: unknown[], argTypes?: readonly ArgType[]): unknown;
   /** The raw source, for evaluating a reference solution in a context that has ListNode/TreeNode. */
   source: string;
@@ -34,7 +35,7 @@ export function workerLib(): WorkerLib {
       deepEqual: __deepEqual, canonical: __canonical, matches: __matches, ListNode, TreeNode,
       listFromArray: __listFromArray, listToArray: __listToArray, cycleListFromSpec: __cycleListFromSpec,
       treeFromLevelOrder: __treeFromLevelOrder, treeToLevelOrder: __treeToLevelOrder,
-      buildArg: __buildArg, encodeResult: __encodeResult,
+      buildArg: __buildArg, buildArgs: __buildArgs, encodeResult: __encodeResult,
     };`,
   )() as Omit<WorkerLib, "source">;
   return { ...cached, source: WORKER_LIB_SOURCE };

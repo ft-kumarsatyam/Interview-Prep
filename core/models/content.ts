@@ -60,7 +60,7 @@ const customProblemSchema = new Schema(
     functionName: { type: String, required: true, maxlength: 40 },
     params: { type: [{ name: { type: String, required: true }, type: { type: String, required: true }, _id: false }], default: [] },
     returnType: { type: String, required: true },
-    compare: { type: String, enum: ["exact", "unordered"], default: "exact" },
+    compare: { type: String, enum: ["exact", "unordered", "unordered-outer", "no-adjacent-repeat", "no-triple-repeat", "same-inorder", "balanced-same-inorder"], default: "exact" },
     cases: { type: [{ input: { type: [Schema.Types.Mixed], default: [] }, expected: Schema.Types.Mixed, hidden: { type: Boolean, default: false }, _id: false }], default: [] },
     hints: { type: [String], default: [] },
     solution: { type: String, maxlength: 8000, default: null },

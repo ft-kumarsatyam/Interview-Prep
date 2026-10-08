@@ -113,6 +113,33 @@ describe("buildArg / encodeResult", () => {
     expect(lib.encodeResult("arg0", undefined, [arr], ["value"])).toEqual([1, 3]);
   });
 
+  it("'DListNode' builds prev pointers and rejects a broken one on the way out", () => {
+    const head = lib.buildArg("DListNode", [1, 2, 3]) as { val: number; prev: unknown; next: { prev: unknown; next: { prev: unknown } } };
+    expect(head.prev).toBeNull();
+    expect(head.next.prev).toBe(head);
+    expect(lib.encodeResult("DListNode", head, [])).toEqual([1, 2, 3]);
+    head.next.next.prev = head;
+    expect(() => lib.encodeResult("DListNode", head, [])).toThrow(/prev pointer/);
+    expect(lib.encodeResult("DListNode", null, [])).toEqual([]);
+  });
+
+  it("'TreeNodeRef' resolves to the node with that value, and 'TreeNodeVal' encodes a node as its value", () => {
+    const [root, p, q] = lib.buildArgs(["TreeNode", "TreeNodeRef", "TreeNodeRef"], [[3, 5, 1, 6, 2], 2, 1]) as Array<{ val: number; left: { right: unknown }; right: unknown }>;
+    expect(p).toBe(root!.left.right);
+    expect(q).toBe(root!.right);
+    expect(() => lib.buildArgs(["TreeNode", "TreeNodeRef"], [[1, 2], 9])).toThrow(/No node with value 9/);
+    expect(lib.encodeResult("TreeNodeVal", root, [])).toBe(3);
+    expect(lib.encodeResult("TreeNodeVal", null, [])).toBeNull();
+    expect(lib.encodeResult("TreeNode[]", [lib.treeFromLevelOrder([1, null, 2]), null], [])).toEqual([[1, null, 2], []]);
+  });
+
+  it("'arg0Prefix' pairs the returned length with that prefix of the first argument", () => {
+    expect(lib.encodeResult("arg0Prefix", 2, [[4, 5, 9, 9]])).toEqual([2, [4, 5]]);
+    expect(lib.encodeResult("arg0Prefix", 0, [[1]])).toEqual([0, []]);
+    expect(() => lib.encodeResult("arg0Prefix", 5, [[1, 2]])).toThrow(/number of elements kept/);
+    expect(() => lib.encodeResult("arg0Prefix", undefined, [[1, 2]])).toThrow(/number of elements kept/);
+  });
+
   it("deepEqual compares encoded structures", () => {
     expect(lib.deepEqual(lib.treeToLevelOrder(lib.treeFromLevelOrder([1, 2, 3])), [1, 2, 3])).toBe(true);
     expect(lib.deepEqual([1, null, 2], [1, 2])).toBe(false);
@@ -150,6 +177,12 @@ describe("the Worker harness with real nodes", () => {
     const code = "function hasCycle(head) { let s = head, f = head; while (f && f.next) { s = s.next; f = f.next.next; if (s === f) return true; } return false; }";
     const ms = await runWorker(harness("hasCycle", [{ input: [{ list: [3, 2, 0, -4], pos: 1 }], expected: true }, { input: [{ list: [1, 2], pos: -1 }], expected: false }, { input: [{ list: [], pos: -1 }], expected: false }], { argTypes: ["cycleList"] }, code));
     expect(results(ms).map((r) => r[0])).toEqual([true, true, true]);
+  });
+
+  it("builds an array of lists for a 'ListNode[]' argument", async () => {
+    const code = "function heads(lists) { return lists.map((l) => (l ? l.val : null)); }";
+    const ms = await runWorker(harness("heads", [{ input: [[[1, 4], [], [2]]], expected: [1, null, 2] }], { argTypes: ["ListNode[]"] }, code));
+    expect(results(ms).map((r) => r[0])).toEqual([true]);
   });
 
   it("'arg0' checks an in-place change", async () => {
@@ -195,6 +228,21 @@ describe("order-insensitive comparison", () => {
     expect(lib.matches([[2, 1], [0, 3]], [[0, 3], [1, 2]], "unordered")).toBe(true);
     expect(lib.matches([0, 2], [0, 1], "unordered")).toBe(false);
     expect(lib.matches([1, 1], [1], "unordered")).toBe(false);
+    expect(lib.matches([[2, 1], [1, 2]], [[1, 2], [2, 1]], "unordered-outer")).toBe(true);
+    expect(lib.matches([[1, 2], [1, 2]], [[1, 2], [2, 1]], "unordered-outer")).toBe(false);
+    expect(lib.matches("bab", "aba", "no-adjacent-repeat")).toBe(false);
+    expect(lib.matches("abacab", "ababac", "no-adjacent-repeat")).toBe(true);
+    expect(lib.matches("aabc", "abac", "no-adjacent-repeat")).toBe(false);
+    expect(lib.matches("", "", "no-adjacent-repeat")).toBe(true);
+    expect(lib.matches([1, 2, 1], [1, 2, 1], "no-adjacent-repeat")).toBe(true);
+    expect(lib.matches("aabaa", "aabaa", "no-triple-repeat")).toBe(true);
+    expect(lib.matches("aaab", "abaa", "no-triple-repeat")).toBe(false);
+    expect(lib.matches([2, 1, 3], [1, null, 2, null, 3], "same-inorder")).toBe(true);
+    expect(lib.matches([2, 1, 3], [2, 3, 1], "same-inorder")).toBe(false);
+    expect(lib.matches([1, null, 2, null, 3], [2, 1, 3], "balanced-same-inorder")).toBe(false);
+    expect(lib.matches([3, 1, null, null, 2], [2, 1, 3], "balanced-same-inorder")).toBe(false);
+    expect(lib.matches([2, 1, 3], [1, null, 2, null, 3], "balanced-same-inorder")).toBe(true);
+    expect(lib.matches([], [], "same-inorder")).toBe(true);
   });
 
   it("the default and 'exact' are strict about order", () => {

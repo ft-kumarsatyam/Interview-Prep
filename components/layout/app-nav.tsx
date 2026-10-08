@@ -4,6 +4,7 @@ import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Check, ChevronLeft, Code2, ListChecks, LogOut, Menu } from "lucide-react";
+import { HistoryBackLink } from "@/components/shared/history-back-link";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { NavBadges, NavToday } from "@/core/services/nav";
 import { cn } from "@/core/utils";
@@ -276,7 +277,7 @@ export function TopBarTitle() {
   return (
     <>
       {parent && (
-        <Link
+        <HistoryBackLink
           href={parent.href}
           className="-ml-2 flex min-h-10 min-w-0 items-center gap-1 rounded-lg pr-2 pl-1 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none lg:hidden"
         >
@@ -285,7 +286,7 @@ export function TopBarTitle() {
             <span className="sr-only">Back to </span>
             {parent.label}
           </span>
-        </Link>
+        </HistoryBackLink>
       )}
       <span className={cn("min-w-0 items-center gap-2 truncate text-sm font-medium", parent ? "hidden lg:flex" : "flex")}>
         <hub.icon className="size-4 shrink-0 text-primary lg:text-muted-foreground" aria-hidden />

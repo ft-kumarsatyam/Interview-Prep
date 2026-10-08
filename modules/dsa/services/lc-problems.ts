@@ -41,7 +41,8 @@ const empty = (status: LcProblemStatus, fetchedAt: Date | null = null): LcProble
  * page can explain instead of throwing. Only slugs of problems in this app are ever requested.
  */
 export async function getLeetCodeProblem(slug: string, deps: { fetcher?: LcQuestionFetcher; now?: Date } = {}): Promise<LcProblemView> {
-  if (!problemBySlug.has(slug)) return empty("not_found");
+  // Problems written for PrepOS have no LeetCode page, so their slug is never sent there.
+  if (problemBySlug.get(slug)?.leetcodeId === undefined) return empty("not_found");
   await connectDb();
   const now = deps.now ?? new Date();
 

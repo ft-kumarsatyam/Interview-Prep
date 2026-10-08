@@ -4,9 +4,13 @@
  */
 import aptitudeBankJson from "@/data/aptitude-bank.json";
 import problemsJson from "@/data/dsa-problems.json";
+import extraProblemsJson from "@/data/dsa-extra-problems.json";
 import sheetsJson from "@/data/dsa-sheets.json";
 import cheatSheetsJson from "@/data/dsa-cheat-sheets.json";
 import externalCatalogueJson from "@/data/dsa-external.json";
+import laddersJson from "@/data/dsa-ladders.json";
+import popularSheetsJson from "@/data/dsa-popular-sheets.json";
+import companyTagsJson from "@/data/dsa-company-tags.json";
 import externalResourcesJson from "@/data/external-resources.json";
 import testcasesJson from "@/data/dsa-testcases.json";
 import practiceCasesJson from "@/data/os-dbms-cases.json";
@@ -103,6 +107,8 @@ import type { PracticeKind } from "@/modules/design/domain/practice-cases";
 import type { Language } from "@/modules/dsa/domain/starters";
 import { cheatSheetsSchema, type CheatSheet } from "@/modules/dsa/domain/dsa-cheat-sheet";
 import { externalCatalogueSchema, externalResourcesSchema, type ExternalResource, type ExternalSheet } from "@/modules/dsa/domain/external-catalogue";
+import { extraCatalogueSchema, type AuthoredStatement } from "@/modules/dsa/domain/extra-problems";
+import { companyDatasetSchema, type CompanyDataset } from "@/modules/dsa/domain/company-tags";
 import type { ProblemTrack } from "@/modules/planner/domain/planner";
 
 export type Difficulty = "Easy" | "Medium" | "Hard";
@@ -110,15 +116,19 @@ export type Difficulty = "Easy" | "Medium" | "Hard";
 export interface ContentProblem {
   slug: string;
   title: string;
-  leetcodeId: number;
+  /** Absent for problems written for PrepOS (see `catalog`). */
+  leetcodeId?: number;
   difficulty: Difficulty;
   pattern: string;
   /** Sheet-view step, when it differs from `pattern` (e.g. re-slotted into "Basics & Complexity"). Falls back to `pattern` — see lib/domain/dsa-sheet.ts. */
   step?: string;
   track: ProblemTrack;
   tier: "core" | "extended";
+  /** Where the problem lives outside PrepOS; empty for authored problems without one. */
   url: string;
   order: number;
+  /** "extra": from data/dsa-extra-problems.json, reachable by slug but never part of `problems` (so never planned). */
+  catalog?: "extra";
 }
 
 export interface ContentSheetItem {
@@ -272,10 +282,34 @@ function loadTestcases(raw: Record<string, RawTestcaseEntry>): Map<string, Probl
 }
 
 export const problems = problemsJson as ContentProblem[];
+const extraCatalogue = extraCatalogueSchema.parse(extraProblemsJson).problems;
+/** Authored and sheet-only LeetCode problems: open by slug, deliberately left out of `problems`. */
+export const extraProblems: ContentProblem[] = extraCatalogue.map((p, i) => ({
+  slug: p.slug,
+  title: p.title,
+  ...(p.leetcodeId ? { leetcodeId: p.leetcodeId } : {}),
+  difficulty: p.difficulty,
+  pattern: p.pattern,
+  track: "main",
+  tier: "extended",
+  url: p.url ?? "",
+  order: 100_000 + i,
+  catalog: "extra",
+}));
+/** Statements written for PrepOS, shown instead of fetching one from LeetCode. */
+export const authoredStatementBySlug: ReadonlyMap<string, AuthoredStatement> = new Map(
+  extraCatalogue.flatMap((p) => (p.source === "authored" && p.statementMd ? [[p.slug, { statementMd: p.statementMd, constraints: p.constraints ?? [] }] as const] : [])),
+);
 export const dsaSheets = sheetsJson.sheets as ContentSheet[];
 export const dsaCheatSheets: CheatSheet[] = cheatSheetsSchema.parse(cheatSheetsJson).sheets;
 export const externalDsaSheets: ExternalSheet[] = externalCatalogueSchema.parse(externalCatalogueJson).sheets;
+/** Pattern ladders (A01-style rows), shown beside the external sheets. */
+export const dsaLadders: ExternalSheet[] = externalCatalogueSchema.parse(laddersJson).sheets;
+/** Love Babbar 450, Apna College 375, Arsh Goyal and Fraz, from their public lists (`npm run import:sheets`). */
+export const popularDsaSheets: ExternalSheet[] = externalCatalogueSchema.parse(popularSheetsJson).sheets;
 export const externalResources: ExternalResource[] = externalResourcesSchema.parse(externalResourcesJson).resources;
+/** Company-wise LeetCode tags with 30-day to all-time frequency (data/dsa-company-tags.json, `npm run import:companies`). */
+export const companyDataset: CompanyDataset = companyDatasetSchema.parse(companyTagsJson);
 export const testcaseBySlug = loadTestcases(testcasesJson as unknown as Record<string, RawTestcaseEntry>);
 export const tracks = (syllabusJson.tracks as ContentTrack[]).toSorted((a, b) => a.order - b.order);
 export const topics = syllabusJson.topics as ContentTopic[];
@@ -311,7 +345,7 @@ export interface SubtopicInfo {
   position: number;
 }
 
-export const problemBySlug = new Map(problems.map((p) => [p.slug, p]));
+export const problemBySlug: ReadonlyMap<string, ContentProblem> = new Map([...problems, ...extraProblems].map((p) => [p.slug, p]));
 export const topicById = new Map(topics.map((t) => [t.id, t]));
 export const trackById = new Map(tracks.map((t) => [t.id, t]));
 

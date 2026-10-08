@@ -58,6 +58,28 @@ def _list_to(head):
         n = n.next
     return out
 
+def _dlist_from(arr):
+    head = _list_from(arr)
+    prev, n = None, head
+    while n is not None:
+        n.prev = prev
+        prev, n = n, n.next
+    return head
+
+def _dlist_to(head):
+    out, seen, prev, n = [], set(), None, head
+    while n is not None:
+        if id(n) in seen:
+            raise ValueError("The returned list has a cycle")
+        seen.add(id(n))
+        if len(out) >= _MAX_NODES:
+            raise ValueError("The returned list is too long (or never ends)")
+        if getattr(n, "prev", None) is not prev:
+            raise ValueError("The head's prev pointer must be None" if prev is None else "The prev pointer of the node holding " + repr(n.val) + " is wrong")
+        out.append(n.val)
+        prev, n = n, n.next
+    return out
+
 def _cycle_from(spec):
     head = _list_from(spec["list"])
     pos = spec.get("pos", -1)
@@ -119,17 +141,48 @@ def _tree_to(root):
 def _build(kind, value):
     if kind == "ListNode":
         return _list_from(value)
+    if kind == "DListNode":
+        return _dlist_from(value)
     if kind == "TreeNode":
         return _tree_from(value)
     if kind == "cycleList":
         return _cycle_from(value)
+    if kind == "ListNode[]":
+        return [_list_from(v) for v in value]
     return value
 
+def _find_node(root, val):
+    if val is None:
+        return None
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n is None:
+            continue
+        if n.val == val:
+            return n
+        stack.extend([n.left, n.right])
+    raise ValueError("No node with value " + str(val) + " in the tree")
+
+def _build_args(kinds, raw):
+    kind = lambda i: kinds[i] if i < len(kinds) and kinds[i] else "value"
+    args = [v if kind(i) == "TreeNodeRef" else _build(kind(i), v) for i, v in enumerate(raw)]
+    root = next((args[i] for i in range(len(args)) if kind(i) == "TreeNode"), None)
+    return [_find_node(root, a) if kind(i) == "TreeNodeRef" else a for i, a in enumerate(args)]
+
 def _encode(kind, value):
+    if kind == "TreeNodeVal":
+        return None if value is None else value.val
     if kind == "ListNode":
         return _list_to(value)
+    if kind == "DListNode":
+        return _dlist_to(value)
     if kind == "TreeNode":
         return _tree_to(value)
+    if kind == "ListNode[]":
+        return [_list_to(v) for v in value]
+    if kind == "TreeNode[]":
+        return [_tree_to(v) for v in value]
     return value
 
 def _plain(v):
@@ -193,10 +246,14 @@ def __prepos_run(code, payload):
     results = []
     for raw in p["cases"]:
         try:
-            args = [_build(kinds[i] if i < len(kinds) and kinds[i] else "value", v) for i, v in enumerate(json.loads(json.dumps(raw)))]
+            args = _build_args(kinds, json.loads(json.dumps(raw)))
             out = fn(*args)
             if p["returns"] == "arg0":
                 actual = _encode(kinds[0] if kinds else "value", args[0])
+            elif p["returns"] == "arg0Prefix":
+                if not isinstance(out, int) or isinstance(out, bool) or out < 0 or out > len(args[0]):
+                    raise ValueError("Return the number of elements kept (an integer from 0 to len(nums))")
+                actual = [out, list(args[0][:out])]
             else:
                 actual = _encode(p["returns"], out)
             results.append({"json": json.dumps(_plain(actual))})

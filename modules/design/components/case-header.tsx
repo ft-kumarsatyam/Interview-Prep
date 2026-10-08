@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import { HistoryBackLink } from "@/components/shared/history-back-link";
 
 export function CaseHeader({
   backHref,
@@ -23,12 +23,12 @@ export function CaseHeader({
 }) {
   return (
     <header className="mb-6 space-y-3">
-      <Link
+      <HistoryBackLink
         href={backHref}
         className="-ml-2 inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
         <ArrowLeft className="size-4" aria-hidden /> {backLabel}
-      </Link>
+      </HistoryBackLink>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="rounded-full bg-muted px-2 py-0.5 font-medium capitalize">{level}</span>
         {context && <span>{context}</span>}

@@ -3,7 +3,7 @@ import { formatDate } from "@/core/plan-clock";
 import type { ProblemDetail } from "@/modules/dsa/services/problems";
 
 /** Last-solve summary and the full review history for a problem. */
-export function SolveHistory({ progress, solved }: { progress: ProblemDetail["progress"]; solved: boolean }) {
+export function SolveHistory({ progress, solved, onLeetCode = true }: { progress: ProblemDetail["progress"]; solved: boolean; onLeetCode?: boolean }) {
   return (
     <div className="grid gap-4 xl:grid-cols-2">
       <Card>
@@ -27,7 +27,9 @@ export function SolveHistory({ progress, solved }: { progress: ProblemDetail["pr
               </div>
             </dl>
           ) : (
-            <p className="text-sm text-muted-foreground">Not solved yet. Solve it here, submit it on LeetCode, then tap Mark solved.</p>
+            <p className="text-sm text-muted-foreground">
+              {onLeetCode ? "Not solved yet. Solve it here, submit it on LeetCode, then tap Mark solved." : "Not solved yet. Pass every test with Submit, or tap Mark solved."}
+            </p>
           )}
         </CardContent>
       </Card>

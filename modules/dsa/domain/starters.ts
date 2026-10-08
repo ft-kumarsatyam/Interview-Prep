@@ -45,11 +45,37 @@ export function parseSignature(src: StarterSource): TypedSignature {
 
 const usesNodes = (sig: TypedSignature) => [sig.returnType, ...sig.params.map((p) => p.type)].some((t) => /ListNode|TreeNode/.test(t));
 
+/** Split on `sep` only outside <>, [] and (), so `Array<a | b>` stays one part. */
+function splitTop(t: string, sep: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of t) {
+    if ("<[(".includes(ch)) depth++;
+    else if (">])".includes(ch)) depth--;
+    if (ch === sep && depth === 0) {
+      out.push(cur.trim());
+      cur = "";
+    } else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+const unwrap = (t: string) => (t.startsWith("(") && t.endsWith(")") ? t.slice(1, -1).trim() : t);
+const generic = (t: string) => /^(Array|Object|Record)<(.+)>$/.exec(t);
+
 export function tsType(jsdoc: string): string {
-  const t = jsdoc.trim();
-  if (t.includes("|")) {
-    const parts = [...new Set(t.split("|").map((p) => tsType(p)).flatMap((p) => p.split(" | ")))];
+  const t = unwrap(jsdoc.trim());
+  const union = splitTop(t, "|");
+  if (union.length > 1) {
+    const parts = [...new Set(union.map((p) => tsType(p)).flatMap((p) => splitTop(p, "|")))];
     return parts.join(" | ");
+  }
+  const g = generic(t);
+  if (g) {
+    const args = splitTop(g[2]!, ",").map(tsType);
+    return g[1] === "Array" ? `Array<${args[0]}>` : `Record<${args.join(", ")}>`;
   }
   if (t.endsWith("[]")) {
     const inner = tsType(t.slice(0, -2));
@@ -62,11 +88,17 @@ export function tsType(jsdoc: string): string {
 }
 
 export function pyType(jsdoc: string): string {
-  const t = jsdoc.trim();
-  if (t.includes("|")) {
-    const parts = t.split("|").map((p) => p.trim()).filter((p) => p !== "null" && p !== "undefined");
+  const t = unwrap(jsdoc.trim());
+  const union = splitTop(t, "|");
+  if (union.length > 1) {
+    const parts = union.filter((p) => p !== "null" && p !== "undefined");
     const inner = parts.length === 1 ? pyType(parts[0]!) : `Union[${parts.map(pyType).join(", ")}]`;
     return inner.startsWith("Optional[") ? inner : `Optional[${inner}]`;
+  }
+  const g = generic(t);
+  if (g) {
+    const args = splitTop(g[2]!, ",").map(pyType);
+    return g[1] === "Array" ? `List[${args[0]}]` : `Dict[${args.join(", ")}]`;
   }
   if (t.endsWith("[]")) return `List[${pyType(t.slice(0, -2))}]`;
   switch (t) {

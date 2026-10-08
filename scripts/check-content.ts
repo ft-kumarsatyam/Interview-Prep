@@ -1,12 +1,14 @@
 /**
  * Validates one authored content file against its schema and the content already registered in core/, before
  * the file itself is registered.
- * Usage: node --import tsx scripts/check-content.ts <webdev|interview|course-chapter|roadmap> <file.json> [extra]
+ * Usage: node --import tsx scripts/check-content.ts <webdev|interview|course-chapter|roadmap|dsa-extras|dsa-ladders> <file.json> [extra]
  *   interview: extra = the companion webdev file whose lessons list these questions
  *   roadmap:   extra = a JSON array of lesson keys that are being written now and count as known
  */
 import { readFileSync } from "node:fs";
-import { problemBySlug, subtopicById, topicById, webLessons, webProjects, webTracks } from "../core/content";
+import { problemBySlug, problems, subtopicById, testcaseBySlug, topicById, webLessons, webProjects, webTracks } from "../core/content";
+import { externalCatalogueSchema } from "../modules/dsa/domain/external-catalogue";
+import { extraCatalogueSchema, extraSlugClashes } from "../modules/dsa/domain/extra-problems";
 import { courseLessonByKey } from "../core/courses";
 import { checkQuestionSchema, webdevFileSchema, webdevProblems, type WebLesson } from "../modules/learn/domain/webdev";
 import { interviewFileSchema, interviewProblems, type InterviewFile } from "../modules/learn/domain/web-interview";
@@ -15,7 +17,7 @@ import { roadmapProblems, roadmapSchema } from "../modules/roadmap/domain/roadma
 
 const [kind, file, extra] = process.argv.slice(2);
 if (!kind || !file) {
-  console.error("usage: check-content <webdev|interview|course-chapter|roadmap> <file.json> [extra]");
+  console.error("usage: check-content <webdev|interview|course-chapter|roadmap|dsa-extras|dsa-ladders> <file.json> [extra]");
   process.exit(2);
 }
 const json: unknown = JSON.parse(readFileSync(file, "utf8"));
@@ -83,6 +85,21 @@ if (kind === "webdev") {
       }),
     );
   }
+} else if (kind === "dsa-extras") {
+  const r = extraCatalogueSchema.safeParse(json);
+  fail(r);
+  if (r.success) {
+    issues.push(...extraSlugClashes(r.data.problems, new Set(problems.map((p) => p.slug))).map((s) => `${s}: defined twice or already seeded`));
+    for (const p of r.data.problems) if (!testcaseBySlug.has(p.slug)) issues.push(`${p.slug}: no judge in data/dsa-testcases.json`);
+  }
+} else if (kind === "dsa-ladders") {
+  const r = externalCatalogueSchema.safeParse(json);
+  fail(r);
+  if (r.success)
+    for (const q of r.data.sheets.flatMap((s) => s.questions)) {
+      if (!q.localSlug || !problemBySlug.has(q.localSlug)) issues.push(`${q.code ?? q.id}: no PrepOS problem (${q.localSlug ?? "unset"})`);
+      else if (!testcaseBySlug.has(q.localSlug)) issues.push(`${q.code ?? q.id}: ${q.localSlug} has no judge`);
+    }
 } else {
   issues.push(`unknown kind ${kind}`);
 }

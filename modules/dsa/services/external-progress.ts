@@ -1,4 +1,4 @@
-import { externalDsaSheets, problemBySlug } from "@/core/content";
+import { problemBySlug } from "@/core/content";
 import { connectDb } from "@/core/db";
 import { ExternalProgressModel } from "@/core/models/external-progress";
 import type { DateStr } from "@/core/domain/dates";
@@ -6,14 +6,7 @@ import { recordSolve } from "@/modules/progress/services/progress";
 import { getSettings } from "@/modules/settings/services/settings";
 import { todayIn } from "@/modules/planner/services/plan";
 import type { ExternalProgress } from "@/modules/dsa/domain/external-catalogue";
-
-function findQuestion(itemId: string) {
-  for (const sheet of externalDsaSheets) {
-    const question = sheet.questions.find((item) => item.id === itemId);
-    if (question) return question;
-  }
-  return undefined;
-}
+import { hubQuestion } from "@/modules/dsa/services/sheet-catalogue";
 
 export async function getExternalProgress(sheetId?: string): Promise<Record<string, ExternalProgress>> {
   await connectDb();
@@ -25,7 +18,7 @@ export async function completeExternalQuestion(
   itemId: string,
   input: { status: ExternalProgress; date?: DateStr; timeTakenMin?: number; notes?: string; gfgCompleted?: boolean },
 ): Promise<void> {
-  const question = findQuestion(itemId);
+  const question = hubQuestion(itemId);
   if (!question) throw new Error("Unknown external question");
   const settings = await getSettings();
   const date = input.date ?? todayIn(settings);

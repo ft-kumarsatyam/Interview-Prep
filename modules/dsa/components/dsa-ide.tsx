@@ -30,6 +30,7 @@ export function DsaIde({
   notes,
   history,
   solveCount,
+  onLeetCode,
 }: {
   slug: string;
   title: string;
@@ -37,6 +38,8 @@ export function DsaIde({
   difficulty?: string;
   pattern?: string;
   url: string;
+  /** False for problems written for PrepOS: there is no LeetCode page to submit to. */
+  onLeetCode: boolean;
   revealedCases?: number[];
   statement: React.ReactNode;
   notes: React.ReactNode;
@@ -79,17 +82,21 @@ export function DsaIde({
       {statement}
       <HintReveal hints={entry.hints} />
       <div className="space-y-2 rounded-xl border border-dashed p-3">
-        <p className="text-xs text-muted-foreground">Passing here? Submit it on LeetCode too. Your Accepted submission is detected and logged automatically.</p>
+        {onLeetCode && (
+          <p className="text-xs text-muted-foreground">Passing here? Submit it on LeetCode too. Your Accepted submission is detected and logged automatically.</p>
+        )}
         <div className="flex flex-wrap items-center gap-2">
-          <CopyAndOpen
-            slug={slug}
-            url={url}
-            getCode={() => codeRef.current}
-            onAccepted={(date) => {
-              setSolveDate(date);
-              setSolveOpen(true);
-            }}
-          />
+          {onLeetCode && (
+            <CopyAndOpen
+              slug={slug}
+              url={url}
+              getCode={() => codeRef.current}
+              onAccepted={(date) => {
+                setSolveDate(date);
+                setSolveOpen(true);
+              }}
+            />
+          )}
           <AskGemini
             subject={pattern && /^SQL/.test(pattern) ? "dbms" : pattern === "JavaScript 30-Days" ? "js" : "dsa"}
             label="Ask Gemini about my code"

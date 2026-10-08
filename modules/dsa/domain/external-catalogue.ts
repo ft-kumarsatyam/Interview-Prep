@@ -28,6 +28,8 @@ export interface ExternalQuestion {
   id: string;
   sheetId: string;
   order: number;
+  /** Ladder row code, e.g. "A01". */
+  code?: string;
   section: string;
   category: string;
   difficulty: ExternalDifficulty;
@@ -46,6 +48,8 @@ export interface ExternalQuestion {
 
 export interface ExternalSheet {
   id: string;
+  /** "ladder": an A01-style pattern ladder shown as a table of signal, task and skill. */
+  kind?: "ladder";
   title: string;
   source: string;
   sourceUrl: string;
@@ -90,6 +94,7 @@ export const externalQuestionSchema = z.object({
   id: z.string().regex(/^[a-z0-9-]+$/),
   sheetId: z.string().regex(/^[a-z0-9-]+$/),
   order: z.number().int().positive(),
+  code: z.string().regex(/^[A-Z]{1,3}\d{2,3}$/).optional(),
   section: z.string().trim().min(1).max(120),
   category: z.string().trim().min(1).max(120),
   difficulty: z.enum(EXTERNAL_DIFFICULTIES),
@@ -108,6 +113,7 @@ export const externalQuestionSchema = z.object({
 
 export const externalSheetSchema = z.object({
   id: z.string().regex(/^[a-z0-9-]+$/),
+  kind: z.literal("ladder").optional(),
   title: z.string().trim().min(1).max(120),
   source: z.string().trim().min(1).max(120),
   sourceUrl: z.url(),
@@ -181,7 +187,8 @@ export function filterExternalQuestions(
 ): ExternalQuestion[] {
   const query = filters.query.trim().toLowerCase();
   return questions.filter((question) => {
-    if (query && ![question.title, question.category, question.section, question.technique ?? ""].some((value) => value.toLowerCase().includes(query))) return false;
+    const haystack = [question.title, question.category, question.section, question.technique ?? "", question.code ?? "", question.prompt ?? "", question.recognitionSignal ?? ""];
+    if (query && !haystack.some((value) => value.toLowerCase().includes(query))) return false;
     if (filters.difficulty !== "all" && question.difficulty !== filters.difficulty) return false;
     if (filters.category && question.category !== filters.category) return false;
     if (filters.company && !question.companies.some((tag) => tag.company === filters.company)) return false;
@@ -201,6 +208,30 @@ export function summarizeExternalProgress(
     if (statuses.get(question.id) === "completed") bucket.completed += 1;
   }
   return { completed: EXTERNAL_DIFFICULTIES.reduce((sum, difficulty) => sum + byDifficulty[difficulty].completed, 0), total: questions.length, byDifficulty };
+}
+
+const PROGRESS_RANK: Record<ExternalProgress, number> = { "not-started": 0, "in-progress": 1, completed: 2 };
+
+/**
+ * A sheet item's status is the further along of its own tick and its in-app problem's progress, so solving a
+ * problem through the judge also moves every sheet row that points at it.
+ */
+export function effectiveStatuses(
+  sheets: readonly Pick<ExternalSheet, "questions">[],
+  statuses: Readonly<Record<string, ExternalProgress>>,
+  progressBySlug: Readonly<Record<string, { status: "solved" | "attempted" }>>,
+): Record<string, ExternalProgress> {
+  const out: Record<string, ExternalProgress> = { ...statuses };
+  for (const sheet of sheets) {
+    for (const question of sheet.questions) {
+      const local = question.localSlug ? progressBySlug[question.localSlug]?.status : undefined;
+      const fromLocal: ExternalProgress = local === "solved" ? "completed" : local === "attempted" ? "in-progress" : "not-started";
+      const own = statuses[question.id] ?? "not-started";
+      const best = PROGRESS_RANK[fromLocal] > PROGRESS_RANK[own] ? fromLocal : own;
+      if (best !== "not-started") out[question.id] = best;
+    }
+  }
+  return out;
 }
 
 export function toggleTimer(state: TimerState, now: number): TimerState {

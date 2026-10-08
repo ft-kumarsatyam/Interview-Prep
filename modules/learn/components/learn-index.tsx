@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, CalendarClock, Check, ChevronRight, Search, SearchX, X } from "lucide-react";
 import { LinkCard } from "@/components/shared/link-card";
@@ -66,7 +66,12 @@ export function LearnIndex({
   initialTrack: string;
 }) {
   const router = useRouter();
-  const [track, setTrack] = useState(initialTrack);
+  const searchParams = useSearchParams();
+  // The live URL wins over the prop: going back re-renders from the router cache with the first visit's props.
+  const [track, setTrack] = useState(() => {
+    const fromUrl = searchParams.get("track");
+    return fromUrl && tracks.some((t) => t.id === fromUrl) ? fromUrl : initialTrack;
+  });
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);

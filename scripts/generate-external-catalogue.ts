@@ -112,17 +112,6 @@ async function main(): Promise<void> {
   };
   });
 
-  const arrayProblems = problems.filter((problem) => stepFor(problem)[0] === "arrays").slice(0, 60);
-  const arrayQuestions = arrayProblems.map((problem, index) => ({
-  ...questions.find((question) => question.localSlug === problem.slug)!,
-  id: `array-${String(index + 1).padStart(2, "0")}`,
-  sheetId: "array-learning",
-  order: index + 1,
-  section: index < 12 ? "Foundation" : index < 25 ? "Easy Reinforcement" : "Pattern Practice",
-  recognitionSignal: `Need to apply ${problem.pattern.toLowerCase()} reasoning.`,
-  technique: problem.pattern,
-  }));
-
   const output = {
   generatedAt: new Date().toISOString().slice(0, 10),
   source: "PrepOS local DSA catalogue aligned to the public takeUforward A2Z module order",
@@ -141,21 +130,11 @@ async function main(): Promise<void> {
       sections: steps.map(([, title]) => title),
       questions,
     },
-    {
-      id: "array-learning",
-      title: "Array Learning Sheet",
-      source: "PrepOS curated sheet",
-      sourceUrl: "https://takeuforward.org/prep-hub/strivers-a2z-dsa-sheet",
-      description: "A simpler Array-first sheet: foundations, reinforcement, and pattern practice with Easy, Medium, and Hard layers.",
-      updatedAt: new Date().toISOString().slice(0, 10),
-      sections: ["Foundation", "Easy Reinforcement", "Pattern Practice"],
-      questions: arrayQuestions,
-    },
   ],
   };
 
   await writeFile("data/dsa-external.json", `${JSON.stringify(output, null, 2)}\n`);
-  console.log(`Generated ${questions.length} A2Z-aligned questions and ${arrayQuestions.length} Array questions.`);
+  console.log(`Generated ${questions.length} A2Z-aligned questions.`);
 }
 
 void main();

@@ -1,4 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { problemBySlug } from "@/core/content";
+import { resolveLocalSlug } from "./dsa-ladders/a2z-resolve";
 
 type Problem = {
   slug: string;
@@ -157,18 +159,20 @@ async function main(): Promise<void> {
       { kind: "practice" as const, label: "Code360 hub", url: hubs.code360, scope: "hub" as const },
       { kind: "practice" as const, label: "HackerRank kit", url: hubs.hackerrank, scope: "hub" as const },
     ];
+    const id = `a2z-${String(index + 1).padStart(3, "0")}`;
+    const linked = problemBySlug.get(resolveLocalSlug({ id, links, title: item.title }) ?? "");
     return {
-      id: `a2z-${String(index + 1).padStart(3, "0")}`,
+      id,
       sheetId: "striver-a2z",
       order: index + 1,
       section,
       category,
-      difficulty: difficulty(category.toLowerCase(), local),
+      difficulty: linked?.difficulty ?? difficulty(category.toLowerCase(), local),
       title: item.title,
       recognitionSignal: `Recognize the ${category} signal.`,
       prompt: item.title,
       technique: local?.pattern ?? section,
-      ...(local ? { leetcodeId: local.leetcodeId, localSlug: local.slug } : {}),
+      ...(linked ? { ...(linked.leetcodeId ? { leetcodeId: linked.leetcodeId } : {}), localSlug: linked.slug } : {}),
       links,
       companies: [],
       priority: local?.tier === "core" ? "high" : "medium",
@@ -176,14 +180,6 @@ async function main(): Promise<void> {
       sourceCoverage: "exact" as const,
     };
   });
-
-  const arrayQuestions = questions.filter((question) => question.section === "Arrays").map((question, index) => ({
-    ...question,
-    id: `array-${String(index + 1).padStart(2, "0")}`,
-    sheetId: "array-learning",
-    order: index + 1,
-    section: index < 12 ? "Foundation" : index < 25 ? "Easy Reinforcement" : "Pattern Practice",
-  }));
 
   const output = {
     generatedAt: new Date().toISOString().slice(0, 10),
@@ -203,20 +199,10 @@ async function main(): Promise<void> {
         sections: [...modules],
         questions,
       },
-      {
-        id: "array-learning",
-        title: "Array Learning Sheet",
-        source: "PrepOS curated sheet from official A2Z Arrays",
-        sourceUrl: hubs.takeuforward,
-        description: "A simpler Array-first view with the same exact source links and Easy, Medium, and Hard layers.",
-        updatedAt: new Date().toISOString().slice(0, 10),
-        sections: ["Foundation", "Easy Reinforcement", "Pattern Practice"],
-        questions: arrayQuestions,
-      },
     ],
   };
   await writeFile("data/dsa-external.json", `${JSON.stringify(output, null, 2)}\n`);
-  console.log(`Imported ${questions.length} official A2Z items and ${arrayQuestions.length} Array items.`);
+  console.log(`Imported ${questions.length} official A2Z items.`);
 }
 
 void main();

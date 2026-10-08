@@ -59,6 +59,12 @@ export function filtersToQuery(f: DsaFilters): string {
   return params.toString();
 }
 
+/** The filter keys for a URL patch: non-default values are set, defaults are removed, other keys are left alone. */
+export function filtersToPatch(f: DsaFilters): Record<string, string | null> {
+  const params = new URLSearchParams(filtersToQuery(f));
+  return Object.fromEntries(Object.keys(DEFAULT_FILTERS).map((key) => [key, params.get(key)]));
+}
+
 export const isSolved = (prog: ProgressSummary | undefined) => prog?.status === "solved";
 
 /** The next problem to do in a track: core before extended, then by order. */

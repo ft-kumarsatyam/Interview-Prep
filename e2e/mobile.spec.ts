@@ -21,6 +21,13 @@ const PAGES = [
   "/ask",
   "/chat",
   "/quiz",
+  "/dsa",
+  "/dsa/sheets",
+  "/dsa/sheets/fraz-250",
+  "/dsa/sheets/sql",
+  "/dsa/sheets/system-design",
+  "/dsa/companies",
+  "/dsa/companies/amazon",
 ];
 
 test.describe("@mobile layout", () => {

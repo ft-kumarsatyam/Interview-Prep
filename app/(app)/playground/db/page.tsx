@@ -6,7 +6,8 @@ import { PageHeader } from "@/components/shared/page-header";
 
 export const metadata: Metadata = { title: "DB Lab" };
 
-export default function DbLabPage() {
+export default async function DbLabPage({ searchParams }: PageProps<"/playground/db">) {
+  const { challenge } = await searchParams;
   return (
     <>
       <PageHeader
@@ -14,7 +15,7 @@ export default function DbLabPage() {
         title="DB Lab"
         description={`${DB_CHALLENGES.length} challenges in real SQL (SQLite, with MySQL helpers) and MongoDB-style queries, grouped by topic from easy to hard, each on seeded data. Run, then check against the expected rows. Everything runs on your device.`}
       />
-      <DbLab />
+      <DbLab initialChallenge={typeof challenge === "string" ? challenge.slice(0, 80) : undefined} />
     </>
   );
 }

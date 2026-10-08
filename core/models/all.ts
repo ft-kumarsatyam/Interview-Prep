@@ -6,6 +6,7 @@ import "@/core/models/chat";
 import "@/core/models/content";
 import "@/core/models/course";
 import "@/core/models/day";
+import "@/core/models/dsa-bookmark";
 import "@/core/models/embedding";
 import "@/core/models/external-progress";
 import "@/core/models/job-postings";

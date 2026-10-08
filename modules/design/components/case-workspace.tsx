@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { ArrowRight, BookOpen, ChevronDown, ListTree, Timer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -83,7 +84,12 @@ export function CaseWorkspace({
   practiceLabel: string;
   readyHint: string;
 }) {
-  const [tab, setTab] = useState<CaseTab>(initialTab);
+  const searchParams = useSearchParams();
+  // The live URL wins over the prop: going back re-renders from the router cache with the first visit's props.
+  const [tab, setTab] = useState<CaseTab>(() => {
+    const fromUrl = searchParams.get("tab");
+    return fromUrl === "practice" ? "practice" : fromUrl === null ? initialTab : "study";
+  });
   const top = useRef<HTMLDivElement>(null);
   const mobileToc = useRef<HTMLDetailsElement>(null);
   const idKey = toc.map((t) => t.id).join("|");

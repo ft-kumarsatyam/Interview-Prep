@@ -29,7 +29,7 @@ export function loadSolution(source: string, functionName: string, shape: RunSha
   const returns = JSON.stringify(shape.returns ?? "value");
   const call = new vm.Script(`
     var __types = ${argTypes};
-    var __args = __input.map(function (v, i) { return __buildArg(__types[i] || "value", v); });
+    var __args = __buildArgs(__types, __input);
     __out = __encodeResult(${returns}, ${functionName}.apply(null, __args), __args, __types);
   `);
   return (input) => {

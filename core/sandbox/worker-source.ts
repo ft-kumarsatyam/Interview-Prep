@@ -15,9 +15,9 @@ export interface HarnessCase {
 
 /** How a problem's arguments are built and its result encoded; see lib/sandbox/worker-lib.ts. */
 export interface HarnessShape {
-  argTypes?: Array<"value" | "ListNode" | "TreeNode" | "cycleList">;
-  returns?: "value" | "ListNode" | "TreeNode" | "arg0";
-  compare?: "exact" | "unordered";
+  argTypes?: Array<"value" | "ListNode" | "DListNode" | "TreeNode" | "TreeNodeRef" | "cycleList" | "ListNode[]">;
+  returns?: "value" | "ListNode" | "DListNode" | "TreeNode" | "TreeNodeVal" | "ListNode[]" | "TreeNode[]" | "arg0" | "arg0Prefix";
+  compare?: "exact" | "unordered" | "unordered-outer" | "no-adjacent-repeat" | "no-triple-repeat" | "same-inorder" | "balanced-same-inorder";
 }
 
 /**
@@ -199,7 +199,7 @@ async function __runHarness(code, harness) {
   const argTypes = harness.argTypes || [];
   for (const [index, c] of harness.cases.entries()) {
     try {
-      const args = c.input.map((v, i) => __buildArg(argTypes[i] || "value", v));
+      const args = __buildArgs(argTypes, c.input);
       const out = fn(...args);
       const actual = __encodeResult(harness.returns || "value", out, args, argTypes);
       send({ type: "case", index, pass: __matches(actual, c.expected, harness.compare), actual: fmt(actual), hidden: c.hidden });

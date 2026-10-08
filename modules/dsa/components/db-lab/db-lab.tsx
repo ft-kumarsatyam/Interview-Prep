@@ -70,23 +70,25 @@ function mongoRows(s: SqlResultSet): Row[] {
 const starterFor = (c: DbChallenge | null, mode: DbMode) => (c ? `${mode === "sql" ? "--" : "//"} ${c.prompt}\n${mode === "sql" ? "SELECT " : "db."}` : STARTERS[mode]);
 const draftKey = (c: DbChallenge | null, mode: DbMode, dataset: string) => (c ? `db-lab:draft:${c.id}` : `db-lab:draft:free:${mode}:${dataset}`);
 
-export function DbLab() {
+/** `initialChallenge` (from `?challenge=`) opens that challenge on its dataset, e.g. from the SQL sheet. */
+export function DbLab({ initialChallenge }: { initialChallenge?: string }) {
   const hydrated = useHydrated();
   if (!hydrated) return <div className="h-[calc(100dvh-15rem)] min-h-[560px] animate-pulse rounded-xl border bg-card motion-reduce:animate-none" aria-hidden />;
-  return <Lab />;
+  return <Lab start={DB_CHALLENGES.find((c) => c.id === initialChallenge) ?? null} />;
 }
 
-function Lab() {
+function Lab({ start }: { start: DbChallenge | null }) {
   const modKey = useModKey();
   const desktop = useMediaQuery(DESKTOP_QUERY);
-  const [mode, setMode] = useState<DbMode>(() => (readPref("db-lab:mode") === "mongo" ? "mongo" : "sql"));
+  const [mode, setMode] = useState<DbMode>(() => start?.mode ?? (readPref("db-lab:mode") === "mongo" ? "mongo" : "sql"));
   const [datasetId, setDatasetId] = useState(() => {
+    if (start) return start.dataset;
     const saved = readPref("db-lab:dataset");
     const list = mode === "sql" ? SQL_DATASETS : MONGO_DATASETS;
     return list.some((d) => d.id === saved) ? saved! : list[0]!.id;
   });
-  const [active, setActive] = useState<DbChallenge | null>(null);
-  const [code, setCodeState] = useState(() => readPref(draftKey(null, mode, datasetId)) ?? STARTERS[mode]);
+  const [active, setActive] = useState<DbChallenge | null>(start);
+  const [code, setCodeState] = useState(() => readPref(draftKey(start, mode, datasetId)) ?? starterFor(start, mode));
   const [running, setRunning] = useState<"run" | "check" | null>(null);
   const [output, setOutput] = useState<QueryOutput | null>(null);
   const [outputTitle, setOutputTitle] = useState<string | undefined>(undefined);

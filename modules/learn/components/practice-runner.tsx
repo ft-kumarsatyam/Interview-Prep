@@ -5,6 +5,7 @@ import { useState, useTransition } from "react";
 import { AlertCircle, ArrowLeft, ArrowRight, Award, Keyboard, ListChecks, Loader2, Play, RotateCcw, Target, Trophy } from "lucide-react";
 import { toast } from "sonner";
 import { generateQuestionsAction, startPracticeAction, submitPracticeAction } from "@/app/(app)/learn/practice/actions";
+import { HistoryBackLink } from "@/components/shared/history-back-link";
 import { DifficultyPicker } from "@/modules/quiz/components/difficulty-picker";
 import { LevelLadder } from "@/modules/quiz/components/level-ladder";
 import type { LevelProgress } from "@/modules/quiz/services/levels";
@@ -123,9 +124,9 @@ export function PracticeRunner({
           )}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
             <Button variant="ghost" asChild>
-              <Link href={back.href}>
+              <HistoryBackLink href={back.href}>
                 <ArrowLeft /> Back
-              </Link>
+              </HistoryBackLink>
             </Button>
             <Button size="lg" onClick={start} disabled={pending} className="w-full sm:w-auto">
               {error ? <RotateCcw /> : <Play />} {error ? "Try again" : startLabel}
@@ -185,9 +186,9 @@ export function PracticeRunner({
                   </Button>
                 )}
                 <Button size="sm" variant="ghost" asChild className="h-9 max-w-full">
-                  <Link href={back.href}>
+                  <HistoryBackLink href={back.href}>
                     <ArrowLeft /> <span className="truncate">Back to {back.label}</span>
-                  </Link>
+                  </HistoryBackLink>
                 </Button>
               </div>
             </div>

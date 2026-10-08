@@ -5,6 +5,7 @@ import { Pause, Play, RotateCcw, Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { updateExternalProgressAction } from "@/app/(app)/dsa/actions";
+import { saveTimedSolveAction } from "@/app/(app)/dsa/[slug]/actions";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { elapsedSecondsAt, minutesFromSeconds, resetTimer, toggleTimer, type TimerState } from "@/modules/dsa/domain/external-catalogue";
 
@@ -12,7 +13,8 @@ function format(seconds: number): string {
   return `${Math.floor(seconds / 3600).toString().padStart(2, "0")}:${Math.floor((seconds % 3600) / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`;
 }
 
-export function ExternalQuestionTimer({ itemId, saveAction }: { itemId: string; saveAction?: (minutes: number) => Promise<ActionResult> }) {
+/** `slug` saves the time as a solve of that local problem; without it the time completes the external sheet item. */
+export function ExternalQuestionTimer({ itemId, slug }: { itemId: string; slug?: string }) {
   const storageKey = `prepos:dsa-timer:${itemId}`;
   const [state, setState] = useState<TimerState>({ elapsedSeconds: 0, running: false, startedAt: null });
   const [now, setNow] = useState(() => Date.now());
@@ -40,9 +42,10 @@ export function ExternalQuestionTimer({ itemId, saveAction }: { itemId: string; 
   const elapsed = useMemo(() => elapsedSecondsAt(state, now), [state, now]);
   const save = () => {
     startSaving(async () => {
-      const result = saveAction
-        ? await saveAction(minutesFromSeconds(elapsed))
-        : await updateExternalProgressAction({ itemId, status: "completed", timeTakenMin: minutesFromSeconds(elapsed) });
+      const minutes = minutesFromSeconds(elapsed);
+      const result: ActionResult = slug
+        ? await saveTimedSolveAction({ slug, timeTakenMin: minutes })
+        : await updateExternalProgressAction({ itemId, status: "completed", timeTakenMin: minutes });
       if (result.ok) toast.success("Question marked complete");
       else toast.error(result.error);
     });

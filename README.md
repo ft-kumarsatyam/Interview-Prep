@@ -39,7 +39,7 @@ All build phases (0–25) are done. See `docs/BUILD_PLAN.md` for the phase list 
 | Calendar | `/calendar` month view of the whole plan: past days with what was done, future days as a projection of the topics and problems planned for that date, weekly mock days |
 | Setup | `/setup` checklist: database, secrets, LeetCode, crons, feeds, notifications, LLM, backups, session, each with a fix button |
 | System Design | `/design`: 45-minute framework, building blocks, latency/capacity cheat sheet, 17 cases (requirements → estimates → API → data model → diagram → deep dives → trade-offs → interviewer probes), mock-interview timer with autosaved sections and rubric, related articles from your feed |
-| DSA / Review | Progress per pattern, filters, `/dsa/[slug]` with solve form, markdown notes and history, and a laptop-sized IDE (resizable problem and editor panes, JavaScript, TypeScript or Python, editable test cases, Run and Submit). SQL-track problems run on in-browser SQLite with LeetCode's tables and a Submit check; JavaScript-track problems start from LeetCode's template with the examples as runnable tests; spaced-repetition review queue |
+| DSA / Review | `/dsa` is a practice set: Basic/Core/Pro progress, one searchable table (difficulty, companies, topics, resources, bookmark, problem of the day, shuffle) with Company, Pattern and Frequency views, a cheat sheet per topic, and a Top Companies sidebar. `/dsa/companies/[company]` lists a company's LeetCode questions for the last 30/90/180 days or all time, by frequency. `/dsa/sheets` is a sheets hub: Striver, Blind 75, NeetCode, Love Babbar 450, Apna College, Arsh Goyal, Fraz, 22 essential patterns, ladders, a package-wise sheet, a SQL sheet and a system design (HLD + LLD) sheet. `/dsa/[slug]` has a solve form, markdown notes and history, and a laptop-sized IDE (resizable problem and editor panes, JavaScript, TypeScript or Python, editable test cases, Run and Submit). SQL-track problems run on in-browser SQLite with LeetCode's tables and a Submit check; JavaScript-track problems start from LeetCode's template with the examples as runnable tests; spaced-repetition review queue |
 | Problems | Questions from anywhere: generate one with the free AI or paste a problem with your own test cases, then solve it in the same IDE. Kept out of the daily plan |
 | Mock interviews | DSA, JavaScript, Node.js, system design (HLD), LLD, SQL, project deep dive, behavioral and a full loop, each timed (auto-submits at zero) and scored out of 100 on tests, time and a rubric (free-AI grading with a self-review fallback). Weekly DSA and system design mocks on days you pick; they never affect the streak |
 | Learn | Checklists per topic, notes, a **Practice** quiz on every subtopic (mastery %) and a **topic quiz** that awards *Mastered* |
@@ -91,6 +91,9 @@ npm run bench               # benchmarks of the redesigned parts: docs/BENCHMARK
 npm run e2e                 # Playwright in a real browser against the app on an in-memory MongoDB (no Docker, no services)
 E2E_DEV=1 npm run e2e       # same, without a production build
 npm run ai:eval             # score the golden prompt set against your configured free AI providers
+npm run dsa:generate        # rebuild the in-app DSA extras, their test cases, the Striver A2Z links and the ladders from scripts/dsa-extras
+npm run import:companies    # rebuild data/dsa-company-tags.json from the public liquidslr/leetcode-company-wise-problems repo on GitHub
+npm run import:sheets       # rebuild data/dsa-popular-sheets.json (Love Babbar 450, Apna College, Arsh Goyal, Fraz) from their public sheets; --from DIR reads saved copies
 docker compose up -d mongo redis redis-rest   # optional local stack: a MongoDB replica set and Redis
 ```
 

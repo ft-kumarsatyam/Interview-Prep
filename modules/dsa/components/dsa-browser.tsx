@@ -21,7 +21,8 @@ import type { ContentProblem, ContentSheet } from "@/core/content";
 import { nextInSheet, sheetProgress, sheetSections, sheetVideos } from "@/modules/dsa/domain/dsa-sheets";
 import type { ProgressSummary } from "@/modules/dsa/services/problems";
 import { cn } from "@/core/utils";
-import { DIFFICULTIES, filtersToQuery, isSolved, nextUnsolved, SORTS, STATUSES, TRACKS, VIEWS, type DsaFilters } from "@/modules/dsa/components/dsa-filters";
+import { replaceQuery } from "@/components/shared/history-back-link";
+import { DIFFICULTIES, filtersToPatch, isSolved, nextUnsolved, SORTS, STATUSES, TRACKS, VIEWS, type DsaFilters } from "@/modules/dsa/components/dsa-filters";
 import { ProblemGroups, ProblemRow, type ProblemGroup } from "@/modules/dsa/components/problem-row";
 import { patternGroups, stepGroups } from "@/modules/dsa/components/step-sheet";
 
@@ -40,21 +41,30 @@ function isTyping(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 }
 
-export function DsaBrowser({ problems, progress, initial, sheets }: { problems: ContentProblem[]; progress: Record<string, ProgressSummary>; initial: DsaFilters; sheets: ContentSheet[] }) {
+export function DsaBrowser({
+  problems,
+  progress,
+  initial,
+  initialOpen = null,
+  sheets,
+}: {
+  problems: ContentProblem[];
+  progress: Record<string, ProgressSummary>;
+  initial: DsaFilters;
+  initialOpen?: string[] | null;
+  sheets: ContentSheet[];
+}) {
   const [filters, setFilters] = useState<DsaFilters>(initial);
   /** null = automatic: everything open while filtering, otherwise just the group holding the next problem. */
-  const [open, setOpen] = useState<string[] | null>(null);
+  const [open, setOpen] = useState<string[] | null>(initialOpen);
   const searchRef = useRef<HTMLInputElement>(null);
   const query = useDeferredValue(filters.q);
 
   // Debounced: Safari throws if replaceState is called too often while typing.
   useEffect(() => {
-    const id = setTimeout(() => {
-      const qs = filtersToQuery(filters);
-      window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
-    }, 250);
+    const id = setTimeout(() => replaceQuery({ ...filtersToPatch(filters), open }), 250);
     return () => clearTimeout(id);
-  }, [filters]);
+  }, [filters, open]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -86,7 +96,7 @@ export function DsaBrowser({ problems, progress, initial, sheets }: { problems: 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/^#/, "");
     return trackProblems.filter((p) => {
-      if (q && !p.title.toLowerCase().includes(q) && !p.pattern.toLowerCase().includes(q) && String(p.leetcodeId) !== q) return false;
+      if (q && !p.title.toLowerCase().includes(q) && !p.pattern.toLowerCase().includes(q) && String(p.leetcodeId ?? "") !== q) return false;
       if (filters.difficulty !== "all" && p.difficulty !== filters.difficulty) return false;
       if (pattern && p.pattern !== pattern) return false;
       const prog = progress[p.slug];

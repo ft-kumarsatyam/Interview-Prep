@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
+import { HistoryBackLink } from "@/components/shared/history-back-link";
 import { CustomProblemIde } from "@/modules/dsa/components/problems/custom-problem-ide";
 import { getCustomProblem } from "@/modules/dsa/services/custom-problems";
 import { cn } from "@/core/utils";
@@ -22,9 +22,9 @@ export default async function CustomProblemPage({ params }: PageProps<"/problems
   return (
     <div className="space-y-3">
       <div className="flex min-w-0 items-center gap-2">
-        <Link href="/problems" className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted" aria-label="Back to problems">
+        <HistoryBackLink href="/problems" className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted" aria-label="Back to problems">
           <ArrowLeft className="size-4" />
-        </Link>
+        </HistoryBackLink>
         <h1 className="min-w-0 truncate text-lg font-semibold">{problem.title}</h1>
         <span className={cn("shrink-0 text-xs font-medium", DIFF_CLASS[problem.difficulty])}>{problem.difficulty}</span>
         {problem.solvedOn && (

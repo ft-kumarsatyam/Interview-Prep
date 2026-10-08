@@ -1,0 +1,43 @@
+import type { LadderDef } from "./types";
+
+const TR = "Trees";
+
+export const BST_LADDER: LadderDef = {
+  id: "ladder-bst",
+  prefix: "N",
+  title: "Binary Search Tree Ladder",
+  description: "30 BST questions from searching and inorder tricks to insert, delete, construct and validate, then iterators, counting trees and hard BST-shaped problems, easy to hard. Each row names the signal to spot, the task, and the skill it builds; every row opens in PrepOS with a judge.",
+  stages: ["Search & Order", "Inorder Tricks", "Modify", "Construct & Validate", "Iterators & Counting", "Advanced"],
+  rows: [
+    { code: "N01", stage: "Search & Order", difficulty: "Easy", pattern: TR, signal: "Smaller left, larger right", task: "Find the node with a given value.", skill: "Drop half the tree per step", slug: "search-in-a-binary-search-tree", lc: 700 },
+    { code: "N02", stage: "Search & Order", difficulty: "Easy", pattern: TR, signal: "Extremes sit on the edges", task: "Return the minimum and maximum of a BST.", skill: "Walk the leftmost and rightmost spine", slug: "minimum-and-maximum-in-bst" },
+    { code: "N03", stage: "Search & Order", difficulty: "Easy", pattern: TR, signal: "Whole subtrees out of range", task: "Sum the values within [low, high].", skill: "Prune by comparing with the bounds", slug: "range-sum-of-bst", lc: 938 },
+    { code: "N04", stage: "Search & Order", difficulty: "Medium", pattern: TR, signal: "Closest values around a key", task: "Return the floor and ceil of a key.", skill: "Remember the best candidate on the way down", slug: "floor-and-ceil-in-a-bst" },
+    { code: "N05", stage: "Search & Order", difficulty: "Medium", pattern: TR, signal: "Paths split at the answer", task: "Return the lowest common ancestor of two nodes.", skill: "Go left or right while both agree", slug: "lowest-common-ancestor-of-a-binary-search-tree", lc: 235 },
+    { code: "N06", stage: "Search & Order", difficulty: "Medium", pattern: TR, signal: "Next and previous in sorted order", task: "Return the inorder successor and predecessor.", skill: "Last left turn, last right turn", slug: "inorder-successor-and-predecessor-in-bst" },
+    { code: "N07", stage: "Inorder Tricks", difficulty: "Easy", pattern: TR, signal: "Closest pair in sorted order", task: "Return the minimum absolute difference between nodes.", skill: "Inorder with a previous value", slug: "minimum-absolute-difference-in-bst", lc: 530 },
+    { code: "N08", stage: "Inorder Tricks", difficulty: "Easy", pattern: TR, signal: "Pair summing to k", task: "Check whether two nodes add up to k.", skill: "Seen set, or two pointers on inorder", slug: "two-sum-iv-input-is-a-bst", lc: 653 },
+    { code: "N09", stage: "Inorder Tricks", difficulty: "Easy", pattern: TR, signal: "Equal values are neighbours in inorder", task: "Return the most frequent values.", skill: "Count runs without a map", slug: "find-mode-in-binary-search-tree", lc: 501 },
+    { code: "N10", stage: "Inorder Tricks", difficulty: "Easy", pattern: TR, signal: "Sorted chain to the right", task: "Rearrange the tree into an increasing right-only chain.", skill: "Inorder with a tail pointer", slug: "increasing-order-search-tree", lc: 897 },
+    { code: "N11", stage: "Inorder Tricks", difficulty: "Medium", pattern: TR, signal: "k-th in sorted order", task: "Return the k-th smallest value.", skill: "Stop the inorder walk at k", slug: "kth-smallest-element-in-a-bst", lc: 230 },
+    { code: "N12", stage: "Inorder Tricks", difficulty: "Medium", pattern: TR, signal: "Add all larger values", task: "Turn every node into itself plus all greater values.", skill: "Reverse inorder with a running sum", slug: "convert-bst-to-greater-tree", lc: 538 },
+    { code: "N13", stage: "Inorder Tricks", difficulty: "Medium", pattern: TR, signal: "Two sorted sources", task: "Return all values of two BSTs in sorted order.", skill: "Two inorders, then merge", slug: "all-elements-in-two-binary-search-trees", lc: 1305 },
+    { code: "N14", stage: "Modify", difficulty: "Medium", pattern: TR, signal: "Spot found by searching", task: "Insert a value into a BST.", skill: "Attach at the first empty child", slug: "insert-into-a-binary-search-tree", lc: 701 },
+    { code: "N15", stage: "Modify", difficulty: "Medium", pattern: TR, signal: "Node with two children", task: "Delete a key from a BST.", skill: "Replace with the inorder successor", slug: "delete-node-in-a-bst", lc: 450 },
+    { code: "N16", stage: "Modify", difficulty: "Medium", pattern: TR, signal: "Keep only a value range", task: "Trim the tree to [low, high].", skill: "Return the surviving child", slug: "trim-a-binary-search-tree", lc: 669 },
+    { code: "N17", stage: "Modify", difficulty: "Medium", pattern: TR, signal: "Two values swapped", task: "Fix a BST in which two nodes were swapped.", skill: "Find the drops in inorder", slug: "recover-binary-search-tree", lc: 99 },
+    { code: "N18", stage: "Construct & Validate", difficulty: "Easy", pattern: TR, signal: "Sorted array, balanced tree", task: "Build a height-balanced BST from a sorted array.", skill: "Middle element as root", slug: "convert-sorted-array-to-binary-search-tree", lc: 108 },
+    { code: "N19", stage: "Construct & Validate", difficulty: "Medium", pattern: TR, signal: "Every node inside a range", task: "Check whether a tree is a valid BST.", skill: "Pass (low, high) bounds down", slug: "validate-binary-search-tree", lc: 98 },
+    { code: "N20", stage: "Construct & Validate", difficulty: "Medium", pattern: TR, signal: "Root first, then smaller values", task: "Build a BST from its preorder.", skill: "Recurse with an upper bound", slug: "construct-binary-search-tree-from-preorder-traversal", lc: 1008 },
+    { code: "N21", stage: "Construct & Validate", difficulty: "Medium", pattern: TR, signal: "Skewed tree, same values", task: "Rebalance a BST.", skill: "Inorder, then build from the middle", slug: "balance-a-binary-search-tree", lc: 1382 },
+    { code: "N22", stage: "Iterators & Counting", difficulty: "Medium", pattern: "Design (Coding)", signal: "Sorted order, one at a time", task: "Design an iterator over a BST in sorted order.", skill: "Stack of the left spine", slug: "binary-search-tree-iterator", lc: 173 },
+    { code: "N23", stage: "Iterators & Counting", difficulty: "Medium", pattern: "Binary Search Tree", signal: "Reject overlapping bookings", task: "Design a calendar that refuses double bookings.", skill: "Check sorted neighbours only", slug: "my-calendar-i", lc: 729 },
+    { code: "N24", stage: "Iterators & Counting", difficulty: "Medium", pattern: TR, signal: "Pick a root, multiply the sides", task: "Count structurally unique BSTs on n values.", skill: "Catalan numbers by DP", slug: "unique-binary-search-trees", lc: 96 },
+    { code: "N25", stage: "Iterators & Counting", difficulty: "Medium", pattern: TR, signal: "List every tree, not just count", task: "Generate all unique BSTs on n values.", skill: "Combine left and right lists per root", slug: "unique-binary-search-trees-ii", lc: 95 },
+    { code: "N26", stage: "Advanced", difficulty: "Hard", pattern: TR, signal: "Biggest subtree that is a BST", task: "Return the size of the largest BST subtree.", skill: "Post-order (min, max, size)", slug: "largest-bst-in-binary-tree" },
+    { code: "N27", stage: "Advanced", difficulty: "Hard", pattern: TR, signal: "Best-sum BST subtree", task: "Return the largest sum of any BST subtree.", skill: "Post-order (isBST, min, max, sum)", slug: "maximum-sum-bst-in-binary-tree", lc: 1373 },
+    { code: "N28", stage: "Advanced", difficulty: "Hard", pattern: "Binary Search Tree", signal: "Rank among later values", task: "Count smaller numbers to the right of each element.", skill: "Fenwick tree or merge sort counting", slug: "count-of-smaller-numbers-after-self", lc: 315 },
+    { code: "N29", stage: "Advanced", difficulty: "Hard", pattern: "Sliding Window", signal: "Close in index and value", task: "Find two values close in both index and value.", skill: "Sorted window or buckets", slug: "contains-duplicate-iii", lc: 220 },
+    { code: "N30", stage: "Advanced", difficulty: "Hard", pattern: TR, signal: "Interleave the two sides", task: "Count insertion orders that build the same BST.", skill: "Binomials times recursive ways", slug: "number-of-ways-to-reorder-array-to-get-same-bst", lc: 1569 },
+  ],
+};

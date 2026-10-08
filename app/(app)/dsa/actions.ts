@@ -5,6 +5,21 @@ import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/core/auth/dal";
 import { completeExternalQuestion } from "@/modules/dsa/services/external-progress";
+import { setBookmark } from "@/modules/dsa/services/bookmarks";
+
+const bookmarkSchema = z.object({ slug: z.string().regex(/^[a-z0-9-]+$/).max(160), on: z.boolean() });
+
+export async function setBookmarkAction(input: unknown): Promise<ActionResult> {
+  await requireSession();
+  const parsed = bookmarkSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Invalid bookmark" };
+  try {
+    await setBookmark(parsed.data.slug, parsed.data.on);
+  } catch {
+    return { ok: false, error: "Unknown problem" };
+  }
+  return { ok: true };
+}
 
 const externalProgressSchema = z.object({
   itemId: z.string().regex(/^[a-z0-9-]+$/),

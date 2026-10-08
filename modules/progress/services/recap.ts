@@ -60,7 +60,10 @@ export async function getForecast(date: DateStr, settings: TodayState["settings"
     { status: "solved", firstSolvedOn: { $gte: addDays(date, -(FORECAST_WINDOW_DAYS - 1)), $lte: date } },
     { slug: 1 },
   ).lean();
-  const recentSolved = rows.filter((r) => problemBySlug.get(r.slug)?.track === "main").length;
+  const recentSolved = rows.filter((r) => {
+    const p = problemBySlug.get(r.slug);
+    return p?.track === "main" && !p.catalog;
+  }).length;
   return forecastFinish({ today: date, solvedMain, totalMain: mainProblemCount, recentSolved, windowDays: FORECAST_WINDOW_DAYS, settings });
 }
 

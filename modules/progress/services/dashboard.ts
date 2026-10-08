@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { mainProblemCount, problemBySlug, subtopicById, type ContentProblem, type SubtopicInfo } from "@/core/content";
+import { mainProblemCount, problemBySlug, problems, subtopicById, type ContentProblem, type SubtopicInfo } from "@/core/content";
 import { connectDb } from "@/core/db";
 import { heatmapCells, type HeatCell } from "@/modules/progress/domain/heatmap";
 import { pace, type Pace } from "@/modules/planner/domain/pace";
@@ -103,6 +103,6 @@ export async function countSolvedMain(): Promise<number> {
 
 let mainSlugCache: string[] | undefined;
 function mainSlugs(): string[] {
-  mainSlugCache ??= [...problemBySlug.values()].filter((p) => p.track === "main").map((p) => p.slug);
+  mainSlugCache ??= problems.filter((p) => p.track === "main").map((p) => p.slug);
   return mainSlugCache;
 }

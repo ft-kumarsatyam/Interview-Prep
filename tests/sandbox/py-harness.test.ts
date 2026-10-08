@@ -34,6 +34,12 @@ describe.skipIf(!hasPython)("Python harness", () => {
     expect(run(invert, { functionName: "invertTree", cases: [[[4, 2, 7, 1, 3, 6, 9]]], argTypes: ["TreeNode"], returns: "TreeNode" }).results?.[0]?.json).toBe("[4, 7, 2, 9, 6, 3, 1]");
   });
 
+  it("passes 'TreeNodeRef' arguments as nodes of the tree and encodes a 'TreeNodeVal' return", () => {
+    const code = "class Solution:\n    def lowestCommonAncestor(self, root, p, q):\n        if root in (None, p, q):\n            return root\n        l, r = self.lowestCommonAncestor(root.left, p, q), self.lowestCommonAncestor(root.right, p, q)\n        return root if l and r else l or r\n";
+    const res = run(code, { functionName: "lowestCommonAncestor", cases: [[[3, 5, 1, 6, 2, 0, 8], 5, 1], [[3, 5, 1, 6, 2, 0, 8], 6, 2]], argTypes: ["TreeNode", "TreeNodeRef", "TreeNodeRef"], returns: "TreeNodeVal" });
+    expect(res.results?.map((r) => r.json)).toEqual(["3", "5"]);
+  });
+
   it("judges an in-place solution on its mutated first argument", () => {
     const code = "class Solution:\n    def moveZeroes(self, nums):\n        nums.sort(key=lambda x: x == 0)\n";
     expect(run(code, { functionName: "moveZeroes", cases: [[[0, 1, 0, 3]]], argTypes: [], returns: "arg0" }).results?.[0]?.json).toBe("[1, 3, 0, 0]");
@@ -43,6 +49,11 @@ describe.skipIf(!hasPython)("Python harness", () => {
     const code = "class Solution:\n    def hasCycle(self, head):\n        slow = fast = head\n        while fast and fast.next:\n            slow, fast = slow.next, fast.next.next\n            if slow is fast:\n                return True\n        return False\n";
     const res = run(code, { functionName: "hasCycle", cases: [[{ list: [3, 2, 0, -4], pos: 1 }], [{ list: [1], pos: -1 }]], argTypes: ["cycleList"], returns: "value" });
     expect(res.results?.map((r) => r.json)).toEqual(["true", "false"]);
+  });
+
+  it("builds an array of lists for a 'ListNode[]' argument", () => {
+    const code = "class Solution:\n    def heads(self, lists):\n        return [l.val if l else None for l in lists]\n";
+    expect(run(code, { functionName: "heads", cases: [[[[1, 4], [], [2]]]], argTypes: ["ListNode[]"], returns: "value" }).results?.[0]?.json).toBe("[1, null, 2]");
   });
 
   it("reports syntax errors, missing functions and per-case exceptions with line numbers", () => {

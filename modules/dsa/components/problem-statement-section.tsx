@@ -4,9 +4,22 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getLeetCodeProblem } from "@/modules/dsa/services/lc-problems";
+import { authoredStatementBySlug, testcaseBySlug } from "@/core/content";
+import { formatExampleInput } from "@/modules/dsa/domain/extra-problems";
+import { AuthoredStatementView } from "@/modules/dsa/components/problem/authored-statement";
 
 /** Loads lazily on first view and is then cached, so a slow or blocked LeetCode never delays the page. */
 export async function ProblemStatement({ slug, url, plain, hideHints }: { slug: string; url: string; plain?: boolean; hideHints?: boolean }) {
+  const authored = authoredStatementBySlug.get(slug);
+  if (authored) {
+    const entry = testcaseBySlug.get(slug);
+    const examples = (entry?.cases ?? [])
+      .filter((c) => !c.hidden && !c.edge)
+      .map((c) => ({ input: formatExampleInput(entry?.signature.params ?? [], c.input), output: JSON.stringify(c.expected) }));
+    const view = <AuthoredStatementView statement={authored} examples={examples} />;
+    return plain ? view : <Card><CardContent className="pt-6">{view}</CardContent></Card>;
+  }
+
   const p = await getLeetCodeProblem(slug);
 
   if (p.status !== "ok" || !p.contentMd) {

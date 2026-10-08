@@ -9,6 +9,15 @@ describe("starters", () => {
     expect(sig).toEqual({ functionName: "twoSum", params: [{ name: "nums", type: "number[]" }, { name: "target", type: "number" }], returnType: "number[]" });
   });
 
+  it("maps generic JSDoc types without splitting unions inside them", () => {
+    expect(tsType("Object<string, number>")).toBe("Record<string, number>");
+    expect(pyType("Object<string, number>")).toBe("Dict[str, int]");
+    expect(tsType("Array<Array<string | number>>")).toBe("Array<Array<string | number>>");
+    expect(pyType("Array<string[]>")).toBe("List[List[str]]");
+    expect(pyType("Array<number | null>")).toBe("List[Optional[int]]");
+    expect(tsType("(number | string)[]")).toBe("(number | string)[]");
+  });
+
   it("maps JSDoc types to TypeScript", () => {
     expect(tsType("number[][]")).toBe("number[][]");
     expect(tsType("character[]")).toBe("string[]");
