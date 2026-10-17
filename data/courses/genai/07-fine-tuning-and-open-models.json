@@ -1,0 +1,477 @@
+{
+  "chapter": {
+    "id": "fine-tuning-open-models",
+    "title": "Fine-tuning and open models",
+    "summary": "When to fine-tune versus prompt or retrieve, building SFT data, LoRA and QLoRA with PEFT and TRL, preference tuning and distillation with honest evals, and running open-weight models in production."
+  },
+  "lessons": [
+    {
+      "id": "finetune-vs-prompt-rag-sft-data",
+      "title": "When to fine-tune vs prompt vs RAG, and preparing SFT data",
+      "minutes": 35,
+      "summary": "A decision ladder for choosing prompting, RAG or fine-tuning, then how to build a supervised fine-tuning dataset: formats, quality filters, deduplication, leak-free splits, synthetic data and licensing.",
+      "parts": [
+        {
+          "id": "decision",
+          "label": "Decide",
+          "diagrams": [
+            {
+              "title": "Decision ladder: prompt, RAG, then fine-tune",
+              "code": "flowchart TD\n  start[\"Model output is not good enough\"] --> evalq{\"Do you have an eval set and a baseline score?\"}\n  evalq -->|\"no\"| buildeval[\"Build the eval set first\"]\n  buildeval --> evalq\n  evalq -->|\"yes\"| missing{\"What is failing?\"}\n  missing -->|\"Missing or fresh facts\"| rag[\"RAG: retrieve and cite\"]\n  missing -->|\"Unclear instructions\"| prompt[\"Better prompt, examples, structured output\"]\n  missing -->|\"Style, format, narrow skill, latency or cost\"| ft[\"Fine-tune a small model\"]\n  prompt --> recheck{\"Eval passes?\"}\n  rag --> recheck\n  ft --> recheck\n  recheck -->|\"no\"| missing\n  recheck -->|\"yes\"| ship[\"Ship and monitor\"]"
+            }
+          ],
+          "body": "## Three levers, three different problems\n\nWhen a model's output is not good enough, there are three main levers, and they fix different things.\n\n| Lever | Changes | Best when | Weak when |\n|---|---|---|---|\n| **Prompting** (instructions, few-shot examples, structured output) | The input at inference time | Behaviour can be described or shown in a few examples | The prompt grows huge, or the skill cannot be demonstrated in context |\n| **RAG** (retrieve documents into the prompt) | The knowledge the model sees | Facts are private, large, or change often; you need citations | The problem is style, format or reasoning, not missing facts |\n| **Fine-tuning** (update weights on examples) | The model's behaviour | Consistent format or tone, a narrow task at scale, shrinking prompts, moving to a cheaper or on-premise model | You need fresh facts, or you have no good data |\n\nThe most important sentence for interviews: **fine-tuning teaches behaviour, not facts.** You can push some knowledge in with training, but it is unreliable, hard to update, impossible to cite and can leak into other answers. If the answer depends on a document that changes weekly, retrieve it.\n\n## Always climb the ladder in order\n\n1. **Write an eval set first.** Fifty to two hundred realistic inputs with reference outputs or a rubric. Without it you cannot tell whether any lever helped, and you will fool yourself.\n2. **Prompt properly.** Clear instructions, a handful of good examples, a JSON schema or constrained output. Many \"we need fine-tuning\" projects end here.\n3. **Add RAG** if failures are missing or stale knowledge.\n4. **Fine-tune** if failures remain that are about style, strict format, a narrow classification or extraction skill, or if cost and latency at volume justify a smaller model.\n\nFine-tuning and RAG combine well: a tuned small model that reliably follows your answer format, fed by retrieval for facts.\n\n## Good reasons to fine-tune\n\n- **Format and style consistency** that prompting leaves at 90 percent and you need at 99 percent (strict JSON for a downstream parser, a house voice).\n- **Distilling a big model** into a small one for one task, to cut cost and latency (lesson 3).\n- **Shorter prompts**: behaviour moved from a 2,000-token instruction block into the weights saves tokens on every call.\n- **Data cannot leave your network** or you must run offline, so a small open-weight model has to carry the task.\n- **A narrow domain skill** such as classifying support tickets into your taxonomy or extracting fields from your document layouts.\n\n## Bad reasons to fine-tune\n\n- \"The model does not know our docs.\" Use RAG.\n- \"We have not tried a good prompt yet.\" Try it.\n- \"We have 30 examples.\" Too few for most tuning; use them as few-shot examples and as an eval set.\n- \"We want to teach it new facts every month.\" You would be retraining forever.\n\n## What it costs\n\nFine-tuning costs are rarely the GPU hours. They are **data creation and review**, the **eval harness**, **re-tuning when the base model or the task changes**, and **hosting your own variant**. A hosted fine-tuning API removes the hosting but locks you to that provider and its model versions. State the full cost when you recommend it.\n\n## Risks to name\n\nCatastrophic forgetting (the tuned model gets worse at general tasks), overfitting to a narrow set, learning your labelling mistakes faithfully, and safety regressions: fine-tuning can weaken the base model's refusal behaviour, so re-run safety checks after every tune.",
+          "code": []
+        },
+        {
+          "id": "sft-data",
+          "label": "SFT data",
+          "diagrams": [
+            {
+              "title": "SFT data pipeline",
+              "code": "flowchart LR\n  raw[\"Raw sources: tickets, logs, docs, expert answers\"] --> clean[\"Clean and redact PII\"]\n  clean --> dedup[\"Exact and near-duplicate removal\"]\n  dedup --> filter[\"Quality filters and human review\"]\n  filter --> format[\"Render to chat format\"]\n  format --> split[\"Split by group: train, validation, test\"]\n  split --> train[\"Train\"]\n  split --> evalset[\"Frozen eval set\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Build, dedupe and split an SFT dataset (chat-format JSONL). Standard library only.\nimport hashlib\nimport json\nimport random\nimport re\nfrom collections import defaultdict\n\nSYSTEM = \"You are a support assistant. Answer in JSON with keys category and reply.\"\n\n\ndef normalise(text: str) -> str:\n    return re.sub(r\"\\s+\", \" \", text.strip().lower())\n\n\ndef fingerprint(text: str) -> str:\n    return hashlib.sha256(normalise(text).encode()).hexdigest()\n\n\ndef shingles(text: str, k: int = 5) -> set[str]:\n    words = normalise(text).split()\n    return {\" \".join(words[i : i + k]) for i in range(max(1, len(words) - k + 1))}\n\n\ndef jaccard(a: set[str], b: set[str]) -> float:\n    return len(a & b) / max(1, len(a | b))\n\n\ndef to_chat(row: dict) -> dict:\n    return {\n        \"messages\": [\n            {\"role\": \"system\", \"content\": SYSTEM},\n            {\"role\": \"user\", \"content\": row[\"input\"]},\n            {\"role\": \"assistant\", \"content\": json.dumps({\"category\": row[\"category\"], \"reply\": row[\"reply\"]})},\n        ],\n        \"group\": row[\"customer_id\"],  # split by customer so near-identical threads never straddle train and test\n    }\n\n\ndef dedupe(rows: list[dict], threshold: float = 0.8) -> list[dict]:\n    seen: set[str] = set()\n    kept: list[tuple[dict, set[str]]] = []\n    for row in rows:\n        fp = fingerprint(row[\"input\"])\n        if fp in seen:\n            continue\n        sh = shingles(row[\"input\"])\n        if any(jaccard(sh, other) >= threshold for _, other in kept):  # O(n^2): use MinHash/LSH beyond ~50k rows\n            continue\n        seen.add(fp)\n        kept.append((row, sh))\n    return [r for r, _ in kept]\n\n\ndef split_by_group(rows: list[dict], seed: int = 7) -> dict[str, list[dict]]:\n    groups: dict[str, list[dict]] = defaultdict(list)\n    for r in rows:\n        groups[r[\"group\"]].append(r)\n    keys = sorted(groups)\n    random.Random(seed).shuffle(keys)\n    n = len(keys)\n    cut_train, cut_val = int(n * 0.8), int(n * 0.9)\n    out = {\"train\": [], \"validation\": [], \"test\": []}\n    for i, key in enumerate(keys):\n        bucket = \"train\" if i < cut_train else \"validation\" if i < cut_val else \"test\"\n        out[bucket].extend(groups[key])\n    return out\n\n\nif __name__ == \"__main__\":\n    raw = [json.loads(line) for line in open(\"tickets.jsonl\")]\n    good = [r for r in raw if 20 <= len(r[\"reply\"]) <= 1200 and r[\"category\"]]  # cheap quality gate\n    chat = [to_chat(r) for r in dedupe(good)]\n    for name, part in split_by_group(chat).items():\n        with open(f\"sft_{name}.jsonl\", \"w\") as f:\n            for r in part:\n                f.write(json.dumps({\"messages\": r[\"messages\"]}) + \"\\n\")\n        print(name, len(part))\n"
+            }
+          ],
+          "body": "## Data quality beats data quantity\n\nFor supervised fine-tuning (SFT) the guiding result is that a small, carefully curated set often beats a large noisy one. Papers such as LIMA argued that most capability comes from pretraining and a thousand excellent examples are enough to teach style and format. Do not generalise that to every task: skill tasks such as extraction or classification still benefit from thousands of examples, but the lesson stands. **A hundred wrong examples hurt more than a hundred missing ones**, because the model learns your mistakes faithfully.\n\n## Formats\n\n- **Chat/messages format** (the default today): a list of messages with roles `system`, `user`, `assistant`, optionally tool calls. Libraries such as TRL apply the model's **chat template** to render this into the exact special-token layout the base model expects. Always use the tokenizer's own template; hand-built strings with the wrong special tokens are a classic silent bug.\n- **Prompt/completion pairs**: simpler, good for single-turn tasks. Loss can be computed on the completion only.\n- **Preference pairs** (`prompt`, `chosen`, `rejected`): needed for DPO, covered in lesson 3.\n\nTrain the loss on **assistant tokens only** where your trainer supports it (an assistant-only-loss option in TRL). Otherwise the model also spends capacity learning to imitate the user and system text.\n\n## Quality checklist\n\n1. **Correct**: reviewed by someone who knows the answer. Sample 100 rows and read them; this is the single highest-value hour.\n2. **Consistent**: same input type, same output format, same labelling rules. Contradictory labels teach nothing.\n3. **Representative**: matches the real input distribution, including the messy, short, multilingual and adversarial cases you will see in production.\n4. **Balanced where it matters**: if 90 percent of tickets are \"billing\", the model will over-predict it; rebalance or measure per-class.\n5. **Right length and style**: the tuned model copies the length and tone of your targets.\n6. **Includes refusals and edge cases** you want preserved, such as \"I do not know\" or out-of-scope handling.\n\n## Deduplication\n\nDuplicates inflate apparent size, over-weight some examples and, worst, leak into your test set. Remove **exact duplicates** by hashing normalised text, then **near duplicates** with shingle Jaccard similarity or MinHash with locality-sensitive hashing for large sets. Also dedupe **against the eval set and against public benchmarks** so a good score is not memorisation.\n\n## Splits without leakage\n\nRandomly splitting rows is wrong when rows are related. Split by **group** (customer, conversation, document, author, time) so that near-identical items stay on one side. For time-dependent tasks, **hold out the latest period** as the test set, because that is how the model will actually be used. Freeze the test set before any experimenting and touch it rarely; use the validation set for tuning decisions.\n\n## Synthetic data\n\nA strong model can generate training data: paraphrases, new inputs for a given label, or answers to your real questions that a smaller model then learns (that is distillation). It works well, with caveats:\n\n- **Seed it with real data** and diversify prompts (personas, difficulty, length), or you get a narrow, repetitive set.\n- **Filter hard**: validate JSON against a schema, run programmatic checks, have a second model or a human grade a sample, drop low scorers.\n- **Beware model collapse** and inherited errors: the student cannot be better than the data. Never use synthetic examples in your eval set; the eval must come from real or human-checked data.\n- **Check the terms of service** of the generating model (next section).\n\n## Licensing and privacy\n\n- **Source rights**: confirm you may train on the data. Scraped web text, customer content and third-party datasets each have different terms; for customer data check contracts and consent.\n- **Provider terms**: some API terms restrict using outputs to train competing models. Read the terms of whichever model generated your synthetic data.\n- **Dataset licences** (for example CC-BY, CC-BY-SA, non-commercial) travel with the data. Keep a manifest listing source, licence and date for every file.\n- **Redact PII** and secrets before they enter the dataset: trained models can regurgitate rare strings. Remove emails, phone numbers, keys and internal identifiers.\n- **Keep the dataset versioned** so a model can be traced back to exactly the data that produced it."
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"Should we fine-tune a model for our product?\"**\nAnswer with the ladder. Ask what is failing and whether there is an eval set. Say: build the eval first, prompt well, add RAG for missing knowledge, and fine-tune only for behaviour problems (strict format, tone, a narrow task at volume, cost or privacy reasons). Mention full cost: data, evals, hosting, and re-tuning when the base model changes.\n\n**2. \"Our model does not know our product docs. Fine-tune it?\"**\nNo, use RAG. Fine-tuning does not reliably store facts, cannot cite, and goes stale. Fine-tuning can still help the model use retrieved context in your answer format.\n\n**3. \"How much data do I need?\"**\nIt depends on the task: tens to hundreds of high-quality examples can shift style and format, classification or extraction usually wants hundreds to thousands, and broad new capabilities need far more. Say you would train on increasing slices and plot eval score against data size to see whether more data still helps.\n\n**4. \"How do you build the dataset?\"**\nCollect real inputs, get expert or reviewed outputs, redact PII, normalise to chat format, dedupe exact and near duplicates, filter by quality, and split by group or time so there is no leakage. Add synthetic data only with seeding, validation and a human-checked sample, and keep eval data real.\n\n**5. \"What can go wrong?\"**\nLabel noise, leakage between train and test, a narrow distribution, forgetting of general skills, safety regression, and licensing or privacy problems. Mitigate with sampling review, grouped splits, a general-capability regression set, safety re-tests and a data manifest.\n\n## Pitfalls to avoid in answers\n\n- Saying fine-tuning \"adds knowledge\" without caveats.\n- Proposing fine-tuning before an eval set exists.\n- Splitting randomly when examples are related.\n- Using synthetic data in the test set.\n\n## A one-line framing\n\n\"Prompt for instructions, retrieve for knowledge, fine-tune for behaviour, and prove each with the same eval set.\"",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Fine-tuning teaches behaviour (format, tone, narrow skills); RAG supplies knowledge that is fresh, private or must be cited.",
+        "Build an eval set first, then climb the ladder: prompt, then RAG, then fine-tune.",
+        "Good reasons to tune: strict format, shorter prompts, cheaper or private small model, narrow task at volume.",
+        "Data quality beats quantity: review a sample by hand, keep labels consistent, represent real inputs.",
+        "Render data with the tokenizer's chat template and compute loss on assistant tokens only where possible.",
+        "Dedupe exact and near duplicates, and split by group or time so train and test never leak.",
+        "Synthetic data must be seeded, filtered and never used for the eval set; check provider terms and dataset licences.",
+        "Redact PII, version the dataset and re-run safety checks after tuning."
+      ],
+      "practiceRef": "ai-llm-engineering:5",
+      "check": [
+        {
+          "q": "Your assistant gives wrong answers about a policy document that is updated every week. What is the best first fix?",
+          "options": [
+            "Fine-tune monthly on the new policy text",
+            "Retrieve the current document into the prompt (RAG) with citations",
+            "Increase the temperature",
+            "Switch to a larger base model"
+          ],
+          "answer": 1,
+          "why": "The problem is missing, fast-changing knowledge. Retrieval keeps it current and citable; fine-tuning stores facts unreliably and goes stale."
+        },
+        {
+          "q": "A support dataset contains many near-identical messages from the same customers. Which split is safest?",
+          "options": [
+            "Random split by row",
+            "Split by customer (group) and keep the newest period as test",
+            "Put all duplicates in the test set",
+            "Use the training set as the test set"
+          ],
+          "answer": 1,
+          "why": "Related rows must stay on one side of the split, otherwise the test score measures memorisation. Time-based holdout mirrors real use."
+        },
+        {
+          "q": "Which is the strongest reason to fine-tune rather than only prompt?",
+          "options": [
+            "The model lacks yesterday's news",
+            "You need 99 percent strict JSON format on a narrow task at high volume with a cheaper model",
+            "You have 20 labelled examples",
+            "You want citations to source documents"
+          ],
+          "answer": 1,
+          "why": "Consistent behaviour on a narrow task, with lower cost and shorter prompts, is what tuning is good at. Fresh facts and citations point to RAG; 20 examples are better used as few-shot examples and an eval set."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Hugging Face LLM course",
+          "url": "https://huggingface.co/learn/llm-course"
+        },
+        {
+          "title": "Hugging Face TRL: SFT trainer",
+          "url": "https://huggingface.co/docs/trl/sft_trainer"
+        },
+        {
+          "title": "LIMA: Less Is More for Alignment (paper)",
+          "url": "https://arxiv.org/abs/2305.11206"
+        },
+        {
+          "title": "Hugging Face: chat templates",
+          "url": "https://huggingface.co/docs/transformers/chat_templating"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    },
+    {
+      "id": "lora-qlora-peft-trl",
+      "title": "LoRA and QLoRA in practice with PEFT and TRL",
+      "minutes": 45,
+      "summary": "How LoRA and QLoRA work, the memory arithmetic behind them, and a runnable Hugging Face PEFT plus TRL training script with sensible hyperparameters, then merging and shipping adapters.",
+      "parts": [
+        {
+          "id": "concepts",
+          "label": "Concepts",
+          "diagrams": [
+            {
+              "title": "LoRA: frozen weight plus low-rank update",
+              "code": "flowchart LR\n  x[\"Input x\"] --> w[\"Frozen weight W (d x k)\"]\n  x --> a[\"Trainable A (r x k)\"]\n  a --> b[\"Trainable B (d x r)\"]\n  w --> add((\"+\"))\n  b -->|\"scaled by alpha / r\"| add\n  add --> y[\"Output y\"]"
+            }
+          ],
+          "body": "## Why parameter-efficient fine-tuning\n\nFull fine-tuning updates every weight and needs gradients and optimizer state for all of them. For a 7 billion parameter model in 16-bit precision, the weights alone are about 14 GB, and AdamW adds two more states per parameter plus gradients, which pushes training to many tens of GB. **Parameter-efficient fine-tuning (PEFT)** freezes the base model and trains a tiny number of added parameters.\n\n## LoRA in one paragraph\n\n**LoRA** (low-rank adaptation, Hu et al.) replaces the update to a weight matrix `W` (shape d by k) with a low-rank product: `W' = W + (alpha / r) * B @ A`, where `A` is r by k, `B` is d by r and the rank `r` is small (8, 16, 64). Only `A` and `B` are trained. `B` starts at zero so training begins exactly at the base model. For a 4096 by 4096 layer, full update is about 16.8 million numbers, while rank 16 is 2 x 4096 x 16, about 131 thousand: under 1 percent. The trained adapter is a small file (tens to a few hundred MB), and you can keep one base model with many adapters, one per task or customer.\n\n## Hyperparameters that matter\n\n- **Rank `r`**: capacity of the update. 8 to 32 covers most style and format tasks; raise it for harder skills, watching for overfitting.\n- **`lora_alpha`**: scaling. The effective scale is `alpha / r`. A common starting point is `alpha = 2 * r` or `alpha = r`; keep it fixed while you tune the learning rate.\n- **`target_modules`**: which linear layers get adapters. Attention projections only (`q_proj`, `v_proj`) is the cheapest; adapting **all linear layers** (attention plus MLP `gate_proj`, `up_proj`, `down_proj`) usually gives better quality for a modest memory increase. PEFT also accepts `\"all-linear\"`.\n- **`lora_dropout`**: 0.0 to 0.1 regularisation.\n- **Learning rate**: LoRA tolerates and needs a higher rate than full tuning, typically 1e-4 to 2e-4 with a cosine or linear schedule and a short warmup.\n- **Epochs**: 1 to 3. More epochs on a small set overfit quickly; watch validation loss and your task eval, not just training loss.\n\n## QLoRA: LoRA on a quantised base\n\n**QLoRA** (Dettmers et al.) loads the frozen base model in **4-bit NF4** quantisation (a data type designed for normally distributed weights), uses **double quantisation** of the scale constants, and keeps LoRA adapters and computation in higher precision (bfloat16). Gradients flow through the dequantised weights into the adapters. The result: a 7B model's weights drop from about 14 GB to roughly 4 to 5 GB, so fine-tuning fits a single consumer or free-tier GPU. Quality is close to 16-bit LoRA in the reported experiments, at the cost of slower steps from dequantisation. It uses the `bitsandbytes` library.\n\n## Memory arithmetic you should be able to do\n\nFor a model with N parameters:\n\n- Weights in 16-bit: `2 * N` bytes. 7B gives about 14 GB. In 4-bit: about `0.5 * N`, so about 3.5 GB plus quantisation overhead.\n- LoRA trainable parameters: tiny (often 0.1 to 1 percent of N). Their gradients and Adam states (about 12 to 16 bytes per trainable parameter in fp32 for weights, grads and two states) are small, tens to hundreds of MB.\n- **Activations** often dominate once weights are quantised. They grow with batch size times sequence length. Reduce with a smaller micro-batch plus **gradient accumulation**, shorter sequences, **gradient checkpointing** (recompute instead of store, roughly 20 to 30 percent slower) and FlashAttention.\n- The **KV cache** is an inference concern, not a training one.\n\nSo rough QLoRA budget for a 7B model: about 4 to 5 GB weights, plus adapters and optimizer, plus activations that you tune to fit (often 6 to 16 GB total depending on sequence length and batch). Treat these as estimates and measure with `torch.cuda.max_memory_allocated()`.\n\n## Other PEFT methods in one line each\n\nPrompt tuning and prefix tuning learn virtual tokens; IA3 learns scaling vectors; DoRA decomposes weights into magnitude and direction; adapters insert small bottleneck layers. LoRA and QLoRA dominate in practice because they add **no inference latency once merged** and are well supported.",
+          "code": []
+        },
+        {
+          "id": "training-code",
+          "label": "Training code",
+          "diagrams": [
+            {
+              "title": "Train, evaluate, merge, serve",
+              "code": "flowchart LR\n  data[\"Chat JSONL\"] --> trainer[\"TRL SFTTrainer + PEFT LoRA on 4-bit base\"]\n  trainer --> adapter[\"Adapter weights\"]\n  adapter --> evalrun[\"Eval vs base on frozen eval set\"]\n  evalrun -->|\"better\"| merge[\"merge_and_unload to a full model\"]\n  merge --> serve[\"Serve: vLLM, GGUF export or hosted\"]\n  evalrun -->|\"not better\"| iterate[\"Fix data or hyperparameters\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# QLoRA supervised fine-tuning with Hugging Face transformers + PEFT + TRL + bitsandbytes.\n# pip install transformers peft trl bitsandbytes datasets accelerate   (needs a CUDA GPU)\n# TRL and PEFT APIs evolve: check the docs for your installed versions.\nimport torch\nfrom datasets import load_dataset\nfrom peft import LoraConfig\nfrom transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig\nfrom trl import SFTConfig, SFTTrainer\n\nBASE = \"Qwen/Qwen2.5-7B-Instruct\"  # any open-weight chat model you are licensed to use\n\nbnb = BitsAndBytesConfig(\n    load_in_4bit=True,\n    bnb_4bit_quant_type=\"nf4\",\n    bnb_4bit_use_double_quant=True,\n    bnb_4bit_compute_dtype=torch.bfloat16,\n)\n\ntokenizer = AutoTokenizer.from_pretrained(BASE)\nif tokenizer.pad_token is None:\n    tokenizer.pad_token = tokenizer.eos_token\n\nmodel = AutoModelForCausalLM.from_pretrained(\n    BASE,\n    quantization_config=bnb,\n    device_map=\"auto\",\n    torch_dtype=torch.bfloat16,\n)\n\npeft_config = LoraConfig(\n    r=16,\n    lora_alpha=32,\n    lora_dropout=0.05,\n    target_modules=\"all-linear\",\n    bias=\"none\",\n    task_type=\"CAUSAL_LM\",\n)\n\ntrain = load_dataset(\"json\", data_files=\"sft_train.jsonl\", split=\"train\")\nval = load_dataset(\"json\", data_files=\"sft_validation.jsonl\", split=\"train\")\n\nargs = SFTConfig(\n    output_dir=\"out/qlora-support\",\n    num_train_epochs=2,\n    per_device_train_batch_size=2,\n    gradient_accumulation_steps=8,   # effective batch 16\n    learning_rate=2e-4,\n    lr_scheduler_type=\"cosine\",\n    warmup_ratio=0.03,\n    weight_decay=0.0,\n    bf16=True,\n    gradient_checkpointing=True,\n    max_length=2048,                 # named max_seq_length in older TRL releases\n    logging_steps=10,\n    eval_strategy=\"steps\",\n    eval_steps=50,\n    save_steps=50,\n    save_total_limit=2,\n    report_to=\"none\",\n    seed=42,\n)\n\ntrainer = SFTTrainer(\n    model=model,\n    args=args,\n    train_dataset=train,\n    eval_dataset=val,\n    processing_class=tokenizer,   # called tokenizer= in older TRL releases\n    peft_config=peft_config,\n)\n\ntrainer.train()\ntrainer.save_model(\"out/qlora-support/adapter\")  # saves only the small adapter\nmodel.print_trainable_parameters() if hasattr(model, \"print_trainable_parameters\") else None\n"
+            },
+            {
+              "lang": "python",
+              "source": "# Merge a trained LoRA adapter into the base weights for serving, then sanity-check it.\n# Merge into a 16-bit copy of the base model, not into the 4-bit one.\nimport torch\nfrom peft import PeftModel\nfrom transformers import AutoModelForCausalLM, AutoTokenizer\n\nBASE = \"Qwen/Qwen2.5-7B-Instruct\"\nADAPTER = \"out/qlora-support/adapter\"\n\nbase = AutoModelForCausalLM.from_pretrained(BASE, torch_dtype=torch.bfloat16, device_map=\"cpu\")\nmodel = PeftModel.from_pretrained(base, ADAPTER)\nmerged = model.merge_and_unload()          # folds (alpha/r) * B @ A into W, removes the adapter layers\nmerged.save_pretrained(\"out/merged\", safe_serialization=True)\nAutoTokenizer.from_pretrained(BASE).save_pretrained(\"out/merged\")\n\ntok = AutoTokenizer.from_pretrained(\"out/merged\")\nprompt = tok.apply_chat_template(\n    [{\"role\": \"user\", \"content\": \"My invoice was charged twice.\"}],\n    tokenize=False,\n    add_generation_prompt=True,\n)\nids = tok(prompt, return_tensors=\"pt\")\nout = merged.generate(**ids, max_new_tokens=120, do_sample=False)\nprint(tok.decode(out[0][ids[\"input_ids\"].shape[1]:], skip_special_tokens=True))\n"
+            }
+          ],
+          "body": "## Reading the training script\n\nThe first script is the whole recipe. Walk through it like this in an interview.\n\n1. **`BitsAndBytesConfig`** loads the frozen base in 4-bit NF4 with double quantisation and bfloat16 compute. That is the \"Q\" in QLoRA.\n2. **`LoraConfig`** defines the adapter: rank 16, alpha 32 (scale 2), light dropout, adapters on every linear layer.\n3. **`SFTConfig`** holds training arguments. The key trade is **micro-batch 2 times accumulation 8 gives an effective batch of 16** without needing activation memory for 16 sequences at once. Gradient checkpointing trades compute for memory. `max_length` caps sequence length; padding and truncation waste are controlled here.\n4. **`SFTTrainer`** applies the tokenizer's chat template to the `messages` column, adds the adapters through `peft_config`, and trains. Evaluation runs on the validation set every 50 steps.\n5. **`save_model`** writes only the adapter, a small file you can version and ship.\n\n## What to watch while training\n\n- **Training loss falling and validation loss flat or rising** means overfitting: fewer epochs, lower rank, more or more varied data, higher dropout.\n- **Loss spikes** often come from a learning rate that is too high, bad data rows, or a mismatched chat template.\n- **Outputs that never stop** usually mean the end-of-turn token was not in the training targets: check template and padding token handling.\n- **Quality dips on general tasks** signal forgetting; lower the rate, rank or epochs, mix in some general data, and keep a regression set.\n- Loss is a proxy. The real measure is your task eval, run on generated outputs, compared with the base model (lesson 3).\n\n## Merging adapters\n\nAt inference you have two choices.\n\n- **Keep the adapter separate** and load it on top of the base. This lets one base model serve many tasks or tenants with **multi-LoRA serving**; vLLM and other servers can hot-swap adapters per request. It costs a small amount of extra compute per token.\n- **Merge** with `merge_and_unload()`, which adds `(alpha / r) * B @ A` into `W`, giving a standard model with **zero extra latency** that any runtime can load. Merge into a 16-bit copy of the base model. Merging into a 4-bit quantised base introduces rounding error, so the usual flow is: merge in 16-bit, evaluate, then quantise the merged model for deployment (lesson 4).\n\nYou can also combine adapters (weighted merges); results vary, so evaluate them.\n\n## Practical tips\n\n- **Start small**: a quick run on a few hundred examples to verify the pipeline end to end before a long run.\n- **Set seeds and save the config** next to the adapter, with the dataset version and base model revision, so the run is reproducible.\n- **Pin library versions.** TRL, PEFT and transformers change argument names between releases (for example `tokenizer` became `processing_class`).\n- **Use the same chat template at train and inference time.** A mismatch is the most common reason a tuned model underperforms in production.\n- **Track the gap**: score base, base with a good prompt, and tuned on the same frozen eval set. If the tuned model does not beat the prompted baseline, you have not earned the added complexity.\n- **Hosted alternatives**: if you do not want to manage GPUs, vendor fine-tuning services exist, trading control and portability for convenience."
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"Explain LoRA.\"**\nFreeze the pretrained weight `W`. Learn a low-rank update `B @ A` with rank `r` much smaller than the layer dimensions, scaled by `alpha / r`. `B` starts at zero so you begin from the base model. You train under 1 percent of the parameters, keep tiny adapters, and can merge them into `W` for no inference overhead.\n\n**2. \"What is QLoRA and why does it matter?\"**\nLoRA on top of a 4-bit NF4 quantised, frozen base with double quantisation and paged optimizers. It cuts memory enough that a 7B model fine-tunes on one 16 to 24 GB GPU, with quality close to 16-bit LoRA in the paper's experiments. The cost is slower steps and some quantisation error.\n\n**3. \"Estimate the memory to fine-tune a 7B model.\"**\nFull tune in mixed precision with Adam: weights, gradients and optimizer states, well beyond a single GPU (on the order of 100 GB or more). LoRA on 16-bit weights: about 14 GB of weights plus small adapter state plus activations. QLoRA: about 4 to 5 GB of weights plus adapters plus activations. Say that activations scale with batch and sequence length and you reduce them with accumulation, checkpointing and shorter sequences. Give ranges and say you would measure.\n\n**4. \"How do you choose rank and target modules?\"**\nStart at rank 16 on all linear layers, learning rate 1e-4 to 2e-4. Raise rank only if the eval shows underfitting; lower it or add data if validation loss diverges. Compare against a smaller target set to see whether the extra memory is justified.\n\n**5. \"Merge or serve adapters separately?\"**\nMerge for simplicity and lowest latency with one task. Keep adapters separate for multi-tenant or multi-task serving from one base model. Always evaluate the merged and quantised artefact, not just the adapter.\n\n**6. \"Your tuned model is worse in production than in training. Why?\"**\nChat template or system prompt mismatch, eval set leakage making offline scores optimistic, distribution shift between training data and live traffic, sampling settings that differ, or quantisation after merging. Check each in that order.\n\n## Pitfalls to avoid in answers\n\n- Claiming LoRA is \"free\": it saves memory, not data or eval effort.\n- Forgetting that merging into a quantised base loses precision.\n- Quoting precise speed or quality numbers you cannot source; give ranges and say you would measure.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "LoRA freezes W and trains a low-rank update (alpha/r) * B @ A; B starts at zero, so training begins at the base model.",
+        "Rank 16 on all linear layers with a learning rate around 1e-4 to 2e-4 is a sensible starting point; 1 to 3 epochs.",
+        "QLoRA = LoRA on a frozen 4-bit NF4 base with double quantisation and bf16 compute; a 7B model's weights fit in roughly 4 to 5 GB.",
+        "Activations often dominate memory after quantisation: use micro-batches with gradient accumulation, gradient checkpointing and shorter sequences.",
+        "Use TRL's SFTTrainer with the tokenizer's chat template; the same template must be used at inference.",
+        "merge_and_unload folds the adapter into W for zero extra latency; merge in 16-bit, evaluate, then quantise.",
+        "Keep adapters separate for multi-tenant serving from one base model.",
+        "Judge success by task eval versus the base and a well-prompted base, not training loss."
+      ],
+      "practiceRef": "ai-llm-engineering:5",
+      "check": [
+        {
+          "q": "In LoRA, why is the matrix B initialised to zero?",
+          "options": [
+            "To make training faster",
+            "So the adapted model equals the base model at step zero",
+            "To avoid needing a learning rate",
+            "To keep the adapter file small"
+          ],
+          "answer": 1,
+          "why": "With B = 0 the update B @ A is zero, so training starts exactly from the pretrained behaviour and drifts only as the adapters learn."
+        },
+        {
+          "q": "Which change best reduces activation memory during QLoRA training without changing the effective batch size?",
+          "options": [
+            "Raise the LoRA rank",
+            "Lower micro-batch size and raise gradient accumulation steps",
+            "Use a higher learning rate",
+            "Merge the adapter first"
+          ],
+          "answer": 1,
+          "why": "Smaller micro-batches store fewer activations at a time; accumulation keeps the effective batch the same. Gradient checkpointing also helps. Rank and learning rate do not address activations."
+        },
+        {
+          "q": "What is the recommended order for preparing a model for deployment after QLoRA training?",
+          "options": [
+            "Merge into the 4-bit base, then evaluate",
+            "Merge into a 16-bit copy, evaluate, then quantise for serving",
+            "Quantise the adapter alone, then merge",
+            "Skip evaluation because training loss was low"
+          ],
+          "answer": 1,
+          "why": "Merging into a 4-bit base adds rounding error. Merge at 16-bit, evaluate that artefact, then quantise and re-check quality."
+        }
+      ],
+      "sources": [
+        {
+          "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+          "url": "https://arxiv.org/abs/2106.09685"
+        },
+        {
+          "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+          "url": "https://arxiv.org/abs/2305.14314"
+        },
+        {
+          "title": "Hugging Face PEFT documentation",
+          "url": "https://huggingface.co/docs/peft/index"
+        },
+        {
+          "title": "Hugging Face TRL documentation",
+          "url": "https://huggingface.co/docs/trl/index"
+        },
+        {
+          "title": "Making LLMs even more accessible with bitsandbytes, 4-bit quantization and QLoRA",
+          "url": "https://huggingface.co/blog/4bit-transformers-bitsandbytes"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    },
+    {
+      "id": "preference-tuning-distillation-eval",
+      "title": "Preference tuning, distillation and evaluating a tuned model",
+      "minutes": 40,
+      "summary": "DPO and ORPO versus RLHF, reward models and their limits, distilling a large model into a small one, and a rigorous way to compare a tuned model with its base on a frozen eval set.",
+      "parts": [
+        {
+          "id": "preference",
+          "label": "Preference tuning",
+          "diagrams": [
+            {
+              "title": "Post-training stack: SFT, then preferences",
+              "code": "flowchart LR\n  base[\"Pretrained base\"] --> sft[\"SFT on demonstrations\"]\n  sft --> pref{\"Preference signal\"}\n  pref -->|\"pairs: chosen vs rejected\"| dpo[\"DPO / ORPO (no reward model)\"]\n  pref -->|\"reward model + sampling\"| rlhf[\"RLHF with PPO-style RL\"]\n  pref -->|\"verifiable checker\"| rlvr[\"RL with verifiable rewards\"]\n  dpo --> tuned[\"Tuned model\"]\n  rlhf --> tuned\n  rlvr --> tuned"
+            }
+          ],
+          "body": "## Why preferences after SFT\n\nSFT teaches the model to imitate good answers. But many qualities are easier to **compare** than to **write**: which of two answers is more helpful, safer, shorter, better formatted. Preference tuning uses pairs of answers, a **chosen** one and a **rejected** one for the same prompt, to move the model toward what people (or a trusted judge) prefer.\n\n## RLHF, briefly\n\nThe classic pipeline (InstructGPT, Ouyang et al.): 1) SFT on demonstrations; 2) train a **reward model** on human rankings so it predicts which answer people prefer; 3) optimise the policy with reinforcement learning (PPO) to maximise the reward, with a **KL penalty** to a reference model so it does not drift into gibberish that fools the reward model.\n\nIt works, but it is heavy: several models in memory (policy, reference, reward, value), unstable training, many hyperparameters, and expensive sampling. That is why most small teams do not run PPO-style RLHF.\n\n## DPO\n\n**Direct Preference Optimization** (Rafailov et al.) shows the RLHF objective can be optimised with a simple classification-like loss directly on preference pairs, **no separate reward model and no RL loop**. For each pair it increases the log-probability of the chosen answer relative to the rejected one, measured against a frozen **reference model** (usually the SFT model), controlled by a temperature-like parameter **beta** (commonly 0.1; higher keeps the model closer to the reference).\n\nPractical notes:\n\n- Start from a good **SFT model**; DPO refines, it does not rescue a weak base.\n- Typical learning rates are far smaller than SFT (around 5e-6 to 5e-7 for full tuning; LoRA allows higher).\n- With LoRA, the reference model is the base with the adapter disabled, so no second copy is needed.\n- Quality of pairs matters more than count. Noisy preference labels and length bias (the model learns that longer wins) are the common failure modes; watch average response length.\n- **Data sources**: human comparisons, \"model A vs model B\" outputs ranked by a judge, or **self-generated candidates** from your SFT model scored by a rubric, a stronger judge or a programmatic check.\n\n## ORPO and relatives\n\n**ORPO** (odds ratio preference optimisation) folds preference learning into the SFT step with an extra odds-ratio penalty on the rejected answers, so it needs **no reference model and no separate stage**, saving memory and time. **KTO** works from single thumbs-up or thumbs-down labels instead of pairs, which fits logged product feedback. **IPO** and **SimPO** are other variants. They differ in details; the interview-level point is the same: *direct, simpler objectives replace the reward model plus RL loop, with good results on many tasks but with less proven behaviour at the largest scale.*\n\n## Reward models and where they break\n\nA reward model is a learned scorer. Limits to name:\n\n- **Reward hacking / overoptimisation**: the policy finds outputs the reward model likes that humans do not (verbosity, flattery, formatting tricks). The KL penalty and early stopping limit it.\n- **Proxy gap**: the reward model reflects the labellers' preferences and its own errors, not true quality.\n- **Distribution shift**: it is reliable near its training data and noisy elsewhere.\n- **Cost and drift**: labelling is expensive and preferences vary by annotator.\n\nFor tasks with an **objective check** (code passes tests, a maths answer matches, JSON validates), **reinforcement learning with verifiable rewards** avoids a learned reward model and underlies many recent reasoning-model recipes. It requires a reliable checker and is out of scope for most product teams, but you should know it exists.\n\n## When preference tuning is worth it\n\nUse it when SFT leaves **style or quality gaps that are easier to rank than to demonstrate**: reducing verbosity, preferring grounded answers over guesses, calibrated refusals, consistent tone. Do not use it to add knowledge. Re-run safety evals: preference tuning can shift refusal behaviour in either direction.",
+          "code": []
+        },
+        {
+          "id": "distill-eval",
+          "label": "Distillation and evals",
+          "diagrams": [
+            {
+              "title": "Distill a teacher into a student, gated by evals",
+              "code": "flowchart TD\n  prompts[\"Real prompts from your product\"] --> teacher[\"Teacher: large model labels outputs\"]\n  teacher --> filter[\"Filter: schema, checks, judge, human sample\"]\n  filter --> student[\"Student: small open model, SFT with LoRA\"]\n  student --> compare[\"Compare on frozen eval: teacher, base student, tuned student\"]\n  compare --> gate{\"Meets quality, cost and latency targets?\"}\n  gate -->|\"yes\"| ship[\"Deploy with monitoring and rollback\"]\n  gate -->|\"no\"| more[\"More or better data, or a larger student\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Compare a tuned model with its base on a frozen eval set, with a paired bootstrap confidence interval.\n# Replace `generate` and `grade` with your model call and your grader (exact match, schema check, or a calibrated judge).\nimport json\nimport random\nimport statistics\nfrom typing import Callable\n\nCase = dict  # {\"id\": str, \"input\": str, \"expected\": str}\n\n\ndef run_eval(cases: list[Case], generate: Callable[[str], str], grade: Callable[[Case, str], float]) -> list[float]:\n    \"\"\"Return one score in [0, 1] per case, in order.\"\"\"\n    return [grade(c, generate(c[\"input\"])) for c in cases]\n\n\ndef exact_json_grade(case: Case, output: str) -> float:\n    try:\n        got, want = json.loads(output), json.loads(case[\"expected\"])\n    except json.JSONDecodeError:\n        return 0.0\n    return 1.0 if got.get(\"category\") == want.get(\"category\") else 0.0\n\n\ndef paired_bootstrap(base: list[float], tuned: list[float], n: int = 5000, seed: int = 1) -> tuple[float, float, float]:\n    \"\"\"Mean difference (tuned - base) and a 95% interval, resampling cases (paired).\"\"\"\n    assert len(base) == len(tuned)\n    rng = random.Random(seed)\n    diffs = [t - b for b, t in zip(base, tuned)]\n    means = []\n    for _ in range(n):\n        sample = [diffs[rng.randrange(len(diffs))] for _ in diffs]\n        means.append(statistics.fmean(sample))\n    means.sort()\n    return statistics.fmean(diffs), means[int(0.025 * n)], means[int(0.975 * n)]\n\n\ndef report(cases: list[Case], base_gen: Callable[[str], str], tuned_gen: Callable[[str], str]) -> None:\n    base = run_eval(cases, base_gen, exact_json_grade)\n    tuned = run_eval(cases, tuned_gen, exact_json_grade)\n    delta, lo, hi = paired_bootstrap(base, tuned)\n    print(f\"base={statistics.fmean(base):.3f} tuned={statistics.fmean(tuned):.3f} delta={delta:+.3f} 95% CI [{lo:+.3f}, {hi:+.3f}]\")\n    if lo > 0:\n        print(\"Tuned model is better with confidence on this set.\")\n    else:\n        print(\"No reliable difference: do not ship on this evidence alone.\")\n    losers = [c[\"id\"] for c, b, t in zip(cases, base, tuned) if t < b]\n    print(\"Regressions to inspect:\", losers[:20])\n"
+            },
+            {
+              "lang": "python",
+              "source": "# Generate distillation data: a teacher labels real prompts; keep only outputs that pass checks.\nimport json\nfrom typing import Callable\n\n\ndef build_distillation_set(\n    prompts: list[str],\n    teacher: Callable[[str], str],\n    validate: Callable[[str, str], bool],\n    out_path: str,\n    samples_per_prompt: int = 1,\n) -> int:\n    kept = 0\n    with open(out_path, \"w\") as f:\n        for p in prompts:\n            for _ in range(samples_per_prompt):\n                answer = teacher(p)\n                if not validate(p, answer):   # schema check, programmatic test, or judge score above a threshold\n                    continue\n                row = {\"messages\": [{\"role\": \"user\", \"content\": p}, {\"role\": \"assistant\", \"content\": answer}]}\n                f.write(json.dumps(row) + \"\\n\")\n                kept += 1\n    return kept\n"
+            }
+          ],
+          "body": "## Distillation: big model to small model\n\n**Knowledge distillation** (Hinton et al.) trains a small **student** to mimic a large **teacher**. For LLMs the common practical form is **sequence-level distillation**: the teacher (often a hosted frontier model) generates outputs for many realistic prompts, you filter them, and you SFT a small open model on the result. The goal is not a general assistant but **one task at lower cost and latency**, for example extraction or ticket routing.\n\nSteps:\n\n1. Collect real prompts from your product (or generate diverse realistic ones), excluding your eval set.\n2. Have the teacher produce answers; optionally include its reasoning if the student will need to reason.\n3. **Filter**: schema validation, programmatic checks, a judge model and a human sample. The student inherits the teacher's mistakes, so filtering is the leverage.\n4. SFT the student (LoRA is usually enough, lesson 2).\n5. Evaluate student against teacher on the frozen eval set.\n\nA stricter form, **logit distillation**, trains on the teacher's probability distribution and needs access to its logits, which means an open-weight teacher you can run.\n\n**Check licences and terms.** Some hosted-model terms forbid using outputs to train competing models; some open-weight licences add conditions on derived models. Verify before building a business on it.\n\n## Evaluating a tuned model against the base\n\nAn eval you cannot trust is worse than none. A solid protocol:\n\n- **Frozen eval set** of real or human-checked inputs, never used for training, deduplicated against the training data. 200 or more cases is a sensible start; more if you need to detect small differences.\n- **Compare three arms**: the untuned base, the base with your best prompt (and RAG if relevant), and the tuned model. The tuned model must beat the **prompted** baseline to justify its cost, not only the bare base.\n- **Use the right grader**: exact match, schema validation and unit-test style checks first; a rubric-based **LLM judge** only after calibrating it against human labels, with randomised answer order to reduce position bias and care about self-preference bias.\n- **Quantify uncertainty**: a paired bootstrap, as in the code above, shows whether a 2-point gain is noise.\n- **Slice the results** by category, input length and difficulty; an average can hide a regression on an important slice.\n- **Add regression suites**: general capability (so you notice forgetting), safety and refusal behaviour, and format robustness under odd inputs.\n- **Measure what ships**: latency (time to first token, tokens per second), cost per 1,000 requests and failure rate, on the deployed, quantised artefact.\n- **Online check**: shadow traffic or a small canary, with user-visible metrics and a rollback path.\n\n## Reading the result\n\nIf the tuned student matches the teacher within your tolerance on the eval, at a fraction of the cost, you have a win. If it matches only on easy slices, route: send hard cases to the large model and easy ones to the student, which is often the best economics."
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"DPO versus RLHF?\"**\nRLHF trains a reward model on preferences and then optimises the policy with RL (PPO) under a KL penalty to a reference. DPO derives a direct loss on chosen versus rejected pairs relative to a frozen reference model, so there is no reward model and no RL loop. It is simpler, cheaper and more stable, and works well for many tasks. RLHF with an explicit reward model remains useful when you need to reuse the reward signal, sample online or optimise against verifiable rewards.\n\n**2. \"What is the role of beta in DPO?\"**\nIt controls how strongly the model is held near the reference. Lower beta lets it move further from the reference and risks degeneration or length exploitation; higher beta keeps it conservative.\n\n**3. \"What are the limits of reward models?\"**\nOveroptimisation (reward hacking), proxy mismatch with true quality, poor generalisation outside their training distribution, and annotator disagreement. Mitigations: KL control, early stopping, ensembles, regular human audits, and verifiable rewards where possible.\n\n**4. \"How would you cut our GPT-class bill for a classification feature?\"**\nDistil: collect real prompts, label with the large model, filter with checks and a human sample, SFT a small open model with LoRA, evaluate against the teacher on a frozen set with confidence intervals, and route hard cases to the teacher. Report cost per 1,000 requests, latency and quality side by side.\n\n**5. \"How do you know the fine-tune actually helped?\"**\nFrozen, deduplicated eval; three arms (base, prompted base, tuned); calibrated graders; paired bootstrap interval; sliced results; regression and safety suites; then a canary online. I would not ship on training loss.\n\n**6. \"Any risks of using an LLM as judge?\"**\nPosition bias, verbosity bias, self-preference, and drift when the judge model version changes. Randomise order, use rubrics, calibrate against human labels and pin the judge version.\n\n## Pitfalls to avoid in answers\n\n- Presenting DPO as always better than RLHF; say it depends.\n- Skipping the prompted baseline.\n- Letting the teacher's outputs into the eval set.\n- Ignoring licence terms on distillation data.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Preference tuning compares chosen vs rejected answers; use it for qualities that are easier to rank than to demonstrate.",
+        "RLHF needs a reward model plus RL under a KL penalty; it is powerful but heavy and unstable.",
+        "DPO optimises preference pairs directly against a frozen reference model, with beta controlling distance; ORPO merges preference learning into SFT without a reference model.",
+        "Reward models can be gamed (verbosity, flattery); watch response length and audit with humans.",
+        "Distillation: teacher labels real prompts, you filter hard, then SFT a small student for one task.",
+        "Compare tuned vs base vs prompted base on a frozen, deduplicated eval, with a paired bootstrap interval and slices.",
+        "Add regression, safety and format-robustness suites, and measure latency and cost on the deployed artefact.",
+        "Check provider terms and model licences before training on a model's outputs."
+      ],
+      "practiceRef": "ai-llm-engineering:4",
+      "check": [
+        {
+          "q": "What does DPO remove compared with classic RLHF?",
+          "options": [
+            "The need for preference data",
+            "The separate reward model and the RL optimisation loop",
+            "The need for a reference model in every variant",
+            "The need for an SFT stage"
+          ],
+          "answer": 1,
+          "why": "DPO optimises a classification-style loss on chosen versus rejected pairs directly. It still needs preference data and normally a frozen reference model, and it works best after SFT."
+        },
+        {
+          "q": "A tuned model scores 2 points higher than the base on 100 eval cases and the paired bootstrap interval spans zero. What should you conclude?",
+          "options": [
+            "It is proven better",
+            "There is no reliable difference; get more eval cases or improve the data before shipping",
+            "The base model must be broken",
+            "Training loss should be used instead"
+          ],
+          "answer": 1,
+          "why": "An interval that includes zero means the gap could be noise. Increase the eval size or improve the tune, and also compare against a well-prompted baseline."
+        },
+        {
+          "q": "Which is the most important filter step when distilling a teacher into a student?",
+          "options": [
+            "Remove all short answers",
+            "Validate teacher outputs (schema, checks, judge, human sample) because the student inherits teacher errors",
+            "Only keep the longest answers",
+            "Add the eval set to the training data"
+          ],
+          "answer": 1,
+          "why": "The student can only be as good as its data. Unfiltered teacher mistakes become the student's behaviour, and the eval set must stay out of training."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Direct Preference Optimization (paper)",
+          "url": "https://arxiv.org/abs/2305.18290"
+        },
+        {
+          "title": "ORPO: Monolithic Preference Optimization without Reference Model",
+          "url": "https://arxiv.org/abs/2403.07691"
+        },
+        {
+          "title": "Training language models to follow instructions with human feedback (InstructGPT)",
+          "url": "https://arxiv.org/abs/2203.02155"
+        },
+        {
+          "title": "Distilling the Knowledge in a Neural Network",
+          "url": "https://arxiv.org/abs/1503.02531"
+        },
+        {
+          "title": "Hugging Face TRL: DPO trainer",
+          "url": "https://huggingface.co/docs/trl/dpo_trainer"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    },
+    {
+      "id": "open-weight-models-production",
+      "title": "Open-weight models in production",
+      "minutes": 40,
+      "summary": "Choosing an open-weight model, reading licences, quantisation formats (GGUF, AWQ, GPTQ), serving with vLLM, Ollama and llama.cpp, comparing cost to an API, and the safety work you still own.",
+      "parts": [
+        {
+          "id": "choose-quantise",
+          "label": "Choose and quantise",
+          "diagrams": [
+            {
+              "title": "Pick a model, then a format and a server",
+              "code": "flowchart TD\n  need[\"Task, quality bar, latency, data rules\"] --> pick[\"Shortlist open-weight models by size and licence\"]\n  pick --> evalm[\"Run your eval set on each candidate\"]\n  evalm --> quant{\"Where will it run?\"}\n  quant -->|\"GPU server, many users\"| awq[\"AWQ / GPTQ / FP8 weights\"]\n  quant -->|\"Laptop, CPU, edge\"| gguf[\"GGUF quantised (llama.cpp / Ollama)\"]\n  awq --> vllm[\"Serve with vLLM\"]\n  gguf --> local[\"Serve with llama.cpp or Ollama\"]\n  vllm --> monitor[\"Monitor quality, cost, safety\"]\n  local --> monitor"
+            }
+          ],
+          "body": "## What \"open\" means\n\nMost popular models are **open-weight**: you can download the weights and run them, but training data and code may not be released. That is different from **open source** in the OSI sense. For a company the question that matters is the **licence**.\n\n## Reading a licence\n\nCheck these every time, on the model card and the licence text itself (licences change between versions):\n\n- **Permissive licences** such as Apache 2.0 or MIT allow commercial use, modification and redistribution with few conditions.\n- **Community or custom licences** (several large-vendor families use them) usually allow commercial use but add conditions: an **acceptable use policy**, a requirement to display attribution or name derivatives in a particular way, a **monthly active user threshold** above which you need a separate agreement, or limits on using outputs to train other models.\n- **Non-commercial or research-only** licences are off the table for products.\n- **Derivatives**: a fine-tune or merge usually inherits the base model's licence. Quantised copies are derivatives too.\n- **Also check** the licence of your training data and of any teacher outputs you used.\n\nRecord the model, revision hash and licence in your model registry. If a legal question is open, ask legal; this lesson is not legal advice.\n\n## Choosing a model\n\n1. **Define the task and the bar** with a real eval set. Public leaderboards are a shortlist, not a decision: they can be contaminated and rarely match your task.\n2. **Shortlist by size class.** Small models (about 1 to 4B parameters) run on a laptop or phone and suit classification and extraction. Mid-size (about 7 to 14B) is the sweet spot for single-GPU serving. Large (30B and up) and mixture-of-experts models need multiple GPUs or heavy quantisation. Mixture-of-experts models activate only part of their parameters per token, so speed tracks active parameters while memory tracks **total** parameters.\n3. **Check capabilities you need**: context length, tool calling, multilingual support, structured output, and the quality of the instruct chat template.\n4. **Check ecosystem support**: is it supported by vLLM, llama.cpp and your fine-tuning stack, and is there an active community fixing issues.\n5. **Run your eval** on two or three candidates, at the precision you will deploy.\n\n## Quantisation\n\nQuantisation stores weights in fewer bits to cut memory and often speed up inference. Memory for weights is roughly `parameters x bits / 8`, so a 7B model is about 14 GB at 16-bit, 7 GB at 8-bit and about 4 GB at 4-bit, plus overhead.\n\n| Format | Where used | Notes |\n|---|---|---|\n| **GGUF** | llama.cpp, Ollama, LM Studio | One file with weights, tokenizer and metadata; many levels (for example Q8_0, Q5_K_M, Q4_K_M); runs on CPU, Apple silicon and GPUs, with partial GPU offload |\n| **GPTQ** | GPU servers | Post-training quantisation using calibration data to minimise layer error (Frantar et al.) |\n| **AWQ** | GPU servers, vLLM | Activation-aware: protects the small set of salient weights (Lin et al.); often a good 4-bit quality and speed trade |\n| **FP8 / INT8** | Recent GPUs | Lighter loss than 4-bit where hardware supports it |\n| **bitsandbytes NF4** | Training and quick inference in Hugging Face | Convenient, usually slower for serving |\n\nRules of thumb: 8-bit is usually near-lossless; 4-bit costs a small quality drop that varies by model and task and is worse for small models, long reasoning and code; below 4-bit degrades noticeably. **Always re-run your eval on the quantised artefact**, because the drop is task-specific. Quantisation does not shrink the **KV cache** unless you also quantise it, and at long contexts and many concurrent users the KV cache can exceed the weights.",
+          "code": []
+        },
+        {
+          "id": "serving-cost-safety",
+          "label": "Serving, cost, safety",
+          "diagrams": [
+            {
+              "title": "Self-hosted inference behind a gateway",
+              "code": "flowchart LR\n  app[\"Your app\"] --> gw[\"Gateway: auth, rate limits, routing, logging\"]\n  gw --> vllm[\"vLLM server: OpenAI-compatible API\"]\n  gw -->|\"fallback or hard cases\"| api[\"Hosted API model\"]\n  vllm --> gpu[\"GPU with paged KV cache and continuous batching\"]\n  gw --> guard[\"Input and output guardrails\"]\n  gw --> obs[\"Metrics: TTFT, tokens per second, cost, quality\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Call a self-hosted open model through the OpenAI-compatible API that vLLM, llama.cpp's server and Ollama all expose.\n#   vLLM:      vllm serve Qwen/Qwen2.5-7B-Instruct --max-model-len 8192 --gpu-memory-utilization 0.90\n#   llama.cpp: llama-server -m model-q4_k_m.gguf -c 8192 --port 8080\n#   Ollama:    ollama run <model>   (serves http://localhost:11434/v1)\nimport os\n\nfrom openai import OpenAI\n\nclient = OpenAI(\n    base_url=os.environ.get(\"LLM_BASE_URL\", \"http://localhost:8000/v1\"),\n    api_key=os.environ.get(\"LLM_API_KEY\", \"not-needed-locally\"),\n)\n\n\ndef ask(question: str, model: str = \"Qwen/Qwen2.5-7B-Instruct\") -> str:\n    resp = client.chat.completions.create(\n        model=model,\n        messages=[\n            {\"role\": \"system\", \"content\": \"Answer briefly and say if you are unsure.\"},\n            {\"role\": \"user\", \"content\": question},\n        ],\n        temperature=0.2,\n        max_tokens=300,\n        timeout=60,\n    )\n    return resp.choices[0].message.content or \"\"\n\n\nif __name__ == \"__main__\":\n    print(ask(\"Explain a KV cache in two sentences.\"))\n"
+            },
+            {
+              "lang": "python",
+              "source": "# Break-even sketch: self-hosted GPU vs per-token API. All inputs are YOUR numbers; none below are real prices.\ndef api_cost_per_month(requests_per_day: float, in_tokens: float, out_tokens: float,\n                       price_in_per_m: float, price_out_per_m: float) -> float:\n    per_request = in_tokens / 1e6 * price_in_per_m + out_tokens / 1e6 * price_out_per_m\n    return per_request * requests_per_day * 30\n\n\ndef selfhost_cost_per_month(gpu_hourly: float, gpus: int, utilisation_hours_per_day: float = 24.0,\n                            ops_overhead: float = 0.0) -> float:\n    return gpu_hourly * gpus * utilisation_hours_per_day * 30 + ops_overhead\n\n\ndef peak_gpus_needed(requests_per_second: float, avg_seconds_per_request: float,\n                     concurrent_per_gpu: float) -> int:\n    in_flight = requests_per_second * avg_seconds_per_request       # Little's law\n    return max(1, -(-int(in_flight * 100) // int(concurrent_per_gpu * 100)))  # ceil\n\n\n# Example with placeholder inputs: replace with measured throughput and current prices.\napi = api_cost_per_month(50_000, 1200, 250, price_in_per_m=1.0, price_out_per_m=4.0)\ngpus = peak_gpus_needed(requests_per_second=6, avg_seconds_per_request=4, concurrent_per_gpu=16)\nown = selfhost_cost_per_month(gpu_hourly=2.0, gpus=gpus, ops_overhead=1500.0)\nprint(f\"API ~ {api:,.0f}/month, self-host ~ {own:,.0f}/month with {gpus} GPU(s). Compare after adding on-call time and idle capacity.\")\n"
+            }
+          ],
+          "body": "## Serving options\n\n- **vLLM**: the standard open-source GPU inference server. Its key ideas are **PagedAttention** (the KV cache stored in fixed blocks, like virtual memory, to avoid fragmentation) and **continuous batching** (new requests join a running batch each step), giving high throughput for many users. It exposes an OpenAI-compatible API, supports AWQ, GPTQ and FP8 weights, prefix caching, tensor parallelism across GPUs, and LoRA adapters served per request. Alternatives with similar goals include SGLang and TensorRT-LLM.\n- **llama.cpp**: C/C++ inference for GGUF models on CPU, Apple silicon and GPUs, with partial offload when the model does not fit in VRAM. `llama-server` gives an OpenAI-compatible endpoint. Best for edge, desktop and low-concurrency use.\n- **Ollama**: a friendly wrapper around llama.cpp with model pulling, a local API and a simple CLI. Excellent for development and personal tools; for high-concurrency production, a dedicated server such as vLLM is the usual choice.\n- **Hosted open-model APIs**: providers serve open-weight models per token. You get open-model prices and licences without running GPUs, at the cost of sending data to a third party.\n\nCapacity planning uses **Little's law**: concurrent requests in flight = arrival rate x average time in system. Measure **time to first token**, **inter-token latency** and **throughput under your real prompt and output lengths**, since long prompts make prefill expensive and long outputs make decode memory-bound. Set `max-model-len` and GPU memory utilisation deliberately, because the KV cache needs room.\n\n## Cost versus an API\n\nSelf-hosting wins when volume is **high and steady**, the task is **narrow enough for a small model**, or **data may not leave your environment**. It loses when traffic is spiky or low, because a GPU you rent by the hour costs the same when idle. Count the full bill:\n\n- GPU rental or amortised hardware, including idle headroom and redundancy.\n- Engineering and on-call time, upgrades, security patching and monitoring.\n- Evaluation and re-tuning when models change.\n- Egress, storage and a fallback path when your server is down.\n\nAPI providers also price cached input and batch jobs cheaper, and prices fall over time, so compare against **current** prices with your own measured token counts. A common mature design is **hybrid**: a small self-hosted model for the bulk of easy traffic and an API model for hard cases, behind one gateway.\n\n## Safety and operations you still own\n\nOpen weights do not come with a managed safety layer.\n\n- **Input and output guardrails**: prompt-injection screening, PII redaction, moderation, schema validation. Open safety classifiers exist, and you can run one beside the main model.\n- **Treat model output as untrusted** text: never execute it or render it as raw HTML.\n- **Fine-tuning can weaken safety behaviour**; keep a red-team and refusal suite and re-run it on every new model, quantisation and tune.\n- **Supply chain**: download weights from trusted sources, pin the revision hash, prefer the **safetensors** format, and avoid pickle-based checkpoint files, which can execute code on load. Be careful with `trust_remote_code=True`.\n- **Secure the server**: authentication, network isolation, rate limits, no public inference port, and logs that avoid storing sensitive prompts.\n- **Version and roll back**: model registry entries with revision, licence, eval results and the exact serving config.\n- **Monitor**: latency, error rate, token usage, cost, and sampled quality checks for drift."
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"When would you choose an open-weight model over an API?\"**\nWhen data cannot leave our environment, volume is high and steady enough that GPUs stay busy, the task is narrow enough for a small tuned model, or we need control over versions, latency and customisation. Otherwise start with an API, measure, and migrate the high-volume paths later. Say that a hybrid with routing is common.\n\n**2. \"How do you pick a model?\"**\nShortlist by licence, size class and needed features (context, tools, languages), then run our own eval set on two or three candidates at the precision we would deploy. Public leaderboards only produce the shortlist.\n\n**3. \"Explain GGUF, AWQ and GPTQ.\"**\nGGUF is the file format for llama.cpp and Ollama, with many quantisation levels, good for CPU and edge. GPTQ and AWQ are GPU-oriented 4-bit post-training quantisation methods; GPTQ minimises layer reconstruction error using calibration data, and AWQ protects salient weights found from activation statistics. I would test the quantised model on our eval because quality loss depends on the task.\n\n**4. \"Why is vLLM faster than a naive Hugging Face generate loop?\"**\nContinuous batching keeps the GPU full as requests arrive and finish, and PagedAttention manages the KV cache in blocks, which removes fragmentation so more sequences fit in memory. Together they raise throughput for many concurrent users.\n\n**5. \"How would you size a GPU deployment?\"**\nEstimate peak requests per second and average latency to get concurrent sequences with Little's law; measure per-GPU concurrency and tokens per second with our real prompt and output lengths; make sure weights plus KV cache fit; add headroom and redundancy; then compare monthly cost with the API using measured tokens and current prices.\n\n**6. \"What safety work is on you with an open model?\"**\nGuardrails on input and output, red-team and refusal tests after every tune or quantisation, treating output as untrusted, supply-chain hygiene (safetensors, pinned revisions), secured endpoints, logging without sensitive text, and monitoring.\n\n## Pitfalls to avoid in answers\n\n- Saying open-weight means free: GPUs, people and risk cost money.\n- Quoting leaderboard scores as a deployment decision.\n- Forgetting the KV cache when sizing memory.\n- Ignoring the licence conditions of community licences.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Open-weight is not open source: read the licence and acceptable use policy, and note that fine-tunes and quantised copies inherit it.",
+        "Choose by running your own eval set on a shortlist at the precision you will deploy; leaderboards are only a shortlist.",
+        "Weight memory is about parameters x bits / 8; mixture-of-experts speed follows active parameters but memory follows total parameters.",
+        "GGUF targets llama.cpp and Ollama (CPU, Apple silicon, edge); AWQ, GPTQ and FP8 target GPU servers such as vLLM.",
+        "Always re-evaluate the quantised artefact; 8-bit is usually close to lossless, 4-bit costs task-dependent quality.",
+        "vLLM gets throughput from continuous batching and PagedAttention; size with Little's law and include the KV cache.",
+        "Self-hosting pays off with high steady volume, narrow tasks or data-residency needs; count ops, idle and fallback costs.",
+        "You own safety: guardrails, red-team tests after every change, safetensors and pinned revisions, secured endpoints."
+      ],
+      "practiceRef": "ai-llm-engineering:5",
+      "check": [
+        {
+          "q": "You must serve a fine-tuned 7B model to many concurrent users on a GPU server. Which setup is the best default?",
+          "options": [
+            "Ollama on a laptop",
+            "vLLM serving an AWQ or FP8 version after re-running your eval",
+            "A pickle checkpoint loaded with trust_remote_code",
+            "A GGUF file via a single-threaded script"
+          ],
+          "answer": 1,
+          "why": "vLLM's continuous batching and paged KV cache suit many concurrent users, and GPU-oriented quantisation reduces memory. The quantised artefact must still pass your eval."
+        },
+        {
+          "q": "Why can long contexts with many users run out of memory even after 4-bit quantising the weights?",
+          "options": [
+            "Quantisation increases activation size",
+            "The KV cache grows with sequence length and concurrency and is not shrunk by weight quantisation",
+            "Tokenizers use more memory",
+            "LoRA adapters are large"
+          ],
+          "answer": 1,
+          "why": "Weight quantisation shrinks the weights only. The KV cache scales with tokens in flight and can exceed the weights, so size for it or quantise the cache too."
+        },
+        {
+          "q": "Which situation most favours an API over self-hosting?",
+          "options": [
+            "Steady high volume on a narrow task",
+            "Strict rule that data stay on premises",
+            "Low, spiky traffic with no GPU operations team",
+            "A tuned 3B model already meets the quality bar"
+          ],
+          "answer": 2,
+          "why": "GPUs cost the same when idle, so low or spiky traffic and no ops capacity make per-token pricing cheaper and simpler. The other cases favour self-hosting."
+        }
+      ],
+      "sources": [
+        {
+          "title": "vLLM on GitHub",
+          "url": "https://github.com/vllm-project/vllm"
+        },
+        {
+          "title": "llama.cpp on GitHub",
+          "url": "https://github.com/ggml-org/llama.cpp"
+        },
+        {
+          "title": "Ollama",
+          "url": "https://ollama.com/"
+        },
+        {
+          "title": "Hugging Face: quantization overview",
+          "url": "https://huggingface.co/docs/transformers/quantization/overview"
+        },
+        {
+          "title": "AWQ: Activation-aware Weight Quantization (paper)",
+          "url": "https://arxiv.org/abs/2306.00978"
+        },
+        {
+          "title": "GPTQ: Accurate Post-Training Quantization (paper)",
+          "url": "https://arxiv.org/abs/2210.17323"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    }
+  ]
+}

@@ -32,14 +32,21 @@ export const roadmapNodeSchema = z.object({
   problems: z.array(z.string()).max(12).default([]),
   /** A syllabus subtopic or topic id whose practice quiz must be passed. */
   quiz: z.string().optional(),
+  /** Skill names job postings use for this node ("rag", "langgraph"), matched against the jobs you saved. */
+  skills: z.array(text(40)).max(12).default([]),
 });
 export type RoadmapNode = z.infer<typeof roadmapNodeSchema>;
+
+/** A focus inside one roadmap ("agent engineer"): the sections that matter most for that role. */
+export const roadmapTrackSchema = z.object({ id, title: text(40), blurb: text(160, 10), sections: z.array(id).min(1).max(20) });
+export type RoadmapTrack = z.infer<typeof roadmapTrackSchema>;
 
 export const roadmapSchema = z.object({
   id,
   title: text(60),
   blurb: text(300, 10),
   audience: text(120),
+  tracks: z.array(roadmapTrackSchema).max(8).default([]),
   sections: z.array(z.object({ id, title: text(80), nodes: z.array(roadmapNodeSchema).min(1).max(24) })).min(2).max(20),
 });
 export type Roadmap = z.infer<typeof roadmapSchema>;
@@ -59,6 +66,8 @@ export function roadmapProblems(
     const ids = nodes.map((n) => n.id);
     ids.forEach((x, i) => ids.indexOf(x) !== i && out.push(`${r.id}: duplicate node ${x}`));
     if (!nodes.some((n) => n.priority === "must")) out.push(`${r.id}: no must-do nodes`);
+    const sectionIds = new Set(r.sections.map((x) => x.id));
+    for (const t of r.tracks) for (const sid of t.sections) if (!sectionIds.has(sid)) out.push(`${r.id}: track ${t.id} names unknown section ${sid}`);
     for (const n of nodes) {
       const k = `${r.id}/${n.id}`;
       for (const p of n.problems) if (!known.problem(p)) out.push(`${k}: unknown problem ${p}`);
@@ -151,4 +160,89 @@ export function roadmapProgress(r: Roadmap, statuses: ReadonlyMap<string, NodeSt
 export function nextNode(r: Roadmap, statuses: ReadonlyMap<string, NodeStatus>): (RoadmapNode & { sectionId: string }) | null {
   const open = allNodes(r).filter((n) => !statuses.get(n.id)?.done);
   return open.find((n) => n.priority === "must") ?? open.find((n) => n.priority === "can") ?? null;
+}
+
+/** The next few unfinished nodes, must-dos first, in roadmap order. A track limits the choice to its sections. */
+export function nextNodes(r: Roadmap, statuses: ReadonlyMap<string, NodeStatus>, limit = 3, track?: RoadmapTrack | null): Array<RoadmapNode & { sectionId: string }> {
+  const inTrack = track ? new Set(track.sections) : null;
+  const open = allNodes(r).filter((n) => !statuses.get(n.id)?.done && n.priority !== "skip" && (!inTrack || inTrack.has(n.sectionId)));
+  return [...open.filter((n) => n.priority === "must"), ...open.filter((n) => n.priority === "can")].slice(0, Math.max(0, limit));
+}
+
+export interface TrackProgress {
+  track: RoadmapTrack;
+  must: { done: number; total: number };
+  /** Percent of the track's must-do nodes done. */
+  pct: number;
+  /** Sections of the track with must-dos still open, least finished first. */
+  gaps: Array<{ sectionId: string; open: number; total: number }>;
+}
+
+/** How far you are towards each role focus: the gap between where you are and being ready for that role. */
+export function trackProgress(r: Roadmap, statuses: ReadonlyMap<string, NodeStatus>): TrackProgress[] {
+  return r.tracks.map((track) => {
+    const sections = r.sections.filter((s) => track.sections.includes(s.id));
+    const gaps = sections
+      .map((s) => {
+        const musts = s.nodes.filter((n) => n.priority === "must");
+        return { sectionId: s.id, open: musts.filter((n) => !statuses.get(n.id)?.done).length, total: musts.length };
+      })
+      .filter((g) => g.open > 0)
+      .sort((a, b) => b.open / b.total - a.open / a.total);
+    const musts = sections.flatMap((s) => s.nodes.filter((n) => n.priority === "must"));
+    const done = musts.filter((n) => statuses.get(n.id)?.done).length;
+    return { track, must: { done, total: musts.length }, pct: musts.length ? Math.round((100 * done) / musts.length) : 0, gaps };
+  });
+}
+
+export interface ResourceEntry {
+  url: string;
+  title: string;
+  kind: (typeof LINK_KINDS)[number];
+  /** Every node that lists this link. */
+  nodes: Array<{ id: string; title: string; sectionId: string; sectionTitle: string }>;
+}
+
+/** Every distinct learning link in a roadmap with the nodes that use it, for the documentation library. */
+export function collectResources(r: Roadmap): ResourceEntry[] {
+  const byUrl = new Map<string, ResourceEntry>();
+  for (const s of r.sections) {
+    for (const n of s.nodes) {
+      for (const l of n.links) {
+        const entry = byUrl.get(l.url) ?? { url: l.url, title: l.title, kind: l.kind, nodes: [] };
+        entry.nodes.push({ id: n.id, title: n.title, sectionId: s.id, sectionTitle: s.title });
+        byUrl.set(l.url, entry);
+      }
+    }
+  }
+  return [...byUrl.values()];
+}
+
+export interface NodeDemand {
+  nodeId: string;
+  title: string;
+  /** How many of your jobs ask for at least one of the node's skills. */
+  jobs: number;
+  /** The node's skills that appeared, most asked first. */
+  skills: string[];
+  done: boolean;
+}
+
+/**
+ * Which roadmap nodes your saved jobs ask for most. `jobTerms` is one list of skill terms per job (already
+ * extracted); a node counts a job once however many of its skills the job names. Nodes nobody asks for are left out.
+ */
+export function demandByNode(r: Roadmap, jobTerms: ReadonlyArray<readonly string[]>, statuses: ReadonlyMap<string, NodeStatus>, limit = 6): NodeDemand[] {
+  const jobSets = jobTerms.map((t) => new Set(t.map((x) => x.toLowerCase())));
+  const out: NodeDemand[] = [];
+  for (const n of allNodes(r)) {
+    if (n.skills.length === 0) continue;
+    const skills = n.skills.map((x) => x.toLowerCase());
+    const counts = skills.map((sk) => jobSets.filter((j) => j.has(sk)).length);
+    const jobs = jobSets.filter((j) => skills.some((sk) => j.has(sk))).length;
+    if (jobs === 0) continue;
+    const seen = skills.map((sk, i) => ({ sk, c: counts[i]! })).filter((x) => x.c > 0).sort((a, b) => b.c - a.c).map((x) => x.sk);
+    out.push({ nodeId: n.id, title: n.title, jobs, skills: seen, done: !!statuses.get(n.id)?.done });
+  }
+  return out.sort((a, b) => b.jobs - a.jobs || Number(a.done) - Number(b.done)).slice(0, Math.max(0, limit));
 }

@@ -1,0 +1,514 @@
+{
+  "chapter": {
+    "id": "data-engineering-ai",
+    "title": "Data engineering for AI",
+    "summary": "SQL and warehouses, pipelines, vector indexing, and data quality for the data layer under ML and LLM systems."
+  },
+  "lessons": [
+    {
+      "id": "sql-and-warehouse-fundamentals",
+      "title": "SQL and warehouse fundamentals for AI engineers",
+      "minutes": 40,
+      "summary": "Joins, window functions, CTEs, partitioning, OLTP versus OLAP and columnar formats like Parquet: the SQL and storage skills behind every training set, eval set and RAG corpus.",
+      "parts": [
+        {
+          "id": "sql-core",
+          "label": "SQL core",
+          "body": "## Why an AI engineer needs SQL\n\nMost model inputs begin life as rows: events, orders, documents, feedback. Training sets, eval sets, feature tables and the metadata that sits beside a vector index are all built with SQL. Interviewers use SQL screens for AI roles because a wrong join silently corrupts a dataset, and nobody notices until the model misbehaves.\n\n## Joins and their traps\n\n- **INNER JOIN** keeps matching rows only. **LEFT JOIN** keeps every left row and fills NULLs when nothing matches.\n- **Fan-out**: joining a user to many events multiplies the user row. Aggregating afterwards double counts. Aggregate the many-side first (in a CTE), then join.\n- **Point-in-time correctness**: when building training data, join features as they were *at the label time*, never the latest value. Otherwise future information leaks into the past (label leakage).\n- **Anti-join** (find rows with no match): use `LEFT JOIN ... WHERE right.id IS NULL` or `NOT EXISTS`. Avoid `NOT IN` with a nullable column; one NULL makes the whole predicate unknown.\n\n## Window functions\n\nA window function computes over a set of rows related to the current row **without collapsing them**, unlike GROUP BY.\n\n- `ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts DESC)` gives the latest row per key; filter `rn = 1`. This is the standard dedup idiom.\n- `LAG(x) / LEAD(x)` look at previous or next rows: time since the last event, session boundaries.\n- `SUM(x) OVER (PARTITION BY u ORDER BY ts ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)` is a rolling window feature. Prefer `ROWS` frames over `RANGE` unless you want ties handled together.\n- `RANK` leaves gaps after ties, `DENSE_RANK` does not, `ROW_NUMBER` never ties.\n\n## CTEs\n\nA **common table expression** (`WITH name AS (...)`) names a step so a long query reads top to bottom. In PostgreSQL 12+ a non-recursive, side-effect-free CTE referenced once is inlined; add `MATERIALIZED` to force a single evaluation or `NOT MATERIALIZED` to force inlining. Recursive CTEs walk hierarchies (category trees, thread replies).\n\n## A training-set query that avoids leakage\n\nThe code tab shows a point-in-time join with a latest-row dedup. Read it as a pattern: dedup first, then join with an inequality on time, then take the closest earlier feature row.\n\n## NULLs and types\n\nNULL is \"unknown\", not zero. `NULL = NULL` is not true; use `IS NOT DISTINCT FROM` for null-safe equality. `COUNT(col)` skips NULLs, `COUNT(*)` does not. Store timestamps as `timestamptz` (UTC), and keep an explicit event time versus ingestion time: late data is normal.",
+          "diagrams": [
+            {
+              "title": "Fan-out versus aggregate-first",
+              "code": "flowchart LR\n  U[users: 1 row each] --> J1{join events}\n  E[events: many per user] --> J1\n  J1 --> BAD[user row repeated: SUM double counts]\n  E --> A[aggregate per user in a CTE]\n  A --> J2{join users}\n  U --> J2\n  J2 --> GOOD[one row per user: correct]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "sql",
+              "source": "-- Point-in-time training set: label rows joined to the latest feature row BEFORE the label time.\nWITH latest_label AS (\n  SELECT DISTINCT ON (user_id, label_ts) user_id, label_ts, churned\n  FROM labels\n  ORDER BY user_id, label_ts, ingested_at DESC   -- dedup late corrections\n),\njoined AS (\n  SELECT l.user_id, l.label_ts, l.churned,\n         f.sessions_7d, f.avg_tokens,\n         ROW_NUMBER() OVER (\n           PARTITION BY l.user_id, l.label_ts\n           ORDER BY f.feature_ts DESC\n         ) AS rn\n  FROM latest_label l\n  JOIN user_features f\n    ON f.user_id = l.user_id\n   AND f.feature_ts <= l.label_ts            -- never look into the future\n)\nSELECT user_id, label_ts, churned, sessions_7d, avg_tokens\nFROM joined\nWHERE rn = 1;"
+            }
+          ]
+        },
+        {
+          "id": "oltp-olap",
+          "label": "OLTP vs OLAP",
+          "body": "## Two different workloads\n\n| | **OLTP** (Postgres, MySQL) | **OLAP** (BigQuery, Snowflake, ClickHouse, DuckDB) |\n|---|---|---|\n| typical query | read or write a few rows by key | scan millions of rows, few columns, aggregate |\n| layout | **row store**: a row's columns sit together | **column store**: a column's values sit together |\n| consistency | strong, many small transactions | batch loads, snapshot reads |\n| index use | B-tree on keys | min/max statistics, sort keys, partition pruning |\n| goal | low latency per request | high throughput per scan |\n\nA row store is ideal when you fetch one user's whole record. A column store wins when you compute `AVG(latency)` over a billion rows because it reads only that one column, compresses it well (similar values side by side) and skips whole blocks using statistics.\n\n## Why it matters to AI work\n\n- Do not train a model by running heavy scans on the production OLTP database; it competes with user traffic. Replicate or export into a warehouse or lake first (change data capture, daily snapshot).\n- Serving a feature lookup by key is an OLTP-shaped job; computing it across history is OLAP-shaped. Feature stores exist because you need both views of the same data.\n- Postgres can do analytics at small scale (and pgvector keeps embeddings beside rows), but past tens of millions of rows scanning is slow and expensive on a row store.\n\n## Warehouse, lake and lakehouse\n\n- **Warehouse**: managed columnar tables with SQL, strong governance (Snowflake, BigQuery, Redshift).\n- **Lake**: files (Parquet) in object storage, schema applied on read.\n- **Lakehouse**: open table formats (Apache Iceberg, Delta Lake, Hudi) add transactions, schema evolution and time travel on top of lake files. By 2026 Iceberg is the common neutral choice, readable by Spark, Trino, DuckDB, Snowflake and BigQuery.\n\n## ELT over ETL\n\nModern stacks **load raw data first, then transform inside the warehouse** (ELT, usually with dbt). Raw is kept immutable so you can re-derive any dataset after fixing a bug. Layer it: **raw/bronze** (as received), **clean/silver** (typed, deduped), **marts/gold** (business or feature tables).\n\n## Cost model\n\nWarehouses bill by bytes scanned or compute time. `SELECT *` on a wide table is the classic waste. Select only needed columns, filter on the partition column, and avoid repeating the same expensive scan in a notebook loop.",
+          "diagrams": [
+            {
+              "title": "Row store versus column store read",
+              "code": "flowchart TB\n  Q[\"SELECT avg(latency) FROM calls\"] --> R[Row store: read every column of every row]\n  Q --> C[Column store: read only the latency column]\n  R --> S1[slow for scans, fast for single-row lookup]\n  C --> S2[fast for scans, compresses well]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "partition-parquet",
+          "label": "Partitioning and Parquet",
+          "body": "## Partitioning\n\n**Partitioning** splits a big table into pieces by a column so a query touching one piece ignores the rest (**partition pruning**). The classic key is the event date.\n\n- **Range partitioning** by day or month suits time-series. Dropping old data becomes a metadata operation: drop one partition instead of running a huge `DELETE`.\n- **Hash partitioning** spreads rows evenly when no natural range exists.\n- **Too many partitions hurt**: thousands of tiny files slow planning and listing. Aim for partitions holding at least hundreds of megabytes.\n- In warehouses you often add **clustering / sort keys** (BigQuery clustering, Snowflake clustering keys, ClickHouse ORDER BY) so rows with the same user or tenant sit together inside a partition.\n\nPostgreSQL declarative partitioning example is in the code tab. Queries must filter on the partition key (without a function wrapped around it) for pruning to apply.\n\n## Parquet\n\n**Apache Parquet** is the default columnar file format of the data world.\n\n- Data is split into **row groups**, each holding **column chunks**, each made of **pages**. A footer stores the schema and per-chunk min/max statistics.\n- **Predicate pushdown**: a reader checks statistics and skips row groups that cannot match; **column pruning** reads only requested columns.\n- **Encodings and compression**: dictionary and run-length encoding, then Snappy or Zstd. Zstd is the usual 2026 choice for a better ratio at similar speed.\n- It carries a **schema with types**, unlike CSV, so there are no more \"is this 1 a string or an int\" bugs. Nested data (lists, structs) is supported, which suits JSON-like documents and embedding arrays.\n\n## Hive-style layout\n\nFiles are commonly laid out as `events/dt=2026-10-17/part-000.parquet`. Engines such as Spark, DuckDB and Trino read the `dt=` directory name as a column and prune on it.\n\n## Practical file sizes\n\nTarget roughly 128 MB to 1 GB per file. Streaming jobs that write a file per minute create the **small files problem**; schedule **compaction** (rewrite many small files into fewer big ones; Iceberg and Delta have built-in commands).\n\n## Using it from Python\n\nDuckDB reads Parquet in place with SQL, which is a superb local tool for exploring a training set without a cluster. For embeddings, store the vector as a `FLOAT[]` or fixed-size list column next to the chunk id, text hash and source metadata so the corpus can be rebuilt or audited later.",
+          "code": [
+            {
+              "lang": "sql",
+              "source": "-- PostgreSQL: range-partition events by month, then prune by filtering on the key\nCREATE TABLE events (\n  event_id   bigint GENERATED ALWAYS AS IDENTITY,\n  user_id    bigint      NOT NULL,\n  event_ts   timestamptz NOT NULL,\n  payload    jsonb,\n  PRIMARY KEY (event_id, event_ts)           -- partition key must be in the PK\n) PARTITION BY RANGE (event_ts);\n\nCREATE TABLE events_2026_10 PARTITION OF events\n  FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');\n\n-- Prunes to one partition because the filter is on the bare partition column\nEXPLAIN SELECT count(*) FROM events\nWHERE event_ts >= '2026-10-10' AND event_ts < '2026-10-11';"
+            },
+            {
+              "lang": "python",
+              "source": "import duckdb\n\ncon = duckdb.connect()\n# Reads only 2 columns and only matching row groups / dt= directories\ndf = con.sql(\"\"\"\n    SELECT user_id, avg(latency_ms) AS avg_latency\n    FROM read_parquet('events/dt=*/part-*.parquet', hive_partitioning = true)\n    WHERE dt >= '2026-10-01' AND status = 'ok'\n    GROUP BY user_id\n\"\"\").df()"
+            }
+          ],
+          "diagrams": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers probe\n\n1. **\"Write the latest row per user.\"** Use `ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY ts DESC)` and filter `rn = 1`, or `DISTINCT ON` in Postgres. Mention a tie-break column so the result is deterministic.\n2. **\"Why is my join count larger than my table?\"** Fan-out from a one-to-many join; aggregate first or confirm the join key is unique (assert it with a test).\n3. **\"Row store versus column store?\"** Row stores serve point lookups and transactions; column stores serve scans and aggregates with compression and pruning. Name an example of each and what query hurts on the wrong one.\n4. **\"How would you build a training set without leakage?\"** Point-in-time join features at or before the label time, split train/validation by time or by entity (not random rows when rows are correlated), and freeze the snapshot with a version.\n5. **\"How do you make this query cheaper?\"** Select fewer columns, filter on the partition key, pre-aggregate, cluster by the common filter, store as Parquet with Zstd, avoid `SELECT *` and repeated scans.\n6. **\"What is Parquet and why not CSV?\"** Typed, columnar, compressed, splittable with statistics for pushdown; CSV has no types, no pruning and parsing ambiguity.\n\n## Strong answer shape\n\nState the constraint (data size, latency, freshness), give the simple correct solution, then name the failure mode you guard against (duplicates, NULLs, late data, leakage) and how you test it.\n\n## Pitfalls to mention unprompted\n\n- `COUNT(DISTINCT)` on huge data is expensive; approximate versions (`HyperLogLog`) trade exactness for speed.\n- Time zones: store UTC, compute day boundaries in the business time zone explicitly.\n- `NOT IN` with NULLs, integer division, and implicit casts that disable indexes.\n- Do not run model-training scans on the primary OLTP database.\n\n## Quick self-test\n\nGiven `orders(user_id, amount, ts)`, write: total spend per user, the second most recent order per user, and a 7-order moving average of amount. If you can write all three without notes using aggregate, `ROW_NUMBER` and a `ROWS BETWEEN 6 PRECEDING AND CURRENT ROW` frame, you are ready for the SQL round of most AI engineering interviews.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Aggregate the many-side before joining to avoid fan-out and double counting.",
+        "Point-in-time joins (feature_ts <= label_ts) prevent label leakage into training data.",
+        "ROW_NUMBER() OVER (PARTITION BY key ORDER BY ts DESC) = 1 is the standard latest-row and dedup idiom.",
+        "OLTP row stores serve point lookups; OLAP column stores serve scans with pruning and compression.",
+        "Partition on a date or tenant key, filter on the bare column to get pruning, and avoid thousands of tiny partitions.",
+        "Parquet is typed, columnar and compressed with row-group statistics for predicate pushdown; compact small files.",
+        "Load raw first (ELT) and keep it immutable, then derive bronze, silver and gold layers."
+      ],
+      "practiceRef": "ai-ml-basics:2",
+      "check": [
+        {
+          "q": "A query joins users (one row each) to events (many per user) and then SUMs a per-user column. The totals are inflated. What is the cause and fix?",
+          "options": [
+            "Fan-out from the one-to-many join; aggregate events in a CTE first, then join",
+            "The warehouse is eventually consistent; wait and rerun",
+            "SUM ignores NULLs, so use COUNT instead",
+            "The users table needs a hash partition"
+          ],
+          "answer": 0,
+          "why": "Each user row is repeated once per event, so user-level values are summed many times. Aggregating the many-side first restores one row per user."
+        },
+        {
+          "q": "Which workload is best suited to a columnar OLAP store rather than a row-oriented OLTP database?",
+          "options": [
+            "Fetching one user's profile by primary key on every request",
+            "Computing average latency per day across a billion rows",
+            "Inserting a single order inside a transaction",
+            "Updating a counter on one row"
+          ],
+          "answer": 1,
+          "why": "Scans over few columns of many rows benefit from column pruning, compression and statistics. Point reads and small transactions suit row stores."
+        },
+        {
+          "q": "Why do Parquet files make an analytical query faster than the same data as CSV?",
+          "options": [
+            "Parquet files are always smaller than 1 MB",
+            "Parquet is encrypted so the reader skips parsing",
+            "Typed columnar layout with row-group statistics allows column pruning and predicate pushdown",
+            "Parquet removes the need for a schema"
+          ],
+          "answer": 2,
+          "why": "A reader reads only the requested column chunks and skips row groups whose min/max cannot match the filter, and decoding typed columns avoids text parsing."
+        }
+      ],
+      "sources": [
+        {
+          "title": "PostgreSQL: window functions tutorial",
+          "url": "https://www.postgresql.org/docs/current/tutorial-window.html"
+        },
+        {
+          "title": "PostgreSQL: WITH queries (CTEs)",
+          "url": "https://www.postgresql.org/docs/current/queries-with.html"
+        },
+        {
+          "title": "PostgreSQL: table partitioning",
+          "url": "https://www.postgresql.org/docs/current/ddl-partitioning.html"
+        },
+        {
+          "title": "Apache Parquet documentation",
+          "url": "https://parquet.apache.org/docs/"
+        },
+        {
+          "title": "DuckDB documentation",
+          "url": "https://duckdb.org/docs/"
+        }
+      ],
+      "problems": []
+    },
+    {
+      "id": "data-pipelines-and-orchestration",
+      "title": "Data pipelines and orchestration",
+      "minutes": 40,
+      "summary": "Batch versus streaming, idempotent tasks, Airflow, Prefect and Dagster concepts, dbt models, backfills and schema evolution for reliable AI data flows.",
+      "parts": [
+        {
+          "id": "pipeline-basics",
+          "label": "Pipeline basics",
+          "body": "## What a pipeline is\n\nA **data pipeline** moves data from sources (databases, APIs, files, event streams) to destinations (warehouse, feature store, vector index) with transformations in between. AI systems have several: ingestion of raw documents, feature computation, embedding and indexing, evaluation dataset builds, and logging of model traffic back into the warehouse.\n\n## Batch versus streaming\n\n| | **Batch** | **Streaming** |\n|---|---|---|\n| unit | a bounded set (a day, a file) | an unbounded sequence of events |\n| latency | minutes to hours | seconds to sub-second |\n| tools | SQL, Spark, dbt, Airflow | Kafka, Redpanda, Flink, Spark Structured Streaming |\n| complexity | low; rerun is easy | high; ordering, late data, state, exactly-once |\n| fits | training sets, nightly re-embedding, reports | fraud signals, live personalisation, near-real-time features |\n\nDefault to batch. Move to streaming only when a freshness requirement truly demands it, because streaming costs much more in operations. A common middle path is **micro-batch** (run every 1 to 5 minutes).\n\n## Event time and late data\n\nStreaming systems distinguish **event time** (when it happened) from **processing time** (when you saw it). **Watermarks** declare how late data may arrive before a window closes. Decide explicitly what happens to later events: drop, route to a correction path, or reprocess.\n\n## Delivery guarantees\n\n- **At-most-once**: may lose data. **At-least-once**: may duplicate. **Exactly-once**: effectively achieved by *at-least-once delivery plus idempotent writes* (or transactions), not by magic.\n\n## Idempotency is the core property\n\nA task is **idempotent** if running it twice with the same input yields the same final state as once. Retries, backfills and crashes then become safe. Techniques:\n\n- **Overwrite by partition**: write `dt=2026-10-17` with replace semantics (`INSERT OVERWRITE`, delete-then-insert in one transaction).\n- **Upsert / MERGE** on a natural key rather than blind `INSERT`.\n- **Deterministic ids**: derive the id from content (hash of source + text) so a duplicate lands on the same key.\n- **Write to temp, then atomically swap/rename** so readers never see half-written output.\n- Pass the **logical date** into the task and read only that window; never use \"now\" inside business logic.\n\n## ETL versus ELT, again\n\nLand raw data untouched, then transform in the warehouse. When a transformation bug is found, re-run from raw instead of begging the source for a re-send.\n\n## Contracts\n\nProducers and consumers agree on a **data contract**: schema, types, nullability, freshness and ownership. Enforce it at the boundary (see the quality lesson) so a silent upstream change fails loudly instead of corrupting the next model run.",
+          "diagrams": [
+            {
+              "title": "Typical AI data flow",
+              "code": "flowchart LR\n  S1[App DB via CDC] --> RAW[(Raw / bronze)]\n  S2[Docs, PDFs, web] --> RAW\n  S3[Event stream] --> RAW\n  RAW --> T[dbt / SQL transforms]\n  T --> SILVER[(Clean / silver)]\n  SILVER --> MART[(Marts / features)]\n  SILVER --> EMB[Chunk + embed job]\n  EMB --> VEC[(Vector index)]\n  MART --> TRAIN[Training + eval sets]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "orchestration",
+          "label": "Orchestration",
+          "body": "## What an orchestrator does\n\nAn **orchestrator** schedules work, runs tasks in dependency order, retries failures, records history and exposes status and alerts. It should *coordinate* work, not do heavy compute itself: it triggers Spark, dbt, a warehouse query or a container, and watches it.\n\n## Airflow\n\n**Apache Airflow** (3.x is current in 2026) models a **DAG** of **tasks** defined in Python.\n\n- **Operators/TaskFlow** define units of work; **sensors** wait for a condition (a file, a partition).\n- **Schedule and logical date** (called the data interval): a daily run for 2026-10-17 processes that day's data even if it executes on the 18th. Pass it to tasks via templating.\n- **Retries, SLAs, pools** limit concurrency; **XComs** pass small metadata between tasks (never big data).\n- **Backfill** runs a DAG for past intervals; **catchup** controls automatic backfill when a DAG is newly deployed.\n- Airflow 3 added asset-aware (data-aware) scheduling, so a DAG can run when an upstream **asset** updates.\n\n## Prefect and Dagster\n\n- **Prefect**: Python-first flows and tasks with decorators, dynamic workflows, easy local runs, retries and caching; good when you want orchestration with minimal boilerplate.\n- **Dagster**: **asset-centric**. You declare the *data assets* you want (a table, an index), their dependencies, and Dagster plans runs, tracks materialisations, partitions and freshness, and offers strong testing and lineage. Fits ML where the question is \"is this dataset up to date?\" rather than \"did task X run?\".\n\n| need | pick |\n|---|---|\n| huge existing ecosystem, many providers, team knows it | Airflow |\n| lightweight dynamic Python workflows | Prefect |\n| data assets, partitions, lineage, local dev experience | Dagster |\n| one warehouse and only SQL | dbt scheduled by cron or the warehouse |\n\n## dbt\n\n**dbt** turns SELECT statements into tested, documented, versioned models in the warehouse.\n\n- **Models** are SQL files; `ref('model')` builds the dependency graph automatically.\n- **Materializations**: `view`, `table`, `incremental` (process only new rows), `ephemeral`.\n- **Tests**: `unique`, `not_null`, `accepted_values`, `relationships`, plus custom ones. **Snapshots** keep history of changing dimensions. **Sources** declare raw tables with freshness checks.\n- dbt does the T in ELT; an orchestrator triggers it and handles upstream loads.\n\n## Design rules\n\n1. Small, single-purpose tasks. 2. Retries with backoff only on transient errors. 3. Alert on failure *and* on missing or late data. 4. Make every task idempotent. 5. Keep secrets in a secret manager, not in DAG code. 6. Version DAGs in git and test them in CI (import test, small data run).",
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Airflow TaskFlow API: a daily, idempotent chunk-and-embed pipeline\nfrom datetime import datetime, timedelta\nfrom airflow.decorators import dag, task\n\n@dag(\n    schedule=\"@daily\",\n    start_date=datetime(2026, 9, 1),\n    catchup=False,                      # backfill explicitly, not on deploy\n    default_args={\"retries\": 3, \"retry_delay\": timedelta(minutes=5)},\n    max_active_runs=1,\n    tags=[\"rag\"],\n)\ndef docs_to_vectors():\n    @task\n    def list_changed(data_interval_start=None, data_interval_end=None) -> list[str]:\n        # Only documents updated inside this run's window -> safe to re-run\n        return fetch_changed_doc_ids(data_interval_start, data_interval_end)\n\n    @task\n    def embed_batch(doc_ids: list[str]) -> int:\n        # Upsert by deterministic chunk id, so retries never duplicate\n        return upsert_chunks(doc_ids)\n\n    embed_batch(list_changed())\n\ndocs_to_vectors()"
+            }
+          ],
+          "diagrams": []
+        },
+        {
+          "id": "backfills-schema",
+          "label": "Backfills and schema evolution",
+          "body": "## Incremental models and the late data problem\n\nReprocessing everything daily is simple but costly. An **incremental** build processes only new or changed rows, usually with a high-water mark such as `updated_at`. Pitfalls: late-arriving rows older than the mark are missed, and deletes in the source are invisible. Mitigate with a **lookback window** (reprocess the last N days each run), CDC that includes delete events, and a periodic full refresh.\n\n## Backfills\n\nA **backfill** recomputes history: after a bug fix, a new feature, a new embedding model, or a changed definition.\n\n1. Make the job parameterised by date range and idempotent.\n2. Run **partition by partition** with limited concurrency so you do not starve production.\n3. Write to a **new versioned table or index** (for example `chunks_v3`), validate it, then **switch** consumers via an alias or view. Never edit a table consumers read in place.\n4. Compare row counts, null rates and distributions between old and new before the switch; keep the old version for rollback.\n5. Record the code version, parameters and input snapshot for reproducibility.\n\n## Schema evolution\n\nSchemas change: columns are added, renamed, retyped, removed. Classify changes:\n\n- **Backward compatible**: add a nullable or defaulted column; consumers using the old schema still work.\n- **Breaking**: rename, drop, change type, change meaning (units, timezone). These need a migration plan.\n\nPractices:\n\n- Use a **schema registry** (Avro, Protobuf, JSON Schema) for streams and set compatibility rules (backward, forward, full).\n- Use table formats with built-in evolution (Iceberg, Delta) which track columns by id, so renames are safe.\n- **Expand and contract**: add the new column, dual-write, migrate readers, then remove the old column in a later release.\n- Make ingestion **schema-on-read tolerant**: land unknown fields in a raw JSON column and alert, rather than dropping the load.\n- Test contracts in CI against a sample of real data.\n\n## Failure handling\n\n- **Dead-letter queue**: park records that fail validation with the error reason for later inspection instead of blocking the pipeline.\n- **Poison pills**: one malformed record must not stall a whole stream partition.\n- **Retries** with exponential backoff and jitter; cap them; make the final failure page someone.\n- **Checkpoints** in streaming jobs so a restart resumes from the last committed offset.\n\n## Observability\n\nTrack freshness (how old is the newest row), volume (rows per run versus the trend), duration, failure rate, and cost. Alert on *anomalies in volume*, since a pipeline that \"succeeds\" with zero rows is the most common silent failure.",
+          "code": [
+            {
+              "lang": "sql",
+              "source": "-- dbt incremental model with a lookback window, upsert on a unique key\n{{ config(materialized='incremental', unique_key='event_id', on_schema_change='append_new_columns') }}\n\nSELECT event_id, user_id, event_ts, payload\nFROM {{ source('app', 'events') }}\n{% if is_incremental() %}\n  -- reprocess the last 3 days to catch late arrivals; unique_key makes it idempotent\n  WHERE event_ts >= (SELECT max(event_ts) - interval '3 days' FROM {{ this }})\n{% endif %}"
+            },
+            {
+              "lang": "yaml",
+              "source": "# dbt schema tests: contracts enforced where the data lands\nmodels:\n  - name: events\n    columns:\n      - name: event_id\n        data_tests: [unique, not_null]\n      - name: user_id\n        data_tests:\n          - not_null\n          - relationships: { to: ref('users'), field: user_id }\n      - name: status\n        data_tests:\n          - accepted_values: { values: [ok, error, timeout] }"
+            }
+          ],
+          "diagrams": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Questions you should expect\n\n1. **\"Batch or streaming?\"** Start from the freshness requirement. If minutes are acceptable, use batch or micro-batch and keep operations simple. Choose streaming when the product decision itself depends on seconds-old data, and say you accept the cost of state, ordering and exactly-once handling.\n2. **\"What does idempotent mean and how do you get it?\"** Same input, same final state, however many runs. Partition overwrite, MERGE on a natural or content-hash key, atomic swap, logical date passed in, no use of wall-clock time.\n3. **\"How do you backfill safely?\"** Parameterise by date, run partitions with bounded concurrency, write to a versioned destination, validate against the old one, switch via alias, keep rollback.\n4. **\"Airflow versus Dagster versus Prefect?\"** Airflow: ubiquitous, task-centric, huge integration set. Dagster: asset-centric, strong lineage and partitions. Prefect: light, dynamic Python flows. Pick by team skill and whether you think in tasks or in datasets.\n5. **\"An upstream team renamed a column. What breaks and how do you prevent it?\"** Contracts and schema tests at the boundary, a schema registry with compatibility rules, expand-and-contract migrations, alerts on schema drift.\n6. **\"The job succeeded but the dashboard is wrong.\"** Look at volume and freshness checks, late data, duplicate loads, timezone boundaries, and a join fan-out. A green run is not proof of correct data.\n\n## Design prompt practice\n\n\"Design a nightly pipeline that keeps a RAG index in sync with a document store.\" Cover: change detection (updated_at or content hash), deleted documents (tombstones), chunk and embed in batches with rate-limit-aware retries, deterministic chunk ids for upserts, a versioned index and alias swap when the embedding model changes, a dead-letter table, metrics (documents processed, failures, index lag), and a full reconciliation job weekly.\n\n## Pitfalls to name\n\n- Putting big payloads in XComs or passing data through the orchestrator.\n- Using \"now\" inside tasks so reruns differ.\n- `catchup=True` on a newly deployed DAG launching hundreds of runs.\n- Incremental models with no lookback or no delete handling.\n- No alert on zero-row loads.\n\n## One-sentence summary\n\nA reliable pipeline is small idempotent steps, scheduled by an orchestrator that retries and alerts, validated at every boundary, with history you can recompute into a new version and switch to safely.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Default to batch or micro-batch; choose streaming only when the freshness requirement truly demands it.",
+        "Exactly-once in practice is at-least-once delivery plus idempotent writes (partition overwrite, MERGE, deterministic ids).",
+        "Pass the logical date into tasks and never use wall-clock time in business logic, so retries and backfills are safe.",
+        "Airflow is task-centric and widely supported, Dagster is asset-centric, Prefect is a light Python-first flow engine.",
+        "dbt provides ref-based dependency graphs, incremental models and built-in data tests inside the warehouse.",
+        "Backfill into a new versioned table or index, validate, then switch via an alias; keep the old one for rollback.",
+        "Treat schema changes with expand-and-contract, registries and contract tests; route bad records to a dead-letter queue.",
+        "Alert on missing, late or zero-row data, since a green run can still produce wrong data."
+      ],
+      "practiceRef": "ai-rag:4",
+      "check": [
+        {
+          "q": "What makes a retried pipeline task safe to run twice?",
+          "options": [
+            "It uses the current wall-clock time to pick its input",
+            "It is idempotent, for example overwriting a partition or upserting on a deterministic key",
+            "It appends rows with INSERT and removes duplicates manually",
+            "It runs with catchup enabled"
+          ],
+          "answer": 1,
+          "why": "Idempotent writes produce the same end state on every run, so retries, crashes and backfills cannot create duplicates."
+        },
+        {
+          "q": "An incremental dbt model uses max(updated_at) as its high-water mark and misses rows that arrive late. What is the standard mitigation?",
+          "options": [
+            "Switch every model to a view",
+            "Disable all tests",
+            "Reprocess a lookback window and use a unique_key so reprocessing is idempotent",
+            "Increase the number of Airflow retries"
+          ],
+          "answer": 2,
+          "why": "A lookback window recaptures late arrivals, and unique_key turns the reprocessed rows into upserts rather than duplicates."
+        },
+        {
+          "q": "You need to change the embedding model for a live RAG index. What is the safest rollout?",
+          "options": [
+            "Delete the index and re-embed in place while users query",
+            "Build a new versioned index in the background, validate it, then switch an alias and keep the old index for rollback",
+            "Mix old and new vectors in the same index",
+            "Re-embed only the queries"
+          ],
+          "answer": 1,
+          "why": "Different embedding models are not comparable, so a full rebuild into a separate index followed by an atomic alias switch avoids downtime and mixed vector spaces."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Apache Airflow: DAGs",
+          "url": "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html"
+        },
+        {
+          "title": "Prefect documentation",
+          "url": "https://docs.prefect.io/"
+        },
+        {
+          "title": "Dagster documentation",
+          "url": "https://docs.dagster.io/"
+        },
+        {
+          "title": "dbt: incremental models",
+          "url": "https://docs.getdbt.com/docs/build/incremental-models"
+        },
+        {
+          "title": "OpenLineage documentation",
+          "url": "https://openlineage.io/docs/"
+        }
+      ],
+      "problems": []
+    },
+    {
+      "id": "embedding-and-vector-pipelines",
+      "title": "Embedding and vector pipelines",
+      "minutes": 45,
+      "summary": "Parsing documents, chunk and embed jobs, incremental re-indexing, pgvector versus dedicated vector databases, HNSW and IVF tuning, index maintenance and deduplication.",
+      "parts": [
+        {
+          "id": "ingest-embed",
+          "label": "Ingest and embed",
+          "body": "## The shape of a vector pipeline\n\nA RAG or semantic-search system is only as good as the pipeline that fills its index. The stages are: **acquire, parse, clean, chunk, enrich, embed, upsert, verify**. Each is a place for silent quality loss.\n\n## Document parsing\n\n- **HTML/Markdown**: strip navigation and boilerplate, keep headings because they are the best chunk boundaries and metadata.\n- **PDF**: text-based PDFs extract with layout-aware parsers; scanned PDFs need OCR. Tables, multi-column pages and headers/footers are the usual damage. Tools: Unstructured, Docling, PyMuPDF, cloud document AI services. Always inspect a sample of parsed output by eye.\n- **Office files, email, tickets, code**: parse into structured elements (title, paragraph, table, list) rather than a flat string.\n- Keep **provenance**: source URI, document id, page or section, version/hash, ingestion time, and access-control tags. You will need them for citations, deletion and permission filtering.\n\n## Chunking, briefly\n\nAim for self-contained passages, roughly 200 to 800 tokens, split on structure first (headings, paragraphs), then size, with small overlap. Prepend the title or section path to each chunk so it carries context. Parent-child chunking (retrieve small, return the larger parent) improves context. Never change chunking silently: it changes every chunk id and forces a re-embed.\n\n## Embedding jobs\n\n- **Batch** requests (dozens to hundreds of texts per call), respect rate limits with backoff and jitter, and bound concurrency.\n- **Normalise text** consistently before embedding, and keep the exact embedded text.\n- Record **model name, version, dimensions and a pipeline version** on every row. Vectors from different models are not comparable.\n- Use **task-appropriate models**: separate query and document prefixes where the model requires them; consider models with Matryoshka (truncatable) dimensions to cut storage and latency with small recall loss, and quantised vectors (int8, binary) for large corpora.\n- **Cost**: embedding a corpus is a one-time bill, but a model change repeats it. Cache by content hash so unchanged text is never re-embedded.\n\n## Deterministic ids and idempotency\n\nCreate the chunk id from content and position, for example a hash of (document id, chunk index, text hash). Then upserts are idempotent, retries do not duplicate, and unchanged chunks can be skipped by comparing hashes.\n\n## Hybrid needs more than vectors\n\nStore the raw text and a full-text index (BM25 or Postgres `tsvector`) next to the vector so hybrid search and re-ranking are possible. Vectors alone miss exact identifiers, codes and rare names.",
+          "diagrams": [
+            {
+              "title": "Chunk, embed, upsert",
+              "code": "flowchart LR\n  A[Source docs] --> B[Parse + clean]\n  B --> C[Chunk + add metadata]\n  C --> D{hash changed?}\n  D -->|no| E[skip]\n  D -->|yes| F[Embed in batches]\n  F --> G[Upsert by chunk id]\n  G --> H[(Vector index + text + metadata)]\n  X[Deleted docs] --> Y[Delete by doc id]\n  Y --> H"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "import hashlib\nfrom dataclasses import dataclass\n\nEMBED_MODEL = \"text-embedding-model-v1\"   # record the real model name you use\nPIPELINE_VERSION = \"chunker-2026-10-a\"\n\n@dataclass\nclass Chunk:\n    chunk_id: str\n    doc_id: str\n    text: str\n    text_hash: str\n\ndef make_chunk(doc_id: str, idx: int, text: str) -> Chunk:\n    h = hashlib.sha256(text.encode()).hexdigest()\n    cid = hashlib.sha256(f\"{doc_id}:{idx}:{h}\".encode()).hexdigest()[:32]\n    return Chunk(cid, doc_id, text, h)\n\ndef sync_document(db, embedder, doc_id: str, chunks: list[str]) -> None:\n    new = [make_chunk(doc_id, i, t) for i, t in enumerate(chunks)]\n    existing = db.hashes_for_doc(doc_id)                 # {chunk_id: text_hash}\n    to_embed = [c for c in new if c.chunk_id not in existing]\n    stale = set(existing) - {c.chunk_id for c in new}    # edited or removed chunks\n\n    for i in range(0, len(to_embed), 64):                # batch to respect rate limits\n        batch = to_embed[i:i + 64]\n        vectors = embedder.embed([c.text for c in batch])\n        db.upsert(batch, vectors, model=EMBED_MODEL, pipeline=PIPELINE_VERSION)\n    if stale:\n        db.delete_chunks(stale)                          # no orphan vectors"
+            }
+          ]
+        },
+        {
+          "id": "stores-indexes",
+          "label": "Stores and indexes",
+          "body": "## pgvector versus dedicated vector databases\n\n**pgvector** adds a `vector` type and ANN indexes to PostgreSQL.\n\n- Pros: one system, **transactions** (update the row and its vector atomically), SQL joins and metadata filters, existing backups and access control, hybrid with `tsvector`, no new infrastructure. Excellent up to low tens of millions of vectors with good tuning.\n- Cons: ANN index builds and memory pressure compete with OLTP load, filtering with ANN has recall pitfalls, and extreme scale or very high write rates strain a single node.\n\n**Dedicated vector databases** (Qdrant, Weaviate, Milvus, Pinecone, and Elasticsearch/OpenSearch vector search):\n\n- Pros: sharding and replication built for vectors, rich filtering integrated into the search, quantisation options, sparse+dense hybrid, higher throughput at hundreds of millions of vectors.\n- Cons: another system to run, sync and secure; eventual consistency with the source of truth; separate permission model.\n\n| situation | choice |\n|---|---|\n| under about 10M vectors, already on Postgres, need joins and transactions | pgvector |\n| tens to hundreds of millions, heavy filtering, high QPS, multi-tenant at scale | dedicated engine |\n| prototype | whichever is fastest to start; keep the pipeline portable |\n\nKeep the source of truth (documents, chunks, metadata) in your database and treat any vector index as a **rebuildable derived artefact**.\n\n## HNSW\n\n**Hierarchical Navigable Small World** builds a layered proximity graph; a query descends from sparse top layers to dense bottom ones.\n\n- `m` (links per node): higher means better recall and more memory.\n- `ef_construction`: search width while building; higher gives a better graph, slower build.\n- `ef_search` (query time): the main **recall versus latency** knob; raise it until recall on your eval set is acceptable.\n- Pros: strong recall and speed, supports incremental inserts. Cons: the graph lives in memory, large and slow to build, deletes leave holes that need maintenance.\n\n## IVF\n\n**Inverted File** clusters vectors (k-means) into `lists` and searches only the nearest `probes` clusters.\n\n- Needs training on representative data *before* insertion; build after the table has data.\n- `lists` rule of thumb: about rows/1000 up to 1M rows, then roughly sqrt(rows); tune `probes` at query time (start near sqrt(lists)).\n- Smaller than HNSW and faster to build, but lower recall at the same latency and sensitive to data drift (retrain/rebuild as distributions change). With product quantisation (IVF-PQ) it is the choice for very large, memory-bound sets.\n\n## Distance and normalisation\n\nUse the metric the embedding model was trained for (cosine or inner product). With normalised vectors, cosine and inner product give the same ranking, and inner product is cheaper. Build the index with the **same operator class** as the query operator, or the index is ignored.",
+          "code": [
+            {
+              "lang": "sql",
+              "source": "CREATE EXTENSION IF NOT EXISTS vector;\n\nCREATE TABLE chunks (\n  chunk_id   text PRIMARY KEY,\n  doc_id     text        NOT NULL,\n  tenant_id  text        NOT NULL,\n  body       text        NOT NULL,\n  embedding  vector(1024) NOT NULL,\n  model      text        NOT NULL,\n  updated_at timestamptz NOT NULL DEFAULT now()\n);\n\n-- HNSW with cosine distance (operator class must match the query operator)\nCREATE INDEX chunks_hnsw ON chunks\n  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);\n\nCREATE INDEX chunks_tenant ON chunks (tenant_id);\n\n-- Query time: raise ef_search for recall; iterative scan helps when filters are selective\nSET hnsw.ef_search = 100;\nSELECT chunk_id, body, embedding <=> $1 AS distance\nFROM chunks\nWHERE tenant_id = $2\nORDER BY embedding <=> $1\nLIMIT 8;"
+            }
+          ],
+          "diagrams": []
+        },
+        {
+          "id": "maintenance-dedup",
+          "label": "Maintenance and dedup",
+          "body": "## Incremental re-indexing\n\nFull rebuilds do not scale, so detect change cheaply:\n\n1. **Document-level**: compare `updated_at`, ETag or a content hash of the source.\n2. **Chunk-level**: only embed chunks whose id (which includes the text hash) is new.\n3. **Deletes**: sources rarely tell you. Use CDC delete events, tombstones, or a reconciliation job that lists live document ids and removes vectors whose parent is gone. A deleted or access-revoked document must disappear from retrieval; this is a correctness and security requirement.\n4. **Metadata-only updates** (permissions, tags) should update the metadata, not re-embed.\n\nRun a periodic **reconciliation** (count per source versus count in the index, sample diffs) to catch drift that incremental logic missed.\n\n## Changing the embedding model\n\nVectors from model A and B are not comparable. Build a new index (`chunks_v2`) in parallel, backfill, run the retrieval eval set against both (recall@k, MRR, answer quality), then switch traffic with an alias and keep the old index until confident. Never mix models in one index; store the model name per row so a mix is detectable.\n\n## Index maintenance\n\n- **Deletes and updates** in HNSW leave dead entries; in Postgres rely on `VACUUM` and, after heavy churn, `REINDEX CONCURRENTLY`. Dedicated engines compact segments automatically; watch their settings.\n- **Build memory**: raise `maintenance_work_mem` so an HNSW build fits in RAM, and use parallel workers.\n- **Monitor** recall against a fixed eval set (ANN recall can degrade silently), p95 latency, index size versus RAM, and ingestion lag.\n- **Filtering**: a restrictive filter after an ANN scan can return too few results. Use iterative scans, partition by tenant, partial indexes for big tenants, or an engine with filter-aware search.\n- **Quantisation**: halfvec (16-bit), int8 or binary vectors cut memory by 2x to 32x; rerank the top candidates with full precision vectors to recover accuracy.\n\n## Deduplication\n\nDuplicate chunks waste context and bias results (the top 5 hits are the same paragraph).\n\n- **Exact**: hash of normalised text (lowercase, collapsed whitespace); drop or merge equal hashes.\n- **Near-duplicate**: MinHash with LSH over shingles, or SimHash, for boilerplate that differs slightly; or a high-similarity threshold between embeddings (for example cosine above 0.97) checked within a document set.\n- **At query time**: MMR (maximal marginal relevance) or a diversity step in re-ranking keeps results varied.\n- Keep a canonical copy plus a list of source ids so citations still point to every origin.\n- Dedup *before* embedding when possible; it saves cost.\n\n## Security and privacy\n\nStore access-control tags with each chunk and filter at query time in the database, not after retrieval. Do not index secrets or personal data unless you must; if you do, support deletion by subject (find all chunks for a user and remove them).",
+          "code": [
+            {
+              "lang": "yaml",
+              "source": "# Example reconciliation + rebuild settings for the vector sync job\nvector_sync:\n  index_alias: chunks_live          # consumers always query the alias\n  active_index: chunks_v3\n  embed:\n    model: text-embedding-model-v1\n    dimensions: 1024\n    batch_size: 64\n    max_concurrency: 4\n    retry: { max_attempts: 5, backoff: exponential, jitter: true }\n  schedule:\n    incremental: \"*/15 * * * *\"\n    reconcile:   \"0 3 * * 0\"       # weekly full id diff, removes orphans\n  quality_gates:\n    min_recall_at_10: 0.90          # vs. fixed eval set before alias switch\n    max_p95_latency_ms: 150\n  dedup:\n    exact_hash: true\n    near_dup_cosine: 0.97"
+            }
+          ],
+          "diagrams": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions and strong answers\n\n1. **\"How do you keep a vector index in sync with changing documents?\"** Change detection by hash or updated time, chunk ids derived from content so unchanged chunks are skipped, upserts for changes, deletes through tombstones or CDC plus a periodic reconciliation, and a freshness metric (index lag).\n2. **\"pgvector or a dedicated vector DB?\"** Decide on scale, filtering needs, QPS and operational appetite. For moderate scale with relational joins and transactions, pgvector avoids a second system. For very large, high-QPS, heavily filtered workloads, a dedicated engine. Either way, keep a rebuildable pipeline from a source of truth.\n3. **\"Explain HNSW and its knobs.\"** A layered graph search; `m` for connectivity, `ef_construction` for build quality, `ef_search` to trade recall for latency. Memory heavy; supports incremental inserts.\n4. **\"HNSW versus IVF?\"** HNSW: higher recall at low latency, more memory and build time. IVF: smaller, faster to build, needs training and tuning of lists and probes, drifts with data. IVF-PQ for very large memory-bound sets.\n5. **\"Retrieval got worse after a deploy. Why?\"** Chunker or parser change altering boundaries, a mixed-model index, a changed embedding prefix, an ANN setting like a lower ef_search, stale or missing documents, or a filter bug. Diagnose with a fixed retrieval eval set and compare recall@k across versions.\n6. **\"How do you handle duplicates?\"** Exact hash, near-duplicate via MinHash or embedding threshold, dedup before embedding, MMR at query time, keep a canonical chunk and all source references.\n7. **\"How do you handle permissions?\"** Metadata filters enforced inside the query, not after; separate indexes or partitions for strict isolation.\n\n## Whiteboard walk-through: re-embedding for a new model\n\nCreate a new versioned index, stream documents in batches with bounded concurrency, record model and pipeline version, run the eval set (recall@k, MRR, grounded answer rate), compare latency and cost, flip the alias, monitor, keep the old index for a retention period, then delete.\n\n## Pitfalls to mention\n\n- Forgetting to normalise vectors or mismatching the operator class so the index is silently unused.\n- Building an IVF index on an empty table.\n- Treating the vector store as the source of truth.\n- No delete path, so revoked documents remain retrievable.\n- Tuning only for speed without measuring recall on your own queries.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Derive chunk ids from document id, position and text hash so upserts are idempotent and unchanged chunks are skipped.",
+        "Store model name, dimensions and pipeline version per row; never mix embedding models in one index.",
+        "pgvector fits moderate scale with joins and transactions; dedicated engines win at very large scale, QPS and filtering.",
+        "HNSW knobs: m and ef_construction at build, ef_search at query for the recall versus latency trade-off.",
+        "IVF needs training data before building and tuning of lists and probes; it is smaller but lower recall and drifts.",
+        "Handle deletes with tombstones, CDC or reconciliation so revoked documents disappear from retrieval.",
+        "Switch embedding models by building a versioned index, evaluating on a fixed set, and flipping an alias.",
+        "Deduplicate exactly by hash and approximately by MinHash or embedding thresholds, preferably before embedding."
+      ],
+      "practiceRef": "ai-rag:1",
+      "check": [
+        {
+          "q": "You must change the embedding model. What is wrong with embedding only the new documents with the new model into the existing index?",
+          "options": [
+            "Nothing; vectors from different models are interchangeable",
+            "It makes the index read-only",
+            "It mixes incompatible vector spaces so similarity scores are meaningless",
+            "It only affects storage cost"
+          ],
+          "answer": 2,
+          "why": "Each model defines its own space. Distances between vectors from different models carry no meaning, so a model change requires a full re-embed into a new index."
+        },
+        {
+          "q": "Which setting is the main query-time knob for trading recall against latency in an HNSW index?",
+          "options": [
+            "ef_search",
+            "lists",
+            "maintenance_work_mem",
+            "m at build time only"
+          ],
+          "answer": 0,
+          "why": "ef_search controls how many candidates the graph search explores. Raising it improves recall and increases latency; m and ef_construction are fixed at build time."
+        },
+        {
+          "q": "A source document is deleted or its access is revoked. Which design ensures it no longer appears in answers?",
+          "options": [
+            "Wait for the next full rebuild in a few months",
+            "Filter results in the UI after generation",
+            "Rely on the LLM to ignore it",
+            "Propagate the delete (tombstone, CDC or reconciliation) to remove its chunks from the index"
+          ],
+          "answer": 3,
+          "why": "Incremental pipelines see only changes they are told about. An explicit delete path plus periodic reconciliation keeps the index consistent and prevents leaking removed content."
+        }
+      ],
+      "sources": [
+        {
+          "title": "pgvector: vector similarity search for Postgres",
+          "url": "https://github.com/pgvector/pgvector"
+        },
+        {
+          "title": "Qdrant documentation",
+          "url": "https://qdrant.tech/documentation/"
+        },
+        {
+          "title": "Efficient and robust approximate nearest neighbor search using HNSW (paper)",
+          "url": "https://arxiv.org/abs/1603.09320"
+        },
+        {
+          "title": "Faiss wiki: indexes and guidelines",
+          "url": "https://github.com/facebookresearch/faiss/wiki"
+        },
+        {
+          "title": "Unstructured documentation",
+          "url": "https://docs.unstructured.io/"
+        }
+      ],
+      "problems": []
+    },
+    {
+      "id": "data-quality-governance-feature-stores",
+      "title": "Data quality, governance and feature stores",
+      "minutes": 40,
+      "summary": "Validation with Great Expectations and Pydantic, lineage, PII handling, labelling, train/serve skew, feature stores and eval dataset management.",
+      "parts": [
+        {
+          "id": "quality",
+          "label": "Data quality",
+          "body": "## Why quality is the real model bottleneck\n\nA model cannot outperform its data. Most production ML incidents are data incidents: a column changed units, a join dropped rows, a feed went empty, a label definition shifted. Treat data like code: define expectations, test them automatically, and fail loudly.\n\n## Dimensions to check\n\n- **Schema**: columns, types, nullability.\n- **Completeness**: null rate, missing partitions, row counts versus trend.\n- **Uniqueness**: primary keys and duplicate rate.\n- **Validity**: ranges, enums, formats (emails, dates), referential integrity.\n- **Freshness**: age of the newest record.\n- **Distribution**: mean, quantiles, category frequencies versus a baseline (drift).\n- **Consistency**: the same fact agrees across tables.\n\n## Where to validate\n\n1. **At the boundary (ingest)**: reject or quarantine bad records with a typed model (Pydantic) and send failures to a dead-letter table with the reason.\n2. **After transformations**: dbt tests or Great Expectations suites on silver and gold tables.\n3. **Before training**: a gate comparing the new snapshot's statistics to the last good one; abort the training run on a breach.\n4. **At serving**: validate request features and monitor live drift.\n\n## Pydantic for records\n\nPydantic validates structure and types of individual records and LLM outputs (parse model output into a schema and reject or retry on failure). It is cheap, runs in-process and gives clear error paths. Use it for API payloads, document metadata and extraction results.\n\n## Great Expectations\n\n**Great Expectations (GX)** validates datasets (pandas, Spark, SQL) with declarative **expectations** grouped into **suites**, run by **checkpoints**, producing human-readable data docs and results you can alert on. Typical expectations: column not null, unique, values in a set, between bounds, row count in a range, column mean within a band. Use it for batch tables where you want reportable, versioned checks; use dbt tests when everything lives in the warehouse and in SQL. Other options: Soda, Pandera, Deequ.\n\n## Severity and ownership\n\nNot every failure should stop the world. Classify checks: **blocking** (schema break, empty table, duplicate keys) versus **warning** (small drift). Each dataset needs an **owner** and an alert channel, otherwise checks produce noise nobody reads. Track a data quality score over time and fix at the source, not downstream.\n\n## Anomaly detection\n\nFor volume and distribution, compare to a rolling baseline (same weekday last weeks) instead of fixed thresholds. Always alert on zero rows: the silent empty load is the classic failure.",
+          "code": [
+            {
+              "lang": "python",
+              "source": "from datetime import datetime\nfrom pydantic import BaseModel, Field, ValidationError, field_validator\n\nclass Feedback(BaseModel):\n    event_id: str = Field(min_length=8)\n    user_id: int = Field(gt=0)\n    rating: int = Field(ge=1, le=5)\n    text: str = Field(max_length=4000)\n    created_at: datetime\n\n    @field_validator(\"text\")\n    @classmethod\n    def no_blank(cls, v: str) -> str:\n        if not v.strip():\n            raise ValueError(\"empty text\")\n        return v\n\ndef ingest(rows: list[dict]) -> tuple[list[Feedback], list[dict]]:\n    good, dead_letter = [], []\n    for r in rows:\n        try:\n            good.append(Feedback.model_validate(r))\n        except ValidationError as e:\n            # quarantine with the reason; never silently drop or crash the batch\n            dead_letter.append({\"row\": r, \"errors\": e.errors(include_input=False)})\n    return good, dead_letter\n\n# Great Expectations (1.x style), run on a pandas DataFrame\nimport great_expectations as gx\nctx = gx.get_context()\nsrc = ctx.data_sources.add_pandas(\"local\")\nasset = src.add_dataframe_asset(\"feedback\")\nbatch_def = asset.add_batch_definition_whole_dataframe(\"all\")\nsuite = ctx.suites.add(gx.ExpectationSuite(name=\"feedback_suite\"))\nsuite.add_expectation(gx.expectations.ExpectColumnValuesToNotBeNull(column=\"event_id\"))\nsuite.add_expectation(gx.expectations.ExpectColumnValuesToBeUnique(column=\"event_id\"))\nsuite.add_expectation(gx.expectations.ExpectColumnValuesToBeBetween(column=\"rating\", min_value=1, max_value=5))"
+            }
+          ],
+          "diagrams": []
+        },
+        {
+          "id": "governance",
+          "label": "Governance and PII",
+          "body": "## Lineage\n\n**Lineage** answers \"where did this value come from and what depends on it?\" Column-level lineage from source to feature to model to prediction lets you:\n\n- assess the **blast radius** of a schema change before shipping it,\n- **debug** a bad prediction back to the offending source row,\n- prove **provenance** for audits and for the training data behind a model,\n- remove a deleted subject's data from every derived copy.\n\nCapture it automatically: **OpenLineage** is the open standard emitted by Airflow, Spark, dbt and Dagster, collected by Marquez, DataHub or OpenMetadata. Complement it with a **data catalog** (owner, description, sensitivity, freshness SLA) so people find and trust datasets.\n\n## Classification and access control\n\nTag data by sensitivity (public, internal, confidential, restricted) and apply the **least privilege** principle: role-based access, column masking for sensitive fields, row-level security by tenant, audit logs of access. Keep training data access tighter than people expect; a notebook with a copy of production data is a leak waiting to happen.\n\n## PII handling\n\n**Personally identifiable information** (names, emails, phone numbers, government ids, precise location, payment data, health data, and free-text that contains them) needs deliberate handling.\n\n1. **Minimise**: do not collect or copy it unless the use case requires it.\n2. **Detect**: scan text with pattern matchers and NER (Microsoft Presidio is a common open tool). Free-text fields like support tickets and chat logs are the usual hiding place.\n3. **Transform**: **redact** (remove), **mask** (partial), **tokenise or pseudonymise** (reversible mapping held in a vault), **hash with a secret salt** (irreversible join key), or **aggregate**. Remember hashing a low-entropy value such as a phone number without a secret is trivially reversible.\n4. **Segregate**: keep identifying data in a separate restricted store; analytics and training use pseudonymous ids.\n5. **Retain and delete**: define retention and support deletion requests (GDPR erasure, India's DPDP Act) across raw, derived tables, feature stores, embeddings and **backups and logs**. This is why lineage matters.\n6. **Prompts and logs**: redact before sending text to third-party LLM APIs, and avoid logging prompts that contain personal data.\n\nEmbeddings of personal text are still personal data and can leak information; treat them with the same controls.\n\n## LLM-era governance\n\nTrack **dataset licences and consent** for training and fine-tuning data, record which data version trained which model (a **model card** and dataset card), and keep copyrighted or restricted content out of indexes. For RAG, enforce the caller's document permissions at retrieval time.\n\n## Labelling\n\nLabels drive supervised learning and evals, so label quality caps model quality.\n\n- Write a **labelling guide** with examples and edge cases; ambiguous guides cause disagreement.\n- Measure **inter-annotator agreement** (Cohen's or Fleiss' kappa); low agreement means the task or guide is unclear, not that annotators are bad.\n- Use **adjudication** for disagreements and a **gold set** to monitor annotator quality.\n- **Active learning** sends the most uncertain examples to humans first; **weak supervision** and LLM-assisted pre-labelling save cost but must be sampled and verified by humans.\n- Beware label noise, class imbalance and annotators seeing model predictions (anchoring).",
+          "code": [
+            {
+              "lang": "python",
+              "source": "from presidio_analyzer import AnalyzerEngine\nfrom presidio_anonymizer import AnonymizerEngine\nimport hmac, hashlib, os\n\nanalyzer, anonymizer = AnalyzerEngine(), AnonymizerEngine()\n\ndef redact(text: str) -> str:\n    \"\"\"Remove PII from free text before it reaches an index, log or external LLM.\"\"\"\n    findings = analyzer.analyze(text=text, language=\"en\")\n    return anonymizer.anonymize(text=text, analyzer_results=findings).text\n\ndef pseudonymize(user_id: str) -> str:\n    \"\"\"Stable, non-reversible join key. The secret lives in a vault, not in code.\"\"\"\n    key = os.environ[\"PSEUDONYM_KEY\"].encode()\n    return hmac.new(key, user_id.encode(), hashlib.sha256).hexdigest()[:24]"
+            }
+          ],
+          "diagrams": []
+        },
+        {
+          "id": "features-skew-evals",
+          "label": "Features, skew and evals",
+          "body": "## Feature stores\n\nA **feature store** (Feast, Tecton, Hopsworks, or the feature tooling in Databricks and cloud platforms) manages features as shared, versioned assets.\n\n- **Offline store**: historical values in a warehouse or lake, used to build training sets with **point-in-time correct joins**.\n- **Online store**: low-latency key-value (Redis, DynamoDB, Postgres) holding the latest values for serving, filled by **materialisation** jobs or streaming writes.\n- **Registry**: definitions, owners, entities, TTLs and lineage, so teams reuse features rather than recomputing them differently.\n\nYou do not need one for every project. It pays off when many models share features, when serving needs low-latency lookups of computed aggregates, or when skew has already bitten you. For an LLM application with prompts and retrieval, \"features\" are often just user attributes and aggregates fetched from a database or cache; a full feature store is overkill.\n\n## Train/serve skew\n\n**Training-serving skew** is a difference between the data a model saw in training and what it sees in production. Causes:\n\n1. **Different code paths**: features computed in SQL for training and reimplemented in application code for serving. Fix: one definition (a feature store, or a shared library) used by both.\n2. **Time leakage**: training used values unavailable at prediction time. Fix: point-in-time joins.\n3. **Stale or missing online values**: materialisation lag or defaults on null. Fix: freshness monitoring and explicit missing-value handling.\n4. **Data drift**: the world changes (new users, seasonality, new products). Monitor feature distributions with PSI, KS tests or simple quantile comparisons and compare to the training baseline.\n5. **Preprocessing differences**: tokenisation, normalisation, unit or timezone differences.\n\nDetect skew by **logging served features** and comparing them with the training distribution, and by replaying logged requests through the offline pipeline to check the values match.\n\n## Eval dataset management\n\nEvaluation sets are the safety net for models, prompts and retrieval. Manage them like production data:\n\n- **Version** them (immutable snapshots, a changelog, a content hash) and record which version produced each reported metric.\n- **Separate roles**: a development set for iteration, and a **held-out test set** that is touched rarely, to avoid overfitting to the eval.\n- **Prevent contamination**: ensure eval items are not in fine-tuning data or in public sources the model may have memorised; dedup between train and eval, including near duplicates.\n- **Representative and stratified**: cover languages, intents, difficulty and known failure modes; add real production failures as regression cases, with consent and PII removed.\n- **Sources of truth**: human-written or human-verified answers; for LLM-judge evals, calibrate the judge against human labels and check judge agreement periodically.\n- **Refresh** on a schedule so the set tracks real traffic, while keeping a frozen core for longitudinal comparison.\n- For RAG, keep **retrieval labels** (which chunks are relevant to each question) separate from answer labels so you can score retrieval and generation independently.\n\n## Splits\n\nSplit by the unit that must not leak: by **user or document** when rows from one entity are correlated, and **by time** for forecasting-like tasks. Random row splits inflate metrics when near-duplicates sit on both sides.",
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Feast: one definition of a feature, used for training (offline) and serving (online)\nfrom datetime import timedelta\nfrom feast import Entity, FeatureView, Field, FileSource\nfrom feast.types import Float32, Int64\n\nuser = Entity(name=\"user\", join_keys=[\"user_id\"])\nsrc = FileSource(path=\"data/user_stats.parquet\", timestamp_field=\"event_ts\")\n\nuser_stats = FeatureView(\n    name=\"user_stats\",\n    entities=[user],\n    ttl=timedelta(days=2),\n    schema=[Field(name=\"sessions_7d\", dtype=Int64), Field(name=\"avg_tokens\", dtype=Float32)],\n    source=src,\n)\n\n# Training: point-in-time correct join against label timestamps\n#   training_df = store.get_historical_features(entity_df=labels_df, features=[\"user_stats:sessions_7d\"]).to_df()\n# Serving: latest values from the online store\n#   store.get_online_features(features=[\"user_stats:sessions_7d\"], entity_rows=[{\"user_id\": 42}]).to_dict()"
+            },
+            {
+              "lang": "yaml",
+              "source": "# Versioned eval dataset manifest, committed next to the data\nname: support-rag-eval\nversion: 7\nsha256: \"<content hash of eval.jsonl>\"\ncreated: 2026-10-01\nsplits:\n  dev:  { file: dev.jsonl,  size: 400 }\n  test: { file: test.jsonl, size: 200, access: restricted }   # touched only for release gates\nlabels: { retrieval: relevant_chunk_ids, answer: reference_answer }\ncontamination_check: { against: [finetune-v4], near_dup_cosine: 0.95, passed: true }\npii_scrubbed: true"
+            }
+          ],
+          "diagrams": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Questions you should be ready for\n\n1. **\"How do you ensure data quality in a pipeline?\"** Layered checks: typed validation at ingest with a dead-letter path, schema and uniqueness tests after transforms (dbt or Great Expectations), volume and freshness monitors, a pre-training gate comparing statistics to a baseline, owners and alerts. Block on severe failures, warn on mild drift.\n2. **\"What is training-serving skew and how do you prevent it?\"** A mismatch between training and production inputs. Prevent with a single feature definition for both paths, point-in-time joins, logging served features, comparing distributions, and replay tests.\n3. **\"Do you need a feature store?\"** Only when features are shared, need low-latency online lookups with consistent offline history, or skew is a recurring issue. Otherwise a well-tested shared library and a warehouse table are enough.\n4. **\"How do you handle PII in an LLM application?\"** Minimise collection, detect and redact before logging, indexing or sending to third-party models, pseudonymise ids, enforce access and permissions at retrieval, define retention and deletion across derived stores including embeddings and backups, and keep an audit trail.\n5. **\"How do you build and maintain an eval set?\"** Representative and stratified, human-verified labels, version-controlled and hashed, a frozen held-out test set, contamination checks against training data, regression cases from production failures, periodic refresh, and a calibrated judge for LLM-graded metrics.\n6. **\"Your model degraded in production. Where do you look?\"** Upstream data first: schema changes, null rates, freshness, distribution drift, a failed materialisation, then label delay and concept drift, then code or model changes. Lineage tells you what changed upstream.\n7. **\"How do you get good labels cheaply?\"** Clear guide, pilot batch, agreement metrics, adjudication, gold questions, active learning for the uncertain cases, LLM pre-labelling with human verification of a sample.\n\n## Pitfalls to name\n\n- Validation that only logs and never blocks.\n- Hashing PII without a secret and calling it anonymous.\n- Evaluating on data that overlaps training data.\n- Random splits that leak correlated rows.\n- Feature logic written twice (SQL and application code).\n- Deleting a user from the source but not from derived tables, embeddings and logs.\n\n## Closing line for system design answers\n\nSay that you would define contracts at every boundary, test data like code, trace lineage end to end, keep sensitive data minimal and separated, and version datasets and evals so any metric can be reproduced.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Validate at ingest with typed models and a dead-letter path, after transforms with dbt or Great Expectations, and before training with a statistics gate.",
+        "Classify checks as blocking or warning, give every dataset an owner, and always alert on zero-row or stale loads.",
+        "Lineage (OpenLineage plus a catalog) gives blast-radius analysis, debugging and provenance for audits and deletion.",
+        "PII needs minimise, detect, redact or pseudonymise, segregate, and delete across derived stores, embeddings, logs and backups.",
+        "Hash identifiers with a secret (HMAC); unsalted hashes of low-entropy values are trivially reversible.",
+        "Train/serve skew comes from duplicated feature code, time leakage, stale online values and drift; use one definition and point-in-time joins.",
+        "Feature stores give offline and online views plus a registry; skip them when features are not shared or latency-critical.",
+        "Version eval sets, hold out a test split, check contamination, and split by entity or time to avoid leakage."
+      ],
+      "practiceRef": "ai-system-design:5",
+      "check": [
+        {
+          "q": "Feature code for a model was written in SQL for training and re-implemented in application code for serving, and accuracy drops in production. What is the most likely root cause and fix?",
+          "options": [
+            "The model is too large; compress it",
+            "Increase the learning rate",
+            "Add more GPUs for serving",
+            "Training-serving skew from two code paths; use a single shared feature definition for both"
+          ],
+          "answer": 3,
+          "why": "Two implementations drift apart in subtle ways such as units, null handling and windowing. One definition used offline and online removes that class of bug."
+        },
+        {
+          "q": "Why is SHA-256 of a raw phone number, without a secret key, a weak way to anonymise it?",
+          "options": [
+            "The input space is small enough to enumerate and reverse by hashing all candidates",
+            "SHA-256 is not deterministic",
+            "Hashes cannot be used as join keys",
+            "SHA-256 outputs are too long"
+          ],
+          "answer": 0,
+          "why": "Phone numbers have low entropy, so an attacker can hash every possible number. A keyed HMAC with a secret held in a vault prevents this while keeping a stable join key."
+        },
+        {
+          "q": "Which practice best prevents an LLM eval score from being inflated by memorisation?",
+          "options": [
+            "Using only the development set for the final report",
+            "Checking and removing overlap and near duplicates between eval items and training or fine-tuning data",
+            "Increasing the number of judge calls",
+            "Shuffling the eval file"
+          ],
+          "answer": 1,
+          "why": "If eval items appear in training data the model can recall them, so the score no longer measures generalisation. Contamination checks and a held-out set guard against this."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Great Expectations documentation",
+          "url": "https://docs.greatexpectations.io/docs/home/"
+        },
+        {
+          "title": "Pydantic documentation",
+          "url": "https://docs.pydantic.dev/latest/"
+        },
+        {
+          "title": "OpenLineage documentation",
+          "url": "https://openlineage.io/docs/"
+        },
+        {
+          "title": "Feast feature store documentation",
+          "url": "https://docs.feast.dev/"
+        },
+        {
+          "title": "Data mesh principles (Martin Fowler)",
+          "url": "https://martinfowler.com/articles/data-mesh-principles.html"
+        }
+      ],
+      "problems": []
+    }
+  ]
+}

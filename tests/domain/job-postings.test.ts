@@ -105,6 +105,8 @@ describe("text and rules", () => {
     for (const t of ["Senior Software Engineer, Payments", "Backend Developer", "SDE II", "Data Engineer", "Machine Learning Engineer", "Site Reliability Engineer", "Android Engineer", "Full Stack Developer", "Engineering Manager"]) expect(isTechRole(t), t).toBe(true);
     for (const t of ["Account Executive", "Sales Engineer", "Marketing Manager", "Technical Recruiter", "Customer Success Manager", "Product Designer", "Legal Counsel", "Technical Program Manager", "Product Manager, Platform"]) expect(isTechRole(t), t).toBe(false);
     expect(isTechRole("Software Engineer, Sales Tools")).toBe(true);
+    for (const t of ["LLM Engineer", "Applied Scientist", "GenAI Engineer", "MLOps Engineer", "Member of Technical Staff", "AI Agent Engineer", "Prompt Engineer"]) expect(isTechRole(t), t).toBe(true);
+    for (const t of ["AI Product Manager", "GenAI Sales Manager", "AI Marketing Manager"]) expect(isTechRole(t), t).toBe(false);
   });
   it("builds keys, careers URLs and detects pasted board links", () => {
     expect(postingKey({ source: "lever", sourceId: "palantir", externalId: "abc" })).toBe("lever:palantir:abc");

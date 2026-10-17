@@ -8,8 +8,13 @@ import { Progress } from "@/components/ui/progress";
 import { problemBySlug } from "@/core/content";
 import { roadmapById, roadmapLesson } from "@/core/roadmaps";
 import { ChecklistItem, JoinButton, LinkRow, ManualTick } from "@/modules/roadmap/components/roadmap-controls";
-import { nextNode, PRIORITY_LABEL, type Priority } from "@/modules/roadmap/domain/roadmap";
+import { JobDemandCard } from "@/modules/roadmap/components/job-demand-card";
+import { NextStepCard } from "@/modules/roadmap/components/next-step-card";
+import { allNodes, demandByNode, nextNode, nextNodes, PRIORITY_LABEL, trackProgress, type Priority } from "@/modules/roadmap/domain/roadmap";
+import { getDeadLinks } from "@/modules/roadmap/services/link-health";
 import { getRoadmapState } from "@/modules/roadmap/services/roadmap";
+import { termsIn } from "@/modules/jobs/domain/ats";
+import { listJobs } from "@/modules/jobs/services/jobs";
 
 const TONE: Record<Priority, "primary" | "info" | "neutral"> = { must: "primary", can: "info", skip: "neutral" };
 
@@ -23,13 +28,25 @@ function Part({ label, state }: { label: string; state: boolean | null }) {
   return <ToneBadge tone={state ? "success" : "neutral"}>{state ? `${label} done` : `${label} to do`}</ToneBadge>;
 }
 
-export default async function RoadmapPage({ params }: PageProps<"/roadmaps/[roadmapId]">) {
+export default async function RoadmapPage({ params, searchParams }: PageProps<"/roadmaps/[roadmapId]">) {
   const { roadmapId: raw } = await params;
+  const { track: trackParam } = await searchParams;
   const roadmapId = decodeURIComponent(raw);
   const roadmap = roadmapById.get(roadmapId);
   if (!roadmap) notFound();
-  const state = await getRoadmapState(roadmap);
+  const [state, jobs, dead] = await Promise.all([
+    getRoadmapState(roadmap),
+    roadmap.sections.some((s) => s.nodes.some((n) => n.skills.length > 0)) ? listJobs() : Promise.resolve([]),
+    getDeadLinks(allNodes(roadmap).flatMap((n) => n.links.map((l) => l.url))),
+  ]);
   const next = nextNode(roadmap, state.statuses);
+  const tracks = trackProgress(roadmap, state.statuses);
+  const selected = tracks.find((t) => t.track.id === (Array.isArray(trackParam) ? trackParam[0] : trackParam)) ?? null;
+  const sectionTitle = new Map(roadmap.sections.map((s) => [s.id, s.title]));
+  const steps = nextNodes(roadmap, state.statuses, 3, selected?.track).map((n) => ({ id: n.id, title: n.title, sectionTitle: sectionTitle.get(n.sectionId) ?? "", priority: n.priority }));
+  const trackViews = tracks.map((t) => ({ id: t.track.id, title: t.track.title, blurb: t.track.blurb, pct: t.pct, done: t.must.done, total: t.must.total, gaps: t.gaps.map((g) => sectionTitle.get(g.sectionId) ?? g.sectionId) }));
+  const demand = demandByNode(roadmap, jobs.map((j) => termsIn(`${j.title}\n${j.jd}`)), state.statuses);
+  const hasSkills = roadmap.sections.some((s) => s.nodes.some((n) => n.skills.length > 0));
 
   return (
     <div className="mx-auto max-w-3xl space-y-8">
@@ -52,9 +69,14 @@ export default async function RoadmapPage({ params }: PageProps<"/roadmaps/[road
         {next && (
           <p className="mt-3 text-sm">
             Next: <a href={`#node-${next.id}`} className="font-medium text-primary underline-offset-2 hover:underline">{next.title}</a>
+            {" · "}
+            <Link href={`/roadmaps/${roadmap.id}/docs`} className="font-medium text-primary underline-offset-2 hover:underline">Documentation library</Link>
           </p>
         )}
       </div>
+
+      <NextStepCard roadmapId={roadmap.id} nodes={steps} tracks={trackViews} selectedTrackId={selected?.track.id ?? null} />
+      {hasSkills && <JobDemandCard rows={demand} jobCount={jobs.length} />}
 
       {roadmap.sections.map((section, si) => (
         <section key={section.id} aria-label={section.title} className="space-y-3">
@@ -122,7 +144,7 @@ export default async function RoadmapPage({ params }: PageProps<"/roadmaps/[road
                               </li>
                             )}
                             {node.links.map((l) => (
-                              <LinkRow key={l.url} roadmapId={roadmap.id} nodeId={node.id} link={l} read={read.includes(l.url)} />
+                              <LinkRow key={l.url} roadmapId={roadmap.id} nodeId={node.id} link={l} read={read.includes(l.url)} dead={dead.has(l.url)} />
                             ))}
                           </ul>
                         </div>

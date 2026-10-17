@@ -85,9 +85,9 @@ const isRemoteText = (s: string) => /\bremote\b/i.test(s);
 
 /* ------------------------------ what is worth keeping ------------------------------ */
 
-const TECH = /\b(engineer(?:ing)?|developer|programmer|sde|swe|sdet|software|backend|back-end|frontend|front-end|full[- ]?stack|devops|sre|site reliability|platform|infrastructure|data (?:scientist|engineer|analyst)|machine learning|ml|ai|research (?:scientist|engineer)|security engineer|qa|android|ios|mobile|firmware|embedded|architect|technical lead)\b/i;
+const TECH = /\b(engineer(?:ing)?|developer|programmer|sde|swe|sdet|software|backend|back-end|frontend|front-end|full[- ]?stack|devops|sre|site reliability|platform|infrastructure|data (?:scientist|engineer|analyst)|machine learning|ml|mlops|llm|genai|generative ai|ai|applied (?:scientist|researcher)|research (?:scientist|engineer)|member of technical staff|security engineer|qa|android|ios|mobile|firmware|embedded|architect|technical lead)\b/i;
 const NOT_TECH = /\b(program manager|product manager|project manager|sales|account (?:executive|manager)|recruit(?:er|ing)|marketing|legal|counsel|finance|accountant|payroll|people partner|hr\b|human resources|customer success|support specialist|copywriter|designer|content|operations manager|business development)\b/i;
-const STRONG_TECH = /\b(software|backend|back-end|frontend|front-end|full[- ]?stack|developer|sde|swe|programmer|devops|sre|machine learning)\b/i;
+const STRONG_TECH = /\b(software|backend|back-end|frontend|front-end|full[- ]?stack|developer|sde|swe|programmer|devops|sre|machine learning|mlops|applied scientist)\b/i;
 
 /** Engineering-type roles. A sales engineer or a marketing role that mentions "data" is not one. */
 export function isTechRole(title: string): boolean {

@@ -10,18 +10,19 @@ Built with Tailwind v4 + shadcn/ui (New York style) + lucide-react icons. Light 
 
 ### Colour tokens (CSS variables in `app/globals.css`, consumed by shadcn)
 
-The palette is **warm paper and deep indigo**: an off-white page with slightly lighter cards and warm borders in light mode, a warm charcoal (not blue-black) in dark mode. The app icon, PWA splash screens (`core/pwa/splash.ts`, `npm run icons`), manifest and `viewport.themeColor` use the same background and indigo.
+The palette is **deep teal and sage on a cool white page**, taken from four brand colours: `#FBFCFC` paper, `#0F3D3E` deep teal (ink, app icon, dark-mode surfaces), `#14746F` teal (actions, links, focus) and `#8EB69B` sage (accents, and the primary colour in dark mode). Cards are white with a hairline border and a teal-tinted shadow (`--shadow-card`); a faint sage glow (`--glow`) sits behind the top of each page. Dark mode is a deep teal night, not grey. The app icon (deep teal with a sage flame), PWA splash screens (`core/pwa/splash.ts`, `npm run icons`), manifest and `viewport.themeColor` use the same colours.
 
 | Token | Dark | Light | Use |
 |---|---|---|---|
-| `--background` | `#13120F` | `#F6F4EF` | Page |
-| `--card` | `#1B1A16` | `#FDFCF9` | Cards |
-| `--sidebar` | `#171612` | `#FBFAF6` | Sidebar |
-| `--muted` | `#24221D` | `#EEEBE4` | Inputs, hover rows |
-| `--border` | `#2C2A24` | `#E5E0D6` | 1px borders |
-| `--foreground` | `#ECE9E2` | `#1C1A17` | Text |
-| `--muted-foreground` | `#A39D91` | `#625D54` | Secondary text |
-| `--primary` / `--primary-foreground` | `#9B8CFF` / `#13120F` | `#4B3FC4` / `#FFFFFF` | Primary actions, progress, links |
+| `--background` | `#081F20` | `#FBFCFC` | Page |
+| `--card` | `#0D3032` | `#FFFFFF` | Cards |
+| `--sidebar` | `#061A1B` | `#F4F8F7` | Sidebar |
+| `--muted` | `#123B3D` | `#EEF4F2` | Inputs, hover rows |
+| `--border` | `#1B4A4C` | `#DBE6E3` | 1px borders |
+| `--foreground` | `#E8F2EF` | `#0C2E2F` | Text |
+| `--muted-foreground` | `#9DB8B3` | `#4F6B6A` | Secondary text |
+| `--primary` / `--primary-foreground` | `#8EB69B` / `#06201F` | `#14746F` / `#FFFFFF` | Primary actions, progress, links |
+| `--accent` / `--accent-foreground` | `#174644` / `#D3E8DC` | `#E2EFE8` / `#0F3D3E` | Selected rows, soft highlights |
 | `--success` | `#4CC47A` | `#12703A` | Done, Easy |
 | `--warning` | `#F0A43A` | `#9A4A07` | Medium, due reviews |
 | `--info` | `#7FB0F5` | `#1F4FBF` | Neutral highlights, tips |

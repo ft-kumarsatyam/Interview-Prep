@@ -37,8 +37,8 @@ export const viewport: Viewport = {
   // Lets the page draw under the notch; app chrome pads itself with env(safe-area-inset-*).
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#13120f" },
-    { media: "(prefers-color-scheme: light)", color: "#f6f4ef" },
+    { media: "(prefers-color-scheme: dark)", color: "#081f20" },
+    { media: "(prefers-color-scheme: light)", color: "#fbfcfc" },
   ],
 };
 

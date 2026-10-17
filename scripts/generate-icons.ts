@@ -6,7 +6,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import sharp from "sharp";
 import { SPLASH_DEVICES, SPLASH_THEMES, splashFile, type SplashTheme } from "@/core/pwa/splash";
 
-const BRAND = "#4b3fc4";
+const BRAND = "#0f3d3e";
+const MARK = "#8eb69b";
 const FLAME = "M16 6c1 3.5 5.5 6 5.5 11.2A5.5 5.5 0 0 1 16 23a5.5 5.5 0 0 1-5.5-5.8c0-2.2 1-3.9 2.2-5 .2 1.8 1 3 2.3 3.6-.3-3.6.2-6.8 1-9.8Z";
 
 /** `rounded` matches the favicon; maskable icons need a full-bleed square with the mark inside the 80% safe zone. */
@@ -15,7 +16,7 @@ function svg({ rounded, scale }: { rounded: boolean; scale: number }): Buffer {
   return Buffer.from(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
       `<rect width="32" height="32" ${rounded ? 'rx="8"' : ""} fill="${BRAND}"/>` +
-      `<path d="${FLAME}" fill="#fff" transform="translate(${offset} ${offset}) scale(${scale})"/>` +
+      `<path d="${FLAME}" fill="${MARK}" transform="translate(${offset} ${offset}) scale(${scale})"/>` +
       `</svg>`,
   );
 }
@@ -36,7 +37,7 @@ function splashSvg(width: number, height: number, theme: SplashTheme): Buffer {
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
       `<rect width="100%" height="100%" fill="${background}"/>` +
       `<g transform="translate(${x} ${y}) scale(${icon / 32})">` +
-      `<rect width="32" height="32" rx="8" fill="${BRAND}"/><path d="${FLAME}" fill="#fff"/></g>` +
+      `<rect width="32" height="32" rx="8" fill="${BRAND}"/><path d="${FLAME}" fill="${MARK}"/></g>` +
       `<text x="50%" y="${y + icon + font * 1.6}" text-anchor="middle" font-family="Inter, -apple-system, Helvetica, Arial, sans-serif" ` +
       `font-size="${font}" font-weight="600" fill="${text}">PrepOS</text>` +
       `</svg>`,

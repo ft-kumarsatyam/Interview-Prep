@@ -1,0 +1,432 @@
+{
+  "chapter": {
+    "id": "mlops-deployment",
+    "title": "MLOps and deployment",
+    "summary": "Package, serve, ship, monitor and pay for ML and LLM systems in production."
+  },
+  "lessons": [
+    {
+      "id": "packaging-and-serving-models",
+      "title": "Packaging and serving models",
+      "minutes": 40,
+      "summary": "Containerising ML code, choosing a model format and a serving stack (FastAPI, BentoML, vLLM, Triton), batch versus online inference, GPU basics and taming cold starts.",
+      "parts": [
+        {
+          "id": "package",
+          "label": "Packaging",
+          "body": "## Why packaging is the first MLOps problem\n\nA notebook that works on your laptop is not a service. Production needs the **same code, the same library versions, the same model weights** and the same system libraries (CUDA, libgomp, libsndfile) on every machine. The standard answer is an **image**: a container that bundles the runtime, dependencies and a pointer to the model.\n\nThree artefacts travel together, and you should version each one:\n\n| artefact | what it is | where it lives |\n|---|---|---|\n| **code** | the serving app, preprocessing, postprocessing | git |\n| **environment** | Python version, pinned libraries, CUDA | image (built from a lockfile) |\n| **model** | weights file(s) plus tokenizer/config | object storage or a model registry |\n\n## Model formats\n\nA format decides who can load the model and how fast.\n\n- **pickle / joblib**: the scikit-learn default. Convenient but **unsafe**: loading a pickle can execute arbitrary code, so never load one you did not create. Also tied to library versions.\n- **safetensors**: tensors only, no code execution, memory-mappable and fast to load. The default for Hugging Face weights.\n- **ONNX**: a framework-neutral graph that ONNX Runtime executes on CPU or GPU. Good for classic ML and encoder models and for leaving PyTorch out of the image.\n- **TorchScript / `torch.export`**: PyTorch graphs for C++ or Triton use.\n- **TensorRT engines**: NVIDIA-optimised, built for one GPU architecture; fastest but least portable.\n- **GGUF**: quantised weights for llama.cpp style CPU and edge inference.\n\nRule of thumb: store the **weights outside the image** for large models (an LLM is tens of gigabytes), download them at start from a registry or bucket and cache them on a volume; bake small models (under a few hundred megabytes) into the image so a deploy is one immutable artefact.\n\n## A production Dockerfile for a Python model service\n\n```dockerfile\n# syntax=docker/dockerfile:1\nFROM python:3.12-slim AS build\nWORKDIR /app\nCOPY requirements.lock .\nRUN python -m venv /venv && /venv/bin/pip install --no-cache-dir -r requirements.lock\n\nFROM python:3.12-slim\nRUN useradd --create-home --uid 10001 app\nCOPY --from=build /venv /venv\nWORKDIR /app\nCOPY src/ ./src/\nENV PATH=\"/venv/bin:$PATH\" MODEL_DIR=/models PYTHONUNBUFFERED=1\nUSER app\nEXPOSE 8000\nHEALTHCHECK --interval=30s CMD python -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:8000/healthz')\"\nCMD [\"uvicorn\", \"src.app:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]\n```\n\nWhy it looks like this: a **multi-stage build** keeps compilers out of the final image; a **lockfile** (not a loose `requirements.txt`) makes builds reproducible; a **non-root user** limits damage; the dependency layer comes before the source copy so code edits reuse the cached layer.\n\nFor GPU images start from an NVIDIA CUDA runtime base (or the framework vendor image) whose CUDA version matches the driver on the host; the host needs the NVIDIA Container Toolkit and you run with `--gpus all`. A CUDA mismatch is the classic \"works locally, crashes in prod\" failure, so pin the base image tag by digest.\n\n## Reproducibility checklist\n\n- Pin Python and every library, including transitive ones.\n- Pin the base image by digest, not by `latest`.\n- Record the model version and the git SHA inside the image as labels and expose them at `/version`.\n- Make the image build in CI, never from a laptop.\n",
+          "diagrams": [
+            {
+              "title": "From training to a running service",
+              "code": "flowchart LR\n  T[Training job] --> W[Weights: safetensors/ONNX]\n  W --> R[(Model registry / bucket)]\n  C[Code + lockfile] --> B[CI image build]\n  B --> I[(Container registry)]\n  I --> D[Deploy]\n  R -->|pulled at start or baked in| D\n  D --> S[Serving endpoint]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# src/app.py - a minimal, production-shaped online endpoint\nimport os\nfrom contextlib import asynccontextmanager\n\nimport joblib  # only for models YOU produced; prefer ONNX/safetensors for third-party artefacts\nfrom fastapi import FastAPI\nfrom pydantic import BaseModel, Field\n\nstate: dict = {}\n\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    # Load once at startup, not per request: loading is the slow part (cold start).\n    state[\"model\"] = joblib.load(os.path.join(os.environ[\"MODEL_DIR\"], \"model.joblib\"))\n    state[\"version\"] = os.environ.get(\"MODEL_VERSION\", \"unknown\")\n    yield\n    state.clear()\n\n\napp = FastAPI(lifespan=lifespan)\n\n\nclass Features(BaseModel):\n    values: list[float] = Field(min_length=1, max_length=512)\n\n\n@app.get(\"/healthz\")\ndef healthz():\n    return {\"ok\": \"model\" in state}\n\n\n@app.post(\"/predict\")\ndef predict(body: Features):\n    score = float(state[\"model\"].predict_proba([body.values])[0][1])\n    return {\"score\": score, \"model_version\": state[\"version\"]}\n"
+            }
+          ]
+        },
+        {
+          "id": "serving",
+          "label": "Serving stacks",
+          "body": "## Pick the serving layer by workload\n\n| tool | best for | notes |\n|---|---|---|\n| **FastAPI** (or Flask) | small models, glue, custom logic | you write batching, metrics and concurrency yourself |\n| **BentoML** | packaging a model plus its API into a versioned \"Bento\" and an image | adaptive micro-batching, runners, one command to containerise |\n| **Triton Inference Server** | many models, mixed frameworks (ONNX, TensorRT, PyTorch), GPU efficiency | dynamic batching, model repository, concurrent model instances, gRPC and HTTP |\n| **vLLM** | LLM text generation | PagedAttention KV-cache management and continuous batching, OpenAI-compatible HTTP server |\n| **Text Generation Inference, SGLang, TensorRT-LLM** | alternatives in the same LLM class | choose by model support and hardware, benchmark on your own prompts |\n| **Managed endpoints** (SageMaker, Vertex AI, Azure ML) | you want autoscaling and patching handled | covered in the cloud lesson |\n\nThe important idea is **batching**. A GPU is efficient when it processes many inputs at once, but users send one request at a time. Servers fix this two ways:\n\n- **Dynamic (micro) batching**: wait a few milliseconds, group whatever arrived, run once. You trade a little latency for a lot of throughput. Triton and BentoML do this for fixed-shape models.\n- **Continuous batching** for LLMs: requests join and leave the running batch at every decoding step, so a short answer is not held up behind a long one. vLLM and TGI do this.\n\n## LLM serving in one paragraph\n\nGeneration has two phases. **Prefill** processes the whole prompt in parallel (compute-bound) and produces the first token, so it dominates **time to first token (TTFT)**. **Decode** produces one token at a time (memory-bandwidth-bound) and sets the **inter-token latency**. Every generated token reads the **KV cache**, the stored attention keys and values of earlier tokens; it grows with context length and with the number of concurrent requests, and it is usually what limits how many users one GPU can serve. PagedAttention stores the cache in fixed-size blocks to avoid fragmentation. Quantisation (8-bit or 4-bit weights) shrinks memory so a bigger model or more concurrent requests fit.\n\n```bash\n# vLLM exposes an OpenAI-compatible server; flags shown are common ones, check your version's docs\nvllm serve meta-llama/Llama-3.1-8B-Instruct \\\n  --max-model-len 8192 \\\n  --gpu-memory-utilization 0.90 \\\n  --port 8000\n\ncurl http://localhost:8000/v1/chat/completions -H 'content-type: application/json' \\\n  -d '{\"model\":\"meta-llama/Llama-3.1-8B-Instruct\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":64}'\n```\n\nBecause the API is OpenAI-compatible, your application code can switch between a hosted provider and a self-hosted model by changing the base URL, which is the foundation of an LLM gateway with fallbacks.\n\n## Batch versus online inference\n\n- **Online (real-time)**: a user waits. Latency budget is tens to hundreds of milliseconds for classic models, seconds for LLMs. Needs autoscaling, health checks and a p95/p99 latency target.\n- **Batch (offline)**: score a whole table nightly or embed a corpus. Run a scheduled job (Airflow, a Kubernetes Job, SageMaker Batch Transform), write predictions to a table, serve them by lookup. Cheaper per prediction, no latency constraint, and easy to retry.\n- **Streaming**: consume events (Kafka) and score continuously, for fraud or recommendations.\n- **Precompute when possible**: if the input space is small or slowly changing (recommendations per user), batch-compute and cache; online serving is then a key-value read.\n\nMany LLM workloads also have an **asynchronous** tier: a queue plus workers for long jobs (document summarisation), with the client polling or receiving a webhook, and provider **batch APIs** at a discount for non-urgent work.\n",
+          "diagrams": [
+            {
+              "title": "Choosing online, batch or streaming",
+              "code": "flowchart TD\n  A[Does a user wait for the answer?] -->|yes| B[Online endpoint + autoscaling]\n  A -->|no| C{Inputs known in advance?}\n  C -->|yes| D[Batch job -> table -> lookup]\n  C -->|events arrive continuously| E[Streaming consumer]\n  B --> F{LLM?}\n  F -->|yes| G[vLLM / TGI + streaming tokens]\n  F -->|no| H[FastAPI / BentoML / Triton]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## GPU basics you should be able to explain\n\n- A GPU has thousands of cores built for parallel matrix math, plus its own memory (**VRAM**). A model must fit in VRAM: weights take roughly *parameters x bytes per parameter* (a 7B model needs about 14 GB in 16-bit, about 7 GB in 8-bit, about 4 GB in 4-bit), plus the KV cache and activations. This is a back-of-envelope estimate, not a guarantee.\n- **Training** needs far more memory than **inference** (gradients and optimiser state). Serving usually fits on smaller GPUs, and bigger models are split with **tensor parallelism** across several GPUs on one machine.\n- Throughput is usually limited by **memory bandwidth** for decode and by **compute** for prefill and for large-batch classic models.\n- Use a CPU when the model is small, traffic is low or spiky, and latency is relaxed; a GPU only pays off when it is kept busy.\n\n## Cold starts\n\nA cold start is the delay between \"a new replica is requested\" and \"it serves its first request\". For ML it is long because of: pulling a multi-gigabyte image, downloading weights, loading them into VRAM, and warming kernels (the first call compiles or autotunes). Mitigations:\n\n- Keep a **minimum replica count** above zero for latency-critical endpoints.\n- Make images small (multi-stage, slim base) and **pre-pull** them on nodes.\n- Put weights on a fast shared volume or bake them into a node image; use safetensors and memory-mapping.\n- Run a **warm-up request** in the startup hook and report ready only afterwards (readiness probe).\n- For scale-to-zero platforms, accept the first-request penalty or use a keep-warm ping for user-facing paths.\n\n## Questions you may be asked\n\n**\"Design serving for a 7B chat model for 500 concurrent users.\"** Estimate VRAM (weights plus KV cache per request times concurrency), choose vLLM for continuous batching, stream tokens to hide latency, set a max context and max output tokens, add a gateway with rate limits and a hosted fallback, autoscale on queue depth or concurrent requests rather than CPU, and track TTFT, tokens per second and cost per 1k tokens.\n\n**\"Why not just use FastAPI for everything?\"** It is fine for small models; it gives no batching, no GPU scheduling and no KV-cache management, so a GPU would sit idle between single requests.\n\n**\"Pickle versus safetensors?\"** Pickle can run code on load, so it is a supply-chain risk; safetensors contains only tensors and loads faster.\n\n**\"Batch or online?\"** Decide from the latency requirement and input predictability; precompute when you can, because it is cheaper and more reliable.\n",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Ship code, environment and model as three separately versioned artefacts; pin dependencies with a lockfile and the base image by digest.",
+        "Never load pickle from an untrusted source; prefer safetensors or ONNX for shared artefacts.",
+        "Load the model once at startup (lifespan hook) and report ready only after warm-up, so traffic never hits a cold replica.",
+        "Batching is what makes GPUs efficient: dynamic batching for fixed-shape models, continuous batching for LLM decoding.",
+        "LLM latency splits into prefill (TTFT, compute-bound) and decode (per-token, memory-bandwidth-bound); the KV cache limits concurrency.",
+        "Choose batch when no user waits and inputs are known in advance; it is cheaper and easier to retry.",
+        "Cold starts come from image pull, weight download, VRAM load and kernel warm-up; fight them with min replicas, small images and warm-up probes."
+      ],
+      "practiceRef": "ai-system-design:3",
+      "check": [
+        {
+          "q": "Why should a model service load its weights in a startup/lifespan hook instead of inside the request handler?",
+          "options": [
+            "Loading is slow, so doing it per request would add seconds of latency to every call",
+            "FastAPI forbids file access inside handlers",
+            "It makes the model more accurate",
+            "It avoids needing a Dockerfile"
+          ],
+          "answer": 0,
+          "why": "Loading weights is the expensive step. Do it once per replica at startup and report ready only after that, so requests only pay inference time."
+        },
+        {
+          "q": "What does continuous batching do for LLM serving?",
+          "options": [
+            "Waits for a full fixed-size batch before starting any request",
+            "Lets requests join and leave the running batch at each decoding step so short requests are not blocked by long ones",
+            "Compresses the KV cache to zero",
+            "Runs every request on a separate GPU"
+          ],
+          "answer": 1,
+          "why": "Continuous batching schedules at token granularity, keeping the GPU busy and improving throughput without making short answers wait for long ones."
+        },
+        {
+          "q": "A nightly job must score ten million customers and write results to a table. Which approach fits best?",
+          "options": [
+            "A real-time endpoint called ten million times with autoscaling",
+            "A streaming consumer on Kafka",
+            "A scheduled batch job writing predictions to a table that the app reads by key",
+            "A GPU kept at minimum one replica"
+          ],
+          "answer": 2,
+          "why": "No user waits and the inputs are known up front, so batch inference is cheaper, easy to retry and removes latency requirements."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Docker: building best practices",
+          "url": "https://docs.docker.com/build/building/best-practices/"
+        },
+        {
+          "title": "FastAPI in containers",
+          "url": "https://fastapi.tiangolo.com/deployment/docker/"
+        },
+        {
+          "title": "BentoML documentation",
+          "url": "https://docs.bentoml.com/en/latest/"
+        },
+        {
+          "title": "NVIDIA Triton Inference Server user guide",
+          "url": "https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/index.html"
+        }
+      ],
+      "problems": []
+    },
+    {
+      "id": "cicd-and-reproducibility",
+      "title": "CI/CD and reproducibility for ML and LLM apps",
+      "minutes": 40,
+      "summary": "Versioning data, models and prompts (DVC, MLflow, registries), GitHub Actions pipelines, evaluation gates in CI, canary and shadow deployments, and rollbacks.",
+      "parts": [
+        {
+          "id": "versioning",
+          "label": "Versioning",
+          "body": "## Reproducibility means more than git\n\nIn software, a commit identifies a build. In ML, the behaviour depends on **code + data + hyperparameters + environment + random seeds**. If you cannot recreate last month's model from recorded inputs, you cannot debug a regression or satisfy an audit. For LLM apps the equivalents are the **prompt version, model name and snapshot, retrieval index version, tool definitions and sampling parameters**.\n\n| thing to version | tool or practice |\n|---|---|\n| code | git, with the commit SHA stored on every model |\n| datasets | **DVC** (git stores a small pointer file, data lives in S3/GCS), lakeFS, or immutable partitioned tables |\n| experiments | **MLflow Tracking** (params, metrics, artefacts per run), Weights & Biases |\n| models | **model registry** (MLflow Model Registry, SageMaker/Vertex registries) |\n| environment | lockfile plus image digest |\n| prompts | files in git with a version string, or a prompt registry; log the version on each trace |\n| eval sets | versioned files, append-only, with the date added |\n\n## DVC in two minutes\n\nDVC keeps large files out of git. `dvc add data/train.parquet` writes `train.parquet.dvc` (a hash and size) which you commit; the bytes go to a **remote** you configure. `dvc repro` runs a pipeline defined in `dvc.yaml` and skips stages whose inputs did not change.\n\n```bash\ndvc init\ndvc remote add -d storage s3://my-bucket/dvcstore\ndvc add data/train.parquet\ngit add data/train.parquet.dvc data/.gitignore dvc.yaml\ngit commit -m \"Track training data v3\"\ndvc push                      # upload bytes\ngit checkout <old-sha> && dvc checkout   # restore the data that matched that commit\n```\n\n## The model registry\n\nA registry is a catalogue of model versions with metadata and a **lifecycle**. A version records which run produced it, its metrics, the data and code versions, and its stage or alias (for example `candidate`, `staging`, `champion`). Deployment pipelines then refer to an alias, not to a file path, so promoting or rolling back is \"move the alias\".\n\n```python\nimport mlflow\nfrom mlflow.tracking import MlflowClient\n\nmlflow.set_experiment(\"churn\")\nwith mlflow.start_run() as run:\n    mlflow.log_params({\"max_depth\": 6, \"data_version\": \"v3\", \"git_sha\": \"ab12cd3\"})\n    model = train(...)  # your training function\n    mlflow.log_metric(\"auc\", 0.912)\n    mlflow.sklearn.log_model(model, name=\"model\", registered_model_name=\"churn-classifier\")\n\nclient = MlflowClient()\nlatest = client.search_model_versions(\"name='churn-classifier'\")[0]\n# Aliases replace the older stage names in recent MLflow releases\nclient.set_registered_model_alias(\"churn-classifier\", \"candidate\", latest.version)\n\n# Serving loads by alias, so promotion never changes the deploy config\nloaded = mlflow.pyfunc.load_model(\"models:/churn-classifier@champion\")\n```\n\nCheck your MLflow version's docs for exact API names; the alias approach is the current recommendation over fixed stages.\n\n## For LLM apps, the \"model\" is a bundle\n\nA change to the system prompt, the retrieval chunk size, the embedding model or the provider snapshot can change quality as much as new weights. Treat the bundle as one releasable unit: keep prompts and config in the repo, pin provider model snapshots (not floating aliases such as \"latest\") where the provider offers them, and stamp every trace with the bundle version so a bad answer can be traced to a specific release.\n",
+          "diagrams": [
+            {
+              "title": "Lineage recorded for every model version",
+              "code": "flowchart LR\n  G[git SHA] --> R[Run]\n  D[Dataset hash via DVC] --> R\n  P[Params + seed] --> R\n  E[Image digest] --> R\n  R --> M[Model version in registry]\n  M -->|alias: champion| S[Serving]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "pipeline",
+          "label": "CI/CD pipeline",
+          "body": "## What CI/CD tests in an ML system\n\nUnit tests are necessary but not sufficient, because a model can pass every unit test and still be worse. Google's \"Rules of ML\" and the CD4ML approach both make the point that you must test **data, model and infrastructure**:\n\n1. **Code**: lint, type check, unit tests for preprocessing and feature code (pure functions).\n2. **Data**: schema and range checks, null rates, label distribution, no train/test leakage.\n3. **Model**: train on a small slice as a smoke test, check output shapes and that predictions are finite.\n4. **Evaluation gate**: compare the candidate against the current champion on a fixed evaluation set; **fail the build if a metric regresses** beyond a tolerance.\n5. **Serving**: build the image, start it, hit `/healthz` and `/predict` with a golden request, check latency.\n\nFor an LLM app the evaluation gate runs a **golden set** of prompts: deterministic checks (valid JSON, required fields, forbidden strings, citations present), plus LLM-as-judge or human-labelled scoring for quality, with temperature fixed at 0 where supported and several samples for noisy cases. Cap the cost: run a small smoke subset on every pull request and the full set nightly or before release.\n\n## GitHub Actions example\n\n```yaml\nname: ml-ci\non:\n  pull_request:\n  push:\n    branches: [main]\n\npermissions:\n  contents: read\n  id-token: write   # OIDC to the cloud, so no long-lived keys are stored\n\njobs:\n  test-and-eval:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with:\n          python-version: \"3.12\"\n          cache: pip\n      - run: pip install -r requirements.lock\n      - run: ruff check . && pytest -q tests/unit\n      - name: Data checks\n        run: python -m ml.checks.data --schema schemas/train.json\n      - name: Eval gate\n        env:\n          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}\n        run: |\n          python -m ml.eval.run --set evals/golden.jsonl --out eval.json\n          python -m ml.eval.gate --result eval.json --baseline evals/baseline.json --max-drop 0.02\n      - uses: actions/upload-artifact@v4\n        with: { name: eval-report, path: eval.json }\n\n  build-image:\n    needs: test-and-eval\n    if: github.ref == 'refs/heads/main'\n    runs-on: ubuntu-latest\n    permissions: { contents: read, packages: write }\n    steps:\n      - uses: actions/checkout@v4\n      - uses: docker/login-action@v3\n        with: { registry: ghcr.io, username: \"${{ github.actor }}\", password: \"${{ secrets.GITHUB_TOKEN }}\" }\n      - uses: docker/build-push-action@v6\n        with:\n          push: true\n          tags: ghcr.io/${{ github.repository }}/model:${{ github.sha }}\n```\n\nNote the shape: the image is tagged with the **commit SHA** (immutable), `permissions` are minimal, and the cloud is reached with OIDC instead of stored keys. Secrets are not available to workflows from forked pull requests, so decide deliberately how contributors' changes get evaluated.\n\n```python\n# ml/eval/gate.py - fail CI when a metric drops more than the tolerance\nimport json, sys, argparse\n\np = argparse.ArgumentParser()\np.add_argument(\"--result\"); p.add_argument(\"--baseline\"); p.add_argument(\"--max-drop\", type=float, default=0.02)\na = p.parse_args()\nnew, base = json.load(open(a.result)), json.load(open(a.baseline))\nbad = {k: (base[k], new.get(k)) for k in base if new.get(k, -1) < base[k] - a.max_drop}\nif bad:\n    print(\"Regression:\", bad); sys.exit(1)\nprint(\"Eval gate passed\")\n```\n\n## Continuous training versus continuous delivery\n\nTraining can be triggered by a schedule, new data volume, or a drift alert (next lesson). Keep **training pipelines** (data to registered model) separate from **deployment pipelines** (registered model to serving). The registry is the handoff, and promotion can require a gate plus a human approval.\n",
+          "diagrams": [
+            {
+              "title": "Pipeline with an evaluation gate",
+              "code": "flowchart LR\n  PR[Pull request] --> U[Unit + data tests]\n  U --> T[Train / build bundle]\n  T --> G{Eval gate vs champion}\n  G -->|regression| X[Fail build]\n  G -->|pass| I[Build image tagged by SHA]\n  I --> REG[(Registry)]\n  REG --> CD[Progressive deploy]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Safe rollout strategies\n\nModels fail silently (they return a plausible but worse answer), so deployment should be **progressive** and measured.\n\n- **Shadow deployment**: the new version receives a copy of live traffic, its outputs are logged and compared, but users still see the old answer. Zero user risk; costs double compute; cannot measure user reaction.\n- **Canary**: route a small slice (1 to 5 percent) to the new version, compare guardrail metrics (errors, latency, quality proxies, cost), then ramp up (5, 25, 50, 100) or abort automatically.\n- **A/B test**: randomised split by user to measure a **business metric** with statistical significance. Slower than a canary; answers \"is it better\" rather than \"is it safe\".\n- **Blue/green**: two full environments, flip the router. Instant rollback, double capacity during the switch.\n\nManaged platforms provide these: SageMaker deployment guardrails (blue/green, canary, linear with automatic rollback on CloudWatch alarms), Kubernetes with Argo Rollouts or a service mesh, and Vertex AI endpoint traffic splits.\n\n## Rollbacks\n\nA rollback should be **one action and fast**: move the registry alias or traffic weight back to the previous version, whose image and weights are still stored. This requires: immutable artefacts (SHA tags, never overwrite), keeping the previous version warm or quickly startable, backward-compatible request and response schemas, and **no destructive data migration** coupled to the release. For LLM apps, rolling back also means restoring the previous prompt and retrieval index version, which is why they belong in the same bundle.\n\nDefine rollback triggers up front, for example error rate above X percent, p95 latency above a budget, or judge score drop, and automate them. Rehearse rollbacks; an untested rollback is a hope.\n\n## Questions you may be asked\n\n**\"How do you stop a worse model reaching production?\"** Evaluation gate in CI against a fixed, versioned eval set and the champion's baseline, then shadow or canary with automatic abort on guardrail metrics.\n\n**\"Offline metrics improved but online metrics fell. Why?\"** Training-serving skew (features computed differently online), distribution shift between the eval set and live traffic, a metric that does not match the business goal, feedback loops, or a leaky offline set. Compare feature values between training and serving.\n\n**\"How do you make an LLM prompt change safe?\"** Prompts are versioned code: pull request, golden-set run in CI, judged diff, canary, version stamped on traces, rollback by reverting the version.\n\n**\"DVC versus MLflow?\"** DVC versions data and pipelines in git workflows; MLflow tracks experiments and manages the model lifecycle. They are complementary.\n",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Model behaviour is code plus data plus params plus environment plus seed; record all of them on every model version.",
+        "DVC keeps dataset pointers in git while bytes live in remote storage; MLflow tracks runs and a registry manages lifecycle.",
+        "Deploy by registry alias or immutable SHA tag so promotion and rollback are a pointer move, not a rebuild.",
+        "CI for ML tests code, data, model quality and the serving container, not just unit tests.",
+        "An evaluation gate compares a candidate to the champion on a fixed versioned eval set and fails the build on regression.",
+        "For LLM apps, treat prompt, model snapshot, retrieval index and tool definitions as one versioned bundle with a golden-set gate.",
+        "Use shadow for zero-risk comparison, canary for safety with auto-abort, A/B for business impact; automate rollback triggers.",
+        "Use OIDC and minimal permissions in Actions instead of long-lived cloud keys."
+      ],
+      "practiceRef": "ai-system-design:0",
+      "check": [
+        {
+          "q": "Why deploy by registry alias (for example champion) instead of by a file path?",
+          "options": [
+            "Aliases make the model smaller",
+            "Promotion and rollback become moving a pointer, with no change to deployment config",
+            "Paths are not allowed in Docker",
+            "Aliases speed up training"
+          ],
+          "answer": 1,
+          "why": "The deploy config refers to the alias; moving it to another version promotes or rolls back without rebuilding or editing infrastructure."
+        },
+        {
+          "q": "What is the main difference between a shadow deployment and a canary?",
+          "options": [
+            "Shadow mirrors traffic and hides the new output from users; canary exposes a small share of users to the new version",
+            "Shadow serves the new model's answers to a small share of users; canary does not",
+            "They are identical",
+            "Canary needs two full environments"
+          ],
+          "answer": 0,
+          "why": "Shadow compares outputs with no user impact. A canary sends real responses from the new version to a small slice and watches guardrail metrics."
+        },
+        {
+          "q": "A pull request changes only the system prompt of an LLM feature. What should CI do?",
+          "options": [
+            "Nothing, since no code changed",
+            "Retrain the base model",
+            "Run the golden-set evaluation and fail if scores regress against the baseline",
+            "Rebuild the GPU driver"
+          ],
+          "answer": 2,
+          "why": "Prompt changes alter behaviour as much as code changes, so they need the same gate: a versioned golden set compared to a baseline."
+        }
+      ],
+      "sources": [
+        {
+          "title": "DVC documentation",
+          "url": "https://dvc.org/doc"
+        },
+        {
+          "title": "MLflow Model Registry",
+          "url": "https://mlflow.org/docs/latest/model-registry/"
+        },
+        {
+          "title": "GitHub Actions: understanding GitHub Actions",
+          "url": "https://docs.github.com/en/actions/about-github-actions/understanding-github-actions"
+        },
+        {
+          "title": "Martin Fowler: Continuous Delivery for Machine Learning",
+          "url": "https://martinfowler.com/articles/cd4ml.html"
+        },
+        {
+          "title": "Amazon SageMaker deployment guardrails",
+          "url": "https://docs.aws.amazon.com/sagemaker/latest/dg/deployment-guardrails.html"
+        },
+        {
+          "title": "Google: Rules of Machine Learning",
+          "url": "https://developers.google.com/machine-learning/guides/rules-of-ml"
+        }
+      ],
+      "problems": []
+    },
+    {
+      "id": "monitoring-and-feedback",
+      "title": "Monitoring, drift and feedback loops",
+      "minutes": 40,
+      "summary": "What to watch in a live model: drift, latency, cost and quality dashboards, LLM tracing with Langfuse and OpenTelemetry, alerting, feedback loops and retraining triggers.",
+      "parts": [
+        {
+          "id": "signals",
+          "label": "What to monitor",
+          "body": "## Four layers of monitoring\n\nA model service can be perfectly healthy by infrastructure standards and still be wrong. Monitor four layers:\n\n1. **System**: CPU/GPU utilisation, memory, restarts, queue depth, replica count.\n2. **Service (RED/USE)**: request **R**ate, **E**rror rate, **D**uration (p50, p95, p99). For LLMs add time to first token, tokens per second and rejection/rate-limit counts.\n3. **Data**: are the inputs still like the training data?\n4. **Model quality**: are the predictions still good? This is the hard one because the truth often arrives late or never.\n\n## Drift, precisely\n\n- **Data drift (covariate shift)**: the distribution of inputs P(X) changes, for example a new app version sends a different mix of countries. Detectable without labels by comparing a recent window to a reference (training) window using the population stability index, Kolmogorov-Smirnov test, Jensen-Shannon divergence or Wasserstein distance per feature.\n- **Concept drift**: the relationship P(y given X) changes, for example fraud tactics evolve, so the same features now mean something else. You only see it through **labels or proxies**: accuracy over time once ground truth arrives, or business outcomes.\n- **Label / prior shift**: the class balance changes.\n- **Training-serving skew**: features are computed differently online than in training (a different code path, a stale join). It looks like drift but is a bug, found by logging served feature values and comparing them with the training pipeline's values.\n- **Prediction drift**: the output distribution moves (suddenly 40 percent more \"high risk\"). A cheap label-free early warning.\n\nDrift is a **signal, not a verdict**: a feature shifts, but accuracy may be fine. Alert on drift to investigate, and confirm with a quality metric before retraining.\n\n```python\n# Population stability index for one numeric feature (reference vs current)\nimport numpy as np\n\ndef psi(reference: np.ndarray, current: np.ndarray, bins: int = 10) -> float:\n    edges = np.quantile(reference, np.linspace(0, 1, bins + 1))\n    edges[0], edges[-1] = -np.inf, np.inf\n    ref = np.histogram(reference, edges)[0] / len(reference)\n    cur = np.histogram(current, edges)[0] / len(current)\n    ref, cur = np.clip(ref, 1e-6, None), np.clip(cur, 1e-6, None)\n    return float(np.sum((cur - ref) * np.log(cur / ref)))\n\n# Common rule of thumb (a heuristic, tune per feature): <0.1 stable, 0.1-0.25 watch, >0.25 investigate\n```\n\nLibraries such as Evidently generate drift and data-quality reports and test suites you can run on a schedule, so you rarely hand-roll this.\n\n## Delayed and missing labels\n\nWhen ground truth is slow (loan default in months) use **proxies**: click or acceptance rate, human review samples, user thumbs, downstream corrections. Sample a small share of predictions for **human labelling** each week; it is the most reliable quality signal you can build. Keep a **holdout** of old traffic with labels as a stable benchmark.\n\n## Dashboards that earn their place\n\n- Traffic, errors, p95 latency per model version.\n- Input feature distributions versus reference, plus the share of missing or out-of-range values.\n- Prediction distribution and confidence histogram.\n- Quality metric over time, with the label delay stated on the chart.\n- Cost per 1,000 requests (compute for self-hosted, tokens for hosted).\n",
+          "diagrams": [
+            {
+              "title": "Drift types at a glance",
+              "code": "flowchart TD\n  A[Metric degraded?] --> B{Inputs changed?}\n  B -->|yes| C[Data drift]\n  B -->|no| D{Same inputs, different outcomes?}\n  D -->|yes| E[Concept drift]\n  D -->|no| F{Online features differ from training?}\n  F -->|yes| G[Training-serving skew bug]\n  F -->|no| H[Check labels / metric definition]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "llm-observability",
+          "label": "LLM observability",
+          "body": "## Tracing an LLM request\n\nA single user question in an LLM app fans out: retrieval, reranking, several model calls, tool calls, guardrails. Without a **trace** you cannot answer \"why was this answer bad or slow or expensive\". A trace is a tree of **spans**, each with start/end time, inputs, outputs and attributes (model, token counts, cost, prompt version).\n\nTwo complementary tools:\n\n- **OpenTelemetry (OTel)**: the vendor-neutral standard for traces, metrics and logs, with **GenAI semantic conventions** that name attributes consistently (model, operation, token usage). Instrument once, export to any backend (Grafana, Datadog, Honeycomb, or an LLM tool). Treat the GenAI conventions as still evolving and check the current spec.\n- **Langfuse** (open source, self-hostable or cloud), and similar tools such as LangSmith and Arize Phoenix: an LLM-specific UI for traces, prompt versions, **evaluations/scores**, datasets and cost. Langfuse can ingest OpenTelemetry data.\n\n```python\n# Tracing with OpenTelemetry: one span per stage, token counts as attributes\nfrom opentelemetry import trace\n\ntracer = trace.get_tracer(\"support-bot\")\n\ndef answer(question: str, user_hash: str) -> str:\n    with tracer.start_as_current_span(\"answer\") as root:\n        root.set_attribute(\"app.prompt_version\", \"support-v14\")\n        root.set_attribute(\"app.user_hash\", user_hash)  # hash, never the raw id or email\n        with tracer.start_as_current_span(\"retrieve\") as s:\n            docs = search(question)\n            s.set_attribute(\"retrieval.count\", len(docs))\n        with tracer.start_as_current_span(\"chat gpt-4o-mini\") as s:\n            resp = call_llm(question, docs)\n            s.set_attribute(\"gen_ai.request.model\", \"gpt-4o-mini\")\n            s.set_attribute(\"gen_ai.usage.input_tokens\", resp.usage.input_tokens)\n            s.set_attribute(\"gen_ai.usage.output_tokens\", resp.usage.output_tokens)\n        return resp.text\n```\n\nAttribute names above follow the GenAI conventions as of writing; confirm against the spec in your SDK version.\n\n## What to record per call\n\nModel and snapshot, prompt version, token counts (input, output, cached), latency (TTFT and total), cost, retrieved document ids and scores, tool calls and their results, finish reason, user feedback and the trace id. **Do not store raw personal data by default**: redact PII before export, hash user ids, set retention, and make full-text capture opt-in or sampled. Prompts and outputs can contain secrets or personal information, so observability data needs the same access control as the product database.\n\n## Quality in production\n\n- **Automatic checks** on every response: valid schema, citations present, banned content, refusal rate, language match.\n- **LLM-as-judge** on a sample (for example 5 percent) for groundedness and helpfulness; calibrate the judge against human labels and re-check periodically, because judges have their own biases.\n- **User feedback**: thumbs, edits, retries, copy actions, escalations to a human. Implicit signals (a user rephrases the same question) are often more plentiful than explicit ratings.\n- **Cost guard**: alert on tokens per request and spend per day; a prompt change that doubles context doubles the bill.\n",
+          "diagrams": [
+            {
+              "title": "Trace of one RAG request",
+              "code": "sequenceDiagram\n  participant U as User\n  participant A as App (root span)\n  participant R as Retriever\n  participant L as LLM\n  participant O as OTel / Langfuse\n  U->>A: question\n  A->>R: search (span)\n  R-->>A: docs\n  A->>L: prompt + docs (span, tokens, cost)\n  L-->>A: answer\n  A-->>U: answer + trace id\n  A->>O: export spans\n  U->>O: thumbs up/down linked by trace id"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Alerting without alert fatigue\n\n- Alert on **symptoms users feel** (error rate, p95 latency, quality score, spend), not on every internal metric. Page for actionable, urgent issues; send the rest to a ticket queue or dashboard.\n- Use **SLOs** with burn-rate alerts rather than static thresholds on noisy signals. Example SLO: 99 percent of requests complete under 3 seconds over 30 days.\n- Drift alerts should be **warnings** that open an investigation, with thresholds tuned on historical data so you do not alert on every seasonal wobble.\n- Give every alert a runbook link: how to check, how to roll back, who owns it.\n- Add a **dead-man's switch**: alert if metrics stop arriving at all.\n\n## Feedback loops and retraining triggers\n\nFeedback loops can help or poison a system. A recommender trained on what it showed users learns its own bias (**selection bias**); a model whose predictions change user behaviour changes its own future data. Mitigate with exploration (show some random items), logging the propensity of each decision, and keeping an unbiased holdout.\n\nRetraining triggers, from simplest to most responsive:\n\n1. **Schedule** (weekly, monthly): predictable and easy, may waste compute or lag.\n2. **Data volume**: retrain after N new labelled examples.\n3. **Performance trigger**: quality metric drops below a threshold once labels arrive.\n4. **Drift trigger**: significant data drift on key features, confirmed by a quality check.\n\nWhatever the trigger, the new model must still pass the **evaluation gate and progressive rollout** from the previous lesson; automatic retraining must never mean automatic deployment without checks. For LLM apps, \"retraining\" is usually **updating prompts, retrieval indexes and eval sets from failures**, adding bad production traces to the golden set, and only occasionally fine-tuning.\n\n```yaml\n# Example alert rule (Prometheus style): p95 latency SLO symptom\ngroups:\n  - name: model-service\n    rules:\n      - alert: ModelLatencyHigh\n        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"model\"}[5m])) by (le)) > 3\n        for: 10m\n        labels: { severity: page }\n        annotations:\n          summary: \"p95 latency above 3s for 10 minutes\"\n          runbook: \"https://wiki.example.com/runbooks/model-latency\"\n```\n\n## Questions you may be asked\n\n**\"How do you know your model degraded if labels arrive in 30 days?\"** Monitor input and prediction drift as early warnings, track proxy metrics, sample predictions for human review, and compute true quality retrospectively with the label delay shown.\n\n**\"Data drift detected. Do you retrain?\"** Not automatically. First check for a pipeline bug or skew, then check whether quality is affected; retrain or recalibrate only if it is.\n\n**\"What do you log for an LLM call, and what must you not log?\"** Model, prompt version, tokens, latency, cost, retrieval ids, scores, trace id; avoid raw PII, secrets and full prompts unless redacted, sampled and access-controlled.\n\n**\"Concept drift versus data drift?\"** Data drift changes inputs; concept drift changes the mapping from inputs to the right answer, so it needs labels to detect.\n",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "Monitor four layers: system, service (rate, errors, duration), data, and model quality.",
+        "Data drift changes P(X) and is detectable without labels; concept drift changes P(y given X) and needs labels or proxies.",
+        "Training-serving skew looks like drift but is a bug; log served features and compare them with the training pipeline.",
+        "Drift is a signal to investigate, not an automatic reason to retrain; confirm with a quality metric.",
+        "Trace LLM apps as span trees with model, prompt version, tokens, latency and cost; OpenTelemetry standardises it and Langfuse adds evals and prompt views.",
+        "Redact PII, hash user ids and set retention on prompts and outputs stored for observability.",
+        "Alert on user-visible symptoms with SLO burn rates and runbooks; automatic retraining must still pass the eval gate and a staged rollout."
+      ],
+      "practiceRef": "ai-system-design:4",
+      "check": [
+        {
+          "q": "Input feature distributions have shifted but no labels are available yet. Which kind of problem can you detect?",
+          "options": [
+            "Only concept drift",
+            "Only label shift",
+            "Nothing without labels",
+            "Data (covariate) drift, by comparing a recent window with the reference window"
+          ],
+          "answer": 3,
+          "why": "Covariate drift concerns P(X), so it can be measured with PSI, KS or similar tests without labels. Concept drift needs outcomes."
+        },
+        {
+          "q": "Why is it risky to retrain automatically and deploy straight away whenever drift is detected?",
+          "options": [
+            "Retraining always lowers accuracy",
+            "The drift may be a pipeline bug or harmless, and the new model may be worse; it must pass the eval gate and staged rollout",
+            "Drift alerts are always false",
+            "Deployments are not possible after retraining"
+          ],
+          "answer": 1,
+          "why": "Drift is a signal, not proof of degradation. A candidate model still needs evaluation against the champion and a canary before serving all traffic."
+        },
+        {
+          "q": "What is the most important privacy practice when storing LLM traces?",
+          "options": [
+            "Redact PII, hash user ids, sample full-text capture and apply retention and access control",
+            "Store every raw prompt forever for debugging",
+            "Disable all tracing",
+            "Store traces only in the browser"
+          ],
+          "answer": 0,
+          "why": "Prompts and outputs can hold personal data and secrets. Observability storage needs the same protections as the product database."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Evidently AI documentation",
+          "url": "https://docs.evidentlyai.com/"
+        },
+        {
+          "title": "Langfuse documentation",
+          "url": "https://langfuse.com/docs"
+        },
+        {
+          "title": "OpenTelemetry documentation",
+          "url": "https://opentelemetry.io/docs/"
+        },
+        {
+          "title": "OpenTelemetry GenAI semantic conventions",
+          "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/"
+        },
+        {
+          "title": "Google: Rules of Machine Learning",
+          "url": "https://developers.google.com/machine-learning/guides/rules-of-ml"
+        }
+      ],
+      "problems": []
+    },
+    {
+      "id": "cloud-and-cost",
+      "title": "Cloud, Kubernetes and cost control",
+      "minutes": 40,
+      "summary": "Managed ML platforms on AWS, GCP and Azure, serverless versus GPU instances, Kubernetes for inference, autoscaling, spot capacity, budget guardrails and secrets.",
+      "parts": [
+        {
+          "id": "platforms",
+          "label": "Platforms and scaling",
+          "body": "## Managed ML platforms\n\nAll three clouds offer the same layers: managed training, a model registry, managed endpoints, pipelines, and hosted foundation models.\n\n| | AWS | Google Cloud | Azure |\n|---|---|---|---|\n| ML platform | **SageMaker AI** (training, endpoints, pipelines, registry) | **Vertex AI** (training, endpoints, pipelines, registry) | **Azure Machine Learning** |\n| Hosted foundation models | **Amazon Bedrock** | Vertex AI model garden (Gemini and open models) | **Azure OpenAI / Foundry** models |\n| Raw GPU VMs | EC2 GPU instances | Compute Engine GPUs | GPU virtual machines |\n| Kubernetes | EKS | GKE | AKS |\n| Serverless functions | Lambda | Cloud Run / Cloud Functions | Functions / Container Apps |\n\nProduct names and model catalogues change often, so check the current docs, but the **decision structure** is stable.\n\n## Decision guide\n\n1. **Can a hosted model API do the job?** For many LLM features, paying per token to a provider or a cloud's hosted models beats running GPUs: no idle cost, no ops. Self-host when volume is high and steady, data cannot leave your boundary, you need a fine-tuned or open model, or per-token cost at scale exceeds GPU cost.\n2. **Managed endpoint** (SageMaker, Vertex, Azure ML): autoscaling, patching, monitoring and deployment guardrails included; you pay a premium for convenience. Best for small teams.\n3. **Containers on a serverless runtime** (Cloud Run, ECS Fargate, Container Apps): scale to zero, pay per use. Good for CPU models and light inference. GPU support exists on some platforms but with cold starts and limits; check availability and quotas.\n4. **Kubernetes with GPU node pools**: most control and best price per request at scale, highest operational cost. Use when you already run Kubernetes or need custom scheduling.\n\n## Serverless versus GPU instances\n\n| | serverless / scale-to-zero | always-on GPU instance |\n|---|---|---|\n| cost shape | pay per request or second, no idle cost | pay per hour whether busy or not |\n| latency | cold starts (image pull, model load) | consistently low |\n| good for | spiky or low traffic, CPU models, prototypes | steady traffic, large models, strict latency |\n| break-even | low utilisation | high utilisation (keep the GPU busy) |\n\nThe key number is **utilisation**: an idle GPU costs the same as a busy one. Raise it with batching, right-sizing the GPU to the model, and consolidating several small models on one device.\n\n## Kubernetes basics for inference\n\n- A **Deployment** runs N replicas of your serving container; a **Service** gives them a stable address; an **Ingress** or gateway exposes HTTP.\n- GPUs are requested as a resource (`nvidia.com/gpu: 1`) and the NVIDIA device plugin exposes them on GPU nodes; taints and tolerations keep non-GPU pods off expensive nodes.\n- **Readiness probes** gate traffic until the model has loaded; **liveness probes** restart hung pods. Set long `initialDelaySeconds` or use a startup probe for big models.\n- **Horizontal Pod Autoscaler (HPA)** scales replicas on metrics. CPU is a poor signal for GPU inference; scale on **requests in flight, queue length or custom metrics**. KEDA scales on queue and event sources, including to zero. A cluster autoscaler or Karpenter adds nodes when pods cannot be scheduled.\n\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata: { name: llm-server }\nspec:\n  replicas: 2\n  selector: { matchLabels: { app: llm-server } }\n  template:\n    metadata: { labels: { app: llm-server } }\n    spec:\n      tolerations: [{ key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }]\n      containers:\n        - name: server\n          image: ghcr.io/acme/llm-server@sha256:REPLACE_WITH_DIGEST\n          ports: [{ containerPort: 8000 }]\n          resources:\n            limits: { nvidia.com/gpu: 1, memory: 32Gi }\n          startupProbe:\n            httpGet: { path: /health, port: 8000 }\n            failureThreshold: 60\n            periodSeconds: 10\n          readinessProbe:\n            httpGet: { path: /health, port: 8000 }\n          envFrom: [{ secretRef: { name: llm-server-secrets } }]\n---\napiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata: { name: llm-server }\nspec:\n  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: llm-server }\n  minReplicas: 2\n  maxReplicas: 8\n  metrics:\n    - type: Pods\n      pods:\n        metric: { name: inflight_requests }   # custom metric exposed via an adapter\n        target: { type: AverageValue, averageValue: \"8\" }\n```\n\nAutoscaling a GPU service is slow (node provisioning plus image pull plus model load can take minutes), so scale on leading indicators, keep a headroom replica, and test scale-up under load.\n",
+          "diagrams": [
+            {
+              "title": "Where to run a model",
+              "code": "flowchart TD\n  A[Need a model in production] --> B{Hosted API good enough?}\n  B -->|yes| C[Call provider / Bedrock / Vertex / Azure]\n  B -->|no| D{Traffic steady and high?}\n  D -->|no, spiky| E[Serverless container or managed endpoint, scale to zero]\n  D -->|yes| F{Team runs Kubernetes?}\n  F -->|yes| G[GPU node pool + vLLM + autoscaling]\n  F -->|no| H[Managed endpoint with autoscaling]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Cost levers\n\nCost in ML systems usually hides in a few places: idle GPUs, oversized models, repeated identical work, and unbounded usage.\n\n- **Right-size the model**: use the smallest model that passes your eval gate; route easy requests to a cheap model and hard ones to a large one (a router or cascade).\n- **Quantise and batch**: lower precision and bigger batches raise throughput per GPU dollar. Validate quality after quantising.\n- **Cache**: exact-match caching and semantic caching for repeated questions; provider **prompt caching** for long shared prefixes (system prompt, documents), which discounts repeated input tokens.\n- **Shorten prompts and outputs**: set `max_tokens`, trim retrieved context, summarise history.\n- **Use batch APIs and off-peak jobs** for non-urgent work.\n- **Spot / preemptible instances**: spare capacity at a large discount that the provider can reclaim with short notice. Great for training with **checkpointing** and for fault-tolerant batch jobs; for online serving use them only behind a pool with on-demand fallback and graceful drain on the interruption notice.\n- **Reserved capacity, savings plans or committed use** for the steady baseline; on-demand or spot for the peak.\n- **Shut things down**: auto-stop notebooks, schedule dev endpoints off at night, delete unused endpoints and old model artefacts.\n\n## Budget guardrails\n\n- **Budgets and alerts** per project and per environment (AWS Budgets, GCP budgets, Azure Cost Management), with tags or labels (team, service, environment) so spend is attributable.\n- **Hard caps where the product allows**: max replicas on autoscalers, per-key spend limits at the LLM gateway, daily token budgets per user and per tenant, request size limits, and rate limits.\n- **Quotas** on GPU instances stop an accident from launching fifty.\n- Track **unit economics**: cost per 1,000 requests, per resolved ticket, per active user. A dashboard of unit cost catches regressions that total spend hides.\n- Bound agent loops with max steps and max spend per task; a runaway loop is a cost incident.\n\n## Security and secrets\n\n- **Never put secrets in images, git or logs.** Use a secrets manager (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault) or Kubernetes Secrets backed by an external store, injected as environment variables or mounted files at runtime.\n- **Workload identity** (IAM roles for service accounts, managed identities, OIDC from CI) so there are no long-lived keys to leak; grant **least privilege**, for example read-only access to one model bucket.\n- **Network**: private endpoints, no public inference port without auth, TLS everywhere, egress restrictions for the serving pods.\n- **Supply chain**: pin and scan images, verify model provenance, prefer safetensors over pickle, sign artefacts.\n- **LLM-specific**: treat prompts and retrieved text as untrusted (prompt injection), restrict tool permissions, redact PII before logging, and enforce per-tenant data isolation in retrieval.\n\n```bash\n# Create a secret out of band and reference it, never commit it\nkubectl create secret generic llm-server-secrets \\\n  --from-literal=PROVIDER_API_KEY=\"$(op read 'op://ml/provider/key')\"\n```\n\n## Questions you may be asked\n\n**\"Your GPU bill doubled. What do you check?\"** Utilisation and idle time, replica counts and autoscaler max, a prompt or context length increase, a routing change sending more traffic to the large model, cache hit rate, and which tag or team owns the spend.\n\n**\"Serverless or dedicated GPU for a new LLM feature?\"** Start with a hosted API or serverless for uncertain, spiky demand. Move to dedicated GPUs when traffic is steady and per-token cost exceeds GPU cost at good utilisation.\n\n**\"Can you serve production on spot instances?\"** Yes for fault-tolerant tiers, with diversified instance types, a baseline of on-demand capacity, interruption handling and retries; not as the only capacity for a strict-latency endpoint.\n\n**\"How do you protect an API key for the LLM provider?\"** Secrets manager plus workload identity, never in the image or repo, rotated, scoped, with spend limits and alerts.\n",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "complexity": [],
+      "keyPoints": [
+        "SageMaker, Vertex AI and Azure ML offer managed training, registries and endpoints; Bedrock, Vertex and Azure host foundation models.",
+        "Start with a hosted API; self-host when volume is steady and high, data must stay inside your boundary, or you need an open or fine-tuned model.",
+        "Serverless suits spiky, low traffic but has cold starts; always-on GPUs suit steady traffic and pay off only at high utilisation.",
+        "On Kubernetes, request GPUs as a resource, gate traffic with readiness and startup probes, and autoscale on in-flight requests or queue depth, not CPU.",
+        "Cut cost with right-sized models, routing, quantisation, batching, caching, prompt caching and shutting down idle resources.",
+        "Use spot capacity for checkpointed training and fault-tolerant batch jobs; keep on-demand baseline for strict-latency serving.",
+        "Add budgets, quotas, max replicas, per-key and per-tenant spend caps, and track unit cost per request.",
+        "Keep secrets in a secrets manager with workload identity and least privilege; never in images, git or logs."
+      ],
+      "practiceRef": "ai-llm-engineering:5",
+      "check": [
+        {
+          "q": "Why is CPU utilisation usually a poor autoscaling signal for GPU-backed LLM serving?",
+          "options": [
+            "GPUs do not use CPUs",
+            "The bottleneck is GPU memory and decoding, so in-flight requests or queue depth track load better",
+            "Kubernetes cannot read CPU metrics",
+            "CPU is always at 100 percent"
+          ],
+          "answer": 1,
+          "why": "Load on a GPU server shows up as concurrent requests and queueing, while CPU may stay low. Scale on leading indicators such as in-flight requests or queue length."
+        },
+        {
+          "q": "Which workload is the best fit for spot or preemptible instances?",
+          "options": [
+            "A strict-latency online endpoint with a single replica",
+            "The database holding user accounts",
+            "A checkpointed training job or fault-tolerant batch scoring",
+            "A payment processor"
+          ],
+          "answer": 2,
+          "why": "Spot capacity can be reclaimed with short notice. Checkpointing and retries make batch and training tolerant of that; single-replica latency-critical serving is not."
+        },
+        {
+          "q": "Where should an LLM provider API key live in a production deployment?",
+          "options": [
+            "In the Dockerfile as an ENV line",
+            "In the git repository in a config file",
+            "In the prompt so the model can use it",
+            "In a secrets manager injected at runtime, with least privilege and spend limits"
+          ],
+          "answer": 3,
+          "why": "Secrets baked into images or repos leak. Inject them at runtime from a secrets manager or workload identity, scope them narrowly and cap their spend."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Kubernetes: workload autoscaling",
+          "url": "https://kubernetes.io/docs/concepts/workloads/autoscaling/"
+        },
+        {
+          "title": "Amazon SageMaker AI",
+          "url": "https://aws.amazon.com/sagemaker/"
+        },
+        {
+          "title": "Google Cloud Vertex AI documentation",
+          "url": "https://cloud.google.com/vertex-ai/docs"
+        },
+        {
+          "title": "Azure Machine Learning documentation",
+          "url": "https://learn.microsoft.com/en-us/azure/machine-learning/"
+        }
+      ],
+      "problems": []
+    }
+  ]
+}

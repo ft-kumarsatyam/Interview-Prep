@@ -84,7 +84,7 @@ export interface PushContent {
 
 /** The roast line becomes the subject and leads the body; the original title follows it. */
 export function withRoast(content: PushContent, line: string): PushContent {
-  const banner = `<p style="margin:0 0 16px;padding:12px 16px;border-radius:10px;background:#1f1633;color:#c4b5fd;font:600 18px/1.4 system-ui,-apple-system,Segoe UI,sans-serif">${escapeHtml(line)}</p>`;
+  const banner = `<p style="margin:0 0 16px;padding:12px 16px;border-radius:10px;background:#0f3d3e;color:#8eb69b;font:600 18px/1.4 system-ui,-apple-system,Segoe UI,sans-serif">${escapeHtml(line)}</p>`;
   return {
     title: `${line} | ${content.title}`,
     body: `${line}\n\n${content.body}`,

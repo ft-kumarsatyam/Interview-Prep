@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boardSearchLinks, companySearchUrl } from "@/modules/jobs/domain/job-links";
+import { aiSearchLinks, AI_ROLE_PRESETS, boardSearchLinks, companySearchUrl } from "@/modules/jobs/domain/job-links";
 import { DEFAULT_PREFS, highlightSegments, jobPrefsSchema, levelOf, matchPosting, roleFit, splitList, type MatchContext, type ScorablePosting } from "@/modules/jobs/domain/job-match";
 
 const NOW = new Date("2026-10-05T12:00:00Z");
@@ -115,5 +115,20 @@ describe("search links", () => {
   it("fills a company's own search template", () => {
     expect(companySearchUrl("https://x.example/?q={q}&loc={l}", { role: "sde 2", location: "Pune" })).toBe("https://x.example/?q=sde%202&loc=Pune");
     expect(companySearchUrl(undefined, { role: "x", location: "y" })).toBeNull();
+  });
+});
+
+describe("AI job search links", () => {
+  it("builds Google searches over public ATS boards and only https links", () => {
+    const links = aiSearchLinks({ role: "LLM Engineer", location: "Bengaluru", remote: true, days: 7 });
+    const g = links.find((l) => l.id === "google-ats")!;
+    expect(decodeURIComponent(g.url)).toContain("site:jobs.lever.co");
+    expect(decodeURIComponent(g.url)).toContain('"LLM Engineer" Bengaluru remote');
+    expect(g.url).toContain("tbs=qdr:w");
+    for (const l of links) expect(l.url.startsWith("https://"), l.id).toBe(true);
+  });
+  it("offers role presets with title and skill keywords", () => {
+    expect(AI_ROLE_PRESETS.map((p) => p.role)).toContain("Applied AI Engineer");
+    for (const p of AI_ROLE_PRESETS) expect(p.keywords.length).toBeGreaterThan(1);
   });
 });

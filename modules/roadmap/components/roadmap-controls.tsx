@@ -26,7 +26,7 @@ export function JoinButton({ roadmapId, joined }: { roadmapId: string; joined: b
 }
 
 /** A learning link: opening it counts as read, and you can untick it. */
-export function LinkRow({ roadmapId, nodeId, link, read }: { roadmapId: string; nodeId: string; link: { title: string; url: string; kind: string }; read: boolean }) {
+export function LinkRow({ roadmapId, nodeId, link, read, dead = false }: { roadmapId: string; nodeId: string; link: { title: string; url: string; kind: string }; read: boolean; dead?: boolean }) {
   const [isRead, setRead] = useState(read);
   const [pending, start] = useTransition();
   const save = (value: boolean) =>
@@ -57,6 +57,7 @@ export function LinkRow({ roadmapId, nodeId, link, read }: { roadmapId: string; 
       >
         <span className="truncate">{link.title}</span>
         <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{link.kind}</span>
+        {dead && <span className="shrink-0 rounded bg-destructive/10 px-1.5 py-0.5 text-[11px] text-destructive">link may be dead</span>}
         <ExternalLink className="size-3 shrink-0" aria-hidden />
         <span className="sr-only">(opens in a new tab)</span>
       </a>

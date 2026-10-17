@@ -5,7 +5,7 @@ import { ExternalLink } from "lucide-react";
 import { Chip } from "@/components/shared/chip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { boardSearchLinks, companySearchUrl } from "@/modules/jobs/domain/job-links";
+import { aiSearchLinks, AI_ROLE_PRESETS, boardSearchLinks, companySearchUrl } from "@/modules/jobs/domain/job-links";
 
 export interface DeepLinkView {
   id: string;
@@ -22,6 +22,7 @@ export function SearchLinks({ initialRole, initialLocation, initialRemote, roleO
   const [remote, setRemote] = useState(initialRemote);
   const [days, setDays] = useState<1 | 7 | 30>(7);
   const links = useMemo(() => boardSearchLinks({ role, location, remote, days }), [role, location, remote, days]);
+  const aiLinks = useMemo(() => aiSearchLinks({ role, location, remote, days }), [role, location, remote, days]);
   const open = "inline-flex min-h-9 items-center gap-1 rounded-md border px-2.5 text-xs hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none pointer-coarse:min-h-11";
 
   return (
@@ -30,6 +31,13 @@ export function SearchLinks({ initialRole, initialLocation, initialRemote, roleO
         <div className="space-y-1.5">
           <Label htmlFor="sl-role">Role</Label>
           <Input id="sl-role" value={role} onChange={(e) => setRole(e.target.value)} placeholder="Backend engineer" maxLength={80} />
+          <div role="group" aria-label="AI role presets" className="flex flex-wrap gap-1.5 pt-1">
+            {AI_ROLE_PRESETS.map((p) => (
+              <Chip key={p.role} pressed={role === p.role} onClick={() => setRole(p.role)}>
+                {p.role}
+              </Chip>
+            ))}
+          </div>
           {roleOptions.length > 1 && (
             <div role="group" aria-label="Roles in this profile" className="flex flex-wrap gap-1.5 pt-1">
               {roleOptions.map((r) => (
@@ -72,6 +80,22 @@ export function SearchLinks({ initialRole, initialLocation, initialRemote, roleO
         <p className="text-sm text-muted-foreground">These sites have no public data feed, so PrepOS can&apos;t read them for you. Each link opens a search in your own browser where you are signed in. Found a job you like? Click the PrepOS extension icon on the page to send it here.</p>
         <ul className="grid gap-3 md:grid-cols-2">
           {links.map((l) => (
+            <li key={l.id} className="rounded-xl border bg-card p-4">
+              <a href={l.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm font-semibold hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+                {l.name} <ExternalLink className="size-3.5" aria-hidden />
+                <span className="sr-only">(opens in a new tab)</span>
+              </a>
+              <p className="mt-1 text-xs text-muted-foreground">{l.note}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section aria-label="AI job boards" className="space-y-3">
+        <h2 className="text-base font-semibold">AI job boards and searches</h2>
+        <p className="text-sm text-muted-foreground">Boards and searches that lean towards AI roles. They open in your own browser; PrepOS never signs in to or reads them for you.</p>
+        <ul className="grid gap-3 md:grid-cols-2">
+          {aiLinks.map((l) => (
             <li key={l.id} className="rounded-xl border bg-card p-4">
               <a href={l.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm font-semibold hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
                 {l.name} <ExternalLink className="size-3.5" aria-hidden />

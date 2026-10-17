@@ -31,7 +31,7 @@ describe("data/roadmaps", () => {
   });
 
   it("is deep: many nodes, each with a checklist of topics to tick", () => {
-    const min: Record<string, number> = { dsa: 55, "system-design": 55, backend: 60, frontend: 80, "frontend-scale": 55, fullstack: 75, "ai-engineer": 65 };
+    const min: Record<string, number> = { dsa: 55, "system-design": 55, backend: 60, frontend: 80, "frontend-scale": 55, fullstack: 75, "ai-engineer": 110 };
     for (const r of roadmaps) {
       const nodes = allNodes(r);
       expect(nodes.length, r.id).toBeGreaterThanOrEqual(min[r.id] ?? 20);

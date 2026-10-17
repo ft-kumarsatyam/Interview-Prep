@@ -1,0 +1,508 @@
+{
+  "chapter": {
+    "id": "ai-system-design",
+    "title": "AI system design",
+    "summary": "A framework for AI design interviews, then worked designs for a RAG platform, an LLM serving API and gateway, an agent platform, and a chat product with observability and evals."
+  },
+  "lessons": [
+    {
+      "id": "ai-design-framework",
+      "title": "A framework for AI and GenAI system design interviews",
+      "minutes": 40,
+      "summary": "A repeatable structure for AI design rounds: clarify the product, define quality and evals first, estimate tokens, cost, latency and QPS with real arithmetic, then decide build vs buy.",
+      "parts": [
+        {
+          "id": "framework",
+          "label": "The framework",
+          "body": "## Why AI design rounds differ\n\nA classic system design round asks you to scale a deterministic service. An AI design round asks the same, plus: the core component is **probabilistic**, **expensive per call**, **slow**, and **hard to test**. Interviewers listen for whether you treat the model as one unreliable dependency inside a normal distributed system, rather than as magic.\n\n## The seven-step structure\n\n1. **Clarify the product and the user.** Who uses it, what is the task, what does a good answer look like, what is the cost of a wrong answer (annoying, costly, dangerous)? A support bot and a medical-coding assistant have different designs because the error cost differs.\n2. **Define quality before architecture.** Name the metrics (answer correctness, groundedness, citation accuracy, task success, refusal rate) and how you will measure them. This is **eval-first thinking**: you cannot choose chunk size, model or prompt without a way to compare options.\n3. **Estimate scale.** Requests per second, tokens per request, concurrency, cost per day, latency budget. Do the arithmetic out loud (next part).\n4. **Sketch the baseline pipeline.** Usually: ingest, retrieve, assemble context, call the model, validate, respond, log. Start with the simplest thing that could work.\n5. **Deep dive on the hard parts.** Pick two or three: retrieval quality, serving latency, safety, freshness, multi-tenancy, evals.\n6. **Failure modes and guardrails.** Provider outage, slow tokens, hallucination, prompt injection, runaway cost, stale data, PII leakage.\n7. **Evolution.** What you would measure after launch and what you would change: caching, smaller model, fine-tuning, a data flywheel.\n\n## Core components you can name on demand\n\n| Layer | Typical pieces |\n|---|---|\n| Edge | Auth, per-tenant rate limits, request validation, input guardrails (PII, injection screening) |\n| Orchestration | Prompt assembly, retrieval, tool calls, retries, routing between models |\n| Model access | A **gateway** over hosted APIs or self-hosted inference servers |\n| Knowledge | Document store, chunking pipeline, embeddings, vector plus keyword index |\n| Memory/state | Conversation store, session cache, semantic cache |\n| Safety | Output validation, schema checks, moderation, citation checks |\n| Observability | Traces per request, token and cost metering, eval and feedback pipelines |\n\n## Eval-first thinking\n\nState this early; it separates strong candidates. Before building, assemble a small **golden set** (50 to 200 real or realistic questions with reference answers or rubrics), pick graders (exact match where possible, otherwise rubric-based LLM judges calibrated against human labels), and decide the ship threshold. Every later decision (model, chunking, reranker, prompt) is then an experiment scored on that set, not a debate.\n\n## Build vs buy\n\nDecide per layer, not for the whole system:\n\n- **Buy** (hosted model API, managed vector DB, managed observability) when speed to market matters, volume is modest, and data policy allows it. You get frontier quality and zero GPU operations.\n- **Build or self-host** when you have high steady volume (the fixed GPU cost amortises), strict data residency or privacy rules, a need for custom fine-tuned small models, or latency requirements an API cannot meet.\n- **Hybrid** is the common answer: hosted frontier model for hard queries, a small self-hosted or cheaper model for easy ones, routed by a gateway.\n\nAlways name the exit: keep a thin provider abstraction so switching vendors is a config change, and keep your prompts and evals portable. That is the real defence against lock-in and price changes.",
+          "diagrams": [
+            {
+              "title": "The AI design interview flow",
+              "code": "flowchart LR\n  req[Clarify product and error cost] --> q[Define quality metrics and evals]\n  q --> est[Estimate QPS, tokens, cost, latency]\n  est --> base[Baseline pipeline]\n  base --> deep[Deep dive on 2-3 hard parts]\n  deep --> fail[Failure modes and guardrails]\n  fail --> evo[Measure, iterate, flywheel]\n  evo -.-> q"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "estimation",
+          "label": "Estimation with real numbers",
+          "body": "## Why estimate\n\nEstimation shows you understand the unit economics. The numbers below are **assumptions for practice**, not quotes of any vendor's price list; in an interview, state your assumptions, then compute.\n\n## Worked example: customer support assistant\n\n**Assumptions**\n\n- 200,000 daily active users, 5 messages each: 1,000,000 requests per day.\n- Peak traffic is about 3x the average.\n- Per request: system prompt 500 tokens, retrieved passages 3,000, recent history 500, the user message 100 = **about 4,100 input tokens**; answer about **300 output tokens**.\n- Illustrative model price: 1 dollar per million input tokens and 4 dollars per million output tokens (placeholder numbers).\n\n**QPS**\n\nAverage = 1,000,000 / 86,400 = about 11.6 requests per second. Peak = about 35 requests per second.\n\n**Token volume per day**\n\nInput = 1,000,000 x 4,100 = 4.1 billion tokens. Output = 1,000,000 x 300 = 300 million tokens.\n\n**Cost per day**\n\nInput = 4,100 million x 1 dollar per million = 4,100 dollars. Output = 300 million x 4 dollars per million = 1,200 dollars. Total about **5,300 dollars per day**, or about 5.3 cents per conversation turn.\n\nNotice what dominates: **input tokens**, because retrieval stuffs the prompt. That tells you where to optimise: fewer, better chunks (rerank to 3 instead of 8), prompt caching for the stable system prompt prefix, and a cheaper model for easy queries.\n\n**Concurrency (Little's law)**\n\nConcurrent in-flight requests = arrival rate x time in system. At 35 QPS and a 6 second average generation, about 35 x 6 = **210 concurrent streams** at peak. That number sizes your gateway connections and, if self-hosting, your GPU batch capacity.\n\n## Latency budget\n\nUsers perceive two numbers: **time to first token (TTFT)** and **tokens per second** after that. Budget a 3 second TTFT target for a chat product:\n\n| Stage | Budget |\n|---|---|\n| Auth, validation, input guardrails | 50 ms |\n| Query rewrite (small model) | 300 ms |\n| Embed query + hybrid retrieval | 150 ms |\n| Rerank top 50 | 200 ms |\n| Prefill of ~4k tokens, queueing | 800 ms |\n| Network and slack | 500 ms |\n\nThen generation at roughly 40 to 80 tokens per second means 300 tokens take about 4 to 7 seconds, which is acceptable **only because it streams**. Streaming converts a long total latency into a short perceived one.\n\n## A quick calculator\n\n```python\ndef estimate(dau, msgs_per_user, in_tok, out_tok, price_in_per_m, price_out_per_m, peak_factor=3, avg_gen_s=6):\n    req_day = dau * msgs_per_user\n    qps_avg = req_day / 86_400\n    qps_peak = qps_avg * peak_factor\n    cost_in = req_day * in_tok / 1e6 * price_in_per_m\n    cost_out = req_day * out_tok / 1e6 * price_out_per_m\n    return {\n        \"qps_avg\": round(qps_avg, 1),\n        \"qps_peak\": round(qps_peak, 1),\n        \"concurrent_peak\": round(qps_peak * avg_gen_s),\n        \"cost_per_day\": round(cost_in + cost_out),\n        \"cost_per_request\": round((cost_in + cost_out) / req_day, 4),\n    }\n\nprint(estimate(200_000, 5, 4_100, 300, 1.0, 4.0))\n```\n\n## Levers when the number is too high\n\n1. **Prompt caching** of the shared prefix: cached input tokens are billed at a steep discount by major providers, and it also cuts prefill latency. Put stable content first, variable content last.\n2. **Semantic or exact response caching** for repeated questions.\n3. **Routing**: a small model for classification-like or FAQ queries, the large model only when needed.\n4. **Shorter context**: rerank, deduplicate, compress history into a summary.\n5. **Batch/async** for anything not user-facing (offline summarisation uses discounted batch APIs).\n6. **Output limits**: set max output tokens and instruct concise answers; output tokens are the slowest and priciest.\n\nState at the end: \"I would validate these numbers with a load test and real token counts from the tokenizer, because my 4,100 is a guess.\"",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"Walk me through how you would design an LLM-powered support chatbot.\"**\nUse the seven steps. Open with clarifying questions (channels, languages, allowed actions, error cost, data sources, compliance). Say you will define a golden set and metrics first. Then draw the pipeline: ingest and chunk docs, hybrid retrieval with rerank, grounded prompt with citations, streaming response, feedback capture, evals. Finish with failure modes and what you would measure after launch.\n\n**2. \"How would you estimate the cost of this system?\"**\nGive the chain: requests per day, tokens in and out per request, price per million tokens, then identify the dominant term (usually input tokens from retrieved context) and the levers: prompt caching, routing, shorter context, response caching.\n\n**3. \"Should we call an API or host our own model?\"**\nAnswer with conditions, not preference. API first for speed and quality. Self-host when volume is high and steady enough that GPU utilisation stays high, when data cannot leave your network, or when a fine-tuned small model matches the big one on your eval. Mention the operational cost of GPUs (autoscaling, drivers, on-call) that people forget. Recommend a gateway so the decision is reversible.\n\n**4. \"How do you know the system is good?\"**\nOffline golden-set evals gating deploys, online metrics (thumbs up, escalation to human, task completion), sampled human review, and regression runs when prompt, model or index changes. Mention LLM judges need calibration against human labels.\n\n**5. \"What breaks in production?\"**\nProvider outage or rate limiting (fallback model, queueing), slow tail latency (timeouts, hedging, streaming), hallucination (grounding, citation checks, abstain path), prompt injection from retrieved content, stale knowledge, cost spikes from a runaway client (per-tenant budgets), PII in logs.\n\n## Answer framing tips\n\n- **Lead with the decision, then the reason.** \"I would start with a hosted model behind a gateway because we have no GPU team and volume is modest.\"\n- **Quantify.** Even rough numbers show maturity; say they are assumptions.\n- **Name trade-offs explicitly:** quality vs cost vs latency form a triangle; every choice moves one.\n- **Do not over-engineer v1.** Interviewers like a simple baseline plus a clear path to evolve it (add rerank, add caching, add fine-tuning) driven by measured failures.\n- **Separate what the model does from what code does.** Authorization, rate limits, budgets and validation are code, never prompt instructions.\n\n## Common mistakes\n\n- Starting with the vector database before saying what quality means.\n- Ignoring cost and latency until asked.\n- Treating the LLM as deterministic, with no retries, validation or fallback.\n- Forgetting that retrieved text and user input are untrusted (prompt injection).\n- Proposing fine-tuning first when better retrieval or prompting has not been tried and measured.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Use a fixed structure: clarify product and error cost, define quality and evals, estimate, baseline, deep dive, failure modes, evolution.",
+        "Eval-first: build a golden set and ship thresholds before choosing models, chunk sizes or prompts.",
+        "Estimate QPS, tokens, cost per day and concurrency (Little's law) with stated assumptions, and find the dominant term, usually input tokens.",
+        "Stream responses: budget time to first token and tokens per second separately.",
+        "Cost levers: prompt caching, routing to smaller models, shorter context, response caching, batch APIs, output limits.",
+        "Decide build vs buy per layer and keep a provider abstraction so the decision is reversible.",
+        "Authorization, budgets and validation live in code, not in prompts."
+      ],
+      "practiceRef": "ai-system-design:0",
+      "check": [
+        {
+          "q": "In the support-assistant estimate, which term usually dominates cost and what is the best first lever?",
+          "options": [
+            "Output tokens; lower the temperature",
+            "Input tokens from retrieved context; prompt caching, reranking to fewer chunks and routing",
+            "Network egress; add a CDN",
+            "Embedding calls; remove the vector index"
+          ],
+          "answer": 1,
+          "why": "Retrieval fills the prompt with thousands of tokens, so input tokens dominate. Caching the stable prefix, passing fewer and better chunks and routing easy queries to cheaper models cut that term directly."
+        },
+        {
+          "q": "Roughly how many concurrent generations are in flight at 35 requests per second with a 6 second average response?",
+          "options": [
+            "About 6",
+            "About 35",
+            "About 210",
+            "About 2,100"
+          ],
+          "answer": 2,
+          "why": "Little's law: concurrency = arrival rate x time in system = 35 x 6 = 210."
+        },
+        {
+          "q": "Why define evals before picking architecture details like chunk size or model?",
+          "options": [
+            "Interviewers require it",
+            "Without a measurable definition of quality you cannot compare options, so decisions become opinion",
+            "Evals make the model faster",
+            "Evals replace the need for monitoring"
+          ],
+          "answer": 1,
+          "why": "Chunk size, reranker, prompt and model are all experiments. A golden set and thresholds let you score them objectively and catch regressions."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Anthropic: Building effective agents",
+          "url": "https://www.anthropic.com/engineering/building-effective-agents"
+        },
+        {
+          "title": "Anthropic docs: Prompt caching",
+          "url": "https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching"
+        },
+        {
+          "title": "Hamel Husain: Your AI product needs evals",
+          "url": "https://hamel.dev/blog/posts/evals/"
+        },
+        {
+          "title": "OpenAI docs: Evals guide",
+          "url": "https://platform.openai.com/docs/guides/evals"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    },
+    {
+      "id": "rag-platform-at-scale",
+      "title": "Design a RAG platform at scale",
+      "minutes": 45,
+      "summary": "Ingestion, chunking, embeddings, sharded vector indexes, hybrid search with rerank, freshness, per-user ACLs, citations, caching and the failure modes of a multi-tenant RAG service.",
+      "parts": [
+        {
+          "id": "architecture",
+          "label": "Architecture",
+          "body": "## The problem\n\n\"Design an internal knowledge assistant for a company with 50 million documents across wikis, tickets, drives and chat, used by 100,000 employees, with answers that cite sources and respect who may see what.\" This is the canonical RAG platform question. Split it into an **offline ingestion path** and an **online query path**.\n\n## Ingestion pipeline\n\n- **Connectors** pull from source systems. Prefer change events or webhooks plus periodic reconciliation over full re-crawls. Each document gets a stable id and a content hash so unchanged documents are skipped.\n- **Queue-driven workers** make ingestion elastic and retryable. Each stage is idempotent: re-processing a document replaces its chunks by document id and version rather than appending.\n- **Parsing** is where quality is lost first. PDFs, slides and tables need layout-aware extraction; scanned files need OCR. Keep headings, table structure and page numbers as metadata.\n- **Deduplicate** near-identical documents (hashing or MinHash) so a policy copied 40 times does not fill the context window.\n\n## Chunking\n\nChunks are the unit of retrieval, so they must be self-contained and neither too small (no context) nor too big (diluted embedding, wasted tokens).\n\n| Strategy | Use when |\n|---|---|\n| Fixed size with overlap (for example 300 to 500 tokens, 10 to 15 percent overlap) | Baseline, homogeneous text |\n| Structure-aware (split on headings, sections, code blocks, table rows) | Docs, wikis, manuals; usually better |\n| Parent-child (retrieve small chunks, return the larger parent section) | Precise match but needs context |\n| Contextual chunks (prepend a short document/section summary to each chunk before embedding) | Chunks that lose meaning in isolation |\n\nThere is no universally best size; tune it on your eval set. Store with every chunk: document id, version, source URL, title path, ACL principals, timestamps and tenant id.\n\n## Embeddings\n\n- Embed in **batches** to use accelerator throughput; cache by content hash so re-ingesting an unchanged chunk costs nothing.\n- Record the **embedding model id and version** on every vector. Changing the model means re-embedding everything, so plan a **blue/green index**: build the new index in the background, evaluate it on the golden set, then switch traffic.\n- Keep dimensionality in mind: storage is documents x chunks x dimensions x bytes. 50M docs at ~20 chunks each is about 1 billion vectors; at 1,024 dimensions in float32 that is about 4 TB before index overhead. Scalar or binary quantization, or lower-dimension (Matryoshka-style) embeddings, shrink this by 4x to 32x with a small recall cost you should measure.\n\n## Vector store sharding\n\nA billion vectors does not fit on one node. Approximate nearest neighbour indexes (HNSW graphs, IVF with product quantization, DiskANN-style disk indexes) trade memory, recall and latency.\n\n- **Shard by tenant** when tenants are large and isolated: queries touch one shard and isolation is simple. Small tenants share shards with a tenant filter.\n- **Shard by hash of document id** for uniform load; queries **scatter-gather** to all shards and merge the top k. Latency becomes the slowest shard, so replicate and set per-shard timeouts.\n- **Replicas** serve read throughput and availability; writes go through the ingestion path, not the query path.\n- Memory-heavy HNSW suits low latency; disk-based indexes cut cost at some latency.",
+          "diagrams": [
+            {
+              "title": "RAG platform: ingestion and query paths",
+              "code": "flowchart TD\n  subgraph Ingest[Offline ingestion]\n    src[Connectors: wiki, drive, tickets] --> cdc[Change events / queue]\n    cdc --> parse[Parse + clean + dedupe]\n    parse --> chunk[Chunk with metadata + ACL]\n    chunk --> emb[Embed in batches]\n    emb --> vs[(Vector + keyword index, sharded)]\n    chunk --> meta[(Document store)]\n  end\n  subgraph Query[Online query]\n    q[User question] --> auth[AuthN + resolve groups]\n    auth --> rw[Query rewrite]\n    rw --> hy[Hybrid retrieval with ACL filter]\n    hy --> rr[Rerank]\n    rr --> ctx[Context assembly + citations]\n    ctx --> llm[LLM via gateway, streaming]\n    llm --> chk[Grounding and citation check]\n    chk --> ans[Answer]\n  end\n  vs --> hy\n  meta --> ctx"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "retrieval-quality",
+          "label": "Retrieval and failures",
+          "body": "## Hybrid retrieval and rerank\n\nDense (embedding) search captures meaning but misses exact identifiers such as error codes, product SKUs and names. Keyword search (BM25) captures exact terms but misses paraphrase. **Hybrid** runs both and fuses the ranked lists, commonly with **reciprocal rank fusion**: each result scores the sum of 1 / (k + rank) across lists (k is often 60), which needs no score calibration.\n\n```python\nfrom collections import defaultdict\n\ndef rrf(ranked_lists, k=60):\n    scores = defaultdict(float)\n    for results in ranked_lists:               # each is a list of chunk ids, best first\n        for rank, chunk_id in enumerate(results, start=1):\n            scores[chunk_id] += 1.0 / (k + rank)\n    return sorted(scores, key=scores.get, reverse=True)\n\ndef retrieve(query, user, dense, bm25, reranker, n_candidates=50, n_final=6):\n    flt = {\"tenant\": user.tenant, \"acl_any\": user.principals}   # filter inside the index\n    fused = rrf([dense.search(query, k=n_candidates, filter=flt),\n                 bm25.search(query, k=n_candidates, filter=flt)])[:n_candidates]\n    return reranker.rank(query, fused)[:n_final]\n```\n\nA **cross-encoder reranker** scores each (query, chunk) pair jointly, which is far more accurate than the bi-encoder used for the first stage but too slow for millions of items. The standard pattern: cheap recall to 50 to 100 candidates, rerank to 5 to 8. This improves answer quality and cuts prompt tokens at once.\n\n**Query rewriting** helps conversational input: resolve pronouns using history (\"what about its pricing?\"), split multi-part questions, and optionally generate a hypothetical answer for embedding. Keep it to a small, fast model.\n\n## Access control (ACLs)\n\nRetrieval must never surface a chunk the user may not read, because the model will happily summarise it.\n\n- Store ACL principals (users, groups) on each chunk and apply a **filter inside the vector query**, not after it. Post-filtering top k can return nothing useful when most hits are forbidden, and risks leaking through counts or timings.\n- Resolve group membership at query time from the identity provider (with a short cache), so revocations take effect quickly. When a document's permissions change in the source, emit an ACL-update event that patches chunk metadata without re-embedding.\n- Never put restricted text in shared caches keyed only by the query. Scope cache keys by the user's permission set.\n- Enforce authorization in code. A prompt that says \"do not reveal confidential documents\" is not a control.\n\n## Citations and grounding\n\nReturn source ids with each passage and ask the model to cite them. Then **verify in code**: every cited id must exist in the retrieved set, and key claims should be supported by the cited text (an entailment check or LLM judge on a sample). If retrieval returns nothing relevant, return an \"I could not find this\" answer instead of letting the model improvise. Show the user source links; it builds trust and gives free feedback signals.\n\n## Freshness\n\n- Event-driven updates make most documents searchable within minutes; a periodic reconciliation job catches missed events and deletions.\n- Handle **deletes and tombstones** explicitly. Stale chunks of deleted or superseded documents are a classic source of wrong answers and privacy incidents.\n- Store version and last-modified times; boost recent documents for time-sensitive intents, and show dates in citations.\n\n## Caching\n\n1. **Embedding cache** keyed by content hash.\n2. **Retrieval cache** keyed by normalised query plus the user's ACL signature, short TTL.\n3. **Semantic response cache**: return a stored answer when a new question is near-identical to a previous one. Risky: it can serve stale or wrongly scoped answers, so use a high similarity threshold, scope by ACL and index version, and invalidate on re-index.\n4. **Prompt caching** at the model provider for the stable system prompt prefix.\n\n## Failure modes\n\n| Failure | Mitigation |\n|---|---|\n| Right document not retrieved | Hybrid search, better chunking, query rewrite, measure recall at k on the golden set |\n| Retrieved but ignored or misread (lost in the middle) | Fewer, reranked chunks; put best evidence first; ask for quotes |\n| Hallucinated answer or fake citation | Citation validation, abstain path, grounded-only prompting |\n| Prompt injection inside a document | Treat retrieved text as data, delimit it, no tool power in this path, filter outputs |\n| Stale or deleted content | Event-driven updates, tombstones, reconciliation |\n| ACL leak | Filter in the index, per-ACL cache keys, audit sampling |\n| Embedding model upgrade breaks recall | Blue/green index with eval gate |\n| One slow shard | Per-shard timeout, replicas, return partial results with a flag |\n| Reranker or LLM outage | Fall back to first-stage ranking; fall back to a secondary model |",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"Design a RAG system for 50 million documents.\"**\nSplit into ingestion and query paths. Mention: connectors with change events, idempotent queue workers, structure-aware chunking with metadata, versioned embeddings, sharded hybrid index with ACL filters, rerank, grounded prompt with citations, streaming, evals and feedback. Quantify storage (vectors x dimensions x bytes) and QPS, and say how you would shard.\n\n**2. \"How do you improve retrieval quality?\"**\nMeasure first: build a labelled set of (question, relevant chunks) and track recall at k and MRR. Then try, in order of cost: better parsing and chunking, hybrid search, query rewriting, metadata filters, reranking, contextual chunk text, and only then embedding fine-tuning. Always compare on the same eval.\n\n**3. \"How do you enforce document permissions?\"**\nACL principals stored with chunks, filters applied inside the ANN query, group membership resolved at query time, ACL-change events patching metadata, ACL-scoped caches, and audit sampling. State plainly that the model is never the access-control layer.\n\n**4. \"How do you keep the index fresh?\"**\nChange events for latency, reconciliation for correctness, tombstones for deletes, version metadata, and a re-embedding plan using blue/green indexes when the embedding model changes.\n\n**5. \"Why not just use a long context window and skip retrieval?\"**\nLong context helps for a handful of documents, but at 50 million documents it cannot hold the corpus; cost and latency scale with every token sent each request, accuracy can degrade on very long inputs, and you cannot enforce per-user permissions on a pasted corpus. Retrieval remains the way to select what is relevant; long context lets you pass more or bigger passages.\n\n**6. \"How would you evaluate it?\"**\nSeparate retrieval metrics (recall at k, nDCG) from generation metrics (faithfulness to the retrieved text, answer relevance, citation accuracy), run offline on a golden set in CI, and monitor online signals: thumbs, follow-up rephrasings, escalations, no-answer rate.\n\n## Answer framing tips\n\n- Draw two lanes (offline and online) before discussing details.\n- Tie each choice to a failure it prevents: hybrid for identifiers, rerank for precision, ACL filter for leaks, tombstones for stale data.\n- Give a numeric sizing example for vectors and index memory, and mention quantization.\n- Raise multi-tenancy early: tenant id on everything, noisy-neighbour limits, per-tenant budgets.\n\n## Common mistakes\n\n- Post-filtering by ACL after top-k retrieval.\n- Embedding with one model and querying with another after an upgrade.\n- Skipping an eval set and tuning chunk size by vibes.\n- Letting the model answer when retrieval found nothing.\n- Caching answers without scoping by user permissions and index version.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Split the design into an offline ingestion path (connectors, parse, chunk, embed, index) and an online query path.",
+        "Make ingestion idempotent and event-driven, with content hashes, tombstones for deletes and a reconciliation job.",
+        "Version embeddings and rebuild with a blue/green index gated by the golden-set eval when the model changes.",
+        "Shard by tenant or document hash; scatter-gather queries to shards with timeouts, replicas and quantization to control memory.",
+        "Hybrid search (dense plus BM25, fused for example with reciprocal rank fusion) followed by a cross-encoder rerank is the standard quality stack.",
+        "Apply ACL filters inside the index query and scope caches by permission set; the model is never the access control layer.",
+        "Validate citations in code and abstain when retrieval finds nothing relevant."
+      ],
+      "practiceRef": "ai-system-design:0",
+      "check": [
+        {
+          "q": "Where should per-user document permissions be enforced in a RAG query?",
+          "options": [
+            "In the system prompt, telling the model not to reveal restricted content",
+            "After retrieval, by deleting forbidden chunks from the top k",
+            "As a filter inside the vector and keyword index query, using ACL metadata stored with each chunk",
+            "Only at login, since users are already authenticated"
+          ],
+          "answer": 2,
+          "why": "Filtering inside the query guarantees forbidden text is never retrieved and avoids empty results from post-filtering. Prompts are not access controls."
+        },
+        {
+          "q": "Why is a cross-encoder reranker applied to a small candidate set rather than the whole corpus?",
+          "options": [
+            "It scores each query and chunk pair jointly, which is accurate but too slow for millions of items",
+            "It cannot read text longer than one word",
+            "It only works on keyword indexes",
+            "It replaces the need for an embedding model entirely"
+          ],
+          "answer": 0,
+          "why": "Joint scoring is more accurate than bi-encoder similarity but costs one model pass per candidate, so use cheap recall first and rerank 50 to 100 candidates."
+        },
+        {
+          "q": "Your team upgrades the embedding model. What is the safe rollout?",
+          "options": [
+            "Embed new documents with the new model and keep old vectors",
+            "Swap the query encoder only and leave the index as is",
+            "Build a new index with the new model in the background, evaluate on the golden set, then switch traffic",
+            "Delete the index and rebuild during peak hours"
+          ],
+          "answer": 2,
+          "why": "Vectors from different models live in different spaces, so mixing breaks retrieval. A blue/green index with an eval gate allows a safe switch and rollback."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Lewis et al.: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+          "url": "https://arxiv.org/abs/2005.11401"
+        },
+        {
+          "title": "Liu et al.: Lost in the Middle",
+          "url": "https://arxiv.org/abs/2307.03172"
+        },
+        {
+          "title": "Anthropic: Introducing Contextual Retrieval",
+          "url": "https://www.anthropic.com/news/contextual-retrieval"
+        },
+        {
+          "title": "Anthropic: Effective context engineering for AI agents",
+          "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    },
+    {
+      "id": "llm-serving-and-gateway",
+      "title": "Design an LLM inference API and gateway",
+      "minutes": 45,
+      "summary": "How LLM serving works (prefill, decode, KV cache, continuous batching, paged attention, quantization) and how to build the API layer around it: streaming, routing, fallbacks, rate limits, multi-tenant cost and GPU autoscaling.",
+      "parts": [
+        {
+          "id": "serving",
+          "label": "Inference serving",
+          "body": "## Two phases, two bottlenecks\n\nGenerating text with a transformer has two phases with different hardware profiles:\n\n- **Prefill**: process the whole prompt in parallel and build the attention **KV cache** (keys and values for every layer and token). This is **compute-bound**; its duration drives **time to first token (TTFT)**.\n- **Decode**: produce one token at a time, each step reading all model weights and the whole KV cache. This is **memory-bandwidth-bound**; it drives **inter-token latency** (tokens per second).\n\nEverything in serving is about keeping the GPU busy during decode without blowing up memory or TTFT.\n\n## KV cache sizing (worked example)\n\nBytes per token = 2 (keys and values) x layers x KV heads x head dimension x bytes per value.\n\nFor a Llama-3-70B-class model (80 layers, 8 KV heads with grouped-query attention, head dimension 128) in 16-bit: 2 x 80 x 8 x 128 x 2 = 327,680 bytes, about **320 KiB per token**. A 4,000-token conversation therefore holds about 1.3 GB of cache. Weights in 16-bit are about 140 GB (70B parameters x 2 bytes), so serving needs several GPUs, and the memory left after weights bounds how many sequences fit at once.\n\nGrouped-query attention (fewer KV heads than query heads) exists precisely to shrink this cache; KV-cache quantization (for example 8-bit) shrinks it further.\n\n## Continuous batching\n\nStatic batching waits for a whole batch to finish, so short requests idle behind long ones. **Continuous (in-flight) batching** schedules at the **token-iteration level**: after every decode step, finished sequences leave and waiting ones join. Throughput rises several times with no change to the model. Every modern server (vLLM, TensorRT-LLM, SGLang, Hugging Face TGI) does this.\n\n## Paged attention\n\nNaively reserving a contiguous max-length KV buffer per request wastes memory through fragmentation. **PagedAttention** (the vLLM paper) stores the cache in fixed-size blocks mapped through a page table, like OS virtual memory, so memory is allocated on demand and nearly all of it is usable. It also enables **prefix caching**: requests sharing a prompt prefix (a long system prompt, a shared document) reuse the same blocks and skip the prefill for that prefix. Design implication: **put stable content first** in the prompt, and consider routing requests with the same prefix to the same replica (cache-aware routing).\n\n## Other latency and throughput levers\n\n| Technique | Effect | Trade-off |\n|---|---|---|\n| Quantization of weights (8-bit, 4-bit) | Smaller weights, faster decode, fewer GPUs | Small quality loss; evaluate on your task |\n| FP8 on recent GPUs | Roughly halves weight memory versus 16-bit | Needs hardware and framework support |\n| Speculative decoding (small draft model proposes tokens, big model verifies) | Lower latency with output identical in distribution | Extra memory, gains depend on acceptance rate |\n| Chunked prefill | Interleaves long prompts with decode so others do not stall | Slightly slower prefill |\n| Prefill/decode disaggregation | Separate GPU pools tuned for each phase | Needs fast KV transfer, more complex |\n| Tensor/pipeline parallelism | Fit models larger than one GPU | Interconnect cost, latency |\n| Mixture-of-experts models | Fewer active parameters per token | All experts must still fit in memory |\n\n## Streaming\n\nReturn tokens as they are produced using **server-sent events** (or gRPC/WebSocket streaming). It makes perceived latency equal to TTFT. Design points: send periodic heartbeats so proxies do not close idle connections, support client cancellation (a closed connection must abort generation and free the KV blocks), include usage totals in the final event, and make retries safe with idempotency keys.",
+          "diagrams": [
+            {
+              "title": "LLM serving request path",
+              "code": "flowchart LR\n  c[Client] --> gw[Gateway: auth, quota, routing]\n  gw --> q[Per-model queue / scheduler]\n  q --> r1[Replica 1: continuous batching + paged KV]\n  q --> r2[Replica 2]\n  gw -. fallback .-> ext[Hosted provider API]\n  r1 --> gw\n  r2 --> gw\n  gw -->|SSE stream| c\n  gw --> m[(Metering: tokens, cost, latency)]"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "gateway",
+          "label": "Gateway and scaling",
+          "body": "## What an LLM gateway does\n\nA gateway is the single front door between your products and one or more model backends (hosted APIs and your own servers). It centralises concerns you do not want duplicated in every team's code:\n\n1. **Authentication and tenant identity** (API keys, service accounts, per-team budgets).\n2. **A unified API** across providers, so changing a model is configuration. Open-source gateways and proxies exist for this, and managed ones do too.\n3. **Routing** by model name, task, tenant tier, cost or latency.\n4. **Fallbacks and retries** with backoff and jitter on 429 and 5xx errors.\n5. **Rate limiting and quotas** by tokens, not just requests.\n6. **Caching** (exact and semantic).\n7. **Guardrails** (PII redaction, injection screening, output moderation).\n8. **Metering and observability**: tokens in and out, cost, latency, errors, tagged by tenant, feature and model.\n\n```yaml\n# Illustrative gateway routing policy (not tied to a specific product)\nroutes:\n  - name: support-chat\n    primary:   { provider: hosted-frontier, model: large-chat }\n    fallbacks:\n      - { provider: hosted-secondary, model: large-chat-alt }\n      - { provider: self-hosted,      model: open-70b-fp8 }\n    timeout_ms: 30000\n    retry: { max_attempts: 2, backoff: exponential, jitter: true, on: [429, 500, 502, 503, 504] }\n    cache: { exact: true, semantic: { enabled: true, similarity: 0.97, scope: [tenant, acl_hash] } }\n  - name: classify-intent\n    primary: { provider: self-hosted, model: small-8b-int8 }\nlimits:\n  tenant_default: { tokens_per_minute: 200000, requests_per_minute: 600, daily_budget_usd: 500 }\n```\n\n## Routing and fallbacks\n\n- **Rule-based routing**: by endpoint or task (classification goes to the small model).\n- **Cascade routing**: try a cheap model, escalate to the large one when a verifier or confidence check fails. It saves money if most queries are easy; measure the escalation rate and the quality on your eval.\n- **Fallback chains** must consider that prompts and tool schemas may behave differently on another model. Test the fallback path in your evals, not only in an outage.\n- **Circuit breaker** per backend: after repeated failures stop sending traffic for a cool-down, then probe. Combine with **hedged requests** for latency-critical paths (send a second request after a delay, take the first answer), accepting the extra cost.\n- Respect provider **Retry-After** headers and never retry non-idempotent tool side effects blindly.\n\n## Rate limits that fit LLMs\n\nRequests per second is a poor unit: one request can be 100 tokens or 100,000. Use a **token bucket in tokens**. You do not know output length in advance, so reserve against the requested max output tokens at admission, then **reconcile** to actual usage when the stream ends and refund the difference. Add a concurrency cap per tenant so one client cannot occupy every decode slot, and priority classes (interactive over batch). Shared counters live in a fast store such as Redis, or in-process with periodic sync if exactness is not required.\n\n## Multi-tenant cost control\n\n- Tag every request with tenant, feature and user; meter prompt, cached and completion tokens separately.\n- **Budgets and alerts** per tenant with hard stops, because a runaway agent loop can burn a month's budget overnight.\n- Chargeback or showback dashboards tied to the metering stream.\n- Per-tenant model allow-lists and maximum context or output sizes.\n- Isolation: noisy-neighbour protection via quotas and separate queues; dedicated capacity for large tenants if needed.\n\n## Autoscaling GPUs\n\nCPU autoscaling signals (utilisation) do not work for GPU inference. Better signals: **queue depth or waiting requests, KV cache utilisation, time to first token, and tokens per second per replica**. Considerations:\n\n- **Cold starts are slow**: pulling a 70 GB weight file and loading to GPU can take minutes. Keep a warm pool, cache weights on local NVMe or a shared volume, and scale on leading indicators (queue growth) rather than lagging ones.\n- **GPUs are scarce and costly**: use reserved or committed capacity for the baseline and on-demand or spot for bursts, with the hosted API as the overflow valve.\n- Scale-down needs **graceful draining**: stop routing new requests, let in-flight streams finish.\n- Right-size with the quantization and batching levers above before adding hardware.\n- Run **load tests with realistic prompt/output length distributions**; averages hide the long-tail requests that dominate KV memory.\n\n## Capacity sketch\n\nSuppose your measured throughput on one 8-GPU node is 2,500 output tokens per second at your latency target (a number you must benchmark, not assume), and peak demand is 35 requests per second x 300 output tokens = 10,500 tokens per second. You need about 10,500 / 2,500 = 4.2, so **5 nodes plus headroom for failure**, versus paying a hosted API per token. The crossover depends on utilisation: idle GPUs cost the same as busy ones.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"Design an API that serves an LLM to many internal teams.\"**\nGateway in front: auth and tenant identity, unified API, routing, fallbacks, token-based rate limits, caching, guardrails, metering. Behind it: self-hosted replicas with continuous batching and paged KV cache, plus a hosted provider as fallback and overflow. Streaming via SSE with cancellation. Observability and budgets per tenant. Then discuss capacity numbers.\n\n**2. \"Why is LLM inference hard to scale compared with a normal web service?\"**\nRequests are long-lived and variable in cost; memory (KV cache), not CPU, is the limiting resource; decode is memory-bandwidth-bound; batching is essential for utilisation but trades latency; GPUs are scarce with slow cold starts; and cost is per token.\n\n**3. \"Explain continuous batching and PagedAttention.\"**\nContinuous batching schedules per decode iteration so finished requests leave and new ones join, keeping the GPU full. PagedAttention allocates KV cache in blocks via a page table, removing fragmentation and enabling prefix sharing, which raises how many concurrent sequences fit.\n\n**4. \"How do you cut latency?\"**\nStream; shorten prompts; prefix and prompt caching; smaller or quantized models; speculative decoding; route easy requests to small models; reduce queueing through autoscaling on queue depth; place replicas near users; cap output length.\n\n**5. \"How do you handle a provider outage or rate limiting?\"**\nRetries with jittered backoff, circuit breakers, fallback to a second provider or a self-hosted model that was evaluated on the same golden set, request queueing with priorities for interactive traffic, and degraded modes such as shorter answers.\n\n**6. \"How would you design rate limiting for tokens?\"**\nToken bucket per tenant, reserve at admission using max output tokens, reconcile at completion, plus concurrency caps and priority classes. Mention that limits protect both your GPUs and your bill.\n\n**7. \"API versus self-host: how do you decide?\"**\nCompare utilisation-adjusted cost per million tokens, data constraints, latency needs, model quality on your eval, and the operations burden. State that the hybrid with a gateway is usually the pragmatic answer.\n\n## Answer framing tips\n\n- Separate the **control plane** (gateway, policy, metering) from the **data plane** (inference replicas).\n- Use numbers: KV cache per token, tokens per second per node, concurrency by Little's law.\n- Always mention the metrics you would alert on: TTFT p95, tokens per second, queue depth, error and fallback rate, cost per tenant.\n- Be honest that benchmark results depend on hardware, model and workload; propose measuring.\n\n## Common mistakes\n\n- Rate limiting by requests only.\n- Autoscaling GPUs on CPU utilisation.\n- Forgetting cancellation, so abandoned streams keep consuming GPU.\n- Untested fallback models with different prompt formats or tool schemas.\n- Ignoring prefix caching by putting variable text at the start of the prompt.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Prefill is compute-bound and sets time to first token; decode is memory-bandwidth-bound and sets tokens per second.",
+        "KV cache grows with tokens x layers x KV heads x head dimension; size it explicitly to know how many concurrent sequences fit.",
+        "Continuous batching schedules per decode iteration; PagedAttention removes cache fragmentation and enables prefix sharing.",
+        "Quantization, speculative decoding, chunked prefill and routing to smaller models are the main latency and cost levers; measure quality on your own eval.",
+        "A gateway centralises auth, routing, fallbacks, token-based rate limits, caching, guardrails and per-tenant metering.",
+        "Rate limit in tokens with reserve-then-reconcile, plus concurrency caps and priorities; set hard per-tenant budgets.",
+        "Autoscale GPUs on queue depth, KV utilisation and TTFT, keep warm capacity because cold starts are slow, and drain gracefully."
+      ],
+      "practiceRef": "ai-system-design:3",
+      "check": [
+        {
+          "q": "Which phase of LLM generation is memory-bandwidth-bound, and what does it determine?",
+          "options": [
+            "Prefill; time to first token",
+            "Decode; the speed of tokens after the first",
+            "Tokenization; request admission",
+            "Embedding; retrieval recall"
+          ],
+          "answer": 1,
+          "why": "Each decode step reads all weights and the KV cache to produce one token, so memory bandwidth limits tokens per second. Prefill is compute-bound and sets TTFT."
+        },
+        {
+          "q": "Why is requests per second a poor rate-limit unit for an LLM API?",
+          "options": [
+            "Providers forbid request limits",
+            "Streaming responses are not requests",
+            "Requests cannot be counted reliably",
+            "A single request can cost 100 tokens or 100,000, so cost and GPU time vary enormously; limit tokens instead"
+          ],
+          "answer": 3,
+          "why": "Cost and capacity scale with tokens. Use a token bucket, reserve using the max output setting at admission and reconcile to actual usage afterwards."
+        },
+        {
+          "q": "What is the best primary autoscaling signal for GPU inference replicas?",
+          "options": [
+            "CPU utilisation of the host",
+            "Disk space",
+            "Queue depth, KV-cache utilisation and time to first token",
+            "Number of registered users"
+          ],
+          "answer": 2,
+          "why": "GPU inference saturates on memory and batch slots, which show up as queue growth and KV pressure well before CPU metrics move."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Kwon et al.: Efficient Memory Management for LLM Serving with PagedAttention",
+          "url": "https://arxiv.org/abs/2309.06180"
+        },
+        {
+          "title": "Hugging Face TGI: PagedAttention concept guide",
+          "url": "https://huggingface.co/docs/text-generation-inference/conceptual/paged_attention"
+        },
+        {
+          "title": "Anthropic docs: Prompt caching",
+          "url": "https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching"
+        },
+        {
+          "title": "LiteLLM documentation (open-source LLM gateway)",
+          "url": "https://docs.litellm.ai/docs/"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    },
+    {
+      "id": "agent-platform-design",
+      "title": "Design an agent platform",
+      "minutes": 45,
+      "summary": "Architecture for running tool-using agents safely at scale: orchestration, MCP, context and memory, sandboxed execution, durable long-running state, tracing, human approval and layered safety.",
+      "parts": [
+        {
+          "id": "architecture",
+          "label": "Orchestration and tools",
+          "body": "## The problem\n\n\"Design a platform where teams deploy agents that call internal tools, run for minutes or hours, and act on behalf of users.\" The interviewer wants to see that you treat an agent as **a loop with side effects**, so the platform must provide durability, isolation, permissions, observability and cost control that individual prompts cannot.\n\n## Orchestrator\n\nThe orchestrator runs the loop: call the model, validate tool calls, execute them, append results, repeat until a finish condition. For a platform, three properties matter:\n\n- **Durable execution.** A run may take minutes, wait for human approval for hours, or survive a deploy. Persist each step (messages, tool calls with ids, results) after it happens, so a crashed worker resumes from the last checkpoint. Workflow engines such as Temporal-style systems, or a queue plus a state table, provide this. Each tool call needs an **idempotency key** so a retry does not send the email twice.\n- **Bounded execution.** Hard limits on steps, tokens, wall-clock time, cost and tool-call count per run, enforced in code, with loop and no-progress detection.\n- **Async interface.** Return a run id immediately; clients subscribe to events (SSE) or poll. Support cancel.\n\n## Tools and the Model Context Protocol (MCP)\n\nMCP is an open protocol that standardises how an AI application connects to tools, resources and prompts, using JSON-RPC between a **host/client** and **servers** over stdio or streamable HTTP. For a platform it means teams publish a tool once as an MCP server and any agent can use it, instead of N custom integrations per model or framework.\n\nPlatform concerns on top of MCP:\n\n- A **tool registry and gateway**: catalogue of approved servers, versioned schemas, owners, and per-agent allow-lists. Unapproved servers are not reachable.\n- **Authentication per user, not per agent.** Remote MCP servers use OAuth-based authorization so a tool acts with the end user's permissions, never a shared super-token. Apply least privilege and short-lived credentials.\n- **Tool descriptions are untrusted input.** A malicious or compromised server can put instructions in descriptions or results (tool poisoning). Pin server versions, review descriptions, and log changes.\n- **Design tools for the model**: few, well-named, purpose-built tools with clear descriptions, helpful errors and concise, paginated outputs. Too many tools degrade selection accuracy, so load them on demand (tool search) when the catalogue is large.\n\n## Context engineering and memory\n\nThe context window is a scarce, costly resource. A long run needs active management:\n\n| Layer | What it holds | Technique |\n|---|---|---|\n| Working context | Current task, recent steps | Trim and clear old tool results, truncate large outputs |\n| Run state | Full transcript, plan, artifacts | Durable store; summarise (\"compaction\") when nearing limits |\n| Scratchpad / notes | Plans, progress files | Agent writes notes to external storage and re-reads them |\n| Long-term memory | User preferences, learned facts | Store as records or documents; retrieve selectively |\n| Sub-agents | Isolated research contexts | Sub-agent returns a short summary to the parent |\n\nPrinciples: keep the stable prefix (system prompt, tool definitions) first for **prompt caching**; return large results as references (a file id or handle) rather than pasting them; write memories only when useful and let users view and delete them. Treat memory as a data store with **privacy** obligations: tenant isolation, retention and deletion on request, and no secrets stored.",
+          "diagrams": [
+            {
+              "title": "Agent platform components",
+              "code": "flowchart TD\n  u[User / trigger] --> api[Agent API + auth]\n  api --> orch[Orchestrator: durable run state machine]\n  orch --> llm[Model via gateway]\n  orch --> pol[Policy engine: permissions, budgets, approvals]\n  pol --> tg[Tool gateway]\n  tg --> mcp1[MCP server: internal APIs]\n  tg --> mcp2[MCP server: search / data]\n  tg --> sb[Sandbox: code execution, browser]\n  orch --> mem[(Run state + memory store)]\n  orch --> hitl[Approval queue: human in the loop]\n  orch --> tr[(Traces and events)]\n  hitl --> orch"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "safety",
+          "label": "Safety and tracing",
+          "body": "## Sandboxing\n\nWhen an agent can run code, browse or use a shell, it executes **model-written, possibly attacker-influenced** instructions. Isolate it:\n\n- Run in an ephemeral **container with a strong boundary** (microVMs such as Firecracker-style, or gVisor-style user-space kernels) with no host access, a read-only base image, CPU, memory and time limits.\n- **Default-deny network**: egress only to an allow-list; block cloud metadata endpoints and internal ranges (SSRF defence).\n- **Short-lived, scoped credentials** injected per run; never place long-lived secrets in the sandbox where the model can print them.\n- Filesystem scoped to a per-run workspace; persist only declared outputs.\n- Destroy the sandbox at the end of the run; snapshot only if resuming is needed.\n\n## Long-running state\n\n- Store the run as an **append-only event log** (model request, model response, tool call, tool result, approval, error). It supports resume, replay for debugging, audit and evals from real traffic.\n- Make tools idempotent or wrap side-effecting ones with an outbox pattern: decide, record intent, execute once, record the result.\n- Handle model and tool versions: replaying an old run against a new prompt is a *new* run, so pin versions per run.\n\n```python\ndef run_agent(run, llm, tools, policy, budget):\n    while not run.done:\n        budget.check(run)                       # steps, tokens, dollars, wall clock\n        reply = llm.complete(run.messages, tools=tools.schemas(run.agent))\n        run.append(reply)                       # checkpoint before acting\n        if not reply.tool_calls:\n            run.finish(reply.text); break\n        for call in reply.tool_calls:\n            decision = policy.evaluate(run.user, call)      # allow | deny | needs_approval\n            if decision == \"needs_approval\":\n                run.pause_for_approval(call); return        # resumed later by the approval handler\n            result = (\"denied by policy\" if decision == \"deny\"\n                      else tools.execute(call, idempotency_key=f\"{run.id}:{call.id}\"))\n            run.append_tool_result(call.id, result)         # exactly one result per call id\n```\n\n## Human in the loop\n\nNot every action deserves an approval; too many prompts cause fatigue and rubber-stamping. Classify tools by **risk**: read-only (auto), reversible writes (auto with audit), irreversible or external (send email, spend money, delete, deploy) require approval. The approval request shows the exact arguments and a plain-language effect, has an expiry, and records who approved. Also offer escalation to a human for low-confidence cases and an easy \"take over\" path.\n\n## Safety and prompt injection\n\nThe key threat is **indirect prompt injection**: instructions hidden in a web page, email, document or tool result that hijack the agent. You cannot fully prevent it by prompting, so design so that a hijacked model can do limited damage:\n\n1. **Least privilege** tools and credentials per agent and per task.\n2. Avoid the \"lethal trifecta\" in one agent: access to private data, exposure to untrusted content, and the ability to communicate externally. Remove at least one leg.\n3. Treat all tool results and retrieved text as **data**; delimit and label them, and keep authority instructions in the system prompt.\n4. **Policy enforcement outside the model** (allow-lists, argument validation, spend and rate caps, domain allow-lists for fetches).\n5. Approvals for exfiltration-capable and irreversible actions.\n6. Output filters for secrets and PII; monitor for anomalies; red-team regularly and add attack cases to the eval set.\n\n## Tracing and observability\n\nRecord a **trace per run** with spans for each model call and tool call: inputs, outputs (with redaction), latency, token counts, cost, errors, tool arguments, policy decisions and approvals. The OpenTelemetry GenAI semantic conventions define standard attributes for this. Useful views: cost per run and per tenant, step count distribution, tool error rates, loop and timeout rates, approval rates, and the ability to replay a failing trace as a test case. Agent evals should score **task success and trajectory** (right tools, no unsafe actions), and reliability across repeated runs, not just single-answer quality.\n\n## Multi-tenancy\n\nPer-tenant quotas on concurrent runs, tokens and tool calls; isolated sandboxes and memory namespaces; per-tenant allow-lists of tools; separate queues for batch versus interactive agents; kill switches per agent and per tool.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"Design a platform to run AI agents for the whole company.\"**\nComponents: agent API, durable orchestrator, model gateway, tool gateway with MCP servers, policy engine, sandbox, memory and state store, approval queue, tracing and eval pipeline. Then spend time on durability, permissions and safety, which differentiate good answers.\n\n**2. \"How do agents call tools safely?\"**\nValidate arguments against schemas; per-user scoped credentials; allow-lists per agent; risk tiers with approvals for irreversible actions; idempotency keys; rate and spend caps; sandbox for code; full audit trail.\n\n**3. \"What is MCP and why use it?\"**\nAn open protocol (JSON-RPC over stdio or streamable HTTP) for exposing tools, resources and prompts to AI applications. It replaces per-framework integrations with one server per capability, enabling a shared registry. The costs: you must govern which servers are trusted, authenticate per user, and treat descriptions and results as untrusted.\n\n**4. \"How do you handle long-running tasks?\"**\nAsync run ids, checkpointing every step to a durable store, event streaming to clients, resumable workers, approval pauses, timeouts and budgets, and idempotent side effects.\n\n**5. \"How do you manage context across hundreds of steps?\"**\nClear stale tool results, truncate big outputs, summarise old history, keep notes in external storage, delegate to sub-agents that return summaries, and keep the prefix stable for caching.\n\n**6. \"How would you defend against prompt injection?\"**\nAssume it will happen. Limit blast radius with least privilege and removing one leg of the private data, untrusted content, external communication combination; enforce policy outside the model; require approval for risky actions; sandbox; monitor and red-team.\n\n**7. \"How do you evaluate and debug an agent?\"**\nTask-level success on a scenario set, trajectory checks, cost and step budgets as metrics, repeated trials to measure reliability, and replayable traces from production failures turned into regression tests.\n\n## Answer framing tips\n\n- Start with the simplest design that works: often a workflow or a single bounded agent, then justify autonomy.\n- Put the **policy and budget enforcement in code**, repeatedly.\n- Mention the failure you are preventing with each component: duplicate side effects (idempotency), lost work (durability), runaway cost (budgets), data theft (least privilege), unreviewed damage (approvals).\n\n## Common mistakes\n\n- One shared super-credential for every tool.\n- No step, cost or time limits.\n- Pasting huge tool outputs into context.\n- Assuming a system prompt is a security boundary.\n- Retrying side-effecting tools without idempotency.\n- Shipping with no traces, so failures cannot be reproduced.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "An agent platform is a durable orchestrator plus a model gateway, tool gateway, policy engine, sandbox, state store, approval queue and tracing.",
+        "Checkpoint every step as an append-only event log, use idempotency keys for tool calls, and enforce step, token, cost and time budgets in code.",
+        "MCP standardises tool access over JSON-RPC; govern servers with a registry, per-user OAuth credentials and treat descriptions and results as untrusted.",
+        "Manage context actively: clear stale results, compact history, keep external notes, delegate to sub-agents, keep a cacheable prefix.",
+        "Sandbox code execution with strong isolation, default-deny egress and short-lived scoped credentials.",
+        "Defend against indirect prompt injection by limiting blast radius: least privilege, remove one leg of private data plus untrusted content plus external comms, policy outside the model.",
+        "Risk-tier tools and require human approval for irreversible or external actions; trace every run and evaluate trajectories, not only final answers."
+      ],
+      "practiceRef": "ai-system-design:1",
+      "check": [
+        {
+          "q": "A long agent run crashes after sending an email tool call but before recording the result. How do you avoid sending it twice on resume?",
+          "options": [
+            "Ask the model to remember what it did",
+            "Lower the model temperature",
+            "Give each tool call an idempotency key and record intent and result in the durable run log",
+            "Restart the run from scratch"
+          ],
+          "answer": 2,
+          "why": "Durable checkpoints plus idempotency keys let the resumed worker detect that the call was already issued and reuse its outcome instead of repeating the side effect."
+        },
+        {
+          "q": "Which design best limits damage from indirect prompt injection in an agent?",
+          "options": [
+            "A stronger system prompt saying to ignore injected instructions",
+            "Least-privilege tools plus policy enforced outside the model, removing at least one of private data access, untrusted content exposure or external communication",
+            "Using a larger model",
+            "Hiding tool descriptions from the model"
+          ],
+          "answer": 1,
+          "why": "Prompts cannot reliably stop injection. Reducing capability and enforcing controls in code means a hijacked model cannot do much harm."
+        },
+        {
+          "q": "Why should remote MCP tool access use the end user's credentials rather than one shared service token?",
+          "options": [
+            "MCP forbids service tokens in every case",
+            "It removes the need for a sandbox",
+            "It makes responses faster",
+            "The agent then acts with only that user's permissions, preserving least privilege and audit attribution"
+          ],
+          "answer": 3,
+          "why": "A shared super-token lets any user, or any injected instruction, reach everything. Per-user scoped credentials keep actions within the user's rights and attributable."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Model Context Protocol specification",
+          "url": "https://modelcontextprotocol.io/specification/latest"
+        },
+        {
+          "title": "Anthropic: Building effective agents",
+          "url": "https://www.anthropic.com/engineering/building-effective-agents"
+        },
+        {
+          "title": "Anthropic: Writing effective tools for agents",
+          "url": "https://www.anthropic.com/engineering/writing-tools-for-agents"
+        },
+        {
+          "title": "Anthropic: Effective context engineering for AI agents",
+          "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"
+        },
+        {
+          "title": "OpenTelemetry: Semantic conventions for generative AI",
+          "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    },
+    {
+      "id": "copilot-observability-evals",
+      "title": "Chat and copilot products, LLM observability and eval platforms",
+      "minutes": 40,
+      "summary": "Designing a chat or copilot product around a data flywheel, then the platform that makes it improvable: tracing, feedback, offline and online evals, guardrails, A/B tests and versioned prompts.",
+      "parts": [
+        {
+          "id": "product",
+          "label": "Chat and copilot design",
+          "body": "## The problem\n\n\"Design a coding copilot / writing assistant / in-app chat for a SaaS product with millions of users.\" Beyond the model call, the answer is about **conversation state, latency, context assembly, safety and a feedback loop that improves quality over time**.\n\n## Core components\n\n- **Conversation service**: stores threads and messages, supports streaming, stop, regenerate and edit. Keep message storage separate from the transient prompt: the prompt is *derived* from history each turn.\n- **Context builder**: system prompt (versioned), user and workspace facts, retrieved knowledge (see the RAG lesson), tool results, and a trimmed or summarised history. Budget tokens per slot so one long history cannot crowd out retrieval.\n- **History management**: a sliding window plus a rolling summary; pin important facts. Summaries are generated asynchronously to avoid adding latency.\n- **Copilot specifics** (inline or IDE assistance): keystroke-time completions need very low latency, so use small fast models, debounce and cancel stale requests, cache by prefix, and gather context locally (current file, neighbours). Chat-style deep help can use a larger model.\n- **Model routing**: simple intents to a small model, hard ones to a larger one; the router itself should be cheap and evaluated.\n- **Safety**: input checks (PII, jailbreak patterns), output moderation, citation or grounding checks, and clear refusal and fallback messages. Product constraints (scope, tone, legal disclaimers) live in the versioned system prompt and in code-level validators.\n- **UX that manages latency and trust**: stream tokens, show sources, show tool activity (\"searching docs\"), allow stop, and let users correct the assistant. Good UX also produces better feedback data.\n\n## The data flywheel\n\nThe long-term advantage is the loop, not the model:\n\n1. **Capture** every interaction as a trace with prompt version, model, retrieved ids, latency, tokens.\n2. **Collect feedback** in two kinds. *Explicit*: thumbs, ratings with reasons, reports. *Implicit*: regenerate clicks, edits to the answer, copy or accept (for copilots, the acceptance rate of suggestions), abandonment, follow-up rephrasing, escalation to a human.\n3. **Triage**: cluster failures (topic, intent, error type), prioritise by frequency and severity.\n4. **Convert failures into test cases**: add them, with corrected references, to the golden set so they never regress.\n5. **Improve**: change retrieval, prompt, tools, routing or model, validate offline, then online.\n6. **Optionally train**: curated, consented preference or supervised data can fine-tune a smaller model. Check privacy, consent and data-retention policy first; strip PII.\n\nBias warning: explicit feedback is sparse and skewed toward extremes; use implicit signals and sampled human review to avoid optimising a vanity metric.",
+          "diagrams": [
+            {
+              "title": "Chat product with a data flywheel",
+              "code": "flowchart LR\n  user[User] --> ui[Client: streaming UI, regenerate, thumbs]\n  ui --> svc[Chat service]\n  svc --> ctx[Context builder: history, retrieval, user and app state]\n  ctx --> gw[Model gateway + guardrails]\n  gw --> svc\n  svc --> ui\n  svc --> log[(Traces + feedback events)]\n  log --> label[Triage + labelling]\n  label --> gold[(Golden sets / regression suite)]\n  gold --> exp[Offline evals + experiments]\n  exp --> reg[Prompt / model registry]\n  reg --> svc"
+            }
+          ],
+          "code": []
+        },
+        {
+          "id": "observability",
+          "label": "Observability and evals",
+          "body": "## What to observe\n\nLLM apps fail silently: the service returns 200 with a bad answer. Classical monitoring (latency, errors) is necessary but not sufficient. Capture per request:\n\n- **Trace**: ordered spans for retrieval, rerank, each model call, each tool call, guardrails. Include prompt version, model id and parameters, token counts (prompt, cached, completion), latency (TTFT and total), cost, retrieved chunk ids, and outcome.\n- **Content** with care: prompts and outputs are valuable for debugging but may contain PII. Redact at ingestion, sample, apply retention limits and access control, and honour deletion requests.\n- **Quality signals**: user feedback, automatic evaluator scores on a sample of live traffic, guardrail triggers, refusal and fallback rates.\n- **Operational signals**: provider error and rate-limit rates, fallback usage, cost per tenant and per feature.\n\nUse **OpenTelemetry** with the GenAI semantic conventions so traces flow into standard backends, plus an LLM-specific layer for prompt/response viewing, datasets and evals (commercial and open-source tools exist; the design matters more than the vendor).\n\n## Offline evals\n\nRun in CI on every change to prompt, model, retrieval or code.\n\n- **Datasets**: golden set curated from production traces, synthetic cases for coverage, adversarial and safety cases. Version them like code and keep a held-out part you do not tune on.\n- **Graders** from cheapest to most flexible: code checks (schema validity, exact match, regex, unit tests for code outputs), reference-based metrics, **LLM-as-judge** with a rubric, and human review. LLM judges show known biases (position, verbosity, preference for their own outputs), so use clear rubrics, pairwise comparison with order swapped, and **calibrate against human labels**; track judge agreement.\n- **Gates**: block a release if a key metric regresses beyond a threshold, with per-slice breakdowns (by language, intent, tenant) because averages hide regressions.\n- **Cost-aware**: running big judge models over large sets is itself expensive; sample and cache.\n\n```python\ndef release_gate(candidate, baseline, dataset, graders, min_delta=-0.01):\n    cand = score(candidate, dataset, graders)       # {metric: {slice: value}}\n    base = score(baseline, dataset, graders)\n    failures = []\n    for metric, by_slice in cand.items():\n        for sl, value in by_slice.items():\n            if value - base[metric][sl] < min_delta:\n                failures.append((metric, sl, base[metric][sl], value))\n    return {\"ship\": not failures, \"regressions\": failures}\n```\n\n## Online evals and experiments\n\nOffline sets never match live traffic fully, so confirm online:\n\n- **Shadow mode**: run the candidate on live requests without showing the result, and compare.\n- **Canary and A/B tests**: route a small share of users (hash on user id for stability) to the new prompt or model; compare task success, feedback, latency, cost and guardrail triggers with enough sample size and a pre-chosen primary metric. LLM outputs are noisy, so expect to need more traffic than for deterministic changes.\n- **Guardrail metrics** that must not regress (safety flags, refusal rate, cost per session).\n- **Sampled live scoring**: an automatic grader scores a percentage of production traces for faithfulness and policy compliance, alerting on drift.\n- **Drift**: provider model updates, changing user behaviour and data changes can degrade quality without any deploy, so monitor continuously and pin model versions where the provider allows.\n\n## Versioned prompts and releases\n\nTreat prompts, tool schemas and retrieval configs as **code-like artifacts**: stored in version control or a registry, with ids and diffs, reviewed, tested by evals, deployed progressively and rollback-able in seconds. Log the prompt version on every trace so regressions are attributable. Avoid editing prompts live in a console without an eval gate.\n\n```yaml\nprompt:\n  id: support-answer\n  version: 14\n  model: large-chat\n  params: { temperature: 0.2, max_output_tokens: 600 }\n  rollout: { strategy: canary, percent: 5, primary_metric: resolved_without_escalation }\n  gates:\n    - { metric: groundedness, min: 0.92 }\n    - { metric: refusal_rate, max: 0.08 }\n    - { metric: p95_ttft_ms, max: 2500 }\n  rollback_on: { error_rate: 0.02, groundedness_below: 0.88 }\n```\n\n## Guardrails in the platform\n\nLayered, with measured false-positive rates: input (PII detection, injection patterns, topic limits), output (schema validation, moderation, secret and PII scrubbing, groundedness check), and action guards for tools. Keep guardrail latency in the budget, run cheap checks first and in parallel with generation where possible, and log each trigger as a metric so thresholds can be tuned.",
+          "diagrams": [],
+          "code": []
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## Likely questions\n\n**1. \"Design ChatGPT-style chat for our product.\"**\nClient with streaming UI; chat service with thread storage; context builder with token budgets, retrieval and summarised history; gateway with routing, fallbacks and guardrails; tracing and feedback capture; eval pipeline and registry. Then address latency, cost, safety and the data flywheel.\n\n**2. \"How do you know whether a prompt change made things better?\"**\nOffline: run the golden set with graders and compare against the baseline per slice. Online: shadow or canary A/B with a predefined primary metric and guardrail metrics. Never judge on a handful of examples or a single average.\n\n**3. \"How do you evaluate open-ended answers?\"**\nCombine deterministic checks, rubric-based LLM judges calibrated against human labels (with known biases mitigated by pairwise, order-swapped comparisons), and periodic human review. Evaluate components separately: retrieval recall, groundedness, task success.\n\n**4. \"What would you log, and what are the privacy risks?\"**\nTraces with prompt version, model, tokens, latency, cost, retrieved ids and feedback. Risks: PII and secrets in prompts and outputs. Mitigate with redaction, sampling, retention limits, access control, tenant isolation and deletion support.\n\n**5. \"How do you build a data flywheel?\"**\nCapture traces and explicit plus implicit feedback, triage failures, convert them into golden test cases, improve and validate, deploy gradually, and repeat. Optionally curate consented data for fine-tuning a smaller model.\n\n**6. \"How do you roll out a new model safely?\"**\nEval gate, shadow traffic, canary by percentage with automatic rollback thresholds, per-slice monitoring, cost and latency checks, and a quick path back to the previous version. Keep fallbacks tested.\n\n**7. \"What guardrails would you add?\"**\nInput and output layers plus action guards, with measured false positive and false negative rates, logged as metrics. Emphasise that guardrails complement, not replace, least privilege and validation in code.\n\n## Answer framing tips\n\n- Say \"eval-first\" and \"versioned\" often: prompt version on every trace, evals in CI, canary releases.\n- Distinguish **quality metrics** (success, groundedness), **safety metrics** (policy violations) and **operational metrics** (latency, cost); a release must satisfy all three.\n- Tie every telemetry item to a decision it enables.\n- Mention that feedback is biased and sparse, and that LLM judges need calibration.\n\n## Common mistakes\n\n- Monitoring only latency and error codes.\n- Changing prompts in production with no version, diff or eval.\n- Trusting an uncalibrated LLM judge.\n- Logging raw user content without redaction or retention rules.\n- Declaring an A/B winner without a primary metric chosen in advance or enough traffic.\n- Optimising thumbs-up rate while task success or safety regresses.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Prompts are derived from stored history each turn; budget tokens per slot (system, retrieval, history, tools) and summarise older turns asynchronously.",
+        "The data flywheel: capture traces, collect explicit and implicit feedback, triage, turn failures into golden test cases, improve, validate, deploy gradually.",
+        "LLM apps fail silently, so trace every request with prompt version, model, tokens, latency, cost and retrieved ids, redacting personal data.",
+        "Offline evals in CI use code checks, calibrated LLM judges and human review, gated per slice; online evals use shadow traffic, canaries and A/B tests with a primary metric chosen in advance.",
+        "LLM judges have biases (position, verbosity, self-preference); calibrate against human labels and use pairwise comparison with order swapped.",
+        "Treat prompts, tool schemas and retrieval configs as versioned artifacts with progressive rollout and fast rollback.",
+        "Layer guardrails (input, output, action) and measure their false positives and negatives; they complement least privilege, not replace it."
+      ],
+      "practiceRef": "ai-system-design:4",
+      "check": [
+        {
+          "q": "A team wants to ship a new prompt. Which release process is strongest?",
+          "options": [
+            "Run the golden set against the baseline per slice, then shadow or canary with predefined metrics and automatic rollback",
+            "Test on five hand-picked examples",
+            "Ask the model whether the new prompt is better",
+            "Edit the prompt in the production console and watch for complaints"
+          ],
+          "answer": 0,
+          "why": "Offline regression evals catch known failures; a canary with preset metrics validates on real traffic; rollback limits the blast radius."
+        },
+        {
+          "q": "What is a known weakness of using an LLM as a judge, and a sensible mitigation?",
+          "options": [
+            "It cannot read text; use only regex",
+            "Position, verbosity and self-preference biases; use clear rubrics, order-swapped pairwise comparison and calibration against human labels",
+            "It is always too strict; lower the threshold",
+            "It requires fine-tuning the model being judged"
+          ],
+          "answer": 1,
+          "why": "Judges are useful but biased. Rubrics, swapped ordering and measuring agreement with human labels keep them trustworthy."
+        },
+        {
+          "q": "Which feedback signal is typically the most abundant and least biased toward extremes for a chat product?",
+          "options": [
+            "Explicit one to five star surveys",
+            "Bug reports emailed to support",
+            "Implicit signals such as regenerate, edits, copy or accept, abandonment and rephrased follow-ups",
+            "Social media posts"
+          ],
+          "answer": 2,
+          "why": "Explicit feedback is sparse and skewed to very happy or very unhappy users. Implicit behaviour covers many more sessions, though it still needs sampled human review to interpret."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Hamel Husain: Your AI product needs evals",
+          "url": "https://hamel.dev/blog/posts/evals/"
+        },
+        {
+          "title": "Zheng et al.: Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena",
+          "url": "https://arxiv.org/abs/2306.05685"
+        },
+        {
+          "title": "OpenTelemetry: Semantic conventions for generative AI",
+          "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/"
+        },
+        {
+          "title": "OpenAI docs: Evals guide",
+          "url": "https://platform.openai.com/docs/guides/evals"
+        }
+      ],
+      "problems": [],
+      "complexity": []
+    }
+  ]
+}

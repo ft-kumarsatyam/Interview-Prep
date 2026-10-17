@@ -52,6 +52,13 @@ import do02 from "@/data/courses/devops/02-containers.json";
 import do03 from "@/data/courses/devops/03-delivery-and-cloud.json";
 import py01 from "@/data/courses/python/01-python-core.json";
 import py02 from "@/data/courses/python/02-python-in-practice.json";
+import py03 from "@/data/courses/python/03-python-for-ai-engineers.json";
+import ai06 from "@/data/courses/genai/06-ai-system-design.json";
+import ml01 from "@/data/courses/ml-engineering/01-ml-dl-foundations.json";
+import ml02 from "@/data/courses/ml-engineering/02-mlops-and-deployment.json";
+import ml03 from "@/data/courses/ml-engineering/03-data-engineering-for-ai.json";
+import ai07 from "@/data/courses/genai/07-fine-tuning-and-open-models.json";
+import ai08 from "@/data/courses/genai/08-ai-engineer-interview-deep-dive.json";
 import type { Course, CourseChapterFile, CourseLesson, CourseMeta } from "@/modules/course/domain/course";
 
 const CHAPTER_FILES: Record<string, CourseChapterFile[]> = {
@@ -62,8 +69,9 @@ const CHAPTER_FILES: Record<string, CourseChapterFile[]> = {
   "cs-core": [cs01, cs02, cs03, cs04] as unknown as CourseChapterFile[],
   javascript: [js01, js02, js03] as unknown as CourseChapterFile[],
   devops: [do01, do02, do03] as unknown as CourseChapterFile[],
-  python: [py01, py02] as unknown as CourseChapterFile[],
-  genai: [ai01, ai02, ai03, ai04, ai05] as unknown as CourseChapterFile[],
+  python: [py01, py02, py03] as unknown as CourseChapterFile[],
+  "ml-engineering": [ml01, ml02, ml03] as unknown as CourseChapterFile[],
+  genai: [ai01, ai02, ai03, ai04, ai05, ai06, ai07, ai08] as unknown as CourseChapterFile[],
 };
 
 export const courses: Course[] = (coursesJson.courses as CourseMeta[]).map((meta) => ({

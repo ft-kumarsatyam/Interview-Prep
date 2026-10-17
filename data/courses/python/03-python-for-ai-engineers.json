@@ -1,0 +1,512 @@
+{
+  "chapter": {
+    "id": "python-for-ai",
+    "title": "Python for AI engineers",
+    "summary": "The Python engineering around AI work: modern project setup and typing, NumPy and pandas, FastAPI services with streaming, and production patterns for LLM apps."
+  },
+  "lessons": [
+    {
+      "id": "py-modern-project-setup",
+      "title": "Modern Python project setup: uv, typing, Pydantic and tests",
+      "minutes": 40,
+      "summary": "A reproducible Python project with uv and pyproject.toml, static typing with mypy or pyright, Pydantic v2 models and settings, and ruff plus pytest in the loop.",
+      "parts": [
+        {
+          "id": "tooling",
+          "label": "uv, pyproject, ruff, pytest",
+          "body": "## Why setup is an interview topic\n\nAI work is mostly glue code around fast-moving libraries, so the first thing that breaks is the environment: \"works on my machine\", a notebook that pins nothing, a model server that imports a different version of a package than the one you tested. A modern project makes the environment **declared, locked and one command to recreate**.\n\n## The pieces\n\n| concern | modern default | what it replaces |\n|---|---|---|\n| project metadata and dependencies | **`pyproject.toml`** (PEP 621 `[project]` table) | `setup.py`, `requirements.txt` as the source of truth |\n| install, lock, run | **uv** (`uv add`, `uv sync`, `uv run`, `uv.lock`) | `pip` + `venv` + `pip-tools`/Poetry for many teams |\n| Python versions | `uv python install 3.13`, `requires-python` in pyproject | pyenv, system Python |\n| lint and format | **ruff** (`ruff check --fix`, `ruff format`) | flake8, isort, black, pyupgrade |\n| tests | **pytest** | unittest boilerplate |\n| types | **mypy** or **pyright** | nothing (runtime surprises) |\n\nuv is a single fast tool (written in Rust, from Astral, the makers of ruff) that creates the virtual environment, resolves dependencies, writes a **cross-platform lockfile** (`uv.lock`) and runs commands inside the environment. Poetry, PDM and Hatch are still valid; what matters in an interview is that you can explain *declared deps + lockfile + isolated env*, not that you memorised one CLI.\n\n## A minimal project\n\n```bash\nuv init --package ai-svc          # src/ layout, pyproject.toml, .python-version\ncd ai-svc\nuv add httpx pydantic pydantic-settings   # runtime deps, recorded and locked\nuv add --dev pytest ruff mypy             # dev dependency group\nuv run pytest                              # runs inside the project env\nuv sync --locked                           # CI: fail if uv.lock is out of date\n```\n\nCommit `pyproject.toml`, `uv.lock` and `.python-version`; never commit `.venv`. Libraries you publish keep **loose** version ranges in `pyproject.toml` (so users can resolve), applications rely on the **lockfile** for exact reproducibility.\n\n## What the pyproject holds\n\nThe `[project]` table has `name`, `version`, `requires-python` and `dependencies`. Dev-only tools go in a PEP 735 `[dependency-groups]` table (what `uv add --dev` writes), so they are never installed for users. Tool configuration lives in `[tool.*]` tables: `[tool.ruff]`, `[tool.mypy]`, `[tool.pytest.ini_options]`. One file, one place to look.\n\n## Ruff and pytest in the loop\n\nRuff does linting and formatting in milliseconds, so you can run it on every save and in pre-commit. Pick rule families on purpose (`E`, `F`, `I` for import sorting, `UP` for modernising syntax, `B` for likely bugs, `ASYNC` for blocking calls inside async code) instead of enabling everything. In pytest, prefer small **fixtures**, `parametrize` for table-driven cases, and `tmp_path`/`monkeypatch` for isolation. For AI code, keep tests **offline**: fake the provider call, assert on the parsing, validation and retry logic you own.\n\n```toml\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\", \"UP\", \"B\", \"ASYNC\"]\n\n[tool.pytest.ini_options]\naddopts = \"-q\"\ntestpaths = [\"tests\"]\n```\n\n## Reproducibility checklist\n\n- `requires-python` states the supported range; CI uses the same version as production.\n- Dependencies installed from the lockfile in CI and in the Docker image (`uv sync --locked`).\n- No secrets in the repo: configuration comes from the environment (next part).\n- Notebooks are for exploration; anything reused moves into the package and gets a test.",
+          "diagrams": [
+            {
+              "title": "From pyproject to a locked, tested environment",
+              "code": "flowchart LR\n  P[\"pyproject.toml<br/>deps and tool config\"] --> U[\"uv lock / uv add\"]\n  U --> L[\"uv.lock<br/>exact versions\"]\n  L --> S[\"uv sync --locked\"]\n  S --> V[\".venv\"]\n  V --> R[\"ruff check and format\"]\n  V --> T[\"pytest\"]\n  V --> Y[\"mypy / pyright\"]\n  R --> CI[\"CI gate\"]\n  T --> CI\n  Y --> CI"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# tests/test_parse.py: offline, table-driven test of a small parsing function you own.\n# Run with: uv run pytest   (or: python -m pytest)\nimport json\nimport pytest\n\n\ndef parse_score(raw: str) -> float:\n    \"\"\"Parse a model reply like '{\"score\": 0.82}' and enforce the 0..1 range.\"\"\"\n    value = float(json.loads(raw)[\"score\"])\n    if not 0.0 <= value <= 1.0:\n        raise ValueError(f\"score out of range: {value}\")\n    return value\n\n\n@pytest.mark.parametrize(\n    \"raw, expected\",\n    [('{\"score\": 0}', 0.0), ('{\"score\": 0.82}', 0.82), ('{\"score\": 1}', 1.0)],\n)\ndef test_parse_ok(raw: str, expected: float) -> None:\n    assert parse_score(raw) == expected\n\n\n@pytest.mark.parametrize(\"raw\", ['{\"score\": 1.5}', '{\"score\": -0.1}', \"not json\", \"{}\"])\ndef test_parse_rejects_bad_input(raw: str) -> None:\n    with pytest.raises((ValueError, KeyError)):  # JSONDecodeError is a ValueError\n        parse_score(raw)\n\n\nif __name__ == \"__main__\":\n    print(parse_score('{\"score\": 0.82}'))"
+            }
+          ]
+        },
+        {
+          "id": "types-pydantic",
+          "label": "Typing and Pydantic v2",
+          "body": "## Type hints are documentation the machine checks\n\nPython does not enforce annotations at runtime. A **static checker** (mypy or pyright) reads them and reports mismatches before the code runs. In a codebase full of dicts returned by LLMs and JSON APIs, that is a large share of the bugs you will otherwise meet in production.\n\nModern syntax (3.10+): `list[int]`, `dict[str, float]`, `int | None` instead of `Optional[int]`, `type` aliases (`type Vector = list[float]` from 3.12), `TypedDict` for dict shapes, `Protocol` for structural interfaces (\"anything with an `embed(texts)` method\"), `Literal[\"a\", \"b\"]` for closed sets, `Callable[[int], str]`, and `Self`. Prefer `Sequence`/`Mapping` for read-only parameters and concrete types for returns.\n\n**mypy vs pyright.** Both are fine; pyright (also powers Pylance in VS Code) is fast and strict-leaning, mypy is the long-standing reference with a large plugin ecosystem. Newer type checkers exist and move quickly, but the skills carry over: turn on `strict` for new code, annotate public functions, and treat `Any` as a hole to be justified. Type checking is **not** validation: a value typed `int` that came from JSON is still whatever the JSON said.\n\n## Pydantic v2: validation at the boundary\n\nPydantic turns type hints into **runtime validation and parsing**. The core is written in Rust (`pydantic-core`), so v2 is much faster than v1. It is what FastAPI, most provider SDKs and many agent frameworks use for request bodies, tool schemas and structured output.\n\n```python\nfrom pydantic import BaseModel, ConfigDict, Field, field_validator\n\nclass Chunk(BaseModel):\n    model_config = ConfigDict(extra=\"forbid\", frozen=True)   # unknown keys are errors; immutable\n    id: str\n    text: str = Field(min_length=1)\n    score: float = Field(ge=0, le=1)\n    tags: list[str] = []\n\n    @field_validator(\"text\")\n    @classmethod\n    def strip(cls, v: str) -> str:\n        return v.strip()\n```\n\nThe v2 API names to know: `model_validate(dict)`, `model_validate_json(str)` (parses and validates in one fast pass), `model_dump()` / `model_dump_json()`, `model_json_schema()` (the JSON Schema you hand to a provider for tool calls and structured output), `TypeAdapter(list[Chunk])` to validate non-model types, `@field_validator`, `@model_validator`, `Field(...)` constraints, and discriminated unions (`Field(discriminator=\"kind\")`). Validation failures raise `ValidationError` with a precise location for every problem, which is also what you feed back to a model when it returns malformed output.\n\nBy default Pydantic runs in **lax mode** and coerces (`\"3\"` becomes `3`); use `strict=True` per field or model when coercion would hide bugs.\n\n## Settings: configuration from the environment\n\n`pydantic-settings` (a separate package in v2) reads typed configuration from environment variables and `.env` files:\n\n```python\nfrom pydantic import SecretStr\nfrom pydantic_settings import BaseSettings, SettingsConfigDict\n\nclass Settings(BaseSettings):\n    model_config = SettingsConfigDict(env_prefix=\"APP_\", env_file=\".env\", extra=\"ignore\")\n    llm_api_key: SecretStr          # APP_LLM_API_KEY; required, so startup fails fast if missing\n    llm_timeout_s: float = 30.0\n    max_concurrency: int = 8\n```\n\n`SecretStr` prints as `**********`, so a stray log line or repr does not leak the key. Build the settings object **once** (a cached function or a FastAPI dependency) and pass it in; do not read `os.environ` all over the code. Never commit `.env`.\n\n## Dataclass, TypedDict or Pydantic?\n\nUse **Pydantic** where data crosses a trust boundary (HTTP bodies, LLM output, config files). Use **`dataclass`** (`slots=True, frozen=True`) for internal value objects that are already trusted: cheaper, no validation cost. Use **`TypedDict`** to describe dicts you do not own.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# pip install pydantic   (run: python this_file.py)\nfrom pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator\n\n\nclass Chunk(BaseModel):\n    model_config = ConfigDict(extra=\"forbid\", frozen=True)\n    id: str\n    text: str = Field(min_length=1)\n    score: float = Field(ge=0, le=1)\n    tags: list[str] = []\n\n    @field_validator(\"text\")\n    @classmethod\n    def strip(cls, v: str) -> str:\n        return v.strip()\n\n\ngood = Chunk.model_validate_json('{\"id\": \"a1\", \"text\": \"  hello  \", \"score\": 0.7}')\nprint(good.text, good.model_dump())\n\n# What an LLM returning malformed output looks like, and the error you can show it\ntry:\n    Chunk.model_validate({\"id\": \"a2\", \"text\": \"x\", \"score\": 1.7, \"extra\": True})\nexcept ValidationError as e:\n    for err in e.errors():\n        print(err[\"loc\"], err[\"type\"], \"-\", err[\"msg\"])\n\n# The JSON Schema you would give a provider for tool calls or structured output\nprint(list(Chunk.model_json_schema()[\"properties\"]))"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nWhether you treat a Python AI project as **engineering**, not a notebook: reproducible environments, validated inputs, typed interfaces, offline tests. They also check you know *why* each tool exists.\n\n## Questions with model answers\n\n### 1. How do you make a Python project reproducible?\n\n**Model answer.** Declare dependencies in `pyproject.toml`, pin the interpreter range with `requires-python`, and commit a lockfile (`uv.lock`) so every machine and CI run resolves identical versions. CI and the Docker image install from the lock (`uv sync --locked`), which fails if the lock is stale. Dev tools live in a dev dependency group so they are not shipped. Applications pin through the lock; libraries keep loose ranges. Configuration comes from environment variables, not files in the repo.\n\n### 2. Type hints are not enforced at runtime. So why use them, and where do you also need Pydantic?\n\n**Model answer.** A static checker (mypy or pyright) catches mismatches, `None` handling and wrong call signatures before runtime, and the annotations document intent for editors and reviewers. But it cannot see data that arrives at runtime: JSON bodies, environment variables and LLM output are only whatever they actually contain. Pydantic validates and parses at those boundaries, so everything inside the boundary can trust its types. Static typing for code you control, Pydantic for data you do not.\n\n### 3. Why Pydantic settings instead of reading os.environ?\n\n**Model answer.** One typed object validated at startup: missing or malformed variables fail fast with a clear error rather than deep in a request. Values are coerced (`\"8\"` to `int`), secrets use `SecretStr` so they do not leak in logs, and the object is injected into code so tests can pass their own settings. Reading `os.environ` everywhere scatters defaults and parsing and makes tests depend on process state.\n\n### 4. How do you test code that calls an LLM?\n\n**Model answer.** Keep the provider call behind a small function or protocol and fake it. Test what you own: prompt construction, output parsing and validation, retry on `ValidationError`, timeouts, cost accounting. Use `parametrize` with real malformed outputs you have seen. Run a small, separate eval set against the real model for quality, because unit tests cannot judge answer quality and live calls are slow, costly and non-deterministic.\n\n### 5. What does ruff give you, and what would you configure?\n\n**Model answer.** One fast tool for linting and formatting that replaces flake8, isort, black and pyupgrade. I select rule families deliberately (errors, pyflakes, import sorting, upgrade, bugbear, ASYNC for blocking calls in async code), run it in pre-commit and CI, and let the formatter end style debates.\n\n## Follow-ups to be ready for\n\n- `mypy` vs `pyright`: both fine, pick one, run in strict mode on new code, gate in CI.\n- Pydantic lax vs strict mode, and when coercion hides a bug.\n- Why `frozen` models or `dataclass(slots=True)` for internal values.\n- Pinning transitive dependencies: that is what the lockfile is for.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "pyproject.toml declares the project; a lockfile (uv.lock) makes installs reproducible; CI installs with uv sync --locked.",
+        "uv replaces venv, pip and Python-version juggling in one tool; Poetry, PDM and Hatch are valid alternatives built on the same pyproject idea.",
+        "Applications pin through the lockfile; libraries publish loose version ranges.",
+        "Static typing (mypy or pyright) checks code you control; Pydantic validates data you do not (HTTP, config, LLM output).",
+        "Pydantic v2 essentials: model_validate_json, model_dump, model_json_schema, field_validator, ConfigDict(extra='forbid'), and ValidationError.",
+        "pydantic-settings loads typed config from the environment and fails fast; SecretStr keeps keys out of logs.",
+        "Ruff for lint and format, pytest for tests; keep AI tests offline by faking the provider call."
+      ],
+      "problems": [],
+      "practiceRef": "ai-llm-engineering:1",
+      "check": [
+        {
+          "q": "An LLM returns JSON for your endpoint. Which tool actually protects you from a wrong shape at runtime?",
+          "options": [
+            "A mypy strict-mode run in CI",
+            "A Pydantic model validating the parsed output",
+            "A type hint on the function return",
+            "ruff's bugbear rules"
+          ],
+          "answer": 1,
+          "why": "Static checkers never see runtime data; Pydantic validates the actual values and raises ValidationError with locations you can feed back to the model."
+        },
+        {
+          "q": "What is the right role of uv.lock in an application repository?",
+          "options": [
+            "Ignore it in git because it is generated",
+            "Commit it so every machine and CI installs the same resolved versions",
+            "Use it only for dev tools",
+            "Replace pyproject.toml with it"
+          ],
+          "answer": 1,
+          "why": "The lockfile records exact resolved versions; committing it plus installing with uv sync --locked is what makes builds reproducible."
+        },
+        {
+          "q": "Why declare an API key as SecretStr in a pydantic-settings class?",
+          "options": [
+            "It encrypts the key in memory",
+            "It makes the variable optional",
+            "Its repr and logging output are masked so the key does not leak by accident",
+            "It speeds up validation"
+          ],
+          "answer": 2,
+          "why": "SecretStr prints as asterisks; you must call get_secret_value() deliberately to read it, which reduces accidental leaks in logs and tracebacks."
+        }
+      ],
+      "sources": [
+        {
+          "title": "uv documentation",
+          "url": "https://docs.astral.sh/uv/"
+        },
+        {
+          "title": "Python Packaging: writing your pyproject.toml",
+          "url": "https://packaging.python.org/en/latest/guides/writing-pyproject-toml/"
+        },
+        {
+          "title": "Pydantic documentation",
+          "url": "https://docs.pydantic.dev/latest/"
+        },
+        {
+          "title": "Pydantic Settings",
+          "url": "https://docs.pydantic.dev/latest/concepts/pydantic_settings/"
+        },
+        {
+          "title": "Ruff documentation",
+          "url": "https://docs.astral.sh/ruff/"
+        },
+        {
+          "title": "pytest documentation",
+          "url": "https://docs.pytest.org/en/stable/"
+        }
+      ],
+      "complexity": []
+    },
+    {
+      "id": "py-numpy-pandas-for-ai",
+      "title": "NumPy and pandas for AI work: vectorisation, dataframes and when to use polars",
+      "minutes": 40,
+      "summary": "Think in arrays: vectorisation and broadcasting in NumPy, memory and dtypes, dataframe cleaning with groupby and merge in pandas, and when polars is the better tool.",
+      "parts": [
+        {
+          "id": "numpy",
+          "label": "NumPy: arrays and broadcasting",
+          "body": "## Why NumPy is the foundation\n\nEmbeddings, features, logits and similarity scores are all **arrays of numbers**. NumPy stores them in one contiguous, typed block of memory and runs loops in compiled C, so an operation on a million floats is one call instead of a million Python bytecode iterations. PyTorch, scikit-learn, pandas and most vector code build on the same ideas, so learning NumPy's model transfers.\n\n## Vectorisation\n\n**Vectorising** means expressing work as whole-array operations instead of Python loops.\n\n```python\nimport numpy as np\n\nx = np.random.rand(1_000_000)\nslow = [v * 2 + 1 for v in x]      # Python loop: per-element interpreter overhead\nfast = x * 2 + 1                   # one C loop over contiguous memory\n```\n\nTypical speed-ups are one to two orders of magnitude, but measure with `timeit` rather than quoting a number: it depends on array size, dtype and hardware. Wins come from avoiding per-element Python overhead, using contiguous memory (cache friendly) and SIMD in the underlying kernels. Not everything vectorises (sequential dependencies, branching per element), and then `numba` or moving the hot loop to a native extension is the next step.\n\n## Shape, dtype and the three things to check\n\nEvery array has a **shape** (`(n, d)`), a **dtype** (`float32`, `int64`, ...) and **strides**. When code misbehaves, print those three first. Embeddings are commonly stored as `float32`: half the memory of `float64` with precision that is enough for similarity search.\n\n## Broadcasting\n\nBroadcasting lets operations combine arrays of different shapes without copying. Compare shapes from the **right**; each pair of dimensions must be equal or one of them must be 1 (or missing), and the 1 is stretched.\n\n```python\nqueries = np.random.rand(5, 384).astype(\"float32\")     # (5, 384)\ndocs = np.random.rand(1000, 384).astype(\"float32\")     # (1000, 384)\nsims = queries @ docs.T                                # (5, 384) @ (384, 1000) -> (5, 1000)\nmean = docs.mean(axis=0)                               # (384,)\ncentered = docs - mean                                 # (1000, 384) - (384,) -> broadcast over rows\n```\n\nThe classic bug is a silent wrong broadcast: subtracting a `(n,)` vector from a `(n, n)` matrix, or a `(n,)` from a `(n, 1)` column which yields `(n, n)`. Be explicit with `keepdims=True` or `arr[:, None]`, and assert shapes in code that matters.\n\n## Cosine similarity, the AI staple\n\n```python\ndef cosine_matrix(a, b):\n    a = a / np.linalg.norm(a, axis=1, keepdims=True)\n    b = b / np.linalg.norm(b, axis=1, keepdims=True)\n    return a @ b.T                      # all pairs at once\n```\n\nFor a handful of thousand vectors this brute-force matrix product is fine. At millions, use an approximate nearest neighbour index (HNSW, IVF) in a vector database or library; do not keep scanning.\n\n## Views, copies and memory\n\n- Basic slicing (`a[1:5]`, `a.T`, `reshape` when possible) returns a **view** sharing memory: writing through it changes the original. Fancy indexing (`a[[1, 3]]`, boolean masks) returns a **copy**.\n- Chained temporaries in `a * b + c` allocate intermediate arrays; for huge arrays use in-place ops (`out=`, `+=`) or chunking.\n- Memory is `size * itemsize`: 1 million vectors of 768 `float32` is about 3 GB. Use `np.memmap` or chunked loading when data exceeds RAM.\n- Prefer `np.float32` explicitly; NumPy defaults to `float64` for Python floats.\n- Use `np.random.default_rng(seed)` (the `Generator` API) for reproducible randomness.",
+          "diagrams": [
+            {
+              "title": "Broadcasting a mean vector over rows",
+              "code": "flowchart LR\n  D[\"docs (1000, 384)\"] --> S[\"docs - mean\"]\n  M[\"mean (384,)\"] -->|\"aligned on the right,<br/>stretched over 1000 rows\"| S\n  S --> C[\"centered (1000, 384)\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# pip install numpy   (run: python this_file.py)\nimport time\nimport numpy as np\n\nrng = np.random.default_rng(0)\ndocs = rng.random((20_000, 128), dtype=np.float32)\nqueries = rng.random((8, 128), dtype=np.float32)\n\n\ndef cosine_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:\n    a = a / np.linalg.norm(a, axis=1, keepdims=True)\n    b = b / np.linalg.norm(b, axis=1, keepdims=True)\n    return a @ b.T\n\n\nsims = cosine_matrix(queries, docs)                  # (8, 20000)\ntop5 = np.argsort(-sims, axis=1)[:, :5]              # best 5 doc ids per query\nprint(sims.shape, top5.shape)\n\n# Python loop vs vectorised, same result\nt = time.perf_counter()\nloop = [sum(float(x) * float(y) for x, y in zip(queries[0], d)) for d in docs[:2000]]\nt_loop = time.perf_counter() - t\nt = time.perf_counter()\nvec = docs[:2000] @ queries[0]\nt_vec = time.perf_counter() - t\nprint(\"same:\", np.allclose(loop, vec, rtol=1e-4), f\"loop {t_loop:.3f}s vs vectorised {t_vec:.5f}s\")\n\n# Broadcasting shape check and the silent (n,) vs (n, 1) trap\nv = np.arange(3)\nprint((v - v[:, None]).shape)  # (3, 3), probably not what you wanted if you meant elementwise"
+            }
+          ]
+        },
+        {
+          "id": "pandas",
+          "label": "pandas and polars",
+          "body": "## What pandas is for\n\npandas gives you the **DataFrame**: labelled, typed columns over NumPy-style storage. In AI work it is the tool for loading evaluation sets, cleaning training data, joining labels to examples, and analysing results (which prompts fail, which segments regress).\n\n```python\nimport pandas as pd\n\ndf = pd.read_csv(\"runs.csv\", dtype={\"model\": \"category\"})\ndf[\"correct\"] = df[\"pred\"] == df[\"label\"]\nby_model = df.groupby(\"model\", observed=True).agg(\n    n=(\"id\", \"size\"), acc=(\"correct\", \"mean\"), p95_ms=(\"latency_ms\", lambda s: s.quantile(0.95))\n)\n```\n\n## The operations to know cold\n\n- **Selecting and filtering:** `df.loc[mask, cols]`, boolean masks, `query()`. Use `.loc` for label/mask selection and avoid chained indexing (`df[a][b] = ...`).\n- **groupby:** split by key, aggregate or transform. `agg` reduces each group to one row; `transform` returns a result aligned to the original rows (for example, a per-group z-score); `apply` is the flexible but slow fallback.\n- **merge (join):** `df.merge(other, on=\"id\", how=\"left\", validate=\"one_to_one\")`. The `validate` argument catches the classic bug where a duplicated key silently multiplies rows. `how` is `inner`, `left`, `right`, `outer`. Use `indicator=True` to see unmatched rows.\n- **reshape:** `pivot_table`, `melt`, `stack`/`unstack`.\n- **time and text:** `pd.to_datetime`, `dt` and `str` accessors; `resample` for time buckets.\n- **missing data:** `isna()`, `fillna`, `dropna`; decide whether a missing value is \"unknown\" or \"zero\" before filling.\n\n## Think vectorised in pandas too\n\nAvoid `iterrows()` and row-wise `apply(axis=1)` for large frames: they run a Python function per row. Prefer column expressions (`df[\"a\"] * df[\"b\"]`), `np.where`, `.str` methods, `map` with a dict, and `groupby` aggregations.\n\n## Memory and dtypes\n\n- Check with `df.info(memory_usage=\"deep\")`.\n- **Downcast** numerics (`float32`, `int32`) when the range allows. Use **`category`** for low-cardinality strings (model names, labels).\n- Read only what you need: `usecols=`, `dtype=`, and `chunksize=` for streaming; prefer **Parquet** over CSV (typed, columnar, compressed, reads columns selectively).\n- **pandas 3** makes Copy-on-Write the default behaviour (so a derived frame never silently writes through to its parent, and chained-assignment tricks stop working) and introduces a dedicated string dtype. Know that code written for pandas 1.x/2.x relying on views may change; check the release notes of the version you pin.\n\n## When to reach for polars\n\n**polars** is a DataFrame library written in Rust with a different design: columnar Arrow-style memory, a **lazy API** that builds a query plan and optimises it (predicate and projection pushdown), and multi-threaded execution by default.\n\n```python\nimport polars as pl\n\nout = (\n    pl.scan_parquet(\"runs.parquet\")                 # lazy: nothing read yet\n    .filter(pl.col(\"latency_ms\") < 5000)\n    .group_by(\"model\")\n    .agg(pl.len().alias(\"n\"), (pl.col(\"pred\") == pl.col(\"label\")).mean().alias(\"acc\"))\n    .collect()                                       # optimise and run\n)\n```\n\n| situation | choose |\n|---|---|\n| exploration, small to medium data, rich ecosystem (scikit-learn, plotting, notebooks) | **pandas** |\n| large files, heavy groupby/join pipelines, multi-core speed, lower memory | **polars** (lazy + Parquet) |\n| data larger than one machine | Spark, Dask, DuckDB or a warehouse |\n| SQL over local files, ad hoc analytics | **DuckDB** works well alongside both |\n\nBoth interoperate through Arrow (`df.to_pandas()`, `pl.from_pandas`). The honest answer in an interview: pandas is the default for compatibility and familiarity; polars is a strong choice when data volume or pipeline speed is the bottleneck, after you have measured.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# pip install pandas   (run: python this_file.py)\nimport pandas as pd\n\nruns = pd.DataFrame(\n    {\n        \"id\": [1, 2, 3, 4, 5, 6],\n        \"model\": pd.Categorical([\"a\", \"a\", \"a\", \"b\", \"b\", \"b\"]),\n        \"pred\": [\"x\", \"y\", \"x\", \"x\", \"x\", \"y\"],\n        \"latency_ms\": [120, 340, 95, 410, 230, 180],\n    }\n)\nlabels = pd.DataFrame({\"id\": [1, 2, 3, 4, 5, 6], \"label\": [\"x\", \"x\", \"x\", \"x\", \"y\", \"y\"]})\n\n# merge with validate: raises if a duplicated key would silently multiply rows\ndf = runs.merge(labels, on=\"id\", how=\"left\", validate=\"one_to_one\")\ndf[\"correct\"] = df[\"pred\"] == df[\"label\"]\n\nsummary = df.groupby(\"model\", observed=True).agg(\n    n=(\"id\", \"size\"),\n    acc=(\"correct\", \"mean\"),\n    p50_ms=(\"latency_ms\", \"median\"),\n)\nprint(summary)\n\n# transform keeps the original row alignment: each row's latency vs its model's mean\ndf[\"vs_model_mean\"] = df[\"latency_ms\"] - df.groupby(\"model\", observed=True)[\"latency_ms\"].transform(\"mean\")\nprint(df[[\"id\", \"model\", \"latency_ms\", \"vs_model_mean\"]])\n\n# Memory: category + float32 cut the footprint\nbig = pd.DataFrame({\"model\": [\"gpt\"] * 100_000, \"score\": [0.5] * 100_000})\nsmall = big.astype({\"model\": \"category\", \"score\": \"float32\"})\nprint(big.memory_usage(deep=True).sum(), \"->\", small.memory_usage(deep=True).sum())"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nWhether you can move data efficiently without falling into the loop-over-rows trap, understand shapes and memory, and choose between pandas and polars with reasons.\n\n## Questions with model answers\n\n### 1. What is vectorisation and why is it faster?\n\n**Model answer.** Expressing an operation over a whole array so the loop runs in compiled code over contiguous typed memory, instead of the interpreter running bytecode per element. That removes per-element overhead and enables cache-friendly access and SIMD. It is typically one to two orders of magnitude faster, but I measure it. Things that cannot vectorise, such as sequential dependencies, call for numba, a native extension, or a different algorithm.\n\n### 2. Explain broadcasting. What goes wrong with it?\n\n**Model answer.** NumPy aligns shapes from the trailing dimension; two dimensions are compatible if equal or one is 1, and the size-1 dimension is virtually stretched without copying. So `(1000, 384) - (384,)` subtracts a mean from every row. The risk is a silent wrong shape: `(n,) - (n, 1)` gives `(n, n)`. I use `keepdims=True`, explicit `[:, None]`, and shape assertions in important code.\n\n### 3. How would you compute similarity of 100 queries against 50,000 embeddings?\n\n**Model answer.** Normalise both matrices to unit length and do one matrix multiplication `Q @ D.T`, giving a (100, 50000) score matrix, then `argpartition` or `argsort` for top-k. Use `float32` to halve memory. This brute force is fine up to roughly a few hundred thousand vectors depending on hardware; beyond that I'd use an ANN index (HNSW or IVF) in a vector database or library.\n\n### 4. A merge doubled my row count. What happened?\n\n**Model answer.** The key was not unique on one side, so each match produced multiple rows (a many-to-many join). I pass `validate=\"one_to_one\"` or `\"many_to_one\"` so pandas raises, deduplicate or aggregate first, and use `indicator=True` to inspect unmatched rows.\n\n### 5. pandas or polars?\n\n**Model answer.** pandas by default for compatibility with the Python ML ecosystem and notebooks. polars when the dataset or pipeline is big enough that speed or memory matters: it is multi-threaded, columnar, and its lazy API optimises the whole query (filters and column selection pushed down into the Parquet scan). Past one machine's memory I would look at DuckDB, Dask or Spark. I decide with a measurement on representative data, not by preference.\n\n### 6. How do you reduce a DataFrame's memory?\n\n**Model answer.** Read fewer columns, set dtypes up front, downcast numerics to `float32`/`int32` where safe, use `category` for low-cardinality strings, drop intermediate frames, and store as Parquet. For data bigger than RAM, process in chunks or use a lazy engine.\n\n## Follow-ups to be ready for\n\n- View vs copy in NumPy, and what Copy-on-Write changes in pandas 3.\n- Why `iterrows` is slow and what replaces it.\n- `transform` vs `agg` vs `apply` in a groupby.\n- Train/test leakage when normalising: fit statistics on training data only.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Vectorise: whole-array operations run in compiled loops over contiguous memory; measure speed-ups rather than assuming them.",
+        "Check shape, dtype and strides first; embeddings are usually float32.",
+        "Broadcasting aligns shapes from the right and stretches size-1 dimensions; guard against silent (n,) vs (n, 1) mistakes.",
+        "Slicing returns views, fancy indexing returns copies; memory is size times itemsize, so plan for large embedding sets.",
+        "pandas: groupby with agg or transform, merge with validate and indicator, avoid iterrows and row-wise apply.",
+        "Cut memory with usecols, dtypes, category, float32 and Parquet; pandas 3 defaults to Copy-on-Write.",
+        "Choose polars (lazy, multi-threaded, Rust) when data size or pipeline speed is the measured bottleneck; pandas for ecosystem fit."
+      ],
+      "problems": [],
+      "practiceRef": "ai-ml-basics:2",
+      "check": [
+        {
+          "q": "What does the shape of (1000, 384) minus (384,) become under NumPy broadcasting?",
+          "options": [
+            "An error because the shapes differ",
+            "(1000, 384), with the vector subtracted from each row",
+            "(384, 384)",
+            "(1000, 1000)"
+          ],
+          "answer": 1,
+          "why": "Shapes align from the right: 384 matches 384, and the missing leading dimension is stretched across the 1000 rows without copying."
+        },
+        {
+          "q": "A left merge unexpectedly returns more rows than the left frame. The most likely cause?",
+          "options": [
+            "Index misalignment from sorting",
+            "Duplicate keys on the right side producing multiple matches",
+            "A category dtype",
+            "NaN values in the label column"
+          ],
+          "answer": 1,
+          "why": "A non-unique key on one side multiplies rows; validate='many_to_one' or 'one_to_one' makes pandas raise instead of silently duplicating."
+        },
+        {
+          "q": "Which situation most clearly favours polars over pandas?",
+          "options": [
+            "A 2,000-row CSV explored in a notebook",
+            "A multi-gigabyte Parquet dataset with heavy groupby and filter pipelines",
+            "Passing a frame straight into scikit-learn",
+            "Plotting with a library that expects pandas"
+          ],
+          "answer": 1,
+          "why": "Lazy evaluation with pushdown, columnar memory and multi-threading pay off at scale; small data and ecosystem-bound code are well served by pandas."
+        }
+      ],
+      "sources": [
+        {
+          "title": "NumPy: broadcasting",
+          "url": "https://numpy.org/doc/stable/user/basics.broadcasting.html"
+        },
+        {
+          "title": "NumPy: the absolute basics for beginners",
+          "url": "https://numpy.org/doc/stable/user/absolute_beginners.html"
+        },
+        {
+          "title": "pandas user guide: group by",
+          "url": "https://pandas.pydata.org/docs/user_guide/groupby.html"
+        },
+        {
+          "title": "pandas user guide: merge, join, concatenate",
+          "url": "https://pandas.pydata.org/docs/user_guide/merging.html"
+        },
+        {
+          "title": "pandas user guide: scaling to large datasets",
+          "url": "https://pandas.pydata.org/docs/user_guide/scale.html"
+        },
+        {
+          "title": "Polars documentation",
+          "url": "https://docs.pola.rs/"
+        }
+      ],
+      "complexity": []
+    },
+    {
+      "id": "py-fastapi-ai-services",
+      "title": "Building AI services with FastAPI: async, streaming, resilience and tests",
+      "minutes": 45,
+      "summary": "Async endpoints and Pydantic validation, dependency injection, streaming LLM tokens over server-sent events, background tasks, httpx timeouts and retries, and testing the service offline.",
+      "parts": [
+        {
+          "id": "endpoints",
+          "label": "Endpoints, validation, DI",
+          "body": "## Why FastAPI for AI services\n\nFastAPI is an ASGI framework built on Starlette and Pydantic. It fits LLM-backed services because the work is mostly **waiting on the network** (provider calls, vector DB, cache), which async handles with few threads, and because request and response bodies are **Pydantic models**, so validation and OpenAPI docs come from the same type hints. Streaming responses and WebSockets are first class.\n\n## async def or def?\n\nThis is the most common interview question about it.\n\n- `async def` endpoints run **on the event loop**. Inside them you must `await` async libraries (`httpx.AsyncClient`, async DB drivers, the provider's async client). A blocking call (`requests.get`, `time.sleep`, a sync SDK, heavy CPU) **freezes every request** on that worker.\n- Plain `def` endpoints run in a **threadpool**, so blocking code is acceptable there, within the pool's limit (a default of 40 threads via AnyIO).\n- CPU-heavy work (local embedding model inference, large JSON transforms) belongs in a separate process, a worker queue, or a model server, not on the loop.\n\nIf you must call blocking code from an async path, use `await asyncio.to_thread(fn, ...)` or `run_in_threadpool`.\n\n## Request and response models\n\n```python\nfrom pydantic import BaseModel, Field\n\nclass AskIn(BaseModel):\n    question: str = Field(min_length=1, max_length=2000)\n    top_k: int = Field(5, ge=1, le=20)\n\nclass AskOut(BaseModel):\n    answer: str\n    sources: list[str]\n\n@app.post(\"/ask\", response_model=AskOut)\nasync def ask(body: AskIn, svc: Annotated[Answerer, Depends(get_answerer)]) -> AskOut:\n    return await svc.answer(body.question, body.top_k)\n```\n\nInvalid input returns **422** automatically with per-field errors; `response_model` filters what leaves the service (so an internal field never leaks) and documents it. Put hard limits on sizes (`max_length`, body size at the proxy): an unbounded prompt is a cost and denial-of-service risk.\n\n## Dependency injection\n\n`Depends` gives you composable, testable wiring: settings, a shared HTTP client, a database session, the current user, rate limiting.\n\n```python\nfrom contextlib import asynccontextmanager\nimport httpx\nfrom fastapi import FastAPI, Depends, Request\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    app.state.http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))\n    yield                                   # app runs here\n    await app.state.http.aclose()           # clean shutdown\n\napp = FastAPI(lifespan=lifespan)\n\ndef get_http(request: Request) -> httpx.AsyncClient:\n    return request.app.state.http\n```\n\nCreate expensive things **once** in the lifespan (HTTP client with connection pooling, model objects, DB pool), never per request. In tests, replace any dependency with `app.dependency_overrides[get_answerer] = lambda: FakeAnswerer()`. That is the main reason to prefer DI over module-level globals.\n\n## Errors and shape of the API\n\n- Raise `HTTPException(status_code=..., detail=...)` for client errors; map provider failures to **502/503/504** with a generic message (never forward provider error text or keys).\n- Add authentication as a dependency (an API key header or JWT) and per-user rate limits; AI endpoints cost money.\n- Version routes (`/v1/...`) and keep `/healthz` (process is up) separate from `/readyz` (dependencies reachable).\n- Run with an ASGI server: `uvicorn app.main:app` in development; in production behind a proxy, with workers sized for your CPU and memory (each worker has its own copy of in-process state and caches).",
+          "diagrams": [
+            {
+              "title": "Request path through a FastAPI AI service",
+              "code": "flowchart LR\n  C[\"Client\"] --> V[\"Pydantic validation<br/>422 on bad input\"]\n  V --> D[\"Depends: auth, settings,<br/>shared httpx client\"]\n  D --> H[\"async endpoint\"]\n  H -->|\"await\"| P[\"LLM provider\"]\n  H -->|\"await\"| DB[\"vector DB / cache\"]\n  H --> R[\"response_model filter\"]\n  R --> C"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# pip install fastapi httpx   (run tests: python this_file.py)\nfrom typing import Annotated, Protocol\n\nfrom fastapi import Depends, FastAPI\nfrom fastapi.testclient import TestClient\nfrom pydantic import BaseModel, Field\n\n\nclass AskIn(BaseModel):\n    question: str = Field(min_length=1, max_length=2000)\n    top_k: int = Field(5, ge=1, le=20)\n\n\nclass AskOut(BaseModel):\n    answer: str\n    sources: list[str]\n\n\nclass Answerer(Protocol):\n    async def answer(self, question: str, top_k: int) -> AskOut: ...\n\n\nclass RealAnswerer:\n    async def answer(self, question: str, top_k: int) -> AskOut:\n        raise NotImplementedError(\"call retrieval + the LLM provider here\")\n\n\ndef get_answerer() -> Answerer:\n    return RealAnswerer()\n\n\napp = FastAPI()\n\n\n@app.post(\"/ask\", response_model=AskOut)\nasync def ask(body: AskIn, svc: Annotated[Answerer, Depends(get_answerer)]) -> AskOut:\n    return await svc.answer(body.question, body.top_k)\n\n\nclass FakeAnswerer:\n    async def answer(self, question: str, top_k: int) -> AskOut:\n        return AskOut(answer=f\"echo: {question}\", sources=[f\"doc-{i}\" for i in range(top_k)])\n\n\nif __name__ == \"__main__\":\n    app.dependency_overrides[get_answerer] = lambda: FakeAnswerer()   # no network, no keys\n    client = TestClient(app)\n    ok = client.post(\"/ask\", json={\"question\": \"what is RAG?\", \"top_k\": 2})\n    print(ok.status_code, ok.json())\n    bad = client.post(\"/ask\", json={\"question\": \"\", \"top_k\": 99})\n    print(bad.status_code, [e[\"loc\"] for e in bad.json()[\"detail\"]])"
+            }
+          ]
+        },
+        {
+          "id": "streaming",
+          "label": "Streaming and background work",
+          "body": "## Why stream\n\nAn LLM answer can take many seconds to finish but the **first token** arrives quickly. Streaming shows text as it is generated, which improves perceived latency (time to first token, TTFT) and lets the user cancel. The simple, proxy-friendly transport is **server-sent events (SSE)**: a long-lived HTTP response with `Content-Type: text/event-stream` where the server writes `data: ...` lines separated by a blank line. Browsers consume it with `EventSource` or `fetch` plus a stream reader (use `fetch` for POST bodies and auth headers, since `EventSource` only does GET). WebSockets are only needed when the client also streams to the server.\n\n## The pattern\n\nProvider SDKs expose streaming as an **async iterator** of chunks. You wrap it in an async generator that yields SSE-formatted strings and return it in a `StreamingResponse`.\n\n```python\nimport json\nfrom fastapi.responses import StreamingResponse\n\nasync def sse(events):\n    try:\n        async for token in events:\n            yield f\"data: {json.dumps({'token': token})}\\n\\n\"\n        yield \"event: done\\ndata: {}\\n\\n\"\n    except Exception:\n        yield \"event: error\\ndata: {\\\"message\\\": \\\"generation failed\\\"}\\n\\n\"\n\n@app.get(\"/stream\")\nasync def stream(q: str):\n    return StreamingResponse(sse(provider_tokens(q)), media_type=\"text/event-stream\",\n                             headers={\"Cache-Control\": \"no-cache\", \"X-Accel-Buffering\": \"no\"})\n```\n\nPoints that matter in production:\n\n- **JSON-encode every payload** so newlines inside a token cannot break the SSE framing.\n- Once the status line is sent you cannot change it; report mid-stream failures as an **in-band error event**.\n- **Disconnects:** when the client goes away, the generator is cancelled at the next `await`. Put cleanup in `finally` and make sure the upstream provider stream is closed (use `async with` on the provider stream) so you stop paying for tokens nobody reads.\n- **Proxy buffering** (nginx, some CDNs) can hold chunks back; disable buffering for the route (`X-Accel-Buffering: no`) and send a periodic comment line (`: ping`) as a keep-alive.\n- Count tokens and latency (TTFT and total) in a `finally` block for cost tracking.\n\n## Background tasks\n\n`BackgroundTasks` runs a function **after the response is sent**, in the same process. It suits small follow-ups: write an audit row, update usage counters, warm a cache.\n\n```python\nfrom fastapi import BackgroundTasks\n\n@app.post(\"/feedback\")\nasync def feedback(item: Feedback, bg: BackgroundTasks):\n    bg.add_task(save_feedback, item)        # runs after the 200 is returned\n    return {\"ok\": True}\n```\n\nIt is **not** a durable queue: if the process restarts the task is lost, there are no retries, and long tasks occupy a worker. For indexing documents, batch embedding, or anything that must finish, use a real queue and worker (Celery, RQ, Arq, Dramatiq, or a managed queue) and return a job id the client can poll.\n\n## Concurrency inside one request\n\nFan out independent calls with `asyncio.gather` or a `TaskGroup` (retrieval from two indexes, several tool calls) and put a deadline around the whole thing with `asyncio.timeout`. Share a **semaphore** across requests to cap simultaneous provider calls so a burst cannot trigger the provider's rate limit.",
+          "diagrams": [
+            {
+              "title": "SSE streaming with cancellation on disconnect",
+              "code": "sequenceDiagram\n  participant B as Browser\n  participant A as FastAPI\n  participant P as LLM provider\n  B->>A: POST /chat (fetch stream)\n  A->>P: open streaming request\n  P-->>A: token\n  A-->>B: data: {token}\n  P-->>A: token\n  A-->>B: data: {token}\n  B--xA: disconnect\n  A->>P: close stream (finally)\n  Note over A: log tokens, TTFT, total time"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# pip install fastapi httpx   (run: python this_file.py)\nimport asyncio\nimport json\nfrom collections.abc import AsyncIterator\n\nfrom fastapi import FastAPI\nfrom fastapi.responses import StreamingResponse\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\n\n\nasync def fake_provider(prompt: str) -> AsyncIterator[str]:\n    \"\"\"Stands in for a provider SDK's async token stream.\"\"\"\n    try:\n        for word in f\"You asked: {prompt}\".split():\n            await asyncio.sleep(0.01)\n            yield word + \" \"\n    finally:\n        print(\"[provider stream closed]\")      # in real code: the SDK context manager closes it\n\n\nasync def sse(tokens: AsyncIterator[str]) -> AsyncIterator[str]:\n    count = 0\n    try:\n        async for tok in tokens:\n            count += 1\n            yield f\"data: {json.dumps({'token': tok})}\\n\\n\"\n        yield \"event: done\\ndata: {}\\n\\n\"\n    except Exception:\n        yield 'event: error\\ndata: {\"message\": \"generation failed\"}\\n\\n'\n    finally:\n        print(f\"[usage] chunks={count}\")\n\n\n@app.get(\"/stream\")\nasync def stream(q: str) -> StreamingResponse:\n    return StreamingResponse(\n        sse(fake_provider(q)),\n        media_type=\"text/event-stream\",\n        headers={\"Cache-Control\": \"no-cache\", \"X-Accel-Buffering\": \"no\"},\n    )\n\n\nif __name__ == \"__main__\":\n    client = TestClient(app)\n    with client.stream(\"GET\", \"/stream\", params={\"q\": \"hello world\"}) as r:\n        print(r.status_code, r.headers[\"content-type\"])\n        for line in r.iter_lines():\n            if line:\n                print(line)"
+            }
+          ]
+        },
+        {
+          "id": "resilience-tests",
+          "label": "httpx resilience and testing",
+          "body": "## Calling providers: timeouts first\n\nEvery network call needs a **timeout**. httpx has a default of 5 seconds for connect/read/write/pool, which is wrong for LLM calls: a long generation legitimately takes longer, while a hung connection should fail fast. Set them explicitly per phase:\n\n```python\ntimeout = httpx.Timeout(60.0, connect=5.0, pool=5.0)    # 60s default (read/write), 5s to connect, 5s to get a pooled connection\nclient = httpx.AsyncClient(timeout=timeout, limits=httpx.Limits(max_connections=100, max_keepalive_connections=20))\n```\n\nFor streaming, the **read** timeout applies to the gap between chunks, which is what you want: it detects a stalled stream without capping total generation time. Add an overall deadline with `asyncio.timeout` when you need one.\n\n## Retries: which errors, and how\n\nRetry only what is **transient and safe**:\n\n- **Retry:** connection errors, timeouts, `429` (rate limited), `500`, `502`, `503`, `504`, and provider \"overloaded\" responses.\n- **Do not retry:** `400`/`422` (your request is wrong), `401`/`403` (credentials), content-policy refusals.\n- **Back off exponentially with jitter** (random spread) so a thundering herd does not hammer a recovering provider. Honour a `Retry-After` header when present.\n- Cap attempts and total time; the user is waiting.\n- Make sure the operation is safe to repeat. Reads and idempotent calls are; \"charge the card\" is not, unless you send an idempotency key.\n- `httpx.AsyncHTTPTransport(retries=n)` only retries failures to **establish the connection**, not HTTP error statuses. For anything else write a small wrapper or use a library such as `tenacity`. Most provider SDKs already retry a few times by default (check and configure their `max_retries` and timeout rather than stacking your own retries on top, which multiplies attempts).\n- Add a **circuit breaker** or fallback model when a provider is down for minutes: fail fast instead of queueing requests that will all time out.\n\nAlso: do not retry after you have already streamed tokens to the user unless you can resume cleanly.\n\n## Testing the service\n\nFour layers, all offline except the last:\n\n1. **Unit tests** for pure logic: prompt building, parsing, chunking, retry decisions.\n2. **API tests** with `TestClient` (or `httpx.AsyncClient(transport=httpx.ASGITransport(app=app))` for async tests) and `dependency_overrides` to inject a fake provider. Assert status codes, validation errors, response shapes and streamed events.\n3. **Provider boundary tests** with `httpx.MockTransport` or a recorded-response library: assert your code handles `429` then `200`, a timeout, malformed JSON.\n4. **Evals** against the real model on a small fixed set, run separately and not on every commit, because answer quality is not what unit tests measure.\n\nTest the unhappy paths on purpose: slow provider, mid-stream failure, invalid model output, oversized input.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# pip install httpx   (run: python this_file.py)\nimport asyncio\nimport random\n\nimport httpx\n\nRETRY_STATUS = {429, 500, 502, 503, 504}\n\n\nasync def post_with_retry(client: httpx.AsyncClient, url: str, payload: dict, *, attempts: int = 4) -> httpx.Response:\n    for attempt in range(1, attempts + 1):\n        try:\n            resp = await client.post(url, json=payload)\n            if resp.status_code not in RETRY_STATUS:\n                return resp                                 # success, or a non-retryable client error\n            delay = float(resp.headers.get(\"retry-after\", 0)) or min(8.0, 0.5 * 2 ** (attempt - 1))\n        except (httpx.TimeoutException, httpx.TransportError):\n            delay = min(8.0, 0.5 * 2 ** (attempt - 1))\n        if attempt == attempts:\n            break\n        await asyncio.sleep(delay * random.uniform(0.5, 1.0))   # jitter\n    raise RuntimeError(\"provider unavailable after retries\")\n\n\n# --- offline test using httpx.MockTransport: first 429, then a timeout, then success ---\ncalls = {\"n\": 0}\n\n\ndef handler(request: httpx.Request) -> httpx.Response:\n    calls[\"n\"] += 1\n    if calls[\"n\"] == 1:\n        return httpx.Response(429, headers={\"retry-after\": \"0\"})\n    if calls[\"n\"] == 2:\n        raise httpx.ReadTimeout(\"slow\", request=request)\n    return httpx.Response(200, json={\"ok\": True})\n\n\nasync def main() -> None:\n    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=5) as client:\n        resp = await post_with_retry(client, \"https://provider.test/v1/generate\", {\"prompt\": \"hi\"})\n        print(resp.status_code, resp.json(), \"calls:\", calls[\"n\"])\n\n\nasyncio.run(main())"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nWhether you can build an LLM-backed HTTP service that does not block, validates input, streams, survives provider failures and is testable. Expect a design discussion around \"an endpoint that calls an LLM\".\n\n## Questions with model answers\n\n### 1. When do you use `async def` vs `def` in FastAPI?\n\n**Model answer.** `async def` when the body awaits async I/O (httpx.AsyncClient, async DB, the provider's async client): it runs on the event loop with very low overhead per request. `def` when I must call blocking libraries: FastAPI runs it in a threadpool so the loop stays free. The worst case is blocking code inside `async def`, which stalls every concurrent request on that worker. CPU-bound work goes to a process pool, worker queue or model server.\n\n### 2. How do you stream an LLM response to a browser?\n\n**Model answer.** Wrap the provider's async token iterator in an async generator that yields SSE frames (`data: <json>\\n\\n`) and return it as a `StreamingResponse` with `text/event-stream`. JSON-encode payloads, send an in-band error event if generation fails after the headers went out, disable proxy buffering, add keep-alive pings, and close the upstream stream in `finally` when the client disconnects so I stop paying for tokens. The client reads it with `fetch` and a stream reader (or `EventSource` for simple GETs).\n\n### 3. How do you handle provider rate limits and failures?\n\n**Model answer.** Explicit connect, read and pool timeouts; retries only for transient errors (429, 5xx, timeouts, connection errors) with exponential backoff, jitter, `Retry-After` and a capped attempt count; no retry on 4xx caused by my request. A shared semaphore caps in-flight calls, and a circuit breaker or fallback model protects against longer outages. I avoid stacking my retries on the SDK's own retries, and log attempts and latency.\n\n### 4. What are BackgroundTasks good for, and what are they not?\n\n**Model answer.** Small, best-effort work after the response: audit logs, counters, cache warm-up. They run in the same process with no persistence or retry, so a restart loses them. Document ingestion, embedding batches and anything that must complete need a durable queue and workers, returning a job id the client polls.\n\n### 5. How do you test an endpoint that calls an LLM?\n\n**Model answer.** Inject the provider through `Depends` and override it in tests with a fake, then assert validation (422s), response models, streamed events and error mapping. Test the HTTP boundary with `httpx.MockTransport` for 429, timeouts and malformed bodies. Keep a separate small eval set for quality against the real model, run on a schedule or before releases.\n\n### 6. Where do you create the HTTP client and why?\n\n**Model answer.** Once, in the app's lifespan, stored on `app.state` and exposed through a dependency. A shared `AsyncClient` reuses pooled keep-alive connections; creating one per request wastes TCP and TLS handshakes and can exhaust sockets. It is closed on shutdown.\n\n## Follow-ups to be ready for\n\n- Why `response_model` matters for not leaking internal fields.\n- Multiple uvicorn/gunicorn workers: in-process caches and rate-limit counters are per worker; use Redis or the database for shared state.\n- Idempotency keys for retried non-idempotent calls.\n- Auth and per-user cost limits on expensive endpoints.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "async def endpoints must only await async I/O; blocking calls freeze the event loop, so use def (threadpool), to_thread, or a separate process.",
+        "Pydantic request and response models give 422 validation, size limits and OpenAPI docs from one definition; response_model prevents leaks.",
+        "Create the shared httpx.AsyncClient and similar resources once in the lifespan; inject with Depends and override in tests.",
+        "Stream LLM output as SSE with a StreamingResponse over an async generator; JSON-encode frames, send in-band errors, close upstream on disconnect.",
+        "BackgroundTasks are best-effort in-process work, not a durable queue; use a real queue for ingestion and batch jobs.",
+        "Set explicit httpx timeouts; retry only transient errors (429, 5xx, timeouts) with exponential backoff, jitter and Retry-After, and do not stack SDK and custom retries.",
+        "Test offline with dependency_overrides, TestClient and httpx.MockTransport; keep quality evals separate."
+      ],
+      "problems": [],
+      "practiceRef": "ai-llm-engineering:2",
+      "check": [
+        {
+          "q": "An async def endpoint calls requests.post() to the LLM provider. What is the consequence?",
+          "options": [
+            "Nothing; requests is async-safe",
+            "The event loop blocks, so other requests on that worker stall until it returns",
+            "FastAPI automatically moves it to a thread",
+            "The response is cached"
+          ],
+          "answer": 1,
+          "why": "A synchronous call inside a coroutine never yields to the loop. Use httpx.AsyncClient, or declare the endpoint with def so FastAPI runs it in a threadpool."
+        },
+        {
+          "q": "Which failures should a retry wrapper around an LLM provider call retry?",
+          "options": [
+            "400 and 422 responses",
+            "401 Unauthorized",
+            "429, 5xx responses, timeouts and connection errors",
+            "Every exception, immediately and without delay"
+          ],
+          "answer": 2,
+          "why": "Transient errors may succeed later; client errors will fail again. Use backoff with jitter, honour Retry-After, and cap attempts."
+        },
+        {
+          "q": "What is the main limitation of FastAPI BackgroundTasks for embedding a large document set?",
+          "options": [
+            "They cannot call async functions",
+            "They run before the response is sent",
+            "They are lost if the process restarts and have no retry or persistence",
+            "They always run in a separate machine"
+          ],
+          "answer": 2,
+          "why": "They are in-process and best-effort after the response. Durable, retryable jobs need a queue and worker with a job status the client can poll."
+        }
+      ],
+      "sources": [
+        {
+          "title": "FastAPI: concurrency and async / await",
+          "url": "https://fastapi.tiangolo.com/async/"
+        },
+        {
+          "title": "FastAPI: dependencies",
+          "url": "https://fastapi.tiangolo.com/tutorial/dependencies/"
+        },
+        {
+          "title": "FastAPI: background tasks",
+          "url": "https://fastapi.tiangolo.com/tutorial/background-tasks/"
+        },
+        {
+          "title": "FastAPI: testing",
+          "url": "https://fastapi.tiangolo.com/tutorial/testing/"
+        },
+        {
+          "title": "HTTPX: timeouts",
+          "url": "https://www.python-httpx.org/advanced/timeouts/"
+        },
+        {
+          "title": "WHATWG HTML: server-sent events",
+          "url": "https://html.spec.whatwg.org/multipage/server-sent-events.html"
+        }
+      ],
+      "complexity": []
+    },
+    {
+      "id": "py-llm-app-patterns",
+      "title": "Python for LLM apps: SDKs, structured output, concurrency, caching and a CLI",
+      "minutes": 45,
+      "summary": "Calling provider SDKs, getting validated structured output, batching with asyncio and semaphores, caching, logging and tracing, notebooks versus scripts, and shipping a command-line tool.",
+      "parts": [
+        {
+          "id": "sdk-structured",
+          "label": "SDKs and structured output",
+          "body": "## Calling a provider from Python\n\nAll major providers ship an official Python SDK with a **sync** client and an **async** client (for example `OpenAI`/`AsyncOpenAI`, `Anthropic`/`AsyncAnthropic`), plus plain HTTP if you prefer `httpx`. The shape is the same everywhere: a model name, a list of messages (system instructions plus conversation), generation parameters (`max_tokens`, `temperature`), and a response containing text blocks and **usage** (input and output token counts).\n\n```python\nimport os\nfrom anthropic import AsyncAnthropic\n\nclient = AsyncAnthropic()                       # reads ANTHROPIC_API_KEY from the environment\n\nasync def summarise(text: str) -> str:\n    msg = await client.messages.create(\n        model=os.environ[\"LLM_MODEL\"],          # keep model ids in config, not scattered literals\n        max_tokens=400,\n        system=\"Summarise in two sentences.\",\n        messages=[{\"role\": \"user\", \"content\": text}],\n    )\n    return msg.content[0].text\n```\n\nHabits that separate toy code from production code:\n\n- **Model names and keys come from configuration.** Models are retired and renamed, so a literal in twelve files is a future incident. Read the provider's current model list when you pick one.\n- **Use the async client in async apps**, create it **once** and reuse it (connection pooling).\n- **Set timeouts and `max_retries`** on the client; know the SDK's defaults.\n- **Stream** for user-facing text (`async with client.messages.stream(...) as s: async for t in s.text_stream`), and read the final usage afterwards.\n- **Record usage** (tokens in/out, model, latency) on every call; cost control starts with measurement.\n- Keep a thin **adapter** (`async def complete(prompt) -> Result`) between your code and the SDK so you can swap providers, add fallbacks and fake it in tests.\n- Never put keys in code, notebooks that get committed, or logs.\n\n## Structured output\n\nFree text is hard to build software on. You want a **typed object**. The options, from most to least reliable:\n\n1. **Native structured output / JSON-schema mode.** The provider constrains decoding to a schema you pass (derived from a Pydantic model with `model_json_schema()`); some SDKs add a `parse` helper that returns the validated model directly. Check your provider's documentation for the exact method and its schema limitations.\n2. **Tool (function) calling.** Define a tool whose input schema is your model and force the model to call it; the arguments are the structured data.\n3. **Prompt for JSON and parse.** Works, but least reliable; always validate.\n\nWhichever you use, **validate on your side** with Pydantic (`model_validate_json`) and treat model output as untrusted input. Schema-constrained output guarantees *shape*, not *truth*: the values can still be wrong or hallucinated, and fields can be semantically off. Add range and enum constraints, and cross-check against known data where you can.\n\nWhen validation fails, a bounded **repair loop** works well: send the error messages back (\"your reply failed validation: ...\") for one or two more attempts, then fail loudly. Log the raw output for debugging, but not if it contains personal data.\n\n```python\nclass Ticket(BaseModel):\n    category: Literal[\"billing\", \"bug\", \"feature\", \"other\"]\n    urgency: int = Field(ge=1, le=5)\n    summary: str = Field(max_length=200)\n```\n\nPrefer **small, closed schemas** (`Literal`/enums, bounded ints, short strings) over open-ended ones: they are easier for the model to satisfy and easier to evaluate.\n\n## Prompts as code\n\nKeep prompts in versioned files or constants with a version string, build them with a function (not scattered f-strings), and never interpolate untrusted text into the **system** prompt. Delimit user-supplied content clearly and tell the model it is data, not instructions (prompt injection is a real risk once documents or web pages enter the prompt). Test prompts with a small eval set when you change them.",
+          "diagrams": [
+            {
+              "title": "Validated structured output with a bounded repair loop",
+              "code": "flowchart TD\n  A[\"Build prompt + JSON schema<br/>from Pydantic model\"] --> B[\"Call provider\"]\n  B --> C{\"model_validate_json OK?\"}\n  C -->|yes| D[\"Typed object<br/>(treat values as untrusted)\"]\n  C -->|no| E{\"attempts left?\"}\n  E -->|yes| F[\"Send validation errors back\"]\n  F --> B\n  E -->|no| G[\"Raise, log raw output\"]"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# pip install pydantic   (run: python this_file.py). The provider is faked so no key is needed.\nimport asyncio\nfrom typing import Literal\n\nfrom pydantic import BaseModel, Field, ValidationError\n\n\nclass Ticket(BaseModel):\n    category: Literal[\"billing\", \"bug\", \"feature\", \"other\"]\n    urgency: int = Field(ge=1, le=5)\n    summary: str = Field(max_length=200)\n\n\nREPLIES = iter(\n    [\n        '{\"category\": \"refund\", \"urgency\": 9, \"summary\": \"Charged twice\"}',      # invalid enum + range\n        '{\"category\": \"billing\", \"urgency\": 4, \"summary\": \"Charged twice\"}',    # repaired\n    ]\n)\n\n\nasync def fake_complete(prompt: str) -> str:\n    \"\"\"Stands in for await client.messages.create(...).\"\"\"\n    return next(REPLIES)\n\n\nasync def extract(text: str, max_attempts: int = 3) -> Ticket:\n    prompt = f\"Classify this support message as JSON matching {list(Ticket.model_json_schema()['properties'])}:\\n{text}\"\n    for attempt in range(1, max_attempts + 1):\n        raw = await fake_complete(prompt)\n        try:\n            return Ticket.model_validate_json(raw)\n        except ValidationError as e:\n            problems = \"; \".join(f\"{'.'.join(map(str, err['loc']))}: {err['msg']}\" for err in e.errors())\n            print(f\"attempt {attempt} failed: {problems}\")\n            prompt += f\"\\nYour previous reply was invalid ({problems}). Return corrected JSON only.\"\n    raise RuntimeError(\"model did not return valid output\")\n\n\nprint(asyncio.run(extract(\"I was charged twice for March\")))"
+            }
+          ]
+        },
+        {
+          "id": "concurrency-cache",
+          "label": "Batching, concurrency, caching",
+          "body": "## Why concurrency is the first optimisation\n\nLLM calls take hundreds of milliseconds to many seconds and spend that time waiting. Running 1,000 calls one after another is slow for no reason; running 1,000 at once gets you rate limited and may exhaust memory or sockets. The answer is **bounded concurrency**: an `asyncio.Semaphore` that allows N calls in flight.\n\n```python\nsem = asyncio.Semaphore(8)\n\nasync def bounded(item):\n    async with sem:\n        return await call_llm(item)\n\nresults = await asyncio.gather(*(bounded(x) for x in items), return_exceptions=True)\n```\n\nDetails that matter:\n\n- **`return_exceptions=True`** (or per-item try/except) so one failure does not discard 999 good results; then separate successes from failures and retry the failed ones.\n- Pick N from the provider's **rate limits** (requests per minute and tokens per minute) and your latency target. Start small (4-16) and measure. Retry 429s with backoff and jitter; respect `Retry-After`.\n- Use `asyncio.TaskGroup` when a single failure should cancel the batch, `gather` with exceptions when partial results are fine.\n- For a huge job, **stream the inputs** through a worker pattern (an `asyncio.Queue` and N workers) instead of creating a million tasks at once.\n- Write results incrementally (JSONL, database) with a **checkpoint**, so a crash at item 80,000 resumes instead of restarting, and key each row by a stable id so reruns are idempotent.\n- Do not call blocking SDK clients from async code; use the async client or `asyncio.to_thread`.\n\n## Provider batch APIs\n\nSeveral providers offer an asynchronous **batch API**: you upload many requests and collect results later (typically within hours) at a **discount** compared with real-time pricing. It fits offline work (evaluation runs, labelling, embedding a corpus) and does not fit anything interactive. Check each provider's current terms, limits and discount.\n\n## Caching\n\nCalls cost money and time, and many are repeated (evals rerun daily, the same document is classified twice). Layers, cheapest first:\n\n1. **Exact-match cache** keyed by a hash of everything that affects the output: model, prompt, parameters, schema version. In-process dict or `functools.lru_cache` for sync code; SQLite, a disk cache or Redis to survive restarts and share across workers. Only meaningful for deterministic-ish settings (`temperature=0`) or when you accept a past answer.\n2. **In-flight de-duplication:** if two requests for the same key arrive together, share one call (store the *task*, not just the result).\n3. **Provider prompt caching:** providers can reuse the processed prefix of a long, stable prompt (system prompt, documents, tool definitions) at a lower price and latency. Put the stable content first and the variable part last, and check the provider's rules for what is cacheable and for how long.\n4. **Semantic caching** (embedding similarity) is riskier: a \"close enough\" hit can return a wrong answer. Use it only where a near-miss is harmless, with a high threshold.\n\nCache only **validated** output, include a version in the key so a prompt change invalidates old entries, and never cache across users when the prompt contains private data.\n\n## Cost and latency accounting\n\nTrack tokens in and out per call and per feature, time to first token and total latency, retries, and cache hit rate. Most savings come from: a smaller model for easy steps, shorter prompts, caching, batching offline work, and capping `max_tokens`.",
+          "diagrams": [
+            {
+              "title": "Bounded concurrency with a cache in front",
+              "code": "flowchart LR\n  I[\"items\"] --> K{\"cache hit?\"}\n  K -->|yes| R[\"results\"]\n  K -->|no| S[\"Semaphore(N)\"]\n  S --> L[\"LLM call<br/>retry 429/5xx\"]\n  L --> V[\"validate\"]\n  V --> W[\"write cache + checkpoint\"]\n  W --> R"
+            }
+          ],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# Pure standard library. Run: python this_file.py\nimport asyncio\nimport hashlib\nimport json\nimport random\nimport time\n\nCACHE: dict[str, str] = {}\nINFLIGHT: dict[str, asyncio.Task[str]] = {}\nCALLS = 0\n\n\ndef cache_key(model: str, prompt: str, **params: object) -> str:\n    blob = json.dumps({\"m\": model, \"p\": prompt, \"params\": params, \"v\": 1}, sort_keys=True)\n    return hashlib.sha256(blob.encode()).hexdigest()\n\n\nasync def fake_llm(prompt: str) -> str:\n    global CALLS\n    CALLS += 1\n    await asyncio.sleep(0.05 + random.random() * 0.05)\n    if \"boom\" in prompt:\n        raise RuntimeError(\"provider error\")\n    return prompt.upper()\n\n\nasync def cached_complete(prompt: str) -> str:\n    key = cache_key(\"demo-model\", prompt, temperature=0)\n    if key in CACHE:\n        return CACHE[key]\n    if key not in INFLIGHT:                              # de-duplicate concurrent identical calls\n        INFLIGHT[key] = asyncio.create_task(fake_llm(prompt))\n    try:\n        CACHE[key] = await INFLIGHT[key]\n        return CACHE[key]\n    finally:\n        INFLIGHT.pop(key, None)\n\n\nasync def run(prompts: list[str], limit: int = 4) -> list[str | BaseException]:\n    sem = asyncio.Semaphore(limit)\n\n    async def one(p: str) -> str:\n        async with sem:\n            return await cached_complete(p)\n\n    return await asyncio.gather(*(one(p) for p in prompts), return_exceptions=True)\n\n\nasync def main() -> None:\n    prompts = [f\"item {i % 10}\" for i in range(40)] + [\"boom\"]    # 10 unique prompts repeated, one failure\n    t = time.perf_counter()\n    out = await run(prompts)\n    ok = [r for r in out if isinstance(r, str)]\n    bad = [r for r in out if isinstance(r, BaseException)]\n    print(f\"{len(ok)} ok, {len(bad)} failed, {CALLS} real calls, {time.perf_counter() - t:.2f}s\")\n\n\nasyncio.run(main())"
+            }
+          ]
+        },
+        {
+          "id": "ops-cli",
+          "label": "Notebooks, logging, CLI",
+          "body": "## Jupyter versus scripts\n\n**Notebooks** are the right place to explore: inspect data, try prompts, plot results, share a finding. They are a poor place to keep logic: hidden state from running cells out of order, outputs that embed secrets or personal data in the file, diffs that are unreadable, and nothing to import or test.\n\nA workable split:\n\n- Explore in a notebook; the moment code is reused, **move it into the package** (`src/yourpkg/`) and import it from the notebook (`%load_ext autoreload` / `%autoreload 2` keeps edits live).\n- Keep notebooks thin: calls into tested functions, plus plots and commentary.\n- Strip outputs before committing (`nbstripout` or the equivalent), and \"Restart and run all\" before sharing.\n- Anything scheduled, repeated or deployed is a **script or service**, not a notebook.\n- Pin the same environment: `uv run --with jupyter jupyter lab` uses your project's dependencies.\n\n## Logging and tracing\n\n`print` does not survive production. Use the standard `logging` module: a logger per module (`logging.getLogger(__name__)`), configure handlers **once** at the entry point, use levels, and prefer **structured** logs (JSON, with fields) that a log platform can query.\n\nFor each LLM call, log: a request id, feature name, model, prompt **version**, input and output token counts, latency (and time to first token if streaming), retry count, cache hit, outcome. Be deliberate about content: prompts and responses often contain personal or confidential data, so log them only when allowed, redact, or log a hash and store full text in a restricted store with a retention period. Never log API keys or full resumes.\n\n**Tracing** ties one user request to every step beneath it (retrieval, each model call, tool calls) as nested spans with durations. OpenTelemetry is the vendor-neutral standard in Python (`opentelemetry-api`/`sdk`, with exporters), and there are LLM-focused observability tools that show prompts, outputs and costs per span. Propagate the trace id through async code with context (`contextvars`), which asyncio tasks inherit.\n\n```python\nimport logging, time\nlog = logging.getLogger(\"llm\")\nt0 = time.perf_counter()\n...\nlog.info(\"llm_call\", extra={\"feature\": \"triage\", \"model\": model, \"prompt_v\": \"triage@3\",\n                            \"tokens_in\": usage.input_tokens, \"tokens_out\": usage.output_tokens,\n                            \"ms\": round((time.perf_counter() - t0) * 1000)})\n```\n\n## Packaging a command-line tool\n\nA CLI is often the most useful deliverable of an AI project: batch labelling, an eval runner, a corpus indexer. Make it installable:\n\n```toml\n[project]\nname = \"triage-cli\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = [\"pydantic>=2\"]\n\n[project.scripts]\ntriage = \"triage.cli:main\"\n\n[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n```\n\nAfter `uv sync`, `uv run triage ...` works; `uv build` produces a wheel; `uv tool install .` (or `pipx`) installs it as a command. For argument parsing use `argparse` from the standard library, or **Typer** / **Click** for less boilerplate, help text and completion from type hints.\n\nCLI hygiene: read input from files or stdin, write results to stdout and **logs to stderr** (so output can be piped), return non-zero exit codes on failure, support `--dry-run`, `--limit` and `--concurrency`, resume from a checkpoint, and print a cost and failure summary at the end. Keep `main()` thin and call testable functions; `asyncio.run()` once at the top.",
+          "diagrams": [],
+          "code": [
+            {
+              "lang": "python",
+              "source": "# A thin, testable CLI. Run: python this_file.py --limit 3 --concurrency 2 < prompts.txt\n# (or: echo -e \"a\\nb\\nc\\nd\" | python this_file.py --limit 3)\nimport argparse\nimport asyncio\nimport json\nimport logging\nimport sys\n\nlog = logging.getLogger(\"triage\")\n\n\nasync def classify(text: str) -> dict[str, str]:       # replace with a real provider call\n    await asyncio.sleep(0.01)\n    return {\"input\": text, \"label\": \"other\"}\n\n\nasync def run(lines: list[str], concurrency: int) -> list[dict[str, str]]:\n    sem = asyncio.Semaphore(concurrency)\n\n    async def one(line: str) -> dict[str, str]:\n        async with sem:\n            return await classify(line)\n\n    return await asyncio.gather(*(one(x) for x in lines))\n\n\ndef main(argv: list[str] | None = None) -> int:\n    ap = argparse.ArgumentParser(prog=\"triage\", description=\"Label lines read from stdin.\")\n    ap.add_argument(\"--limit\", type=int, default=100)\n    ap.add_argument(\"--concurrency\", type=int, default=4)\n    ap.add_argument(\"--verbose\", action=\"store_true\")\n    args = ap.parse_args(argv)\n\n    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, stream=sys.stderr,\n                        format=\"%(asctime)s %(levelname)s %(name)s %(message)s\")   # logs to stderr, data to stdout\n    lines = [x.strip() for x in sys.stdin if x.strip()][: args.limit]\n    if not lines:\n        log.error(\"no input on stdin\")\n        return 2\n    for row in asyncio.run(run(lines, args.concurrency)):\n        print(json.dumps(row))                         # JSON Lines on stdout: easy to pipe\n    log.info(\"done: %d items\", len(lines))\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())"
+            }
+          ]
+        },
+        {
+          "id": "interview",
+          "label": "Interview",
+          "body": "## What interviewers are testing\n\nWhether you can write the Python around an LLM call so it is typed, bounded, cheap, observable and shippable. They want specifics: semaphores, validation, cache keys, what you log.\n\n## Questions with model answers\n\n### 1. How do you get reliable structured output from an LLM?\n\n**Model answer.** Define a Pydantic model, pass its JSON Schema through the provider's structured-output or tool-calling feature so decoding is constrained, then **validate again** with `model_validate_json` because output is untrusted input. On `ValidationError`, retry once or twice with the error messages fed back, then fail loudly. Schemas stay small and closed (enums, bounded ints). I remember that a valid shape does not make the values true, so important fields get cross-checked.\n\n### 2. You must process 100,000 documents with an LLM. How?\n\n**Model answer.** Make the work idempotent per document id and checkpoint results to JSONL or a database. For offline work, consider the provider's batch API (cheaper, asynchronous). Otherwise use asyncio with a semaphore sized to the rate limit, worker tasks reading from a queue instead of 100,000 tasks at once, retries with backoff and jitter on 429/5xx, and `return_exceptions` so failures are collected and retried separately. Add a cache for repeated inputs, and report cost and failure counts at the end.\n\n### 3. How do you design the cache key?\n\n**Model answer.** A hash of every input that changes the output: model id, full prompt, generation parameters, schema or prompt version. Only cache validated output, never share entries across users when prompts contain private data, and bump the version to invalidate. For concurrent identical requests I share one in-flight task. Provider prompt caching is a separate mechanism for stable long prefixes, so I keep stable content at the start of the prompt.\n\n### 4. Notebook or script?\n\n**Model answer.** Notebooks to explore and communicate; scripts and packages for anything repeated, tested or deployed. Reusable logic moves to the package and is imported into the notebook, outputs are stripped before commit, and the notebook runs top to bottom from a clean kernel. Secrets never live in notebooks.\n\n### 5. What do you log for each LLM call, and what do you avoid logging?\n\n**Model answer.** Request id, feature, model, prompt version, token counts, latency and time to first token, retries, cache hit and outcome, as structured logs and as a trace span. I avoid API keys and, by default, raw prompts and responses that may contain personal data; when needed I redact or store them in a restricted, time-limited store.\n\n### 6. How do you ship a Python CLI?\n\n**Model answer.** A `[project.scripts]` entry point in `pyproject.toml` pointing to a thin `main()`, a build backend, `uv build` for the wheel and `uv tool install` or pipx to install it. Results to stdout, logs to stderr, meaningful exit codes, flags for limit, concurrency and dry-run, and tested functions underneath.\n\n## Follow-ups to be ready for\n\n- Sync client in async code: what breaks and how to fix it.\n- Prompt injection when documents are placed in the prompt.\n- Temperature 0 and determinism: reduces variance, does not guarantee identical output.\n- How you would evaluate a prompt change before shipping it.",
+          "diagrams": [],
+          "code": []
+        }
+      ],
+      "keyPoints": [
+        "Use the provider's async client in async apps, create it once, set timeouts and retries, and keep model ids and keys in configuration.",
+        "Structured output: pass a Pydantic-derived schema via native structured output or tool calling, then validate again and repair a bounded number of times.",
+        "Valid shape is not truth; treat model output as untrusted and keep schemas small and closed.",
+        "Bound concurrency with asyncio.Semaphore sized to rate limits; gather with return_exceptions, checkpoint results and keep work idempotent.",
+        "Provider batch APIs suit offline jobs at lower cost; exact-match caches key on model, prompt, params and version; cache only validated output.",
+        "Notebooks explore, packages and scripts ship; strip outputs and never keep secrets in notebooks.",
+        "Log structured metadata per call (tokens, latency, model, prompt version) and trace requests; be careful with prompt and response content.",
+        "Package a CLI with a project.scripts entry point; data to stdout, logs to stderr, proper exit codes."
+      ],
+      "problems": [],
+      "practiceRef": "ai-llm-engineering:3",
+      "check": [
+        {
+          "q": "You run 5,000 LLM calls with asyncio.gather and no limit. What is the most likely problem?",
+          "options": [
+            "Python refuses to create that many tasks",
+            "Provider rate limiting (429s) and resource exhaustion because everything starts at once",
+            "The calls run strictly one after another",
+            "The responses come back unordered"
+          ],
+          "answer": 1,
+          "why": "Unbounded fan-out hits rate limits and exhausts sockets and memory. Use a Semaphore (or worker queue) and retry 429s with backoff."
+        },
+        {
+          "q": "Which inputs belong in an exact-match LLM cache key?",
+          "options": [
+            "Only the user's prompt text",
+            "Model, full prompt, generation parameters and a prompt or schema version",
+            "Only the timestamp",
+            "The API key"
+          ],
+          "answer": 1,
+          "why": "Anything that changes the output must change the key; otherwise a model or prompt change returns stale answers. Never include secrets."
+        },
+        {
+          "q": "A model returns JSON that matches your schema exactly. What is still true?",
+          "options": [
+            "The values are guaranteed correct",
+            "You can skip validation",
+            "The shape is right but values may still be wrong, so validate and sanity-check them",
+            "The call will never need a retry"
+          ],
+          "answer": 2,
+          "why": "Schema-constrained output guarantees structure, not factual accuracy. Validate with Pydantic and cross-check important fields."
+        }
+      ],
+      "sources": [
+        {
+          "title": "Anthropic API: streaming messages",
+          "url": "https://docs.anthropic.com/en/api/messages-streaming"
+        },
+        {
+          "title": "OpenAI: structured outputs",
+          "url": "https://platform.openai.com/docs/guides/structured-outputs"
+        },
+        {
+          "title": "Python docs: asyncio synchronization primitives",
+          "url": "https://docs.python.org/3/library/asyncio-sync.html"
+        },
+        {
+          "title": "Python docs: logging",
+          "url": "https://docs.python.org/3/library/logging.html"
+        },
+        {
+          "title": "OpenTelemetry for Python",
+          "url": "https://opentelemetry.io/docs/languages/python/"
+        },
+        {
+          "title": "Typer documentation",
+          "url": "https://typer.tiangolo.com/"
+        }
+      ],
+      "complexity": []
+    }
+  ]
+}
