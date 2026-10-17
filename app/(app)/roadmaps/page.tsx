@@ -19,7 +19,7 @@ export default async function RoadmapsPage() {
   const studyFlow = await getStudyFlow();
   return (
     <>
-      <PageHeader icon={Route} title="Roadmaps" description="Pick a path, join it, and follow the must-do nodes. A node ticks itself when you have ticked its topics, read its links, solved its problems and passed its quiz. This never affects your daily plan or streak." />
+      <PageHeader icon={Route} title="Roadmaps" description="Pick a path, join it, and follow the must-do nodes. A node ticks itself when you have ticked its topics, read its links, solved its problems and passed its quiz. This never affects your daily plan or streak. Each roadmap is an optional deeper path on top of the syllabus or Web — not a replacement for either." />
       <div className="mb-4"><StudyFlowCard items={studyFlow.items} nextId={studyFlow.next?.id} /></div>
       <ul className="grid gap-4 md:grid-cols-2">
         {items.map(({ roadmap, joinedOn, progress, next }) => {

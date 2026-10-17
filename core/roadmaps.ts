@@ -8,13 +8,15 @@ import dsaJson from "@/data/roadmaps/dsa.json";
 import frontendJson from "@/data/roadmaps/frontend.json";
 import frontendScaleJson from "@/data/roadmaps/frontend-scale.json";
 import fullstackJson from "@/data/roadmaps/fullstack.json";
-import systemDesignJson from "@/data/roadmaps/system-design.json";
 import { webLessonById } from "@/core/content";
 import { courseLessonByKey } from "@/core/courses";
 import { roadmapSchema, type Roadmap } from "@/modules/roadmap/domain/roadmap";
 
+// The former "system-design" roadmap was retired (2026-10-17): it duplicated the syllabus's
+// "hld" track almost 1:1, and /design studio is the deeper, flagship case-study format for
+// the same subject. See docs/DESIGN.md §2 for the depth-tier convention.
 /** Parsed through the schema so defaults (empty links and problems) apply and a bad file fails loudly. */
-export const roadmaps: Roadmap[] = [dsaJson, systemDesignJson, backendJson, frontendJson, frontendScaleJson, fullstackJson, aiEngineerJson].map((j) => roadmapSchema.parse(j));
+export const roadmaps: Roadmap[] = [dsaJson, backendJson, frontendJson, frontendScaleJson, fullstackJson, aiEngineerJson].map((j) => roadmapSchema.parse(j));
 export const roadmapById = new Map(roadmaps.map((r) => [r.id, r]));
 
 /** Prefix of a node `lesson` that points at a web lesson (data/webdev) instead of a course lesson. */

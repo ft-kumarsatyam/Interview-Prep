@@ -26,17 +26,28 @@ import { StatGrid } from "@/modules/progress/components/dashboard/stat-grid";
 import { TheoryCard } from "@/modules/progress/components/dashboard/theory-card";
 import { TodayCard } from "@/modules/progress/components/dashboard/today-card";
 import { buildRequirements, dayCopy, greetingFor, isWorkday, localHour, nextRequirement } from "@/modules/progress/domain/dashboard-view";
-import { selectNextAction, type StudyActionCandidate } from "@/modules/progress/domain/next-action";
+import { selectNextAction, type StudyActionCandidate, type StudyActionKind } from "@/modules/progress/domain/next-action";
 import { getDashboard } from "@/modules/progress/services/dashboard";
 import { getStreakInsights } from "@/modules/progress/services/streak-insights";
 import { streakRisk } from "@/modules/progress/domain/streak-insights";
 import { getMistakesOverview } from "@/modules/quiz/services/practice";
 import { FixNextCard } from "@/modules/progress/components/dashboard/fix-next-card";
 import { ReadinessStrip } from "@/modules/progress/components/dashboard/readiness-strip";
+import { CollapsibleSection } from "@/components/shared/collapsible-section";
 import { getTargetsOverview } from "@/modules/targets/services/targets";
 import { studyGuidance } from "@/modules/progress/domain/study-guidance";
 import { getStudyFlow } from "@/modules/study-flow/services/study-flow";
-import { StudyFlowCard } from "@/modules/study-flow/components/study-flow-card";
+import type { StudyFlowKind } from "@/modules/study-flow/domain/study-flow";
+
+const STUDY_FLOW_KIND_TO_ACTION_KIND: Record<StudyFlowKind, StudyActionKind> = {
+  dsa: "dsa",
+  review: "review",
+  theory: "theory",
+  quiz: "quiz",
+  course: "backlog",
+  roadmap: "backlog",
+  practice: "backlog",
+};
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -53,50 +64,21 @@ export default async function DashboardPage() {
   const hour = localHour(settings.timezone);
   const requirements = buildRequirements(day, READINGS_PER_DAY);
   const next = nextRequirement(requirements, day);
+  // One ranked queue (modules/study-flow) feeds both the header CTA and Today's "next" badge,
+  // so they can never disagree about what to do next (impeccable critique P1, 2026-10-17).
   const nextAction = selectNextAction({
     kind: day.kind,
-    candidates: [
-      ...data.problems.map((problem, index): StudyActionCandidate => ({
-        kind: problem.role === "review" ? "review" : "dsa",
-        title: problem.title,
-        href: `/dsa/${problem.slug}`,
-        reason: problem.role === "review" ? "Due spaced-repetition review" : "Today's frozen plan",
-        minutes: problem.difficulty === "Hard" ? 55 : problem.difficulty === "Medium" ? 35 : 20,
-        required: true,
-        done: problem.solvedToday,
-        rank: problem.role === "review" ? 5 + index : 10 + index,
-      })),
-      ...data.theory.map((topic, index): StudyActionCandidate => ({
-        kind: "theory",
-        title: topic.title,
-        href: `/learn/${topic.topicId}`,
-        reason: "Today's theory target",
-        minutes: 25,
-        required: true,
-        done: topic.done,
-        rank: 20 + index,
-      })),
-      {
-        kind: "quiz",
-        title: day.kind === "sunday" ? "Weekly quiz" : "Daily quiz",
-        href: "/quiz",
-        reason: day.quizPassed ? "Already passed" : "Required to complete the day",
-        required: true,
-        done: day.quizPassed,
-        locked: !day.quizUnlocked && !day.quizPassed,
-        rank: 40,
-      },
-      ...(!day.complete
-        ? [{
-            kind: "backlog" as const,
-            title: "Choose an optional backlog item",
-            href: "/backlog",
-            reason: "Optional work after today's required targets",
-            required: false,
-            rank: 100,
-          }]
-        : []),
-    ],
+    candidates: studyFlow.items.map((item, index): StudyActionCandidate => ({
+      kind: STUDY_FLOW_KIND_TO_ACTION_KIND[item.kind],
+      title: item.title,
+      href: item.href,
+      reason: item.reason,
+      minutes: item.minutes,
+      required: item.bucket === "required",
+      done: item.done,
+      locked: item.locked,
+      rank: index,
+    })),
   });
   const guidance = studyGuidance({
     minutesAvailable: Math.round((plan.hours ?? 0) * 60),
@@ -132,7 +114,6 @@ export default async function DashboardPage() {
         <CarrySection today={today} plan={plan} settings={settings} />
       </Suspense>
       <NotificationBanner notification={data.unreadNotifications[0]} />
-      <StudyFlowCard items={studyFlow.items} nextId={studyFlow.next?.id} />
 
       <div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
         <TodayCard
@@ -143,12 +124,14 @@ export default async function DashboardPage() {
           showHours={isWorkday(day.kind) || day.kind === "sunday"}
           hours={plan.hours ?? null}
           estMinutes={plan.estMinutes ?? null}
+          secondary={studyFlow.items.filter((item): item is typeof item & { bucket: "recommended" | "optional" } => item.bucket !== "required")}
         />
         <StatGrid
           streak={data.streak}
           best={data.best}
           freezeTokens={data.freezeTokens}
           risk={risk}
+          next={next}
           freeze={insights.freeze}
           streakWeek={insights.week}
           solvedMain={data.solvedMain}
@@ -167,26 +150,43 @@ export default async function DashboardPage() {
         <TheoryCard theory={data.theory} target={plan.theoryTarget} />
       </div>
 
-      <Suspense fallback={<CardSkeleton />}>
-        <BacklogSection today={today} plan={plan} settings={settings} />
-      </Suspense>
       <FixNextCard mistakes={mistakes} />
-      <ReadinessStrip targets={targets} />
-      <Suspense fallback={<CardSkeleton />}>
-        <JobSearchSection today={today} />
-      </Suspense>
-      <Suspense fallback={<CardSkeleton className="h-40" />}>
-        <MocksSection today={today} schedule={settings.mockSchedule} />
-      </Suspense>
 
-      {day.kind === "sunday" && <BonusCard bonus={data.bonus} />}
+      <CollapsibleSection title="Backlog">
+        <Suspense fallback={<CardSkeleton />}>
+          <BacklogSection today={today} plan={plan} settings={settings} />
+        </Suspense>
+      </CollapsibleSection>
+      <CollapsibleSection title="Readiness">
+        <ReadinessStrip targets={targets} />
+      </CollapsibleSection>
+      <CollapsibleSection title="Job search">
+        <Suspense fallback={<CardSkeleton />}>
+          <JobSearchSection today={today} />
+        </Suspense>
+      </CollapsibleSection>
+      <CollapsibleSection title="This week's mocks">
+        <Suspense fallback={<CardSkeleton className="h-40" />}>
+          <MocksSection today={today} schedule={settings.mockSchedule} />
+        </Suspense>
+      </CollapsibleSection>
 
-      {showLeetCode && <LeetCodeCard username={settings.leetcodeUsername} lastSyncLabel={lastSyncLabel} needsDetails={data.needsDetails} />}
-      <ActivityCard heatmap={data.heatmap} username={settings.leetcodeUsername} lastSyncLabel={lastSyncLabel} showLeetCodeCompact={!showLeetCode} />
+      {day.kind === "sunday" && (
+        <CollapsibleSection title="Sunday bonus" defaultOpen>
+          <BonusCard bonus={data.bonus} />
+        </CollapsibleSection>
+      )}
 
-      <Suspense fallback={<CardSkeleton className="h-56" />}>
-        <NewsStrip />
-      </Suspense>
+      <CollapsibleSection title="LeetCode activity">
+        {showLeetCode && <LeetCodeCard username={settings.leetcodeUsername} lastSyncLabel={lastSyncLabel} needsDetails={data.needsDetails} />}
+        <ActivityCard heatmap={data.heatmap} username={settings.leetcodeUsername} lastSyncLabel={lastSyncLabel} showLeetCodeCompact={!showLeetCode} />
+      </CollapsibleSection>
+
+      <CollapsibleSection title="AI & engineering news">
+        <Suspense fallback={<CardSkeleton className="h-56" />}>
+          <NewsStrip />
+        </Suspense>
+      </CollapsibleSection>
     </PageStack>
   );
 }

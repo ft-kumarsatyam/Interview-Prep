@@ -11,7 +11,7 @@ import { getSubtopicProgressMap } from "@/modules/learn/services/learn";
 import { getMasteryMap } from "@/modules/progress/services/mastery";
 import { getSettings } from "@/modules/settings/services/settings";
 
-export const metadata: Metadata = { title: "Learn" };
+export const metadata: Metadata = { title: "Syllabus" };
 
 export default async function LearnPage({ searchParams }: PageProps<"/learn">) {
   const { track } = await searchParams;
@@ -51,7 +51,7 @@ export default async function LearnPage({ searchParams }: PageProps<"/learn">) {
 
   return (
     <>
-      <PageHeader title="Learn" icon={GraduationCap} description="Pick a topic, tick subtopics as you study, then pass the topic quiz to earn Mastered.">
+      <PageHeader title="Syllabus" icon={GraduationCap} description="Pick a topic, tick subtopics as you study, then pass the topic quiz to earn Mastered.">
         <Button asChild variant="outline" size="sm">
           <Link href="/courses">
             <GraduationCap /> Courses
@@ -68,6 +68,9 @@ export default async function LearnPage({ searchParams }: PageProps<"/learn">) {
           </Link>
         </Button>
       </PageHeader>
+      <p className="-mt-2 mb-4 text-sm text-muted-foreground">
+        AI and System Design go deeper elsewhere: Web has 47 AI/LLM lessons, the AI Engineer roadmap is the practitioner-depth path, and the System Design studio is the flagship case-study format — this syllabus track is the required foundation for each.
+      </p>
       <LearnIndex
         tracks={tracks}
         rows={rows}

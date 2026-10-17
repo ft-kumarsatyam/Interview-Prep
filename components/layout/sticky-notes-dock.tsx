@@ -5,12 +5,12 @@ import { useState } from "react";
 import { ChevronRight, StickyNote, X } from "lucide-react";
 import type { CapturedNoteView } from "@/modules/notes/services/notes";
 
-const COLOR_CLASS: Record<CapturedNoteView["highlightColor"], string> = {
-  yellow: "border-l-yellow-400",
-  blue: "border-l-blue-400",
-  green: "border-l-green-400",
-  pink: "border-l-pink-400",
-  purple: "border-l-purple-400",
+const DOT_CLASS: Record<CapturedNoteView["highlightColor"], string> = {
+  yellow: "bg-yellow-300",
+  blue: "bg-blue-300",
+  green: "bg-green-300",
+  pink: "bg-pink-300",
+  purple: "bg-purple-300",
 };
 
 /** A small, non-blocking note pile: collapsed by default, expands on hover or keyboard focus. */
@@ -31,10 +31,13 @@ export function StickyNotesDock({ notes }: { notes: CapturedNoteView[] }) {
         </div>
         <div className={`${expanded ? "block" : "hidden group-hover:block group-focus-within:block"} max-h-72 space-y-2 overflow-y-auto border-t p-2`}>
           {notes.slice(0, 12).map((note) => (
-            <Link key={note.id} href="/notes" className={`block rounded-lg border border-l-4 bg-background p-2.5 text-xs hover:bg-muted ${COLOR_CLASS[note.highlightColor]}`}>
-              <span className="block truncate font-medium">{note.title}</span>
+            <Link key={note.id} href="/notes" className="block rounded-lg border bg-background p-2.5 text-xs hover:bg-muted">
+              <span className="flex items-center gap-1.5 truncate font-medium">
+                <span className={`size-1.5 shrink-0 rounded-full ${DOT_CLASS[note.highlightColor]}`} aria-hidden />
+                {note.title}
+              </span>
               <span className="mt-1 block line-clamp-3 whitespace-pre-wrap text-muted-foreground">{note.body || note.excerpt}</span>
-              {note.body && note.body !== note.excerpt && <span className="mt-1 block line-clamp-1 text-[11px] text-muted-foreground/70">“{note.excerpt}”</span>}
+              {note.body && note.body !== note.excerpt && <span className="mt-1 block line-clamp-1 text-2xs text-muted-foreground/70">&ldquo;{note.excerpt}&rdquo;</span>}
               <span className="mt-1 inline-flex items-center gap-1 text-primary">Open notes <ChevronRight className="size-3" /></span>
             </Link>
           ))}

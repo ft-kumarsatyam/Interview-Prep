@@ -21,7 +21,7 @@ export function PageHeader({
         )}
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{title}</h1>
-          {description && <p className="mt-1 max-w-2xl text-sm text-pretty text-muted-foreground">{description}</p>}
+          {description && <div className="mt-1 max-w-2xl text-sm text-pretty text-muted-foreground">{description}</div>}
         </div>
       </div>
       {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}

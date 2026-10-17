@@ -29,7 +29,7 @@ export default async function WebPage({ searchParams }: PageProps<"/web">) {
 
   return (
     <>
-      <PageHeader icon={Globe} title="Web, frontend and AI engineering" description="Frontend from the browser up to frontend at scale and frontend system design, the backend and data stack, architecture, and GenAI: how LLMs work, RAG, agents and evals. Optional: this never changes your study plan.">
+      <PageHeader icon={Globe} title="Web, frontend and AI engineering" description="Frontend from the browser up to frontend at scale and frontend system design, the backend and data stack, architecture, and GenAI: how LLMs work, RAG, agents and evals. Optional: this never changes your study plan. The AI lessons here go deeper than the syllabus's AI track; the AI Engineer roadmap goes deeper still.">
         {next && (
           <Button asChild>
             <Link href={`/web/${next.id}`}>Continue: {next.title}</Link>

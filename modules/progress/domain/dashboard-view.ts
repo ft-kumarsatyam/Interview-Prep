@@ -30,6 +30,23 @@ export interface Requirement {
   cta: string;
 }
 
+/**
+ * Recommended/optional study-flow items shown as a lower-emphasis tier below
+ * Today's required checklist. Deliberately local (not imported from
+ * modules/study-flow) so this module stays within its reviewed dependency
+ * baseline; modules/study-flow's `StudyFlowItem` already has this shape.
+ */
+export interface SecondaryStudyItem {
+  id: string;
+  title: string;
+  href: string;
+  minutes: number;
+  bucket: "recommended" | "optional";
+  reason: string;
+  done: boolean;
+  locked?: boolean;
+}
+
 export const isWorkday = (kind: DayKind): boolean => kind === "study" || kind === "revision";
 
 /** Local hour (0-23) in `timeZone`. */

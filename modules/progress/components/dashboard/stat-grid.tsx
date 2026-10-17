@@ -1,8 +1,10 @@
-import { BookOpen, CalendarClock, Code2, Flame, Snowflake, TrendingDown, TrendingUp } from "lucide-react";
+import { ArrowRight, BookOpen, CalendarClock, Code2, Flame, Snowflake, TrendingDown, TrendingUp } from "lucide-react";
 import { StatTile } from "@/components/shared/stat-tile";
 import { Progress } from "@/components/ui/progress";
+import { StudyActionLink } from "@/components/shared/study-action-link";
 import { formatDate } from "@/core/plan-clock";
 import { cn } from "@/core/utils";
+import type { Requirement } from "@/modules/progress/domain/dashboard-view";
 import type { FreezeProgress, StreakRisk, WeekCell } from "@/modules/progress/domain/streak-insights";
 
 type Props = {
@@ -10,6 +12,8 @@ type Props = {
   best: number;
   freezeTokens: number;
   risk: StreakRisk;
+  /** The next undone requirement; drives the streak-risk alert's recovery link. */
+  next?: Requirement;
   freeze: FreezeProgress;
   streakWeek: { cells: WeekCell[]; kept: number; elapsed: number };
   solvedMain: number;
@@ -64,10 +68,24 @@ export function StatGrid(p: Props) {
           <span className="ml-1 text-2xs text-muted-foreground">{p.streakWeek.kept}/7 this week</span>
         </ol>
         {p.risk.level !== "none" && p.risk.level !== "safe" && (
-          <p className={cn("text-xs", p.risk.level === "critical" ? "font-medium text-destructive" : "text-warning")} role="status">
-            {p.risk.message}
-            {p.risk.left.length > 0 && ` Still needed: ${p.risk.left.join(", ")}.`}
-          </p>
+          <div className="space-y-1" role="status">
+            <p className={cn("text-xs", p.risk.level === "critical" ? "font-medium text-destructive" : "text-warning")}>
+              {p.risk.message}
+              {p.risk.left.length > 0 && ` Still needed: ${p.risk.left.join(", ")}.`}
+            </p>
+            {p.next && (
+              <StudyActionLink
+                href={p.next.href}
+                title={p.next.cta}
+                className={cn(
+                  "inline-flex items-center gap-1 text-xs font-medium hover:underline",
+                  p.risk.level === "critical" ? "text-destructive" : "text-warning",
+                )}
+              >
+                {p.next.cta} <ArrowRight className="size-3" aria-hidden />
+              </StudyActionLink>
+            )}
+          </div>
         )}
         <p className="text-2xs text-muted-foreground">{p.freeze.label}</p>
       </StatTile>

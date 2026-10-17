@@ -31,9 +31,21 @@ The palette is **deep teal and sage on a cool white page**, taken from four bran
 
 Every pair above is at least 4.5:1 for text on its own background and on a 10% tint of itself (checked by computing WCAG ratios, not by eye). **Soft tint = `bg-<tone>/10 text-<tone>`**; do not invent other alphas. Use the `Tone` type and `ToneBadge`/`StatTile` instead of typing the classes by hand.
 
+#### Day-state tokens (heatmap, streak week-ring)
+
+Each day state has three variants — base tint, line, and dot — for backgrounds, borders and small markers respectively. The `-dot` variants are what's actually used today, in `Heatmap` and `StatGrid`'s streak-week dots; base/`-line` variants are reserved for future tinted backgrounds/borders of the same states.
+
+| Token | Dark (base / line / dot) | Light (base / line / dot) | Use |
+|---|---|---|---|
+| `--day-done` | `#0F2B22` / `#1F5238` / `#4CC47A` | `#E4F0E8` / `#B2D3BD` / `#3A9A5E` | Complete day |
+| `--day-left` | `#2B2010` / `#5E4318` / `#E6A447` | `#FBEFDD` / `#ECC996` / `#D48F3F` | Partial — something left |
+| `--day-missed` | `#2C1614` / `#5E2B26` / `#E8807A` | `#FBE9E6` / `#EFBDB5` / `#D0756A` | Missed day |
+| `--day-rest` | `#0F2F31` / `#1D4749` / `#7F9C98` | `#EEF2F1` / `#D6E0DD` / `#8FA09D` | Rest day |
+| `--day-caught` | `#0D2F2E` / `#1D5A56` / `#45C3AD` | `#DCEFEC` / `#9DCFC8` / `#14746F` | Caught-up day |
+
 Track accents (chips, topic headers): JS/TS yellow · Node lime · DSA orange · DBMS emerald · OOP violet · LLD indigo · HLD blue · CS amber · AI pink · Behavioral slate. These are defined in `syllabus.json → tracks[].color` and mapped to static Tailwind classes in `components/shared/badges.tsx`.
 
-Difficulty badges: Easy = success, Medium = warning, Hard = destructive, all as soft tints (`/10`) with full-colour text. Track chips are the one place raw palette colours are allowed: ten categorical hues cannot be expressed with the semantic tokens.
+Difficulty badges: Easy = success, Medium = warning, Hard = destructive, all as soft tints (`/10`) with full-colour text. Track chips and sticky-note highlight colors are the two places raw palette colours are allowed: ten categorical track hues, and five user-chosen note-highlight hues, cannot be expressed with the semantic tokens — both are decorative/categorical choices with no semantic app-state meaning, not design-system states.
 
 ### Typography
 - **Inter** for UI and **JetBrains Mono** for numbers, complexities and code, both loaded with `next/font`.
@@ -59,7 +71,7 @@ Difficulty badges: Easy = success, Medium = warning, Hard = destructive, all as 
   - **Today**: Overview (`/dashboard`), Daily quiz, Review, Backlog, Assistant
   - **Plan**: Planner, Calendar, Targets, Stats
   - **Practice**: Practice hub, DSA, Problems, Mock interviews, Aptitude, Playground, DB Lab
-  - **Learn**: Syllabus, Courses, Roadmaps, System Design, Web & AI, Interview bank, Projects, Eng blogs, Ask notes, Reading
+  - **Learn**: Syllabus, Courses, Roadmaps, System Design, Web & AI, Interview bank, Projects, Eng blogs, Ask notes, Notes inbox, Reading. **Depth tiers:** several of these teach overlapping ground at increasing depth — the syllabus track is always the required foundation, Web's lessons and the matching roadmap (e.g. AI Engineer) are optional deeper tiers on top of it, never a replacement. The syllabus's "hld" track and the `/design` studio cover system design directly; the roadmap system's own `system-design.json` was retired (2026-10-17) as pure duplication once `/design` existed as the flagship format.
   - **Career**: Jobs, Resume
   - **Settings**: Settings, Setup
   Every old URL still works; only the grouping changed. `pageFor()` matches the longest prefix, so `/playground/db` is DB Lab.
@@ -97,8 +109,8 @@ Centred card on a dark background with a faint animated grid or noise. It contai
 
 - **Progress ring:** the share of the four day-requirements done. The centre shows "3/4", and at 100% it turns green and fires confetti.
 - **Ticking ✓ on a problem** opens a compact sheet with confidence (easy/ok/struggled), minutes taken, a one-line approach, and time/space complexity. Saving updates the ring immediately (optimistic UI).
-- **Streak card:** flame icon, current and best streak, freeze tokens as ❄ icons. If today is incomplete after 20:00, the card pulses amber with "Finish today to keep your streak".
-- **Heatmap:** the full 24-week plan window. Cell colours: empty (future), muted (missed), warning (partial), success (complete), blue outline (freeze used). Hovering a cell shows that day's counts, clicking opens that day in the calendar.
+- **Streak card:** flame icon, current and best streak, freeze tokens as ❄ icons. If today is incomplete after 20:00, the card gets an amber border (critical risk also pulses, muted when `prefers-reduced-motion` is set) with a risk message and an inline link to the next thing that closes it.
+- **Heatmap:** the full 24-week plan window, one cell per day. States and their tokens: `future` (muted, upcoming), `idle` (muted with a primary ring — today, in progress), `missed` (`--day-missed-dot`), `partial` (`--day-left-dot`, something left), `complete` (`--day-done-dot`), `rest` (`--day-rest-dot`), `caught-up` (`--day-caught-dot`), `freeze` (muted with a `chart-5` ring — freeze used). Hovering a cell shows that day's date, state and counts; clicking opens that day in the calendar.
 - **This week's mocks:** a compact card with the DSA and System design slots (scheduled, today, missed, or done with the score). Informational only.
 - **"On pace" indicator:** solved compared with the expected count for today. ▲ green when ahead, ▼ red when behind, with the size of the gap.
 - **Notification banner** at the top when there are unread notifications (e.g. the morning plan or the evening reminder).
