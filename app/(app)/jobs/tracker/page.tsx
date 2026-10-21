@@ -19,7 +19,7 @@ export const metadata: Metadata = { title: "Jobs" };
 export default async function JobsPage() {
   const settings = await getSettings();
   const today = todayIn(settings);
-  const { jobs, funnel, next } = await getJobOverview(today);
+  const { jobs, funnel, next, offers, patterns } = await getJobOverview(today);
   const counts = pipelineCounts(jobs);
   const board = jobs.map((j) => ({
     id: j.id, title: j.title, company: j.company, source: j.source, status: j.status, location: j.location, appliedOn: j.appliedOn,
@@ -55,6 +55,40 @@ export default async function JobsPage() {
               <StatTile label="Reach screening" value={funnel.conversion.screening === null ? "–" : `${funnel.conversion.screening}%`} hint={`${funnel.reached.screening} of ${funnel.applied}`} />
               <StatTile label="Reach an interview" value={funnel.conversion.interview === null ? "–" : `${funnel.conversion.interview}%`} hint={`${funnel.reached.interview} of ${funnel.applied}`} />
               <StatTile label="No news for 2 weeks" value={String(funnel.stale.length)} tone={funnel.stale.length ? "warning" : "neutral"} hint="applied or screening" />
+            </div>
+          </section>
+        )}
+        {offers.length >= 2 && (
+          <section aria-label="Offers in hand" className="space-y-2">
+            <SectionHeading title="Offers in hand" hint="Oldest first — likely closest to its deadline" />
+            <ul className="divide-y rounded-xl border bg-card text-sm">
+              {offers.map((o) => (
+                <li key={o.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+                  <div>
+                    <Link href={`/jobs/${o.id}`} className="font-medium underline-offset-2 hover:underline">
+                      {o.title} at {o.company}
+                    </Link>
+                    <p className="text-xs text-muted-foreground">
+                      {o.daysInPipeline} days from first contact to offer{o.isTarget ? " · a Target company" : ""}
+                    </p>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {o.daysSinceOffer === 0 ? "Offered today" : `Offered ${o.daysSinceOffer}d ago`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {funnel.applied >= 3 && (patterns.byTailoring.tailored.applied > 0 || patterns.byTailoring.untailored.applied > 0) && (
+          <section aria-label="Application patterns" className="space-y-2">
+            <SectionHeading title="What's working" hint="How far applications get, by group" />
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <StatTile label="Tailored resume" value={patterns.byTailoring.tailored.interviewPct === null ? "–" : `${patterns.byTailoring.tailored.interviewPct}%`} hint={`${patterns.byTailoring.tailored.applied} applied, reach an interview`} />
+              <StatTile label="Generic resume" value={patterns.byTailoring.untailored.interviewPct === null ? "–" : `${patterns.byTailoring.untailored.interviewPct}%`} hint={`${patterns.byTailoring.untailored.applied} applied, reach an interview`} />
+              {patterns.bySource.slice(0, 2).map((p) => (
+                <StatTile key={p.label} label={p.label} value={p.interviewPct === null ? "–" : `${p.interviewPct}%`} hint={`${p.applied} applied, reach an interview`} />
+              ))}
             </div>
           </section>
         )}

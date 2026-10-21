@@ -64,7 +64,7 @@ export function resolvePracticeTarget(ref: string): PracticeTarget | null {
   if (kase) {
     const title = caseTitle(ref);
     if (!title || caseQuestions(ref).length === 0) return null;
-    const topicId = kase.kind === "hld" ? designCaseBySlug.get(kase.slug)!.topicId : practiceCaseBySlug.get(`${kase.kind}:${kase.slug}`)!.topicId;
+    const topicId = (kase.kind === "hld" ? designCaseBySlug.get(kase.slug)!.topicId : practiceCaseBySlug.get(`${kase.kind}:${kase.slug}`)!.topicId) ?? "";
     return { scope: "case", ref, title, topicId, topicTitle: title, track: kase.kind, subtopicIds: [], href: casePath(kase.kind, kase.slug) };
   }
   const sub = subtopicById.get(ref);

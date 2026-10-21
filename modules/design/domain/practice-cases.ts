@@ -2,8 +2,8 @@ import { SECTION_MAX, SECTION_MIN_WORDS, formatClock, rubricScore, type DesignSt
 
 export { SECTION_MAX, formatClock, rubricScore };
 
-export type PracticeKind = "os" | "dbms";
-export const PRACTICE_KINDS: readonly PracticeKind[] = ["os", "dbms"];
+export type PracticeKind = "os" | "dbms" | "ai";
+export const PRACTICE_KINDS: readonly PracticeKind[] = ["os", "dbms", "ai"];
 
 /** "Explain it like an interview answer" template: shorter than the 45-minute HLD round. */
 export const EXPLAIN_SECTIONS = [

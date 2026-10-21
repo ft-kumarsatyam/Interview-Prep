@@ -222,12 +222,14 @@ export interface DesignCase {
   readings: Array<{ title: string; url: string }>;
 }
 
-/** An OS or DBMS "explain it" practice case — the /design/os and /design/dbms studios. */
+/** An OS, DBMS or AI-system-design "explain it" practice case — the /design/os, /design/dbms and /design/ai studios.
+ * `topicId` links to a syllabus topic for os/dbms; AI cases have no syllabus topic (GenAI content never touches
+ * the syllabus or the streak), so it is omitted and `practiceRef` instead points at a `courseId/lessonId`. */
 export interface PracticeCase {
   kind: PracticeKind;
   slug: string;
   title: string;
-  topicId: string;
+  topicId?: string;
   practiceRef: string;
   level: "core" | "advanced";
   summary: string;

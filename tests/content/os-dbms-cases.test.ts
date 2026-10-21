@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { courseLessonByKey } from "@/core/courses";
 import { practiceCases, subtopicById, topicById } from "@/core/content";
 import { EXPLAIN_MINUTES, EXPLAIN_RUBRIC, EXPLAIN_SECTION_IDS, explainSectionsAttempted, practiceStatus } from "@/modules/design/domain/practice-cases";
 
@@ -43,13 +44,20 @@ describe("data/os-dbms-cases.json", () => {
     expect(practiceCases.filter((c) => c.kind === "dbms").length).toBeGreaterThanOrEqual(8);
   });
 
-  it.each(practiceCases.map((c) => [`${c.kind}:${c.slug}`, c] as const))("%s links to real syllabus content and is complete", (_id, c) => {
+  it.each(practiceCases.map((c) => [`${c.kind}:${c.slug}`, c] as const))("%s links to real content and is complete", (_id, c) => {
     expect(c.slug).toMatch(/^[a-z0-9-]+$/);
-    expect(["os", "dbms"]).toContain(c.kind);
-    const topic = topicById.get(c.topicId);
-    expect(topic, "topicId must exist in syllabus.json").toBeDefined();
-    expect(topic?.track).toBe(c.kind === "os" ? "cs" : "dbms");
-    expect(subtopicById.get(c.practiceRef)?.topicId).toBe(c.topicId);
+    expect(["os", "dbms", "ai"]).toContain(c.kind);
+    if (c.kind === "ai") {
+      // AI cases have no syllabus topic (GenAI content never joins the syllabus); practiceRef instead
+      // names a real `courseId/lessonId`.
+      expect(c.topicId).toBeUndefined();
+      expect(courseLessonByKey.has(c.practiceRef), `practiceRef must be a real course lesson, got ${c.practiceRef}`).toBe(true);
+    } else {
+      const topic = topicById.get(c.topicId!);
+      expect(topic, "topicId must exist in syllabus.json").toBeDefined();
+      expect(topic?.track).toBe(c.kind === "os" ? "cs" : "dbms");
+      expect(subtopicById.get(c.practiceRef)?.topicId).toBe(c.topicId);
+    }
     expect(c.title.length).toBeGreaterThan(5);
     expect(c.summary.length).toBeGreaterThan(30);
     expect(c.keywords.length).toBeGreaterThan(0);

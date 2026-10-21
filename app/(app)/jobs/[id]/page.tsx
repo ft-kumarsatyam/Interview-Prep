@@ -76,7 +76,9 @@ export default async function JobPage({ params }: PageProps<"/jobs/[id]">) {
           </CardHeader>
           <CardContent className="space-y-4">
             <JobControls id={job.id} status={job.status} notes={job.notes} />
-            {ACTIVE_STATUSES.includes(job.status) && job.status !== "saved" && <InterviewPanel id={job.id} interviewOn={job.interviewOn} round={job.interviewRound} contact={job.contact} today={today} />}
+            {ACTIVE_STATUSES.includes(job.status) && job.status !== "saved" && (
+              <InterviewPanel id={job.id} interviewOn={job.interviewOn} round={job.interviewRound} contact={job.contact} interviewDebrief={job.interviewDebrief} interviewDebriefOn={job.interviewDebriefOn} today={today} />
+            )}
             {ACTIVE_STATUSES.includes(job.status) && job.status !== "saved" && <FollowUpPanel id={job.id} followUpOn={job.followUpOn} today={today} draft={followUpDraft({ status: job.status, title: job.title, company: job.company, appliedOn: job.appliedOn })} />}
             {job.statusLog.length > 0 && (
               <ol className="space-y-1 border-t pt-3 text-xs text-muted-foreground">

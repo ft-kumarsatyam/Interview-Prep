@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { Cpu, Database, Network, type LucideIcon } from "lucide-react";
+import { Bot, Cpu, Database, Network, type LucideIcon } from "lucide-react";
 import { cn } from "@/core/utils";
 
-const TABS: ReadonlyArray<{ id: "hld" | "os" | "dbms"; label: string; href: string; icon: LucideIcon }> = [
+const TABS: ReadonlyArray<{ id: "hld" | "os" | "dbms" | "ai"; label: string; href: string; icon: LucideIcon }> = [
   { id: "hld", label: "System Design", href: "/design", icon: Network },
   { id: "os", label: "Operating Systems", href: "/design/os", icon: Cpu },
   { id: "dbms", label: "Databases", href: "/design/dbms", icon: Database },
+  { id: "ai", label: "AI Systems", href: "/design/ai", icon: Bot },
 ];
 
 export type DesignTabId = (typeof TABS)[number]["id"];

@@ -23,6 +23,8 @@ export interface JobDto {
   interviewOn: DateStr | null;
   interviewRound: string;
   contact: string;
+  interviewDebrief: string;
+  interviewDebriefOn: DateStr | null;
   updatedAt: string;
   /** The target company this job is at, when one matches. */
   targetId: string | null;
@@ -34,7 +36,7 @@ type Row = Awaited<ReturnType<typeof Job.findById>> extends infer T ? NonNullabl
 function toDto(d: Row | Record<string, unknown>, targets: ReadonlyArray<{ id: string; name: string }>): JobDto {
   const r = d as unknown as {
     _id: unknown; title: string; company: string; source?: string; url: string; location?: string; jd?: string; applyUrl?: string; status?: string;
-    statusLog?: Array<{ status: string; on: string }>; appliedOn?: string | null; followUpOn?: string | null; resumeId?: unknown; atsScore?: number | null; notes?: string; interviewOn?: string | null; interviewRound?: string; contact?: string; updatedAt?: Date;
+    statusLog?: Array<{ status: string; on: string }>; appliedOn?: string | null; followUpOn?: string | null; resumeId?: unknown; atsScore?: number | null; notes?: string; interviewOn?: string | null; interviewRound?: string; contact?: string; interviewDebrief?: string; interviewDebriefOn?: string | null; updatedAt?: Date;
   };
   const t = matchTarget(r.company, targets);
   return {
@@ -56,6 +58,8 @@ function toDto(d: Row | Record<string, unknown>, targets: ReadonlyArray<{ id: st
     interviewOn: r.interviewOn ?? null,
     interviewRound: r.interviewRound ?? "",
     contact: r.contact ?? "",
+    interviewDebrief: r.interviewDebrief ?? "",
+    interviewDebriefOn: r.interviewDebriefOn ?? null,
     updatedAt: (r.updatedAt ?? new Date()).toISOString(),
     targetId: t?.id ?? null,
     targetName: t?.name ?? null,
@@ -129,7 +133,17 @@ export async function setInterview(id: string, details: { date: DateStr | null; 
   const job = await getJob(id);
   if (!job) throw new Error("Unknown job");
   if (details.date !== null && (!isDateStr(details.date) || details.date < today)) throw new Error("Pick today or a later day");
-  await Job.updateOne({ _id: id }, { $set: { interviewOn: details.date, interviewRound: details.round.slice(0, 60), contact: details.contact.slice(0, 200) } });
+  const clearsDebrief = details.date !== job.interviewOn ? { interviewDebrief: "" } : {};
+  await Job.updateOne({ _id: id }, { $set: { interviewOn: details.date, interviewRound: details.round.slice(0, 60), contact: details.contact.slice(0, 200), ...clearsDebrief } });
+}
+
+/** Records what happened at the job's current interview date, so it stops showing as due for a debrief. A later `setInterview` with a new date makes this one due again. */
+export async function saveInterviewDebrief(id: string, text: string): Promise<void> {
+  const job = await getJob(id);
+  if (!job) throw new Error("Unknown job");
+  if (!job.interviewOn) throw new Error("No interview to debrief");
+  await connectDb();
+  await Job.updateOne({ _id: id }, { $set: { interviewDebrief: text.slice(0, 1000), interviewDebriefOn: job.interviewOn } });
 }
 
 /** Interviews between two days (inclusive) for jobs still in play, for the calendar. */

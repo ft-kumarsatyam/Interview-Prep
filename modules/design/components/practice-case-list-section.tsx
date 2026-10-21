@@ -1,4 +1,4 @@
-import { Cpu, Database, FileQuestion } from "lucide-react";
+import { Bot, Cpu, Database, FileQuestion } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { practiceCases } from "@/core/content";
@@ -18,6 +18,11 @@ const COPY: Record<PracticeKind, { title: string; description: string; icon: typ
     title: "Databases",
     description: `Classic DBMS interview questions: transactions, indexing, distributed data, query tuning. Study a case, then write your own answer against a ${EXPLAIN_MINUTES}-minute clock.`,
     icon: Database,
+  },
+  ai: {
+    title: "AI Systems",
+    description: `GenAI system design: RAG pipelines, LLM serving, agents and evals. Study a case, then write your own answer against a ${EXPLAIN_MINUTES}-minute clock.`,
+    icon: Bot,
   },
 };
 

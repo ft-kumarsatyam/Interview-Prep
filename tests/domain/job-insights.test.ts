@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daysInStage, funnel, nextJobAction, type InsightJob } from "@/modules/jobs/domain/job-insights";
+import { applicationPatterns, compareOffers, daysInStage, funnel, nextJobAction, type InsightJob } from "@/modules/jobs/domain/job-insights";
 
 const T = "2026-10-20";
 const job = (o: Partial<InsightJob> & { id: string }): InsightJob => ({ title: "Backend Engineer", company: "Acme", status: "saved", statusLog: [{ status: "saved", on: "2026-10-01" }], appliedOn: null, followUpOn: null, resumeId: null, ...o });
@@ -89,5 +89,50 @@ describe("interviews", () => {
     expect(interviewSchema.safeParse({ date: null }).success).toBe(true);
     expect(interviewSchema.safeParse({ date: "25/10/2026" }).success).toBe(false);
     expect(interviewSchema.safeParse({ date: "2026-10-25", round: "x".repeat(61) }).success).toBe(false);
+  });
+});
+
+describe("debriefs", () => {
+  it("prompts for a debrief once the interview day has passed and none is recorded for it", () => {
+    const past = job({ id: "a", status: "interview", interviewOn: "2026-10-18", interviewDebriefOn: null });
+    const debriefed = job({ id: "b", status: "interview", interviewOn: "2026-10-18", interviewDebriefOn: "2026-10-18" });
+    const future = job({ id: "c", status: "interview", interviewOn: "2026-10-25", interviewDebriefOn: null });
+    expect(nextJobAction({ hasResume: true, jobs: [past], today: T })).toMatchObject({ kind: "debrief", href: "/jobs/a" });
+    expect(nextJobAction({ hasResume: true, jobs: [debriefed], today: T }).kind).toBe("interview");
+    expect(nextJobAction({ hasResume: true, jobs: [future], today: T }).kind).toBe("interview");
+  });
+});
+
+describe("compareOffers", () => {
+  it("lists offers oldest first with pipeline length and time since the offer", () => {
+    const a = job({
+      id: "a", title: "Backend Engineer", company: "Acme", status: "offer", appliedOn: "2026-09-20",
+      statusLog: [{ status: "applied", on: "2026-09-20" }, { status: "interview", on: "2026-10-01" }, { status: "offer", on: "2026-10-10" }],
+    });
+    const b = job({
+      id: "b", title: "SRE", company: "Globex", status: "offer", appliedOn: "2026-10-01", targetName: "Globex",
+      statusLog: [{ status: "applied", on: "2026-10-01" }, { status: "offer", on: "2026-10-15" }],
+    });
+    const notOffer = job({ id: "c", status: "interview" });
+    const out = compareOffers([notOffer, b, a], T);
+    expect(out.map((o) => o.id)).toEqual(["a", "b"]);
+    expect(out[0]).toMatchObject({ daysInPipeline: 20, daysSinceOffer: 10, isTarget: false });
+    expect(out[1]).toMatchObject({ daysInPipeline: 14, daysSinceOffer: 5, isTarget: true });
+  });
+});
+
+describe("applicationPatterns", () => {
+  it("splits conversion to interview by tailoring and by source", () => {
+    const tailoredHit = job({ id: "a", status: "interview", resumeId: "r1", source: "linkedin", statusLog: [{ status: "applied", on: "2026-10-01" }, { status: "interview", on: "2026-10-05" }] });
+    const tailoredMiss = job({ id: "b", status: "applied", resumeId: "r2", source: "linkedin", statusLog: [{ status: "applied", on: "2026-10-01" }] });
+    const genericMiss = job({ id: "c", status: "applied", resumeId: null, source: "naukri", statusLog: [{ status: "applied", on: "2026-10-01" }] });
+    const notApplied = job({ id: "d", status: "saved", resumeId: null });
+    const out = applicationPatterns([tailoredHit, tailoredMiss, genericMiss, notApplied]);
+    expect(out.byTailoring.tailored).toEqual({ label: "Tailored resume", applied: 2, interviewPct: 50 });
+    expect(out.byTailoring.untailored).toEqual({ label: "Generic resume", applied: 1, interviewPct: 0 });
+    expect(out.bySource).toEqual([
+      { label: "Naukri", applied: 1, interviewPct: 0 },
+      { label: "LinkedIn", applied: 2, interviewPct: 50 },
+    ]);
   });
 });

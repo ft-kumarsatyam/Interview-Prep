@@ -4,9 +4,9 @@ import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/app/(app)/dashboard/actions";
 import { requireSession } from "@/core/auth/dal";
-import { interviewSchema, jobCaptureSchema, JOB_STATUSES, profileCaptureSchema, snoozedFollowUp } from "@/modules/jobs/domain/jobs";
+import { debriefSchema, interviewSchema, jobCaptureSchema, JOB_STATUSES, profileCaptureSchema, snoozedFollowUp } from "@/modules/jobs/domain/jobs";
 import { todayIn } from "@/modules/planner/services/plan";
-import { addJob, deleteJob, saveJobNotes, setFollowUp, setInterview, setJobStatus } from "@/modules/jobs/services/jobs";
+import { addJob, deleteJob, saveInterviewDebrief, saveJobNotes, setFollowUp, setInterview, setJobStatus } from "@/modules/jobs/services/jobs";
 import { publish } from "@/core/realtime";
 import { limited } from "@/core/services/rate-limit";
 import { saveProfileSnapshot } from "@/modules/resume/services/resume";
@@ -115,6 +115,20 @@ export async function setInterviewAction(input: unknown): Promise<ActionResult> 
   if (!parsed.success) return { ok: false, error: "Check the interview day (a real date, today or later)" };
   try {
     await setInterview(parsed.data.id, { date: parsed.data.date, round: parsed.data.round, contact: parsed.data.contact }, todayIn(await getSettings()));
+    refresh();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: message(err) };
+  }
+}
+
+/** What happened at the interview, in your own words. Feeds the application-patterns view. */
+export async function saveInterviewDebriefAction(input: unknown): Promise<ActionResult> {
+  await requireSession();
+  const parsed = z.object({ id }).and(debriefSchema).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "A debrief needs a line or two" };
+  try {
+    await saveInterviewDebrief(parsed.data.id, parsed.data.text);
     refresh();
     return { ok: true };
   } catch (err) {

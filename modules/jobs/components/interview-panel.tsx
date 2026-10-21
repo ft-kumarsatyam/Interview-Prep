@@ -4,13 +4,30 @@ import Link from "next/link";
 import { useState, useTransition } from "react";
 import { CalendarClock } from "lucide-react";
 import { toast } from "sonner";
-import { setInterviewAction } from "@/app/(app)/jobs/actions";
+import { saveInterviewDebriefAction, setInterviewAction } from "@/app/(app)/jobs/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
-/** Your next interview for this job: the day, the round and who you talk to. It shows on the calendar next to your study plan. */
-export function InterviewPanel({ id, interviewOn, round, contact, today }: { id: string; interviewOn: string | null; round: string; contact: string; today: string }) {
+/** Your next interview for this job: the day, the round and who you talk to. It shows on the calendar next to your study plan. Once the day has passed, a debrief box opens so what happened gets written down while it is fresh. */
+export function InterviewPanel({
+  id,
+  interviewOn,
+  round,
+  contact,
+  interviewDebrief,
+  interviewDebriefOn,
+  today,
+}: {
+  id: string;
+  interviewOn: string | null;
+  round: string;
+  contact: string;
+  interviewDebrief: string;
+  interviewDebriefOn: string | null;
+  today: string;
+}) {
   const [pending, start] = useTransition();
   const [v, setV] = useState({ date: interviewOn ?? "", round, contact });
   const save = (clear: boolean) =>
@@ -19,6 +36,15 @@ export function InterviewPanel({ id, interviewOn, round, contact, today }: { id:
       if (!res.ok) return void toast.error(`${res.error}.`);
       if (clear) setV({ date: "", round: "", contact: "" });
       toast.success(clear ? "Interview removed" : "Interview saved. It is on your calendar.");
+    });
+
+  const debriefDue = interviewOn !== null && interviewOn < today && interviewDebriefOn !== interviewOn;
+  const [debrief, setDebrief] = useState(debriefDue ? "" : interviewDebrief);
+  const saveDebrief = () =>
+    start(async () => {
+      const res = await saveInterviewDebriefAction({ id, text: debrief });
+      if (!res.ok) return void toast.error(`${res.error}.`);
+      toast.success("Debrief saved.");
     });
 
   return (
@@ -70,6 +96,17 @@ export function InterviewPanel({ id, interviewOn, round, contact, today }: { id:
           )}
         </div>
       </form>
+      {interviewOn !== null && interviewOn < today && (
+        <div className="space-y-2 border-t pt-3">
+          <Label htmlFor="interview-debrief" className="text-xs">
+            {debriefDue ? "How did it go?" : "Debrief"}
+          </Label>
+          <Textarea id="interview-debrief" value={debrief} maxLength={1000} placeholder="What went well, what didn't, what's next…" onChange={(e) => setDebrief(e.target.value)} rows={3} />
+          <Button type="button" size="sm" disabled={pending || !debrief.trim()} onClick={saveDebrief}>
+            Save debrief
+          </Button>
+        </div>
+      )}
     </section>
   );
 }

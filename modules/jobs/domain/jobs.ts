@@ -207,3 +207,22 @@ export interface InterviewLike {
 export function upcomingInterviews<T extends InterviewLike>(jobs: readonly T[], today: DateStr): T[] {
   return jobs.filter((j) => j.interviewOn !== null && j.interviewOn >= today && ACTIVE_STATUSES.includes(j.status)).toSorted((a, b) => a.interviewOn!.localeCompare(b.interviewOn!));
 }
+
+/** What happened, in your own words, so you can spot patterns later. Plain text, capped. */
+export const debriefSchema = z.object({ text: clean(1000, 1) });
+export type Debrief = z.infer<typeof debriefSchema>;
+
+export interface DebriefLike {
+  id: string;
+  company: string;
+  status: JobStatus;
+  interviewOn?: DateStr | null;
+  interviewDebriefOn?: DateStr | null;
+}
+
+/** Interviews that happened but have no debrief yet, oldest first. */
+export function dueDebriefs<T extends DebriefLike>(jobs: readonly T[], today: DateStr): T[] {
+  return jobs
+    .filter((j): j is T & { interviewOn: DateStr } => (j.interviewOn ?? null) !== null && j.interviewOn! < today && j.interviewDebriefOn !== j.interviewOn && ACTIVE_STATUSES.includes(j.status))
+    .toSorted((a, b) => a.interviewOn.localeCompare(b.interviewOn));
+}

@@ -73,7 +73,11 @@ export async function getPracticeCatalog(): Promise<PracticeCatalog> {
     passPct: settings.quizPassPct,
     cases: [
       ...systemDesign.cases.map((c) => ({ ref: caseRef("hld", c.slug), title: c.title, topicId: c.topicId, href: `/design/${c.slug}`, subject: "hld" as const, level: c.level })),
-      ...practiceCases.map((c) => ({ ref: caseRef(c.kind, c.slug), title: c.title, topicId: c.topicId, href: `/design/${c.kind}/${c.slug}`, subject: (c.kind === "os" ? "os" : "dbms") as SubjectId, level: c.level })),
+      // AI cases have no syllabus topic (GenAI content never joins the syllabus-linked practice catalogue); they
+      // still get their own quiz via caseBank(), just not a row here.
+      ...practiceCases
+        .filter((c): c is typeof c & { topicId: string } => c.topicId !== undefined)
+        .map((c) => ({ ref: caseRef(c.kind, c.slug), title: c.title, topicId: c.topicId, href: `/design/${c.kind}/${c.slug}`, subject: (c.kind === "os" ? "os" : "dbms") as SubjectId, level: c.level })),
     ],
     code,
     flashcards: interviewFiles.map((f) => {

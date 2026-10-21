@@ -59,7 +59,7 @@ export function dsaPrompt(p: DsaAskInput): string {
 }
 
 export interface CaseAskInput {
-  kind: "System Design" | "Operating Systems" | "Databases";
+  kind: "System Design" | "Operating Systems" | "Databases" | "AI Systems";
   title: string;
   summary?: string;
   prompt?: readonly string[];

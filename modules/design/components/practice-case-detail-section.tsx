@@ -17,13 +17,15 @@ import { CaseWorkspace, type CaseTab, type TocItem } from "@/modules/design/comp
 import { DesignPractice } from "@/modules/design/components/design-practice";
 import { MermaidDiagram } from "@/modules/design/components/mermaid-diagram";
 
-const LABEL = { os: "Operating Systems", dbms: "Databases" } as const satisfies Record<PracticeKind, string>;
+const LABEL = { os: "Operating Systems", dbms: "Databases", ai: "AI Systems" } as const satisfies Record<PracticeKind, string>;
 
 export async function PracticeCaseDetail({ kind, slug, tab = "study" }: { kind: PracticeKind; slug: string; tab?: CaseTab }) {
   const c = practiceCaseBySlug.get(`${kind}:${slug}`);
   if (!c) notFound();
   const [answer, mastery] = await Promise.all([getPracticeAnswer(kind, slug), getMasteryMap()]);
-  const topic = topicById.get(c.topicId);
+  const topic = c.topicId ? topicById.get(c.topicId) : undefined;
+  // AI cases have no syllabus topic; practiceRef instead points at the course lesson that teaches this case.
+  const courseLesson = !c.topicId ? c.practiceRef.split("/") : null;
   const hasAnswer = Object.values(answer.sections).some((t) => t.trim().split(/\s+/).filter(Boolean).length >= 15);
   const siblings = practiceCases.filter((x) => x.kind === kind);
   const index = siblings.findIndex((x) => x.slug === slug);
@@ -96,11 +98,21 @@ export async function PracticeCaseDetail({ kind, slug, tab = "study" }: { kind: 
         summary={c.summary}
       >
         <CaseQuizButton kind={kind} slug={slug} mastery={mastery[caseRef(kind, slug)]} />
-        <Button asChild size="sm" variant="outline">
-          <Link href={`/learn/practice?ref=${encodeURIComponent(c.practiceRef)}`}>
-            <GraduationCap /> Topic drill
-          </Link>
-        </Button>
+        {c.topicId ? (
+          <Button asChild size="sm" variant="outline">
+            <Link href={`/learn/practice?ref=${encodeURIComponent(c.practiceRef)}`}>
+              <GraduationCap /> Topic drill
+            </Link>
+          </Button>
+        ) : (
+          courseLesson && (
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/courses/${courseLesson[0]}/${courseLesson[1]}`}>
+                <GraduationCap /> Course lesson
+              </Link>
+            </Button>
+          )
+        )}
         {critique}
         {topic && (
           <Button asChild size="sm" variant="ghost">

@@ -79,7 +79,7 @@ export interface PracticeCaseSummary {
 export async function getPracticeOverview(kind: PracticeKind): Promise<Record<string, PracticeCaseSummary>> {
   await connectDb();
   const cases = practiceCases.filter((c) => c.kind === kind);
-  const topicIds = [...new Set(cases.map((c) => c.topicId))];
+  const topicIds = [...new Set(cases.flatMap((c) => (c.topicId ? [c.topicId] : [])))];
   const [answers, progress, mastery] = await Promise.all([
     PracticeAnswer.find({ kind }, { slug: 1, sections: 1, rubric: 1, minutesSpent: 1 }).lean(),
     SubtopicProgress.find({ topicId: { $in: topicIds } }, { topicId: 1 }).lean(),
@@ -95,12 +95,12 @@ export async function getPracticeOverview(kind: PracticeKind): Promise<Record<st
       const a = bySlug.get(c.slug);
       const attempted = explainSectionsAttempted((a?.sections ?? {}) as unknown as ExplainSections);
       const rubricPct = rubricScore(a?.rubric ?? [], rubricIds).pct;
-      const subtopicsDone = doneByTopic.get(c.topicId) ?? 0;
+      const subtopicsDone = c.topicId ? (doneByTopic.get(c.topicId) ?? 0) : 0;
       const summary: PracticeCaseSummary = {
         slug: c.slug,
-        status: practiceStatus({ topicMastered: mastered.has(c.topicId), subtopicsDone, sectionsAttempted: attempted, rubricPct }),
+        status: practiceStatus({ topicMastered: c.topicId !== undefined && mastered.has(c.topicId), subtopicsDone, sectionsAttempted: attempted, rubricPct }),
         subtopicsDone,
-        subtopicsTotal: topicById.get(c.topicId)?.subtopics.length ?? 0,
+        subtopicsTotal: (c.topicId ? topicById.get(c.topicId)?.subtopics.length : 0) ?? 0,
         sectionsAttempted: attempted,
         rubricPct,
         minutesSpent: a?.minutesSpent ?? 0,

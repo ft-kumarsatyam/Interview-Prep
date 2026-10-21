@@ -88,7 +88,7 @@ ownerScope(designSchema, [{ fields: { slug: 1 } }]);
 /** Your OS / DBMS "explain it" practice answer per case (`kind` + `slug` from data/os-dbms-cases.json). */
 const practiceAnswerSchema = new Schema(
   {
-    kind: { type: String, enum: ["os", "dbms"], required: true },
+    kind: { type: String, enum: ["os", "dbms", "ai"], required: true },
     slug: { type: String, required: true },
     /** Section id -> markdown text (see EXPLAIN_SECTIONS in lib/domain/practice-cases.ts). */
     sections: { type: Map, of: { type: String, maxlength: 20_000 }, default: {} },

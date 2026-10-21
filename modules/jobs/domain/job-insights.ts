@@ -3,7 +3,7 @@
  * and the one thing worth doing next. Pure; the dashboard, the tracker and the next-step strip all read it.
  */
 import { addDays, diffDays, type DateStr } from "@/core/domain/dates";
-import { ACTIVE_STATUSES, dueFollowUps, type JobStatus } from "@/modules/jobs/domain/jobs";
+import { ACTIVE_STATUSES, dueFollowUps, dueDebriefs, JOB_SOURCES, SOURCE_LABEL, type JobSource, type JobStatus } from "@/modules/jobs/domain/jobs";
 
 export interface InsightJob {
   id: string;
@@ -14,6 +14,11 @@ export interface InsightJob {
   appliedOn: DateStr | null;
   followUpOn: DateStr | null;
   resumeId: string | null;
+  /** Optional: not every caller tracks these, and they only feed offer comparison and pattern insights. */
+  source?: JobSource;
+  targetName?: string | null;
+  interviewOn?: DateStr | null;
+  interviewDebriefOn?: DateStr | null;
 }
 
 const STAGES = ["applied", "screening", "interview", "offer"] as const;
@@ -66,7 +71,7 @@ export function funnel(jobs: readonly InsightJob[], today: DateStr): Funnel {
   };
 }
 
-export type NextKind = "resume" | "follow-up" | "interview" | "tailor" | "apply" | "find" | "clear";
+export type NextKind = "resume" | "follow-up" | "debrief" | "interview" | "tailor" | "apply" | "find" | "clear";
 
 export interface NextAction {
   kind: NextKind;
@@ -86,6 +91,9 @@ export function nextJobAction(input: { hasResume: boolean; jobs: readonly Insigh
     return { kind: "follow-up", title: due.length === 1 ? `Follow up on ${j.title} at ${j.company}` : `Follow up on ${due.length} applications`, detail: "A short polite message keeps you on their radar.", href: due.length === 1 ? `/jobs/${j.id}` : "/jobs/tracker" };
   }
 
+  const debrief = dueDebriefs(jobs, today)[0];
+  if (debrief) return { kind: "debrief", title: `Debrief your interview at ${debrief.company}`, detail: "A couple of lines now feeds your patterns later.", href: `/jobs/${debrief.id}` };
+
   const interviewing = jobs.find((j) => j.status === "interview");
   if (interviewing) return { kind: "interview", title: `Prepare for your interview at ${interviewing.company}`, detail: "Run a mock interview while it is fresh.", href: "/mock" };
 
@@ -97,4 +105,74 @@ export function nextJobAction(input: { hasResume: boolean; jobs: readonly Insigh
 
   if (!jobs.some((j) => ACTIVE_STATUSES.includes(j.status))) return { kind: "find", title: "Find roles to apply to", detail: "Discover postings that match your resume, or capture one with the extension.", href: "/jobs" };
   return { kind: "clear", title: "You are on top of it", detail: "No follow-ups are due and nothing is waiting on you.", href: "/jobs/tracker" };
+}
+
+/* ---------------------------------- comparing offers in hand ---------------------------------- */
+
+export interface OfferComparison {
+  id: string;
+  title: string;
+  company: string;
+  source: JobSource;
+  isTarget: boolean;
+  offeredOn: DateStr;
+  daysSinceOffer: number;
+  daysInPipeline: number;
+}
+
+/** Offers you are holding, side by side: how long each took to land and how long you have been sitting on it. Oldest offer first, since that one is likely closest to its deadline. */
+export function compareOffers(jobs: readonly InsightJob[], today: DateStr): OfferComparison[] {
+  return jobs
+    .filter((j) => j.status === "offer")
+    .map((j) => {
+      const offeredOn = [...j.statusLog].reverse().find((s) => s.status === "offer")?.on ?? j.appliedOn ?? today;
+      const startedOn = j.statusLog[0]?.on ?? j.appliedOn ?? offeredOn;
+      return {
+        id: j.id,
+        title: j.title,
+        company: j.company,
+        source: j.source ?? "other",
+        isTarget: j.targetName != null,
+        offeredOn,
+        daysSinceOffer: Math.max(0, diffDays(today, offeredOn)),
+        daysInPipeline: Math.max(0, diffDays(offeredOn, startedOn)),
+      };
+    })
+    .toSorted((a, b) => a.offeredOn.localeCompare(b.offeredOn));
+}
+
+/* ---------------------------------- how applications are doing, by group ---------------------------------- */
+
+export interface PatternSplit {
+  label: string;
+  applied: number;
+  /** Share that reached an interview, as whole percent; null with nothing applied in this group. */
+  interviewPct: number | null;
+}
+
+function splitStats(label: string, group: readonly InsightJob[]): PatternSplit {
+  const appliedJobs = group.filter((j) => reachedRank(j) >= RANK.applied);
+  const reachedInterview = appliedJobs.filter((j) => reachedRank(j) >= RANK.interview).length;
+  return { label, applied: appliedJobs.length, interviewPct: appliedJobs.length > 0 ? Math.round((100 * reachedInterview) / appliedJobs.length) : null };
+}
+
+export interface ApplicationPatterns {
+  byTailoring: { tailored: PatternSplit; untailored: PatternSplit };
+  bySource: PatternSplit[];
+}
+
+/** How far applications get, split by whether a tailored resume was attached and by where the posting came from. Groups with nothing applied are left out. */
+export function applicationPatterns(jobs: readonly InsightJob[]): ApplicationPatterns {
+  const bySource = new Map<JobSource, InsightJob[]>();
+  for (const j of jobs) {
+    const src = j.source ?? "other";
+    bySource.set(src, [...(bySource.get(src) ?? []), j]);
+  }
+  return {
+    byTailoring: {
+      tailored: splitStats("Tailored resume", jobs.filter((j) => j.resumeId !== null)),
+      untailored: splitStats("Generic resume", jobs.filter((j) => j.resumeId === null)),
+    },
+    bySource: JOB_SOURCES.map((s) => splitStats(SOURCE_LABEL[s], bySource.get(s) ?? [])).filter((p) => p.applied > 0),
+  };
 }

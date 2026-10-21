@@ -1,7 +1,7 @@
 import { shuffle, weightedSample, type Rng } from "@/core/domain/sampling";
 
-/** The three kinds of "case" that get their own quiz: System Design cases, OS cases and DBMS cases. */
-export const CASE_KINDS = ["hld", "os", "dbms"] as const;
+/** The kinds of "case" that get their own quiz: System Design, OS, DBMS and AI system design cases. */
+export const CASE_KINDS = ["hld", "os", "dbms", "ai"] as const;
 export type CaseKind = (typeof CASE_KINDS)[number];
 
 /** Questions per run. Every case has more than this in the bank, so retakes aren't identical. */
@@ -13,6 +13,7 @@ export const CASE_ANCHORS: Record<CaseKind, readonly string[]> = {
   hld: ["functional", "non-functional", "estimates", "api", "data-model", "architecture", "deep-dives", "tradeoffs", "probes", "blocks", "readings"],
   os: ["prompt", "talking-points", "diagram", "tradeoffs", "probes", "readings"],
   dbms: ["prompt", "talking-points", "diagram", "tradeoffs", "probes", "readings"],
+  ai: ["prompt", "talking-points", "diagram", "tradeoffs", "probes", "readings"],
 };
 
 export const ANCHOR_LABELS: Record<string, string> = {
@@ -35,7 +36,7 @@ export const ANCHOR_LABELS: Record<string, string> = {
 /** `case:hld:url-shortener`: the ref a case quiz uses for practice runs and mastery. */
 export const caseRef = (kind: CaseKind, slug: string) => `case:${kind}:${slug}`;
 
-const CASE_REF = /^case:(hld|os|dbms):([a-z0-9][a-z0-9-]*)$/;
+const CASE_REF = /^case:(hld|os|dbms|ai):([a-z0-9][a-z0-9-]*)$/;
 
 export function parseCaseRef(ref: string): { kind: CaseKind; slug: string } | null {
   const m = CASE_REF.exec(ref);

@@ -1,4 +1,5 @@
 import type { Built } from "./define";
+import { AI_PRACTICAL } from "./ai-practical";
 import { A2Z_BASICS } from "./a2z-basics";
 import { A2Z_DP } from "./a2z-dp";
 import { A2Z_GRAPHS } from "./a2z-graphs";
@@ -26,4 +27,5 @@ export const ALL_EXTRAS: Built[] = [
   ...LADDER_ARRAYS, ...A2Z_LEETCODE, ...A2Z_PATTERNS, ...A2Z_BASICS, ...A2Z_SORTING_SEARCH, ...A2Z_STRINGS_GREEDY,
   ...A2Z_LISTS, ...A2Z_STACK_HEAP, ...A2Z_TREES, ...A2Z_GRAPHS, ...A2Z_DP,
   ...A2Z_TRIES_MATH, ...LADDER_STRINGS, ...LADDER_HASHING, ...LADDER_RECURSION, ...LADDER_LISTS, ...LADDER_BITS, ...LADDER_GREEDY, ...LADDER_HEAPS, ...LADDER_BST, ...LADDER_TRIES,
+  ...AI_PRACTICAL,
 ];

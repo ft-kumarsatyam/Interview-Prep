@@ -8,7 +8,7 @@ import { EXPLAIN_SECTION_IDS, SECTION_MAX } from "@/modules/design/domain/practi
 import { addPracticeMinutes, savePracticeSection, setPracticeRubric } from "@/modules/design/services/practice-cases";
 
 const target = z
-  .object({ kind: z.enum(["os", "dbms"]), slug: z.string().max(80) })
+  .object({ kind: z.enum(["os", "dbms", "ai"]), slug: z.string().max(80) })
   .refine((t) => practiceCaseBySlug.has(`${t.kind}:${t.slug}`), "Unknown case");
 
 const sectionSchema = z.object({
