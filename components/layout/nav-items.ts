@@ -112,6 +112,7 @@ export const NAV_HUBS: NavHub[] = [
     pages: [
       { href: "/learn", label: "Syllabus", icon: BookOpen },
       { href: "/courses", label: "Courses", icon: GraduationCap },
+      { href: "/genai-sprint", label: "GenAI sprint", icon: Bot },
       { href: "/roadmaps", label: "Roadmaps", icon: Route },
       { href: "/design", label: "System Design", icon: Network },
       { href: "/web", label: "Web & AI", icon: Globe },

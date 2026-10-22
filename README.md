@@ -94,6 +94,7 @@ npm run ai:eval             # score the golden prompt set against your configure
 npm run dsa:generate        # rebuild the in-app DSA extras, their test cases, the Striver A2Z links and the ladders from scripts/dsa-extras
 npm run import:companies    # rebuild data/dsa-company-tags.json from the public liquidslr/leetcode-company-wise-problems repo on GitHub
 npm run import:sheets       # rebuild data/dsa-popular-sheets.json (Love Babbar 450, Apna College, Arsh Goyal, Fraz) from their public sheets; --from DIR reads saved copies
+npm run link:genai-prep     # optional: HTTP-check links in data/genai-prep-pack/resources.json (needs network; writes /tmp/genai-prep-link-report.json)
 docker compose up -d mongo redis redis-rest   # optional local stack: a MongoDB replica set and Redis
 ```
 

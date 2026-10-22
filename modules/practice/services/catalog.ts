@@ -12,7 +12,7 @@ import { getSettings } from "@/modules/settings/services/settings";
 
 /** Which subject a web-interview track belongs to. Anything not listed is frontend or general web. */
 const FLASHCARD_SUBJECT: Record<string, SubjectId> = {
-  agents: "ai", "genai-eng": "ai", "llm-evals-ops": "ai", llm: "ai", "ml-foundations": "ai", rag: "ai",
+  agents: "ai", "genai-eng": "ai", "genai-sprint": "ai", "llm-evals-ops": "ai", llm: "ai", "ml-foundations": "ai", rag: "ai",
   sql: "dbms", mongo: "dbms", distdb: "dbms",
   arch: "hld", "cloud-devops": "hld", observability: "hld", "sd-cases": "hld", "caching-queues": "hld",
   security: "networking", "auth-security": "networking", http: "networking", "http-apis": "networking",

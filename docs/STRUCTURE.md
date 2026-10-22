@@ -180,6 +180,7 @@ Dates are `YYYY-MM-DD` in `APP_TIMEZONE` through `core/domain/dates.ts`; never `
 | Day completion (`DayLog.complete`) | stored | `recomputeDay` (`modules/planner/services/day.ts`) |
 | Subtopic done, problem solved | stored | `toggleSubtopic`, `recordSolve` (`modules/progress/services/progress.ts`) |
 | Course lesson done, roadmap link read | stored (own collections) | `modules/course`, `modules/roadmap` services |
+| GenAI sprint task done | stored (`GenaiSprintTask`, keyed by pack task id) | `modules/genai-sprint/services/progress.ts`; data in `data/genai-prep-pack/`; schemas in `modules/genai-prep` |
 | Backlog (what is owed) | **derived** | `loadBacklogItems` |
 | "Caught up" days | **derived** | `loadCatchUp` |
 | Roadmap node done | **derived** | `nodeStatus` |

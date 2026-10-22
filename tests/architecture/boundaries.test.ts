@@ -52,6 +52,7 @@ const BASELINE = new Set([
   "study-flow > course", "study-flow > planner", "study-flow > practice", "study-flow > roadmap", "study-flow > settings",
   // chat is the read-only assistant: its tools read leaf modules' services and nothing points back at it
   "chat > ai", "chat > course", "chat > dsa", "chat > jobs", "chat > mock", "chat > planner", "chat > progress", "chat > quiz", "chat > roadmap", "chat > settings", "chat > targets",
+  "genai-sprint > genai-prep",
 ]);
 
 function moduleEdges(): Map<string, string[]> {

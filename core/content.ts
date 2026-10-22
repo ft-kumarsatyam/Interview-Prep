@@ -94,6 +94,7 @@ import wiFeSd from "@/data/web-interview/fe-sd.json";
 import wiLlm from "@/data/web-interview/llm.json";
 import wiRag from "@/data/web-interview/rag.json";
 import wiGenaiEng from "@/data/web-interview/genai-eng.json";
+import wiGenaiSprint from "@/data/web-interview/genai-sprint.json";
 import syllabusJson from "@/data/syllabus.json";
 import systemDesignJson from "@/data/system-design.json";
 import type { AptitudeBank } from "@/modules/aptitude/domain/aptitude";
@@ -412,7 +413,7 @@ export const interviewFiles = [
   wiHtmlCss, wiBrowserJs, wiFeCore, wiTypescript, wiA11y, wiReact, wiNext, wiStateData, wiPerf, wiFeTesting, wiFeScale, wiFeSd,
   wiHttp, wiHttpApis, wiNode, wiSql, wiMongo, wiAuthSecurity, wiSecurity, wiCachingQueues, wiDistdb, wiQuality,
   wiArch, wiSdCases, wiCloudDevops, wiObservability,
-  wiMlFoundations, wiLlm, wiRag, wiGenaiEng, wiAgents, wiLlmEvalsOps,
+  wiMlFoundations, wiLlm, wiRag, wiGenaiEng, wiGenaiSprint, wiAgents, wiLlmEvalsOps,
 ] as InterviewFile[];
 export const interviewTracks = interviewFiles.map((f) => f.track);
 export const interviewQuestions: TrackedQuestion[] = interviewFiles.flatMap((f) => f.questions.map((q) => ({ ...q, track: f.track.id })));

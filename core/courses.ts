@@ -59,6 +59,7 @@ import ml02 from "@/data/courses/ml-engineering/02-mlops-and-deployment.json";
 import ml03 from "@/data/courses/ml-engineering/03-data-engineering-for-ai.json";
 import ai07 from "@/data/courses/genai/07-fine-tuning-and-open-models.json";
 import ai08 from "@/data/courses/genai/08-ai-engineer-interview-deep-dive.json";
+import ai09 from "@/data/courses/genai/09-genai-sprint-guide.json";
 import type { Course, CourseChapterFile, CourseLesson, CourseMeta } from "@/modules/course/domain/course";
 
 const CHAPTER_FILES: Record<string, CourseChapterFile[]> = {
@@ -71,7 +72,7 @@ const CHAPTER_FILES: Record<string, CourseChapterFile[]> = {
   devops: [do01, do02, do03] as unknown as CourseChapterFile[],
   python: [py01, py02, py03] as unknown as CourseChapterFile[],
   "ml-engineering": [ml01, ml02, ml03] as unknown as CourseChapterFile[],
-  genai: [ai01, ai02, ai03, ai04, ai05, ai06, ai07, ai08] as unknown as CourseChapterFile[],
+  genai: [ai01, ai02, ai03, ai04, ai05, ai06, ai07, ai08, ai09] as unknown as CourseChapterFile[],
 };
 
 export const courses: Course[] = (coursesJson.courses as CourseMeta[]).map((meta) => ({
