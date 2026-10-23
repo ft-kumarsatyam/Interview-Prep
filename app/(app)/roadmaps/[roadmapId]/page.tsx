@@ -6,6 +6,7 @@ import { BackLink } from "@/components/shared/back-link";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Progress } from "@/components/ui/progress";
 import { problemBySlug } from "@/core/content";
+import { nodeStudy } from "@/core/genai-study";
 import { roadmapById, roadmapLesson } from "@/core/roadmaps";
 import { ChecklistItem, JoinButton, LinkRow, ManualTick } from "@/modules/roadmap/components/roadmap-controls";
 import { JobDemandCard } from "@/modules/roadmap/components/job-demand-card";
@@ -178,6 +179,11 @@ export default async function RoadmapPage({ params, searchParams }: PageProps<"/
                             </Link>
                           </div>
                         </div>
+                      )}
+                      {nodeStudy(roadmap.id, node.id) && (
+                        <Link href={`/roadmaps/${roadmap.id}/${node.id}`} className="inline-flex min-h-9 items-center gap-1.5 text-sm font-medium text-primary underline-offset-2 hover:underline">
+                          Study notes and questions for every topic
+                        </Link>
                       )}
                       <ManualTick roadmapId={roadmap.id} nodeId={node.id} manual={st.manual} />
                     </div>

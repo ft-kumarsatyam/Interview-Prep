@@ -30,3 +30,4 @@ import "@/core/models/question-flags";
 import "@/core/models/interview-bank";
 import "@/core/models/webdev";
 import "@/core/models/link-health";
+import "@/core/models/genai-study";

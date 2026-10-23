@@ -12,7 +12,8 @@ import { migration as externalProgress } from "@/core/db/migrations/011-external
 import { migration as dashboardIndexes } from "@/core/db/migrations/012-dashboard-indexes";
 import { migration as dsaBookmarks } from "@/core/db/migrations/013-dsa-bookmarks";
 import { migration as linkHealth } from "@/core/db/migrations/014-link-health";
+import { migration as genaiStudy } from "@/core/db/migrations/015-genai-study";
 import type { Migration } from "@/core/db/migrations/types";
 
 /** Append new migrations to the end. Ids must be in order (a test checks it). */
-export const MIGRATIONS: Migration[] = [ownerId, eventIndexes, vectorIndex, aiChatIndexes, capturedNotes, jobProfiles, postingYears, questionFlags, interviewBank, studyFlowSettings, externalProgress, dashboardIndexes, dsaBookmarks, linkHealth];
+export const MIGRATIONS: Migration[] = [ownerId, eventIndexes, vectorIndex, aiChatIndexes, capturedNotes, jobProfiles, postingYears, questionFlags, interviewBank, studyFlowSettings, externalProgress, dashboardIndexes, dsaBookmarks, linkHealth, genaiStudy];

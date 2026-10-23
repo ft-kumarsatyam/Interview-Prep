@@ -18,13 +18,13 @@ export const LINK_KINDS = ["article", "docs", "video", "course", "book", "tool"]
 export const roadmapNodeSchema = z.object({
   id,
   title: text(80),
-  summary: text(240, 10),
+  summary: text(400, 10),
   priority: z.enum(PRIORITIES),
   /**
    * Sub-topics you tick one by one. Ticks are stored by index, so only append new items: never reorder or
    * delete existing ones.
    */
-  checklist: z.array(text(160, 3)).max(12).default([]),
+  checklist: z.array(text(500, 3)).max(30).default([]),
   links: z.array(z.object({ title: text(120), url: https, kind: z.enum(LINK_KINDS) })).max(8).default([]),
   /** `${courseId}/${lessonId}` of an in-app lesson that teaches this node. */
   lesson: z.string().regex(/^[a-z0-9-]+\/[a-z0-9-]+$/).optional(),
@@ -47,7 +47,7 @@ export const roadmapSchema = z.object({
   blurb: text(300, 10),
   audience: text(120),
   tracks: z.array(roadmapTrackSchema).max(8).default([]),
-  sections: z.array(z.object({ id, title: text(80), nodes: z.array(roadmapNodeSchema).min(1).max(24) })).min(2).max(20),
+  sections: z.array(z.object({ id, title: text(80), nodes: z.array(roadmapNodeSchema).min(1).max(40) })).min(2).max(20),
 });
 export type Roadmap = z.infer<typeof roadmapSchema>;
 

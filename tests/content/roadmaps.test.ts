@@ -21,7 +21,7 @@ describe("data/roadmaps", () => {
   });
 
   it("covers frontend, frontend at scale, full stack and AI engineering", () => {
-    expect([...roadmapById.keys()]).toEqual(expect.arrayContaining(["dsa", "backend", "frontend", "frontend-scale", "fullstack", "ai-engineer"]));
+    expect([...roadmapById.keys()]).toEqual(expect.arrayContaining(["dsa", "backend", "frontend", "frontend-scale", "fullstack", "ai-engineer", "genai-16-levels", "genai-100-days"]));
   });
 
   it("resolves web and course lessons to in-app links", () => {
@@ -31,12 +31,13 @@ describe("data/roadmaps", () => {
   });
 
   it("is deep: many nodes, each with a checklist of topics to tick", () => {
-    const min: Record<string, number> = { dsa: 55, backend: 60, frontend: 80, "frontend-scale": 55, fullstack: 75, "ai-engineer": 110 };
+    const min: Record<string, number> = { dsa: 55, backend: 60, frontend: 80, "frontend-scale": 55, fullstack: 75, "ai-engineer": 110, "genai-16-levels": 180, "genai-100-days": 100 };
     for (const r of roadmaps) {
       const nodes = allNodes(r);
       expect(nodes.length, r.id).toBeGreaterThanOrEqual(min[r.id] ?? 20);
       for (const n of nodes) {
-        expect(n.checklist.length, `${r.id}/${n.id}`).toBeGreaterThanOrEqual(4);
+        // A few modules of the imported GenAI roadmap really have three topics.
+        expect(n.checklist.length, `${r.id}/${n.id}`).toBeGreaterThanOrEqual(3);
         expect(n.links.length + (n.lesson ? 1 : 0), `${r.id}/${n.id}`).toBeGreaterThanOrEqual(2);
       }
     }

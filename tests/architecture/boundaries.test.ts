@@ -53,6 +53,8 @@ const BASELINE = new Set([
   // chat is the read-only assistant: its tools read leaf modules' services and nothing points back at it
   "chat > ai", "chat > course", "chat > dsa", "chat > jobs", "chat > mock", "chat > planner", "chat > progress", "chat > quiz", "chat > roadmap", "chat > settings", "chat > targets",
   "genai-sprint > genai-prep",
+  // study notes render markdown with the news module's article renderer
+  "genai-study > news",
 ]);
 
 function moduleEdges(): Map<string, string[]> {
