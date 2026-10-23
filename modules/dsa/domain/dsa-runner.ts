@@ -18,6 +18,8 @@ export interface TestCase {
   input: unknown[];
   expected: unknown;
   hidden: boolean;
+  /** Set on a hidden case sent to the browser sealed: `expected` is null and this is the SHA-256 of the answer's stable text (core/sandbox/seal-node.ts). */
+  expectedHash?: string;
   /** Names an edge case; it then appears under "Edge cases" with a label and reason. */
   edge?: EdgeId;
   /** Why this particular case matters, overriding the generic reason for its edge id. */
@@ -116,9 +118,12 @@ export function pickRevealCase(cases: readonly TestCase[], results: readonly Cas
   return results.find((r) => !r.pass && cases[r.index]?.hidden && !revealed.includes(r.index))?.index;
 }
 
-/** Cases as the learner sees them: ones already revealed become visible so Run covers them. */
+/**
+ * Cases as the learner sees them: ones already revealed become visible so Run covers them. A case that is still sealed
+ * (it has no answer to show yet) stays hidden until the page re-renders with its answer.
+ */
 export function effectiveCases(cases: readonly TestCase[], revealed: readonly number[]): TestCase[] {
-  return cases.map((c, i) => (revealed.includes(i) ? { ...c, hidden: false } : c));
+  return cases.map((c, i) => (revealed.includes(i) && !c.expectedHash ? { ...c, hidden: false } : c));
 }
 
 /** Positions (in the full list) of the cases to run for "Run edge cases": the visible ones tagged with an edge id. */

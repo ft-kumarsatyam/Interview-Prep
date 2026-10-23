@@ -55,6 +55,8 @@ const BASELINE = new Set([
   "genai-sprint > genai-prep",
   // study notes render markdown with the news module's article renderer
   "genai-study > news",
+  // the weekly GenAI tests read the playbook week and grade written answers with the AI router
+  "genai-test > ai", "genai-test > genai-playbook",
 ]);
 
 function moduleEdges(): Map<string, string[]> {

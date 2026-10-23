@@ -11,6 +11,8 @@ export interface HarnessCase {
   input: unknown[];
   expected: unknown;
   hidden: boolean;
+  /** SHA-256 of the expected answer's stable text; a sealed hidden case has this and no `expected`. */
+  expectedHash?: string;
 }
 
 /** How a problem's arguments are built and its result encoded; see lib/sandbox/worker-lib.ts. */
@@ -202,7 +204,7 @@ async function __runHarness(code, harness) {
       const args = __buildArgs(argTypes, c.input);
       const out = fn(...args);
       const actual = __encodeResult(harness.returns || "value", out, args, argTypes);
-      send({ type: "case", index, pass: __matches(actual, c.expected, harness.compare), actual: fmt(actual), hidden: c.hidden });
+      send({ type: "case", index, pass: __judgeCase(actual, c, harness.compare), actual: fmt(actual), hidden: c.hidden });
     } catch (e) {
       send({ type: "case", index, pass: false, actual: "threw " + fmt(e), hidden: c.hidden });
     }
@@ -210,7 +212,16 @@ async function __runHarness(code, harness) {
   send({ type: "done" });
 }
 
+// readline() / input() return the next line you typed in the stdin box, then null.
+let __stdin = [];
+self.readline = () => (__stdin.length ? __stdin.shift() : null);
+self.input = self.readline;
+
 self.onmessage = async (e) => {
+  if (e.data && typeof e.data === "object" && typeof e.data.free === "string") {
+    __stdin = typeof e.data.stdin === "string" && e.data.stdin.length ? e.data.stdin.split("\n") : [];
+    e = { data: e.data.free };
+  }
   if (e.data && typeof e.data === "object" && e.data.harness) {
     await __runHarness(e.data.code, e.data.harness);
     return;

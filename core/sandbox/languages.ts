@@ -1,3 +1,4 @@
+import { jsModuleKey, pythonModules, withJsModules, type FreeFile } from "@/modules/dsa/domain/playground-modules";
 import type { Language } from "@/modules/dsa/domain/starters";
 import { runCode, runWithCases, type HarnessCase, type HarnessShape, type LogLine, type RunCasesResult, type RunResult } from "@/core/sandbox/run";
 
@@ -31,16 +32,39 @@ export async function runCasesIn(
   return runWithCases(code, functionName, cases, JS_TIMEOUT_MS, shape);
 }
 
-/** Free-form run for the Playground: console output only, no test cases. */
-export async function runFreeIn(lang: Language, code: string, onLog?: (line: LogLine) => void): Promise<RunResult> {
+/**
+ * Free-form run for the Playground: console output only, no test cases. `files` are the other editor tabs: Python
+ * writes them next to the script (`import helper`), JS and TS serve them through `require('./helper')`.
+ */
+export async function runFreeIn(lang: Language, code: string, onLog?: (line: LogLine) => void, stdin?: string, files: FreeFile[] = []): Promise<RunResult> {
   if (lang === "python") {
     const { runPython } = await import("@/core/sandbox/py-run");
-    return runPython(code, undefined, onLog);
+    const mods = pythonModules(files);
+    const res = await runPython(code, undefined, onLog, stdin, mods.files);
+    if (mods.problems.length === 0) return res;
+    const notes = mods.problems.map((text) => ({ level: "warn" as const, text }));
+    notes.forEach((n) => onLog?.(n));
+    return { ...res, logs: [...notes, ...res.logs] };
   }
+  const modules = await jsModules(files);
   if (lang === "typescript") {
     const out = await toJs(code);
     if ("errors" in out) return { logs: out.errors.map((text) => ({ level: "error" as const, text })), timedOut: false, ms: 0 };
-    return runCode(out.js, JS_TIMEOUT_MS, onLog);
+    return runCode(withJsModules(out.js, modules), JS_TIMEOUT_MS, onLog, stdin);
   }
-  return runCode(code, JS_TIMEOUT_MS, onLog);
+  return runCode(withJsModules(code, modules), JS_TIMEOUT_MS, onLog, stdin);
+}
+
+/** The other JS and TS tabs as plain JavaScript. A TS tab with a syntax error throws when it is required. */
+async function jsModules(files: FreeFile[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const f of files) {
+    if (f.language === "python") continue;
+    if (f.language === "javascript") out[jsModuleKey(f.name)] = f.code;
+    else {
+      const t = await toJs(f.code);
+      out[jsModuleKey(f.name)] = "js" in t ? t.js : `throw new Error(${JSON.stringify(`${f.name}: ${t.errors.join("; ")}`)});`;
+    }
+  }
+  return out;
 }

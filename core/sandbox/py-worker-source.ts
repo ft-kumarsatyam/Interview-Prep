@@ -223,9 +223,25 @@ def _fmt_exc(e, filename):
 
 _BASE = {k: v for k, v in dict(globals()).items() if not k.startswith("__")}
 
-def __prepos_free(code):
+def __prepos_free(code, files_json="{}"):
     ns = dict(_BASE)
     ns["__name__"] = "__main__"
+    try:
+        import os, importlib
+        files = json.loads(files_json)
+        d = "/tmp/prepos_mods"
+        os.makedirs(d, exist_ok=True)
+        for f in os.listdir(d):
+            os.remove(os.path.join(d, f))
+        for name, src in files.items():
+            with open(os.path.join(d, name), "w") as fh:
+                fh.write(src)
+            sys.modules.pop(name[:-3], None)
+        if d not in sys.path:
+            sys.path.insert(0, d)
+        importlib.invalidate_caches()
+    except BaseException as e:
+        print("Could not set up the other files: " + str(e), file=sys.stderr)
     try:
         exec(compile(code, "<main>", "exec"), ns)
     except BaseException as e:
@@ -263,13 +279,13 @@ def __prepos_run(code, payload):
 `;
 
 /**
- * Classic worker that boots Pyodide once from the CDN (cached by the browser after the
- * first load) and then runs free-form code or the test-case harness. The page kills and
+ * Classic worker that boots Pyodide once (from the copy this app serves, else the CDN; cached by the
+ * browser after the first load) and then runs free-form code or the test-case harness. The page kills and
  * re-creates it on a timeout, because a busy Python loop can't be interrupted otherwise.
  */
 export const PY_WORKER_SOURCE = String.raw`
 const send = (m) => postMessage(m);
-const INDEX_URL = ${JSON.stringify(PYODIDE_URL)};
+const CDN_URL = ${JSON.stringify(PYODIDE_URL)};
 const HARNESS = ${JSON.stringify(PY_HARNESS)};
 let pyodide = null;
 let lines = 0;
@@ -299,23 +315,37 @@ function tidy(err) {
 self.onmessage = async (e) => {
   const msg = e.data;
   if (msg.type === "boot") {
-    try {
-      importScripts(INDEX_URL + "pyodide.js");
-      pyodide = await loadPyodide({ indexURL: INDEX_URL });
-      pyodide.runPython(HARNESS);
-      send({ type: "ready" });
-    } catch (err) {
-      send({ type: "boot-error", text: String((err && err.message) || err) });
+    // Prefer the copy served by this app (public/vendor/pyodide); fall back to the CDN when it is missing.
+    const bases = [msg.local, CDN_URL].filter(Boolean);
+    let lastErr = null;
+    for (const base of bases) {
+      try {
+        send({ type: "stage", text: base === CDN_URL ? "Downloading Python from the CDN" : "Loading Python" });
+        importScripts(base + "pyodide.js");
+        pyodide = await loadPyodide({ indexURL: base });
+        send({ type: "stage", text: "Starting Python" });
+        pyodide.runPython(HARNESS);
+        send({ type: "ready", source: base === CDN_URL ? "cdn" : "local" });
+        return;
+      } catch (err) {
+        lastErr = err;
+        pyodide = null;
+      }
     }
+    send({ type: "boot-error", text: String((lastErr && lastErr.message) || lastErr) });
     return;
   }
   lines = 0;
+  // input() and sys.stdin read the lines you typed in the stdin box, then hit EOF (no browser prompt in a worker).
+  const stdinLines = typeof msg.stdin === "string" && msg.stdin.length ? msg.stdin.split("\n") : [];
+  pyodide.setStdin({ stdin: () => (stdinLines.length ? stdinLines.shift() : undefined) });
   pyodide.setStdout(sink("log"));
   pyodide.setStderr(sink("error"));
   if (msg.type === "free") {
     try {
       pyodide.globals.set("__user_code", msg.code);
-      pyodide.runPython("__prepos_free(__user_code)");
+      pyodide.globals.set("__user_files", JSON.stringify(msg.files || {}));
+      pyodide.runPython("__prepos_free(__user_code, __user_files)");
     } catch (err) {
       send({ type: "log", level: "error", text: tidy(err) });
     }
@@ -347,7 +377,7 @@ self.onmessage = async (e) => {
     }
     let actual;
     try { actual = JSON.parse(r.json); } catch { actual = r.json; }
-    send({ type: "case", index, pass: __matches(actual, c.expected, h.compare), actual: JSON.stringify(actual) ?? String(actual), hidden: c.hidden });
+    send({ type: "case", index, pass: __judgeCase(actual, c, h.compare), actual: JSON.stringify(actual) ?? String(actual), hidden: c.hidden });
   });
   send({ type: "done" });
 };

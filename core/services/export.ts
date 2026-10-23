@@ -14,6 +14,9 @@ import { Article, Notification, Settings } from "@/core/models/system";
 import { CapturedNote } from "@/core/models/notes";
 import { ExternalProgressModel } from "@/core/models/external-progress";
 import { DsaBookmark } from "@/core/models/dsa-bookmark";
+import { DbLabProgress, DbLabQuery, RunLog } from "@/core/models/code-lab";
+import { GenaiTestAttempt } from "@/core/models/genai-test";
+import { GenaiPlaybookReview, GenaiPlaybookTask } from "@/core/models/genai-playbook";
 import { GenaiStudyProgress } from "@/core/models/genai-study";
 
 export const EXPORT_VERSION = 1;
@@ -25,7 +28,7 @@ export const EXPORT_VERSION = 1;
  */
 export async function exportBackup(now = new Date()) {
   await connectDb();
-  const [settings, problemprogress, externalprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews, capturednotes, dsabookmarks, genaistudyprogress] =
+  const [settings, problemprogress, externalprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews, capturednotes, dsabookmarks, genaistudyprogress, genaiplaybooktasks, genaiplaybookreviews, genaitestattempts, dblabqueries, dblabprogress, runlogs] =
     await Promise.all([
       Settings.find().lean(),
       ProblemProgress.find().lean(),
@@ -60,11 +63,17 @@ export async function exportBackup(now = new Date()) {
       CapturedNote.find().sort({ createdAt: 1 }).lean(),
       DsaBookmark.find().sort({ createdAt: 1 }).lean(),
       GenaiStudyProgress.find().lean(),
+      GenaiPlaybookTask.find().lean(),
+      GenaiPlaybookReview.find().lean(),
+      GenaiTestAttempt.find().lean(),
+      DbLabQuery.find().lean(),
+      DbLabProgress.find().lean(),
+      RunLog.find().lean(),
     ]);
   return {
     app: "PrepOS",
     version: EXPORT_VERSION,
     exportedAt: now.toISOString(),
-    collections: { settings, problemprogress, externalprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews, capturednotes, dsabookmarks, genaistudyprogress },
+    collections: { settings, problemprogress, externalprogress, subtopicprogress, dailyplans, daylogs, quizzes, masteries, practiceattempts, snippets, notifications, articles, designs, practiceanswers, customproblems, customsolves, mocksessions, aptitudesessions, planchanges, studysessions, resumes, jobs, weblessonprogress, webprojectprogress, webinterviewprogress, courselessonprogress, roadmapenrollments, roadmapnodeprogress, generatedquestions, generatedinterviews, capturednotes, dsabookmarks, genaistudyprogress, genaiplaybooktasks, genaiplaybookreviews, genaitestattempts, dblabqueries, dblabprogress, runlogs },
   };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { testcaseBySlug } from "@/core/content";
+import { sealCases } from "@/core/sandbox/seal-node";
 import { ALL_SPECS } from "../../scripts/dsa-testcases/specs";
 import { runWorker } from "./helpers";
 
@@ -25,6 +26,24 @@ describe("Worker harness on the committed problems", () => {
     const msgs = await runWorker({ code: e.starter, harness: harnessFor(slug) }, 60);
     const passed = msgs.filter((m) => m.type === "case" && m.pass).length;
     expect(passed).toBeLessThan(e.cases.length);
+  });
+
+  // Every 4th problem: hidden cases arrive sealed (answer replaced by a hash) and the harness must judge them the same way.
+  it.each(ALL_SPECS.filter((_, i) => i % 4 === 0).map((s) => [s.slug, s.reference] as const))("%s: the reference still passes every case when the hidden ones are sealed", async (slug, reference) => {
+    const e = testcaseBySlug.get(slug)!;
+    const harness = structuredClone({ functionName: e.signature.functionName, cases: sealCases(e.cases, e.compare), argTypes: e.argTypes, returns: e.returns, compare: e.compare });
+    const msgs = await runWorker({ code: reference, harness }, 60);
+    const cases = msgs.filter((m) => m.type === "case");
+    expect(cases).toHaveLength(e.cases.length);
+    expect(cases.filter((m) => !m.pass).map((m) => `${m.index}: ${m.actual}`)).toEqual([]);
+  });
+
+  it("a wrong solution still fails sealed hidden cases", async () => {
+    const e = testcaseBySlug.get("two-sum")!;
+    const harness = structuredClone({ functionName: "twoSum", cases: sealCases(e.cases, e.compare), argTypes: e.argTypes, returns: e.returns, compare: e.compare });
+    const msgs = await runWorker({ code: "function twoSum(nums, target) { return [0, 0]; }", harness }, 60);
+    const hiddenPassed = msgs.filter((m) => m.type === "case" && m.hidden && m.pass);
+    expect(hiddenPassed.length).toBeLessThan(e.cases.filter((c) => c.hidden).length);
   });
 
   it("Two Sum accepts either index order because its answers are compared unordered", async () => {

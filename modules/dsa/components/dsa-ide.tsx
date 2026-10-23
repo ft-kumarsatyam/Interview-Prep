@@ -125,6 +125,7 @@ export function DsaIde({
             title={title}
             entry={entry}
             cases={cases}
+            historyRef={slug}
             onSubmit={onSubmit}
             onCodeChange={(code) => {
               codeRef.current = code;

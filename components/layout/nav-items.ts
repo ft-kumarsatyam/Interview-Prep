@@ -32,6 +32,7 @@ import {
   Timer,
   Wrench,
   type LucideIcon,
+  ClipboardCheck,
 } from "lucide-react";
 
 /** One page inside a hub. */
@@ -113,6 +114,8 @@ export const NAV_HUBS: NavHub[] = [
       { href: "/learn", label: "Syllabus", icon: BookOpen },
       { href: "/courses", label: "Courses", icon: GraduationCap },
       { href: "/genai-sprint", label: "GenAI sprint", icon: Bot },
+      { href: "/genai-playbook", label: "GenAI playbook", icon: Target },
+      { href: "/genai-test", label: "GenAI tests", icon: ClipboardCheck },
       { href: "/roadmaps", label: "Roadmaps", icon: Route },
       { href: "/design", label: "System Design", icon: Network },
       { href: "/web", label: "Web & AI", icon: Globe },

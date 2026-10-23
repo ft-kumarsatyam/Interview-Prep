@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { LogLine, RunResult } from "@/modules/dsa/lib/playground/runner";
 import { testSummary } from "@/modules/dsa/lib/playground/test-summary";
 import { cn } from "@/core/utils";
+import { parseRunError, type RunLanguage } from "@/modules/dsa/domain/run-errors";
 
 const LEVEL: Record<LogLine["level"], { icon: LucideIcon; text: string; row: string; label: string }> = {
   log: { icon: ChevronRight, text: "text-foreground", row: "", label: "log" },
@@ -22,6 +23,9 @@ export function ConsoleOutput({
   onClear,
   modKey,
   fill = false,
+  language,
+  source,
+  onJump,
   className,
 }: {
   result: RunResult | null;
@@ -31,6 +35,10 @@ export function ConsoleOutput({
   modKey: string;
   /** Fill the parent's height (inside a resizable IDE pane) instead of sizing to the content. */
   fill?: boolean;
+  /** With `source`, error lines are parsed so they can show a hint and a jump-to-line button. */
+  language?: RunLanguage;
+  source?: string;
+  onJump?: (line: number, column?: number) => void;
   className?: string;
 }) {
   const logs = running ? liveLogs : (result?.logs ?? []);
@@ -107,10 +115,24 @@ export function ConsoleOutput({
         {logs.map((l, i) => {
           const meta = LEVEL[l.level];
           const Icon = meta.icon;
+          const parsed = l.level === "error" && language ? parseRunError(language, l.text, source) : null;
           return (
             <div key={i} className={cn("flex gap-2 border-b border-border/40 px-3 py-1 last:border-b-0", meta.row)}>
               <Icon className={cn("mt-[3px] size-3.5 shrink-0", meta.text, l.level === "log" && "text-muted-foreground")} aria-label={meta.label} />
-              <span className={cn("min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]", meta.text)}>{l.text}</span>
+              <span className="min-w-0 flex-1">
+                <span className={cn("whitespace-pre-wrap [overflow-wrap:anywhere]", meta.text)}>{l.text}</span>
+                {parsed?.hint && <span className="mt-1 block font-sans text-xs text-muted-foreground">{parsed.hint}</span>}
+              </span>
+              {parsed?.line && onJump && (
+                <button
+                  type="button"
+                  onClick={() => onJump(parsed.line!, parsed.column)}
+                  className="h-6 shrink-0 self-start rounded border bg-background px-1.5 font-sans text-2xs font-medium text-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                  aria-label={`Go to line ${parsed.line}`}
+                >
+                  Line {parsed.line}
+                </button>
+              )}
             </div>
           );
         })}

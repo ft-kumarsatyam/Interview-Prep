@@ -60,6 +60,13 @@ import ml03 from "@/data/courses/ml-engineering/03-data-engineering-for-ai.json"
 import ai07 from "@/data/courses/genai/07-fine-tuning-and-open-models.json";
 import ai08 from "@/data/courses/genai/08-ai-engineer-interview-deep-dive.json";
 import ai09 from "@/data/courses/genai/09-genai-sprint-guide.json";
+import pb01 from "@/data/courses/genai-playbook/01-positioning-and-python.json";
+import pb02 from "@/data/courses/genai-playbook/02-ml-and-llm-foundations.json";
+import pb03 from "@/data/courses/genai-playbook/03-retrieval-and-rag.json";
+import pb04 from "@/data/courses/genai-playbook/04-agents.json";
+import pb05 from "@/data/courses/genai-playbook/05-production-and-design.json";
+import pb06 from "@/data/courses/genai-playbook/06-interview-loop.json";
+import pb07 from "@/data/courses/genai-playbook/07-playbook-toolkit.json";
 import type { Course, CourseChapterFile, CourseLesson, CourseMeta } from "@/modules/course/domain/course";
 
 const CHAPTER_FILES: Record<string, CourseChapterFile[]> = {
@@ -72,6 +79,7 @@ const CHAPTER_FILES: Record<string, CourseChapterFile[]> = {
   devops: [do01, do02, do03] as unknown as CourseChapterFile[],
   python: [py01, py02, py03] as unknown as CourseChapterFile[],
   "ml-engineering": [ml01, ml02, ml03] as unknown as CourseChapterFile[],
+  "genai-playbook": [pb01, pb02, pb03, pb04, pb05, pb06, pb07] as unknown as CourseChapterFile[],
   genai: [ai01, ai02, ai03, ai04, ai05, ai06, ai07, ai08, ai09] as unknown as CourseChapterFile[],
 };
 

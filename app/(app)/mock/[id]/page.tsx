@@ -5,6 +5,7 @@ import { ProblemStatement, ProblemStatementSkeleton } from "@/modules/dsa/compon
 import { MockRunner, type CodingBundle } from "@/modules/mock/components/mock-runner";
 import { ArticleMarkdown } from "@/modules/news/components/article-markdown";
 import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { sealCases } from "@/core/sandbox/seal-node";
 import { toRunnable } from "@/modules/dsa/domain/custom-problem";
 import { MOCK_CONFIG } from "@/modules/mock/domain/mock";
 import { getCustomProblem } from "@/modules/dsa/services/custom-problems";
@@ -25,9 +26,11 @@ export default async function MockSessionPage({ params }: PageProps<"/mock/[id]"
       const entry = testcaseBySlug.get(q.slug);
       const p = problemBySlug.get(q.slug);
       if (!entry || !p) continue;
+      const cases = sealCases(entry.cases, entry.compare);
+      const sealed = { ...entry, cases };
       coding[q.id] = {
-        entry,
-        cases: entry.cases,
+        entry: sealed,
+        cases,
         hints: entry.hints,
         statement: (
           <Suspense key={q.id} fallback={<ProblemStatementSkeleton />}>

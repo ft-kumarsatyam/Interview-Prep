@@ -1,6 +1,7 @@
 import { isValidObjectId } from "mongoose";
 import { connectDb } from "@/core/db";
 import { isLanguage, type Language } from "@/modules/dsa/domain/starters";
+import { SNIPPET_LIMIT } from "@/modules/dsa/lib/playground/tags";
 import { Snippet } from "@/core/models/learning";
 
 export interface SnippetSummary {
@@ -14,7 +15,7 @@ export interface SnippetSummary {
 
 export async function listSnippets(): Promise<SnippetSummary[]> {
   await connectDb();
-  const rows = await Snippet.find().sort({ updatedAt: -1 }).limit(100).lean();
+  const rows = await Snippet.find().sort({ updatedAt: -1 }).limit(SNIPPET_LIMIT).lean();
   return rows.map((r) => ({
     id: String(r._id),
     title: r.title,

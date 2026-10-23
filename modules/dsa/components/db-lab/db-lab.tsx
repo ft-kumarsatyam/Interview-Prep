@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { ArrowRight, Check, Eraser, Eye, History, Lightbulb, ListChecks, Loader2, Play, RotateCcw, Send, Table2, Target, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { ArrowRight, BookmarkPlus, Check, Eraser, Eye, History, Lightbulb, ListChecks, Loader2, Play, RotateCcw, Send, Table2, Target, Workflow, X } from "lucide-react";
 import { toast } from "sonner";
 import { CodeEditor } from "@/modules/dsa/components/playground/lazy-code-editor";
 import { useModKey } from "@/modules/dsa/components/playground/use-mod-key";
 import { DESKTOP_QUERY, readPref, useHydrated, useMediaQuery, writePref } from "@/modules/dsa/components/ide/use-client-prefs";
+import { RunHistory } from "@/modules/dsa/components/ide/run-history";
 import { DifficultyBadge } from "@/components/shared/badges";
 import { CompactTabsList, CompactTabsTrigger } from "@/components/shared/compact-tabs";
 import { Button } from "@/components/ui/button";
@@ -26,15 +27,42 @@ import {
   type DbMode,
   type Row,
 } from "@/modules/dsa/domain/db-lab";
+import { ENGINES, challengeMode, checkEngine, engineLabel, fromSavedMode, toSavedMode, PG_CHECKABLE, type DbEngine, type SavedMode } from "@/modules/dsa/domain/db-dialect";
+import { PG_COLUMNS_SQL, PG_FKS_SQL, SQLITE_COLUMNS_SQL, SQLITE_FKS_SQL, buildEr, erFromPostgres, erFromSeedTables, erFromSqlite } from "@/modules/dsa/domain/db-er";
+import { explainStatement, parsePlan } from "@/modules/dsa/domain/db-explain";
+import { MAX_TABS, addTab, closeTab, initialTabs, newTabId, openTab, parseTabs, renameTab, updateTab, type TabsState } from "@/modules/dsa/domain/db-lab-tabs";
+import { localOnlySolved, mergeSolved } from "@/modules/dsa/domain/db-lab-progress";
 import { runMongo } from "@/modules/dsa/domain/mongo-query";
 import { parseSchema } from "@/modules/dsa/domain/sql-schema";
-import { judgeOutputs, runQuery, type QueryOutput, type QueryVerdict } from "@/core/sandbox/sql-judge";
-import { resetSqlDatabase, type SqlResultSet } from "@/core/sandbox/sql-run";
+import { judgeOutputs, resetEngines, runOn, runQuery, type QueryOutput, type QueryVerdict } from "@/core/sandbox/sql-judge";
+import { getPgProgress, onPgProgress, preloadPg, type PgProgress } from "@/core/sandbox/pg-run";
+import type { SqlResultSet } from "@/core/sandbox/sql-run";
 import { cn } from "@/core/utils";
+import { deleteQueryAction, importSolvedAction, markSolvedAction, recordRunAction, saveQueryAction } from "@/app/(app)/playground/code-lab-actions";
 import { QueryOutputView, VerdictBanner } from "@/modules/dsa/components/db-lab/query-output";
 import { MongoSchemaBrowser, SqlSchemaBrowser } from "@/modules/dsa/components/db-lab/schema-browser";
 import { ChallengeCatalog, type CatalogFilter } from "@/modules/dsa/components/db-lab/challenge-catalog";
+import { EngineStatus } from "@/modules/dsa/components/db-lab/engine-status";
+import { ErView, type ErState } from "@/modules/dsa/components/db-lab/er-view";
+import { PlanView, type PlanState } from "@/modules/dsa/components/db-lab/plan-view";
+import { QueryTabs } from "@/modules/dsa/components/db-lab/query-tabs";
+import { SavedQueries, type SavedItem } from "@/modules/dsa/components/db-lab/saved-queries";
 import { groupByTopic, nextUnsolved, topicLabel } from "@/modules/dsa/domain/db-lab-topics";
+
+/** A saved query as the page loads it (same shape the database service returns). */
+export interface SavedQueryRow {
+  id: string;
+  title: string;
+  sql: string;
+  mode: SavedMode;
+  dataset: string;
+  updatedAt: string;
+}
+export interface SolvedRow {
+  challengeId: string;
+  mode: SavedMode;
+}
+export type MermaidComponent = ComponentType<{ code: string; label: string }>;
 
 type SideTab = "challenges" | "schema";
 type BottomTab = "result" | "expected" | "history";

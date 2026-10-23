@@ -10,6 +10,7 @@ import frontendScaleJson from "@/data/roadmaps/frontend-scale.json";
 import fullstackJson from "@/data/roadmaps/fullstack.json";
 import genai100DaysJson from "@/data/roadmaps/genai-100-days.json";
 import genai16LevelsJson from "@/data/roadmaps/genai-16-levels.json";
+import genaiPlaybookJson from "@/data/roadmaps/genai-interview-playbook.json";
 import { webLessonById } from "@/core/content";
 import { courseLessonByKey } from "@/core/courses";
 import { roadmapSchema, type Roadmap } from "@/modules/roadmap/domain/roadmap";
@@ -18,7 +19,7 @@ import { roadmapSchema, type Roadmap } from "@/modules/roadmap/domain/roadmap";
 // "hld" track almost 1:1, and /design studio is the deeper, flagship case-study format for
 // the same subject. See docs/DESIGN.md §2 for the depth-tier convention.
 /** Parsed through the schema so defaults (empty links and problems) apply and a bad file fails loudly. */
-export const roadmaps: Roadmap[] = [dsaJson, backendJson, frontendJson, frontendScaleJson, fullstackJson, aiEngineerJson, genai16LevelsJson, genai100DaysJson].map((j) => roadmapSchema.parse(j));
+export const roadmaps: Roadmap[] = [dsaJson, backendJson, frontendJson, frontendScaleJson, fullstackJson, aiEngineerJson, genai16LevelsJson, genai100DaysJson, genaiPlaybookJson].map((j) => roadmapSchema.parse(j));
 export const roadmapById = new Map(roadmaps.map((r) => [r.id, r]));
 
 /** Prefix of a node `lesson` that points at a web lesson (data/webdev) instead of a course lesson. */

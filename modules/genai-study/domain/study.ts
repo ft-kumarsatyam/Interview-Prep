@@ -19,20 +19,20 @@ export type StudyStatus = (typeof STUDY_STATUSES)[number];
 export const studyQuestionSchema = z.object({
   q: text(240, 8),
   /** A short model answer, markdown. */
-  a: text(900, 20),
+  a: text(1500, 20),
   kind: z.enum(QUESTION_KINDS),
 });
 export type StudyQuestion = z.infer<typeof studyQuestionSchema>;
 
 export const studyEntrySchema = z.object({
-  /** Markdown: the quick review. What it is, why it matters, how it works, where it goes wrong. */
-  explain: text(2200, 200),
-  keyPoints: z.array(text(200, 5)).min(2).max(5),
-  questions: z.array(studyQuestionSchema).min(2).max(4),
+  /** Markdown: what it is, why it matters, how it works, where it goes wrong, and the interview line. */
+  explain: text(8000, 200),
+  keyPoints: z.array(text(200, 5)).min(2).max(8),
+  questions: z.array(studyQuestionSchema).min(2).max(6),
   /** A lab exercise (`data/genai-lab`) that practises this sub-topic. */
   lab: slug.optional(),
   /** Extra reading for this sub-topic only. */
-  links: z.array(z.object({ title: text(120), url: https })).max(4).default([]),
+  links: z.array(z.object({ title: text(120), url: https })).max(6).default([]),
 });
 export type StudyEntry = z.infer<typeof studyEntrySchema>;
 

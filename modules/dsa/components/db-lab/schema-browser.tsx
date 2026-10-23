@@ -1,12 +1,53 @@
 "use client";
 
+import { useState, type ReactNode } from "react";
 import { ChevronRight, Eye, KeyRound, Link2, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/core/utils";
 import type { Collections } from "@/modules/dsa/domain/mongo-query";
 import type { SchemaTable } from "@/modules/dsa/domain/sql-schema";
 
-/** Tables with their columns (types, keys, references) and a one-click preview of the data. */
-export function SqlSchemaBrowser({ tables, onPreview }: { tables: SchemaTable[]; onPreview?: (table: string) => void }) {
+/**
+ * Tables with their columns (types, keys, references) and a one-click preview of the data. With `er`, a List / ER
+ * switch shows the entity-relationship diagram instead; `onShowEr` fires when it is opened so the caller can load it.
+ */
+export function SqlSchemaBrowser({ tables, onPreview, er, onShowEr }: { tables: SchemaTable[]; onPreview?: (table: string) => void; er?: ReactNode; onShowEr?: () => void }) {
+  const [view, setView] = useState<"list" | "er">("list");
+  const switcher = er !== undefined && (
+    <div role="group" aria-label="Schema view" className="mb-2 flex w-fit rounded-lg bg-muted p-[3px]">
+      {(["list", "er"] as const).map((v) => (
+        <button
+          key={v}
+          type="button"
+          aria-pressed={view === v}
+          onClick={() => {
+            setView(v);
+            if (v === "er") onShowEr?.();
+          }}
+          className={cn("h-7 rounded-md px-3 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none", view === v ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground")}
+        >
+          {v === "list" ? "List" : "ER diagram"}
+        </button>
+      ))}
+    </div>
+  );
+  if (view === "er" && er !== undefined) {
+    return (
+      <div>
+        {switcher}
+        {er}
+      </div>
+    );
+  }
+  return (
+    <div>
+      {switcher}
+      <TableList tables={tables} onPreview={onPreview} />
+    </div>
+  );
+}
+
+function TableList({ tables, onPreview }: { tables: SchemaTable[]; onPreview?: (table: string) => void }) {
   return (
     <ul className="space-y-2">
       {tables.map((t) => (

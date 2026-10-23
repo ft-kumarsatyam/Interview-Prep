@@ -2,7 +2,8 @@ import { PY_WORKER_SOURCE } from "@/core/sandbox/py-worker-source";
 import type { CaseResult, HarnessCase, HarnessShape, LogLevel, LogLine, RunCasesResult, RunResult } from "@/core/sandbox/run";
 
 type WorkerMessage =
-  | { type: "ready" }
+  | { type: "ready"; source?: "local" | "cdn" }
+  | { type: "stage"; text: string }
   | { type: "boot-error"; text: string }
   | { type: "log"; level: LogLevel; text: string; crash?: boolean }
   | { type: "case"; index: number; pass: boolean; actual: string; hidden: boolean }
@@ -17,6 +18,8 @@ let ready: Promise<Worker> | null = null;
 
 export type PyStatus = "idle" | "loading" | "ready";
 let status: PyStatus = "idle";
+let stage = "";
+export const pyStage = () => stage;
 const listeners = new Set<() => void>();
 const setStatus = (s: PyStatus) => {
   status = s;
@@ -32,10 +35,11 @@ function reset() {
   worker?.terminate();
   worker = null;
   ready = null;
+  stage = "";
   setStatus("idle");
 }
 
-/** Boot Pyodide once per tab. The ~10 MB download only happens the first time; the browser caches it. */
+/** Boot Pyodide once per tab. It loads from this app's own files (the browser caches it) and falls back to the CDN. */
 export function bootPython(): Promise<Worker> {
   if (ready) return ready;
   workerUrl ??= URL.createObjectURL(new Blob([PY_WORKER_SOURCE], { type: "text/javascript" }));
@@ -48,14 +52,18 @@ export function bootPython(): Promise<Worker> {
       reject(new Error("Python took too long to load. Check your connection and try again."));
     }, BOOT_TIMEOUT_MS);
     w.onmessage = (e: MessageEvent<WorkerMessage>) => {
-      if (e.data.type === "ready") {
+      if (e.data.type === "stage") {
+        stage = e.data.text;
+        setStatus(status);
+      } else if (e.data.type === "ready") {
         clearTimeout(timer);
+        stage = "";
         setStatus("ready");
         resolve(w);
       } else if (e.data.type === "boot-error") {
         clearTimeout(timer);
         reset();
-        reject(new Error("Couldn't load Python. It needs an internet connection the first time."));
+        reject(new Error("Couldn't load Python. If the app was installed without its Python files, it needs an internet connection the first time."));
       }
     };
     w.onerror = (e) => {
@@ -64,18 +72,22 @@ export function bootPython(): Promise<Worker> {
       reset();
       reject(new Error("Couldn't start the Python worker."));
     };
-    w.postMessage({ type: "boot" });
+    w.postMessage({ type: "boot", local: `${location.origin}/vendor/pyodide/` });
   });
   return ready;
 }
 
-/** One run at a time; a timeout kills the worker (a tight Python loop can't be interrupted) and the next run re-boots it. */
+/**
+ * One run at a time. A timeout kills the worker (a tight Python loop can't be interrupted), then a replacement boots
+ * in the background right away, so the next run usually finds Python ready instead of paying a cold start.
+ */
 function exchange(message: unknown, timeoutMs: number, onMessage: (m: WorkerMessage) => boolean): Promise<{ timedOut: boolean }> {
   return bootPython().then(
     (w) =>
       new Promise((resolve) => {
         const timer = setTimeout(() => {
           reset();
+          void bootPython().catch(() => {});
           resolve({ timedOut: true });
         }, timeoutMs);
         w.onmessage = (e: MessageEvent<WorkerMessage>) => {
@@ -89,11 +101,11 @@ function exchange(message: unknown, timeoutMs: number, onMessage: (m: WorkerMess
   );
 }
 
-export async function runPython(code: string, timeoutMs = PY_RUN_TIMEOUT_MS, onLog?: (line: LogLine) => void): Promise<RunResult> {
+export async function runPython(code: string, timeoutMs = PY_RUN_TIMEOUT_MS, onLog?: (line: LogLine) => void, stdin?: string, files?: Record<string, string>): Promise<RunResult> {
   const logs: LogLine[] = [];
   const started = performance.now();
   try {
-    const { timedOut } = await exchange({ type: "free", code }, timeoutMs, (m) => {
+    const { timedOut } = await exchange({ type: "free", code, stdin, files }, timeoutMs, (m) => {
       if (m.type === "done") return true;
       if (m.type === "log") {
         const line = { level: m.level, text: m.text };

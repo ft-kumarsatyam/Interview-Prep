@@ -4,7 +4,9 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AArrowDown, AArrowUp, Loader2, Maximize2, Minimize2, Play, RotateCcw, Send, Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { EdgeCasesPanel } from "@/modules/dsa/components/edge-cases-panel";
+import { recordRunAction } from "@/app/(app)/playground/code-lab-actions";
 import { CodeEditor } from "@/modules/dsa/components/playground/lazy-code-editor";
+import type { EditorMarkerInput, EditorReveal } from "@/modules/dsa/components/playground/code-editor";
 import { CompactTabsList, CompactTabsTrigger } from "@/components/shared/compact-tabs";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -13,7 +15,9 @@ import { summarizeCases, type ArgType, type CaseSummary, type CompareMode, type 
 import { caseToDraft, casesFromInputs, parseDrafts, stepFontSize, type CaseDraft } from "@/modules/dsa/domain/ide";
 import { LANGUAGES, isLanguage, starterFor, type Language, type StarterSource } from "@/modules/dsa/domain/starters";
 import { runCasesIn } from "@/core/sandbox/languages";
-import { bootPython, pyStatus, subscribePyStatus } from "@/core/sandbox/py-run";
+import { errorMarkers, parseRunError } from "@/modules/dsa/domain/run-errors";
+import { RunHistory } from "@/modules/dsa/components/ide/run-history";
+import { bootPython, pyStage, pyStatus, subscribePyStatus } from "@/core/sandbox/py-run";
 import type { CaseResult, LogLine } from "@/core/sandbox/run";
 import { cn } from "@/core/utils";
 import { useIde } from "@/modules/dsa/components/ide/ide-shell";
@@ -53,6 +57,8 @@ export interface CodeWorkspaceProps {
   /** Start from this code instead of a draft (e.g. resuming a mock interview). */
   initial?: { language: Language; code: string };
   disabled?: boolean;
+  /** Record runs and show a History tab under this key (the problem slug). Omit for mock interviews and custom problems. */
+  historyRef?: string;
 }
 
 /** Waits for hydration so drafts and preferences can be read from localStorage on first render. */
@@ -62,9 +68,9 @@ export function CodeWorkspace(props: CodeWorkspaceProps) {
   return <Workspace {...props} />;
 }
 
-type BottomTab = "cases" | "result" | "edges" | "console";
+type BottomTab = "cases" | "result" | "edges" | "console" | "history";
 
-function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Submit", toolbarExtra, onCodeChange, initial, disabled }: CodeWorkspaceProps) {
+function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Submit", toolbarExtra, onCodeChange, initial, disabled, historyRef }: CodeWorkspaceProps) {
   const { split, full, toggleFull } = useIde();
   const params = entry.signature.params;
   const visible = cases.filter((c) => !c.hidden);
@@ -92,6 +98,10 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
   const [edgeResults, setEdgeResults] = useState<CaseResult[] | null>(null);
   const [running, setRunning] = useState<"run" | "submit" | null>(null);
   const py = useSyncExternalStore(subscribePyStatus, pyStatus, () => "idle" as const);
+  const pyStageText = useSyncExternalStore(subscribePyStatus, pyStage, () => "");
+  const [markers, setMarkers] = useState<EditorMarkerInput[]>([]);
+  const [reveal, setReveal] = useState<EditorReveal | undefined>(undefined);
+  const [historyVersion, setHistoryVersion] = useState(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const code = codeByLang[language];
@@ -130,8 +140,27 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
     writePref("ide-font", String(next));
   }
 
+  function jumpTo(line: number, column?: number) {
+    setReveal((r) => ({ line, column, nonce: (r?.nonce ?? 0) + 1 }));
+  }
+
+  /** Counts and time only; failures here must never interrupt a run. */
+  function record(kind: "run" | "submit", toRun: Array<TestCase & { custom?: boolean }>, res: { cases: CaseResult[]; ms: number; timedOut: boolean; crashed?: string }) {
+    if (!historyRef) return;
+    const judged = res.cases.filter((r) => !toRun[r.index]?.custom);
+    const passed = judged.filter((r) => r.pass).length;
+    const ok = !res.crashed && !res.timedOut && judged.length > 0 && passed === judged.length && res.cases.length === toRun.length;
+    void recordRunAction({ kind: "dsa", ref: historyRef, language, action: kind, ok, passed, total: judged.length, ms: res.ms })
+      .then(() => setHistoryVersion((n) => n + 1))
+      .catch(() => {});
+  }
+
   async function execute(kind: "run" | "submit", toRun: Array<TestCase & { custom?: boolean }>) {
     const res = await runCasesIn(language, code, fn, toRun, shape);
+    // Underline the line a crash or a thrown case points at, so you can fix it where it happened.
+    const thrown = res.cases.filter((r) => r.actual.startsWith("threw ")).map((r) => ({ level: "error", text: r.actual.slice(6) }));
+    setMarkers(errorMarkers(language, [...(res.crashed ? [{ level: "error", text: res.crashed }] : []), ...thrown], code));
+    record(kind, toRun, res);
     setView({ kind, cases: toRun, results: res.cases, ms: res.ms, timedOut: res.timedOut, crashed: res.crashed });
     setRunId((n) => n + 1);
     setLogs(res.crashed ? [...res.logs, { level: "error", text: res.crashed }] : res.logs);
@@ -200,7 +229,7 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
       </select>
       {language === "python" && py === "loading" && (
         <span className="inline-flex items-center gap-1 text-2xs text-muted-foreground">
-          <Loader2 className="size-3 animate-spin motion-reduce:animate-none" /> Loading Python…
+          <Loader2 className="size-3 animate-spin motion-reduce:animate-none" /> {pyStageText || "Loading Python…"}
         </span>
       )}
       <div className="flex items-center">
@@ -258,6 +287,8 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
       fill={split}
       minHeight="52dvh"
       ariaLabel={`Code editor for ${title}`}
+      markers={markers}
+      reveal={reveal}
       className="rounded-none border-0"
     />
   );
@@ -284,6 +315,7 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
             <Terminal className="size-3.5" /> Console
             {logs.length > 0 && <span className="font-mono text-2xs text-muted-foreground">{logs.length}</span>}
           </CompactTabsTrigger>
+          {historyRef && <CompactTabsTrigger value="history">History</CompactTabsTrigger>}
         </CompactTabsList>
       </div>
       <div className={cn("min-h-0 flex-1 p-3", split && "overflow-y-auto overscroll-contain")}>
@@ -310,7 +342,7 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
           />
         </TabsContent>
         <TabsContent value="result">
-          <ResultTab key={runId} view={view} params={params} />
+          <ResultTab key={runId} view={view} params={params} language={language} source={code} onJump={jumpTo} />
         </TabsContent>
         {edgeCount > 0 && (
           <TabsContent value="edges">
@@ -324,14 +356,28 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
             </p>
           ) : (
             <pre className="space-y-0.5 font-mono text-xs whitespace-pre-wrap">
-              {logs.map((l, i) => (
-                <div key={i} className={cn(l.level === "error" && "text-destructive", l.level === "warn" && "text-warning")}>
-                  {l.text}
-                </div>
-              ))}
+              {logs.map((l, i) => {
+                const parsed = l.level === "error" ? parseRunError(language, l.text, code) : null;
+                return (
+                  <div key={i} className={cn(l.level === "error" && "text-destructive", l.level === "warn" && "text-warning")}>
+                    {l.text}
+                    {parsed?.line && (
+                      <button type="button" onClick={() => jumpTo(parsed.line!, parsed.column)} className="ml-2 rounded border bg-background px-1.5 font-sans text-2xs font-medium text-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+                        Line {parsed.line}
+                      </button>
+                    )}
+                    {parsed?.hint && <span className="block font-sans text-xs text-muted-foreground">{parsed.hint}</span>}
+                  </div>
+                );
+              })}
             </pre>
           )}
         </TabsContent>
+        {historyRef && (
+          <TabsContent value="history">
+            <RunHistory kind="dsa" refKey={historyRef} version={historyVersion} />
+          </TabsContent>
+        )}
       </div>
     </Tabs>
   );

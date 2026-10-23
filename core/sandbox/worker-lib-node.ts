@@ -12,6 +12,9 @@ export interface WorkerLib {
   deepEqual(a: unknown, b: unknown): boolean;
   canonical(v: unknown): unknown;
   matches(actual: unknown, expected: unknown, compare?: "exact" | "unordered" | "unordered-outer" | "no-adjacent-repeat" | "no-triple-repeat" | "same-inorder" | "balanced-same-inorder"): boolean;
+  sealText(v: unknown, compare?: string): string;
+  sealable(compare?: string): boolean;
+  sha256(text: string): string;
   ListNode: new (val?: number, next?: unknown) => { val: number; next: unknown };
   TreeNode: new (val?: number, left?: unknown, right?: unknown) => { val: number; left: unknown; right: unknown };
   listFromArray(arr: unknown): unknown;
@@ -32,7 +35,7 @@ export function workerLib(): WorkerLib {
   cached ??= new Function(
     `${WORKER_LIB_SOURCE}
     return {
-      deepEqual: __deepEqual, canonical: __canonical, matches: __matches, ListNode, TreeNode,
+      deepEqual: __deepEqual, canonical: __canonical, matches: __matches, sealText: __sealText, sealable: __sealable, sha256: __sha256, ListNode, TreeNode,
       listFromArray: __listFromArray, listToArray: __listToArray, cycleListFromSpec: __cycleListFromSpec,
       treeFromLevelOrder: __treeFromLevelOrder, treeToLevelOrder: __treeToLevelOrder,
       buildArg: __buildArg, buildArgs: __buildArgs, encodeResult: __encodeResult,

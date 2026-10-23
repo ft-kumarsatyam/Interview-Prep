@@ -15,16 +15,16 @@ test("GenAI study notes: open a sub-topic, reveal an answer, rate it and keep it
   await expect(card.getByRole("button", { name: "Hide" }).first()).toBeVisible();
 
   await card.getByRole("button", { name: "Got it" }).click();
-  await expect(page.getByText("1/3 got it")).toBeVisible();
+  await expect(page.getByText(/1\/\d+ got it/)).toBeVisible();
 
   await page.reload();
   await page.waitForLoadState("networkidle");
-  await expect(page.getByText("1/3 got it")).toBeVisible();
+  await expect(page.getByText(/1\/\d+ got it/)).toBeVisible();
 });
 
 test("GenAI study notes: a node with no notes explains that, and an unknown node shows the not-found page", async ({ page }) => {
   await signIn(page);
-  await page.goto("/roadmaps/genai-16-levels/m3-2");
+  await page.goto("/roadmaps/genai-16-levels/l0-overview");
   await expect(page.getByText("Study notes are not written for this topic yet")).toBeVisible();
   await page.goto("/roadmaps/genai-16-levels/does-not-exist");
   await expect(page.getByText("Nothing here")).toBeVisible();

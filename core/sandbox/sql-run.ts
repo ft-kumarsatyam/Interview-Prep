@@ -83,7 +83,19 @@ function request(message: object, timeoutMs: number): Promise<WorkerMessage | "t
 }
 
 /** Run `sql` against a fresh database built from `seed`. The database is rebuilt only when the seed changes or `fresh` is set. */
-export async function runSql(seed: string, sql: string, opts: { fresh?: boolean } = {}): Promise<SqlRun> {
+export function runSql(seed: string, sql: string, opts: { fresh?: boolean } = {}): Promise<SqlRun> {
+  return serial(() => runSqlNow(seed, sql, opts));
+}
+
+/** Requests share one worker, so overlapping callers (a run and a plan, say) queue instead of clobbering each other. */
+let chain: Promise<unknown> = Promise.resolve();
+function serial<T>(job: () => Promise<T>): Promise<T> {
+  const next = chain.then(job, job);
+  chain = next.catch(() => undefined);
+  return next;
+}
+
+async function runSqlNow(seed: string, sql: string, opts: { fresh?: boolean }): Promise<SqlRun> {
   try {
     if (opts.fresh || loadedSeed !== seed) {
       const loaded = await request({ type: "load", seed }, SQL_RUN_TIMEOUT_MS);

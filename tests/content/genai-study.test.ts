@@ -12,6 +12,14 @@ describe("data/genai-study", () => {
     expect(studyProblems(roadmaps, studyFiles)).toEqual([]);
   });
 
+  it("has notes for every module topic of all 16 levels", () => {
+    const roadmap = roadmaps.find((r) => r.id === "genai-16-levels")!;
+    const covered = new Set(studyFiles.flatMap((f) => Object.keys(f.nodes)));
+    const modules = roadmap.sections.flatMap((s) => s.nodes).filter((n) => /^m\d+-\d+$/.test(n.id));
+    expect(modules.length).toBe(144);
+    for (const n of modules) expect(covered.has(n.id), n.id).toBe(true);
+  });
+
   it("finds the note for a checklist item by its title", () => {
     const item = "The parts of a prompt: Structure prompts using instructions, context, input, constraints, examples, and output requirements.";
     expect(noteFor("genai-16-levels", "m3-1", item)?.questions.length).toBeGreaterThanOrEqual(2);

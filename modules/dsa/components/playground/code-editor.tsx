@@ -3,8 +3,9 @@
 import { useEffect, useRef } from "react";
 import { javascript } from "@codemirror/lang-javascript";
 import { python } from "@codemirror/lang-python";
-import { sql, SQLite } from "@codemirror/lang-sql";
+import { PostgreSQL, sql, SQLite } from "@codemirror/lang-sql";
 import { indentUnit } from "@codemirror/language";
+import { lintGutter, setDiagnostics } from "@codemirror/lint";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
@@ -16,11 +17,13 @@ import { cn } from "@/core/utils";
 /** The runnable languages plus SQL, which the DB Lab uses (it isn't a DSA language). */
 export type EditorLanguage = Language | "sql";
 
-const languageExtension = (lang: EditorLanguage): Extension =>
+export type SqlDialect = "sqlite" | "postgres";
+
+const languageExtension = (lang: EditorLanguage, dialect: SqlDialect = "sqlite"): Extension =>
   lang === "python"
     ? [python(), indentUnit.of("    ")]
     : lang === "sql"
-      ? [sql({ dialect: SQLite }), indentUnit.of("  ")]
+      ? [sql({ dialect: dialect === "postgres" ? PostgreSQL : SQLite }), indentUnit.of("  ")]
       : [javascript({ typescript: lang === "typescript" }), indentUnit.of("  ")];
 
 const sizing = (fontSize: number, minHeight: string, fill: boolean) =>
@@ -29,6 +32,19 @@ const sizing = (fontSize: number, minHeight: string, fill: boolean) =>
     ".cm-scroller": { fontFamily: "var(--font-jetbrains)", ...(fill ? { overflow: "auto" } : {}) },
   });
 
+export interface EditorMarkerInput {
+  line: number;
+  column?: number;
+  message: string;
+}
+
+/** Ask the editor to move the cursor to a line (a new `nonce` repeats the request for the same line). */
+export interface EditorReveal {
+  line: number;
+  column?: number;
+  nonce: number;
+}
+
 export function CodeEditor({
   value,
   onChange,
@@ -36,10 +52,13 @@ export function CodeEditor({
   onSubmit,
   onSave,
   language = "typescript",
+  sqlDialect = "sqlite",
   fontSize = 13,
   minHeight = "320px",
   fill = false,
   ariaLabel = "Code editor",
+  markers,
+  reveal,
   className,
 }: {
   value: string;
@@ -49,11 +68,17 @@ export function CodeEditor({
   onSubmit?: () => void;
   onSave?: () => void;
   language?: EditorLanguage;
+  /** Highlighting and completion dialect when `language` is "sql". */
+  sqlDialect?: SqlDialect;
   fontSize?: number;
   minHeight?: string;
   /** Fill the parent's height and scroll inside, instead of growing with the content. */
   fill?: boolean;
   ariaLabel?: string;
+  /** Error markers to underline (for example the line a run failed on). */
+  markers?: EditorMarkerInput[];
+  /** Move the cursor to a line and scroll it into view. */
+  reveal?: EditorReveal;
   className?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -76,7 +101,8 @@ export function CodeEditor({
         doc: value,
         extensions: [
           basicSetup,
-          langSlot.current.of(languageExtension(language)),
+          lintGutter(),
+          langSlot.current.of(languageExtension(language, sqlDialect)),
           Prec.highest(
             keymap.of([
               {
@@ -128,12 +154,38 @@ export function CodeEditor({
   }, [value]);
 
   useEffect(() => {
+    const v = view.current;
+    if (!v) return;
+    const doc = v.state.doc;
+    const diagnostics = (markers ?? [])
+      .filter((m) => m.line >= 1 && m.line <= doc.lines)
+      .map((m) => {
+        const line = doc.line(m.line);
+        const from = Math.min(line.from + Math.max(0, (m.column ?? 1) - 1), line.to);
+        return { from, to: line.to > from ? line.to : Math.min(from + 1, doc.length), severity: "error" as const, message: m.message };
+      });
+    v.dispatch(setDiagnostics(v.state, diagnostics));
+  }, [markers]);
+
+  const revealNonce = reveal?.nonce;
+  useEffect(() => {
+    const v = view.current;
+    if (!v || !reveal) return;
+    const line = v.state.doc.line(Math.min(Math.max(reveal.line, 1), v.state.doc.lines));
+    const pos = Math.min(line.from + Math.max(0, (reveal.column ?? 1) - 1), line.to);
+    v.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+    v.focus();
+    // Only a new request (nonce) moves the cursor, not every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealNonce]);
+
+  useEffect(() => {
     view.current?.dispatch({ effects: themeSlot.current.reconfigure(resolvedTheme === "light" ? [] : oneDark) });
   }, [resolvedTheme]);
 
   useEffect(() => {
-    view.current?.dispatch({ effects: langSlot.current.reconfigure(languageExtension(language)) });
-  }, [language]);
+    view.current?.dispatch({ effects: langSlot.current.reconfigure(languageExtension(language, sqlDialect)) });
+  }, [language, sqlDialect]);
 
   useEffect(() => {
     view.current?.dispatch({ effects: sizeSlot.current.reconfigure(sizing(fontSize, minHeight, fill)) });

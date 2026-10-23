@@ -50,3 +50,22 @@ export function filterSnippets<T extends Taggable>(snippets: readonly T[], query
     return s.title.toLowerCase().includes(q) || s.tag.toLowerCase().includes(q) || s.code.toLowerCase().includes(q);
   });
 }
+
+/** The most snippets the sidebar loads. */
+export const SNIPPET_LIMIT = 500;
+
+export type SnippetSort = "updated" | "title";
+
+/** Newest first by default, or A to Z. Rows without a date sort last. Never mutates the input. */
+export function sortSnippets<T extends { title: string; updatedAt: string }>(snippets: readonly T[], sort: SnippetSort): T[] {
+  return snippets.toSorted((a, b) => (sort === "title" ? a.title.localeCompare(b.title) : b.updatedAt.localeCompare(a.updatedAt)));
+}
+
+/** A backup of every snippet as pretty JSON. */
+export function exportSnippetsJson(snippets: ReadonlyArray<{ title: string; tag: string; code: string; language: string; updatedAt: string }>, exportedAt: string): string {
+  return JSON.stringify(
+    { app: "prepos", kind: "snippets", exportedAt, count: snippets.length, snippets: snippets.map(({ title, tag, language, code, updatedAt }) => ({ title, tag, language, code, updatedAt })) },
+    null,
+    2,
+  );
+}

@@ -13,7 +13,10 @@ import { migration as dashboardIndexes } from "@/core/db/migrations/012-dashboar
 import { migration as dsaBookmarks } from "@/core/db/migrations/013-dsa-bookmarks";
 import { migration as linkHealth } from "@/core/db/migrations/014-link-health";
 import { migration as genaiStudy } from "@/core/db/migrations/015-genai-study";
+import { migration as genaiPlaybook } from "@/core/db/migrations/016-genai-playbook";
+import { migration as genaiTest } from "@/core/db/migrations/017-genai-test";
+import { migration as codeLab } from "@/core/db/migrations/018-code-lab";
 import type { Migration } from "@/core/db/migrations/types";
 
 /** Append new migrations to the end. Ids must be in order (a test checks it). */
-export const MIGRATIONS: Migration[] = [ownerId, eventIndexes, vectorIndex, aiChatIndexes, capturedNotes, jobProfiles, postingYears, questionFlags, interviewBank, studyFlowSettings, externalProgress, dashboardIndexes, dsaBookmarks, linkHealth, genaiStudy];
+export const MIGRATIONS: Migration[] = [ownerId, eventIndexes, vectorIndex, aiChatIndexes, capturedNotes, jobProfiles, postingYears, questionFlags, interviewBank, studyFlowSettings, externalProgress, dashboardIndexes, dsaBookmarks, linkHealth, genaiStudy, genaiPlaybook, genaiTest, codeLab];

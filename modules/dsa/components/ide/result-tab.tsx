@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { CheckCircle2, Circle, Clock, EyeOff, XCircle } from "lucide-react";
 import type { TestCase } from "@/modules/dsa/domain/dsa-runner";
+import { parseRunError, type RunLanguage } from "@/modules/dsa/domain/run-errors";
 import type { CaseResult } from "@/core/sandbox/run";
 import { cn } from "@/core/utils";
 
@@ -34,16 +35,41 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: "b
   );
 }
 
-export function ResultTab({ view, params }: { view: RunView | null; params: string[] }) {
+export function ResultTab({
+  view,
+  params,
+  language,
+  source,
+  onJump,
+}: {
+  view: RunView | null;
+  params: string[];
+  language?: RunLanguage;
+  source?: string;
+  onJump?: (line: number, column?: number) => void;
+}) {
   const [picked, setPicked] = useState<number | null>(null);
 
   if (!view) return <p className="py-6 text-center text-sm text-muted-foreground">Run your code to see the output here.</p>;
 
   if (view.crashed) {
+    const parsed = language ? parseRunError(language, view.crashed, source) : null;
     return (
       <div className="space-y-2">
-        <p className="text-base font-semibold text-destructive">{/SyntaxError|Line \d+:\d+/.test(view.crashed) ? "Compile error" : "Runtime error"}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-base font-semibold text-destructive">{/SyntaxError|Line \d+:\d+/.test(view.crashed) ? "Compile error" : "Runtime error"}</p>
+          {parsed?.line && onJump && (
+            <button
+              type="button"
+              onClick={() => onJump(parsed.line!, parsed.column)}
+              className="h-7 rounded border bg-background px-2 text-xs font-medium hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              Go to line {parsed.line}
+            </button>
+          )}
+        </div>
         <pre className="overflow-x-auto rounded-md bg-destructive/8 p-3 font-mono text-xs whitespace-pre-wrap text-destructive">{view.crashed}</pre>
+        {parsed?.hint && <p className="text-sm text-muted-foreground">{parsed.hint}</p>}
       </div>
     );
   }

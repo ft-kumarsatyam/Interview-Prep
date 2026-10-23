@@ -181,6 +181,8 @@ Dates are `YYYY-MM-DD` in `APP_TIMEZONE` through `core/domain/dates.ts`; never `
 | Subtopic done, problem solved | stored | `toggleSubtopic`, `recordSolve` (`modules/progress/services/progress.ts`) |
 | Course lesson done, roadmap link read | stored (own collections) | `modules/course`, `modules/roadmap` services |
 | GenAI sprint task done | stored (`GenaiSprintTask`, keyed by pack task id) | `modules/genai-sprint/services/progress.ts`; data in `data/genai-prep-pack/`; schemas in `modules/genai-prep` |
+| GenAI playbook task done, weekly readiness and mock scores | stored (`GenaiPlaybookTask` keyed by task id, `GenaiPlaybookReview` keyed by kind and week; owner-scoped) | `modules/genai-playbook/services/progress.ts`; schedule in `data/genai-playbook/plan.json` (generated, 157 days, Oct 26 2026 to Mar 31 2027); reading in course `genai-playbook`; roadmap `genai-interview-playbook`; credits in `data/genai-playbook/ATTRIBUTION.md` |
+| GenAI test attempts (questions, answers, grades, pass mark) | stored (`GenaiTestAttempt`, owner-scoped, slug like `weekly-w05-1`); coverage, per-level mastery, level reached and verdict are derived on read | `modules/genai-test/services/test.ts`; pure rules in `modules/genai-test/domain/*`; pool built in `core/genai-test.ts` from playbook lessons, `data/genai-test/mcq/*` and study-note questions (`data/genai-study`); AI feature `test-grade`, self-grade fallback |
 | Backlog (what is owed) | **derived** | `loadBacklogItems` |
 | "Caught up" days | **derived** | `loadCatchUp` |
 | Roadmap node done | **derived** | `nodeStatus` |

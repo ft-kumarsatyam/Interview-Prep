@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { FileCode2, FilePlus2, Search, SearchX, Trash2 } from "lucide-react";
+import { ArrowDownAZ, Clock, Download, FileCode2, FilePlus2, Search, SearchX, Trash2 } from "lucide-react";
 import { Chip } from "@/components/shared/chip";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Input } from "@/components/ui/input";
-import { filterSnippets, parseTags, tagCounts } from "@/modules/dsa/lib/playground/tags";
+import { exportSnippetsJson, filterSnippets, parseTags, sortSnippets, tagCounts, type SnippetSort } from "@/modules/dsa/lib/playground/tags";
 import type { SnippetSummary } from "@/modules/dsa/services/snippets";
 import { cn } from "@/core/utils";
 
@@ -28,8 +28,20 @@ export function SnippetList({
   const [query, setQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [sort, setSort] = useState<SnippetSort>("updated");
   const tags = useMemo(() => tagCounts(snippets), [snippets]);
-  const visible = useMemo(() => filterSnippets(snippets, query, activeTag), [snippets, query, activeTag]);
+  const visible = useMemo(() => sortSnippets(filterSnippets(snippets, query, activeTag), sort), [snippets, query, activeTag, sort]);
+
+  function exportAll() {
+    const now = new Date();
+    const blob = new Blob([exportSnippetsJson(snippets, now.toISOString())], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `prepos-snippets-${now.toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   useEffect(() => {
     if (!confirmId) return;
@@ -57,6 +69,20 @@ export function SnippetList({
           <div className="relative">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
             <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search snippets" className="h-9 pl-8 text-sm" aria-label="Search snippets" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 flex-1"
+              onClick={() => setSort((v) => (v === "updated" ? "title" : "updated"))}
+              aria-label={`Sorted by ${sort === "updated" ? "last updated" : "title"}. Change sort`}
+            >
+              {sort === "updated" ? <Clock /> : <ArrowDownAZ />} {sort === "updated" ? "Recent" : "A to Z"}
+            </Button>
+            <Button size="sm" variant="outline" className="h-8 flex-1" onClick={exportAll} aria-label="Export all snippets as JSON">
+              <Download /> Export all (JSON)
+            </Button>
           </div>
           {tags.length > 0 && (
             <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by tag">

@@ -10,6 +10,7 @@ import { ProblemStatement, ProblemStatementSkeleton } from "@/modules/dsa/compon
 import { ScratchIde } from "@/modules/dsa/components/scratch-ide";
 import { SqlIde } from "@/modules/dsa/components/sql-ide";
 import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { sealCases } from "@/core/sandbox/seal-node";
 import { lessonByProblem } from "@/core/courses";
 import { roadmapNodesByProblem } from "@/core/roadmaps";
 import { sheetContextOf, siblingsOf } from "@/modules/dsa/domain/problem-siblings";
@@ -93,7 +94,7 @@ export default async function ProblemPage({ params, searchParams }: PageProps<"/
         </p>
       )}
       {entry ? (
-        <DsaIde slug={problem.slug} entry={entry} revealedCases={progress?.revealedCases ?? []} onLeetCode={onLeetCode} {...shared} />
+        <DsaIde slug={problem.slug} entry={{ ...entry, cases: sealCases(entry.cases, entry.compare, progress?.revealedCases ?? []) }} revealedCases={progress?.revealedCases ?? []} onLeetCode={onLeetCode} {...shared} />
       ) : sql ? (
         <SqlIde problem={sql} {...shared} />
       ) : (

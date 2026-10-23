@@ -32,7 +32,7 @@ function getWorkerUrl(): string {
 }
 
 /** Run untrusted JS off the main thread with no DOM or network, killed after `timeoutMs`. */
-export function runCode(code: string, timeoutMs = 3000, onLog?: (line: LogLine) => void): Promise<RunResult> {
+export function runCode(code: string, timeoutMs = 3000, onLog?: (line: LogLine) => void, stdin?: string): Promise<RunResult> {
   const worker = new Worker(getWorkerUrl());
   const logs: LogLine[] = [];
   const started = performance.now();
@@ -57,7 +57,7 @@ export function runCode(code: string, timeoutMs = 3000, onLog?: (line: LogLine) 
       logs.push({ level: "error", text: e.message || "Worker error" });
       finish(false);
     };
-    worker.postMessage(code);
+    worker.postMessage(stdin ? { free: code, stdin } : code);
   });
 }
 

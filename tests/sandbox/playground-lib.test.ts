@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterSnippets, formatTags, parseTags, tagCounts } from "@/modules/dsa/lib/playground/tags";
+import { SNIPPET_LIMIT, exportSnippetsJson, filterSnippets, formatTags, parseTags, sortSnippets, tagCounts } from "@/modules/dsa/lib/playground/tags";
 import { transpileTs } from "@/modules/dsa/lib/playground/ts-check";
 
 describe("transpileTs", () => {
@@ -55,5 +55,25 @@ describe("snippet tags", () => {
     expect(filterSnippets(snippets, "", "dsa").map((s) => s.title)).toEqual(["LRU"]);
     expect(filterSnippets(snippets, "debounce", "dsa")).toEqual([]);
     expect(filterSnippets(snippets, "", null)).toHaveLength(3);
+  });
+});
+
+describe("snippet list helpers", () => {
+  const rows = [
+    { title: "b", tag: "", code: "1", language: "javascript", updatedAt: "2026-01-01" },
+    { title: "a", tag: "x", code: "2", language: "python", updatedAt: "2026-02-01" },
+  ];
+  it("sorts by updated or title without mutating", () => {
+    expect(sortSnippets(rows, "updated").map((r) => r.title)).toEqual(["a", "b"]);
+    expect(sortSnippets(rows, "title").map((r) => r.title)).toEqual(["a", "b"]);
+    expect(rows[0]!.title).toBe("b");
+  });
+  it("exports a JSON backup", () => {
+    const out = JSON.parse(exportSnippetsJson(rows, "now")) as { count: number; snippets: Array<{ title: string }> };
+    expect(out.count).toBe(2);
+    expect(out.snippets[1]!.title).toBe("a");
+  });
+  it("loads up to 500", () => {
+    expect(SNIPPET_LIMIT).toBe(500);
   });
 });

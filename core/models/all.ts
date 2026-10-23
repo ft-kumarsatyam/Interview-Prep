@@ -31,3 +31,6 @@ import "@/core/models/interview-bank";
 import "@/core/models/webdev";
 import "@/core/models/link-health";
 import "@/core/models/genai-study";
+import "@/core/models/genai-playbook";
+import "@/core/models/genai-test";
+import "@/core/models/code-lab";

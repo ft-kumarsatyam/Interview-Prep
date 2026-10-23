@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
-import { AArrowDown, AArrowUp, Code2, FolderOpen, Link2, Loader2, PanelLeftClose, PanelLeftOpen, Pencil, Play, Save, Terminal } from "lucide-react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { AArrowDown, AArrowUp, Code2, FolderOpen, History, Link2, Loader2, PanelLeftClose, PanelLeftOpen, Pencil, Play, Save, Sparkles, Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { deleteSnippetAction, saveSnippetAction } from "@/app/(app)/playground/actions";
 import { DESKTOP_QUERY, readPref, useHydrated, useMediaQuery, writePref } from "@/modules/dsa/components/ide/use-client-prefs";
@@ -12,8 +12,17 @@ import { Label } from "@/components/ui/label";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { recordRunAction } from "@/app/(app)/playground/code-lab-actions";
+import { RunHistory } from "@/modules/dsa/components/ide/run-history";
 import { stepFontSize } from "@/modules/dsa/domain/ide";
-import { LANGUAGES, isLanguage, type Language } from "@/modules/dsa/domain/starters";
+import { errorMarkers, type EditorMarker } from "@/modules/dsa/domain/run-errors";
+import { moduleHint } from "@/modules/dsa/domain/playground-modules";
+import {
+  activeTab, canOpen, closeTab, createTab, extFor, focusNth, focusTab, isDirty, migrateLegacyScratch, MAX_TABS, moveTab, openSnippetTab, openTab,
+  parseTabs, renameTab, serializeTabs, stepTab, updateTab, uniqueName, type Tab, type TabsState,
+} from "@/modules/dsa/domain/playground-tabs";
+import { formatCode } from "@/modules/dsa/lib/playground/format";
+import { LANGUAGES, type Language } from "@/modules/dsa/domain/starters";
 import type { Drill } from "@/modules/dsa/lib/playground/drills";
 import type { LogLine, RunResult } from "@/modules/dsa/lib/playground/runner";
 import { playgroundHref } from "@/modules/dsa/lib/playground/share";
@@ -25,7 +34,10 @@ import { CodeEditor } from "@/modules/dsa/components/playground/lazy-code-editor
 import { ConsoleOutput } from "@/modules/dsa/components/playground/console-output";
 import { OutputDrills } from "@/modules/dsa/components/playground/output-drills";
 import { SnippetList } from "@/modules/dsa/components/playground/snippet-list";
+import { StdinBox } from "@/modules/dsa/components/playground/stdin-box";
+import { EDITOR_PANEL_ID, TabStrip } from "@/modules/dsa/components/playground/tab-strip";
 import { useModKey } from "@/modules/dsa/components/playground/use-mod-key";
+import { usePyStatus } from "@/modules/dsa/components/playground/use-py-status";
 
 const STARTER = `// ⌘/Ctrl + Enter to run. No DOM, no network, 3 s limit.
 // Helpers: assertEqual(actual, expected, label?), test(name, fn), console.table(...)
@@ -49,6 +61,7 @@ print(Counter(words).most_common(3))
 `;
 
 const SCRATCH_KEY = "playground:scratch";
+const TABS_KEY = "playground:tabs";
 const WIDE_QUERY = "(min-width: 1280px)";
 /** `?snippet=` links stop decoding past this length (see app/(app)/playground/page.tsx). */
 const SHARE_LIMIT = 8000;
@@ -59,14 +72,28 @@ interface Current {
   title: string;
   tag: string;
 }
+/** What the last run (or format) of a tab produced. Markers only show while the code is unchanged. */
+interface Outcome {
+  result: RunResult | null;
+  code: string;
+  markers: EditorMarker[];
+}
 
-function readScratch(): { code: string; language: Language } | null {
-  try {
-    const v = JSON.parse(readPref(SCRATCH_KEY) ?? "null") as { code?: unknown; language?: unknown } | null;
-    return v && typeof v.code === "string" && isLanguage(v.language) ? { code: v.code, language: v.language } : null;
-  } catch {
-    return null;
+function defaultState(): TabsState {
+  const tab = createTab({ language: "javascript", code: STARTER }, []);
+  return { tabs: [tab], activeId: tab.id };
+}
+
+/** Saved tabs, else the old single scratch buffer as tab 1, else a starter. A `?snippet=` link opens in its own tab. */
+function initialState(initialCode?: string): TabsState {
+  let s = parseTabs(readPref(TABS_KEY)) ?? migrateLegacyScratch(readPref(SCRATCH_KEY)) ?? defaultState();
+  if (initialCode !== undefined) {
+    const same = s.tabs.find((t) => t.code === initialCode);
+    if (same) s = focusTab(s, same.id);
+    else if (canOpen(s)) s = openTab(s, createTab({ language: "javascript", code: initialCode, name: "shared.js" }, s.tabs));
+    else s = updateTab(s, s.activeId, { code: initialCode });
   }
+  return s;
 }
 
 function Kbd({ children }: { children: React.ReactNode }) {

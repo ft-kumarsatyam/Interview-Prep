@@ -7,9 +7,12 @@ test("GenAI sprint: toggle a task and reload", async ({ page }) => {
   await page.waitForLoadState("networkidle");
   const box = page.getByRole("checkbox").first();
   const before = await box.getAttribute("aria-checked");
+  const next = before === "true" ? "false" : "true";
+  const posted = page.waitForResponse((r) => r.request().method() === "POST" && r.ok());
   await box.click();
-  await expect(box).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
+  await posted;
+  await expect(box).toHaveAttribute("aria-checked", next);
   await page.reload();
   await page.waitForLoadState("networkidle");
-  await expect(page.getByRole("checkbox").first()).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
+  await expect(page.getByRole("checkbox").first()).toHaveAttribute("aria-checked", next);
 });
