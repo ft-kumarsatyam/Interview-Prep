@@ -1,14 +1,11 @@
-import { courses } from "@/core/courses";
+import { courseMeta, lessonsOf } from "@/core/courses";
 import { problemBySlug, subtopicById } from "@/core/content";
 import { connectDb } from "@/core/db";
+import { loadRoadmap } from "@/core/roadmaps";
 import { ProblemProgress, SubtopicProgress } from "@/core/models/progress";
 import { getDoneByCourse } from "@/modules/course/services/progress";
-import { nextCourseLesson } from "@/modules/course/domain/course";
-import { getPracticeCatalog } from "@/modules/practice/services/catalog";
-import { recommend } from "@/modules/practice/domain/catalog";
-import { getSettings } from "@/modules/settings/services/settings";
+import { nextIndexLesson } from "@/modules/course/domain/course";
 import { getRoadmapState } from "@/modules/roadmap/services/roadmap";
-import { roadmapById } from "@/core/roadmaps";
 import { ensureToday, type TodayState } from "@/modules/planner/services/plan";
 import { buildStudyQueue, type StudyFlowItem } from "@/modules/study-flow/domain/study-flow";
 
@@ -28,11 +25,10 @@ export async function getStudyFlow(prior?: TodayState): Promise<StudyFlow> {
   await connectDb();
   const { plan, today, settings } = state;
   const slugs = [...new Set([...plan.dsaNew, ...plan.dsaReview, plan.jsProblem, plan.sqlProblem].filter((x): x is string => !!x))];
-  const [problemRows, theoryRows, doneByCourse, catalog] = await Promise.all([
+  const [problemRows, theoryRows, doneByCourse] = await Promise.all([
     ProblemProgress.find({ slug: { $in: slugs } }, { slug: 1, solveDates: 1 }).lean(),
     SubtopicProgress.find({ subtopicId: { $in: plan.theory } }, { subtopicId: 1 }).lean(),
     getDoneByCourse(),
-    getPracticeCatalog(),
   ]);
   const solvedToday = new Set(problemRows.filter((row) => row.solveDates?.includes(today)).map((row) => row.slug));
   const doneTheory = new Set(theoryRows.map((row) => row.subtopicId));
@@ -78,7 +74,7 @@ export async function getStudyFlow(prior?: TodayState): Promise<StudyFlow> {
 
   const roadmapItems: StudyFlowItem[] = [];
   for (const roadmapId of settings.studyFlowRoadmaps) {
-    const roadmap = roadmapById.get(roadmapId);
+    const roadmap = await loadRoadmap(roadmapId);
     if (!roadmap) continue;
     const roadmapState = await getRoadmapState(roadmap);
     const next = roadmap.sections.flatMap((section) => section.nodes).find((node) => !roadmapState.statuses.get(node.id)?.done && node.priority !== "skip");
@@ -98,36 +94,24 @@ export async function getStudyFlow(prior?: TodayState): Promise<StudyFlow> {
 
   const courseItems: StudyFlowItem[] = [];
   if (settings.studyFlowCourses) {
-    for (const course of courses) {
-      const done = new Set((doneByCourse.get(course.id) ?? new Map()).keys());
-      const next = nextCourseLesson(course, done);
+    for (const meta of courseMeta()) {
+      const lessons = lessonsOf(meta.id);
+      const done = new Set((doneByCourse.get(meta.id) ?? new Map()).keys());
+      const next = nextIndexLesson(lessons, done);
       if (!next) continue;
       courseItems.push({
-        id: `course:${course.id}:${next.id}`,
+        id: `course:${meta.id}:${next.id}`,
         kind: "course",
-        title: `${course.title}: ${next.title}`,
-        href: `/courses/${course.id}/${next.id}`,
+        title: `${meta.title}: ${next.title}`,
+        href: `/courses/${meta.id}/${next.id}`,
         minutes: next.minutes,
         bucket: "recommended",
         done: false,
         reason: "Continue your selected course",
-        source: course.id,
+        source: meta.id,
       });
     }
   }
-
-  const practiceItems: StudyFlowItem[] = recommend(catalog.entries, catalog.studiedTopics, 4)
-    .map((entry) => ({
-      id: `practice:${entry.id}`,
-      kind: "practice" as const,
-      title: entry.title,
-      href: entry.href,
-      minutes: 20,
-      bucket: "optional" as const,
-      done: false,
-      reason: "Suggested from your unfinished practice",
-      source: entry.subject,
-    }));
 
   const items = buildStudyQueue({
     dayKind: plan.kind,
@@ -135,7 +119,7 @@ export async function getStudyFlow(prior?: TodayState): Promise<StudyFlow> {
     required,
     roadmap: roadmapItems,
     courses: courseItems,
-    practice: practiceItems,
+    practice: [],
   });
   return { items, next: items.find((item) => !item.done && !item.locked) ?? null };
 }

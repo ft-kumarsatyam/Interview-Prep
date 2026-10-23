@@ -1,3 +1,5 @@
-export default function GenaiPlaybookLoading() {
-  return <div className="mx-auto max-w-3xl animate-pulse space-y-4 pt-4" aria-busy aria-label="Loading GenAI playbook" />;
+import { PageSkeleton } from "@/components/shared/page-skeleton";
+
+export default function Loading() {
+  return <PageSkeleton cards={4} label="Loading GenAI playbook…" />;
 }

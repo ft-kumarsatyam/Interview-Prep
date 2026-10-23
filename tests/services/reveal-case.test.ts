@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { testcaseBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { ProblemProgress } from "@/core/models/progress";
 import { getProblemDetail } from "@/modules/dsa/services/problems";
 import { revealHiddenCase } from "@/modules/progress/services/progress";

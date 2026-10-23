@@ -9,6 +9,7 @@ import { ReaderActions } from "@/modules/news/components/reader-actions";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { news } from "@/core/content";
+
 import { tagLabel } from "@/modules/news/domain/article";
 import { READINGS_PER_DAY } from "@/modules/planner/domain/plan-config";
 import { getArticle, nextUnread } from "@/modules/news/services/news";

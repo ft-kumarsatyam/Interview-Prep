@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { BookOpen, Check, ChevronRight, Eye, EyeOff, Layers, ListChecks, RotateCcw, Search, Shuffle, Timer, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
-import { setInterviewStatusAction } from "@/app/(app)/web/actions";
+import { getInterviewAnswerAction, setInterviewStatusAction } from "@/app/(app)/web/actions";
 import { ArticleMarkdown } from "@/modules/news/components/article-markdown";
 import { Chip } from "@/components/shared/chip";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -20,14 +20,13 @@ export interface DeckQuestion {
   id: string;
   level: InterviewLevel;
   q: string;
-  answer: string;
-  followUps: string[];
-  mistakes: string[];
   trackName: string;
   /** Written by the model on request rather than by hand. */
   generated?: boolean;
   lesson?: { id: string; title: string };
 }
+
+type AnswerBodyData = { answer: string; followUps: string[]; mistakes: string[] };
 
 const LEVEL_TONE = { junior: "success", mid: "info", senior: "warning" } as const;
 const STATUS_LABEL: Record<InterviewStatus, string> = { new: "New", review: "Review", known: "Got it" };
@@ -49,29 +48,29 @@ function useStatus(initial: Record<string, InterviewStatus>) {
   return { status, rate };
 }
 
-function AnswerBody({ q }: { q: DeckQuestion }) {
+function AnswerBody({ q, body }: { q: DeckQuestion; body: AnswerBodyData }) {
   return (
     <div className="space-y-3">
       <div className="min-w-0 rounded-lg bg-muted/40 p-3 sm:p-4">
-        <ArticleMarkdown markdown={q.answer} />
+        <ArticleMarkdown markdown={body.answer} />
       </div>
-      {q.mistakes.length > 0 && (
+      {body.mistakes.length > 0 && (
         <div className="rounded-lg bg-warning/5 p-3 ring-1 ring-warning/20">
           <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-warning">
             <TriangleAlert className="size-3.5" aria-hidden /> Weak answers miss
           </p>
           <ul className="list-disc space-y-0.5 pl-5 text-sm">
-            {q.mistakes.map((m) => (
+            {body.mistakes.map((m) => (
               <li key={m}>{m}</li>
             ))}
           </ul>
         </div>
       )}
-      {q.followUps.length > 0 && (
+      {body.followUps.length > 0 && (
         <div className="rounded-lg p-3 ring-1 ring-foreground/10">
           <p className="mb-1 text-xs font-semibold text-muted-foreground">Likely follow-ups</p>
           <ul className="list-disc space-y-0.5 pl-5 text-sm text-muted-foreground">
-            {q.followUps.map((f) => (
+            {body.followUps.map((f) => (
               <li key={f}>{f}</li>
             ))}
           </ul>
@@ -105,8 +104,26 @@ function RateButtons({ current, onRate, size = "sm" }: { current: InterviewStatu
 }
 
 /** Browse a track's questions with answers, or practise them one at a time like flashcards. */
+function useAnswers() {
+  const [answers, setAnswers] = useState<Record<string, AnswerBodyData>>({});
+  const [, start] = useTransition();
+  const load = (id: string) => {
+    if (answers[id]) return;
+    start(async () => {
+      const res = await getInterviewAnswerAction(id);
+      if (!res.ok) {
+        toast.error(`${res.error}.`);
+        return;
+      }
+      setAnswers((cur) => ({ ...cur, [id]: { answer: res.answer, followUps: res.followUps, mistakes: res.mistakes } }));
+    });
+  };
+  return { answers, load };
+}
+
 export function InterviewDeck({ questions, initialStatus, showTrack = false }: { questions: DeckQuestion[]; initialStatus: Record<string, InterviewStatus>; showTrack?: boolean }) {
   const { status, rate } = useStatus(initialStatus);
+  const { answers, load } = useAnswers();
   const [mode, setMode] = useState<"browse" | "practice">("browse");
   const [level, setLevel] = useState<InterviewLevel | "all">("all");
   const [statusFilter, setStatusFilter] = useState<InterviewStatus | "all">("all");
@@ -142,13 +159,13 @@ export function InterviewDeck({ questions, initialStatus, showTrack = false }: {
       </div>
 
       {mode === "practice" ? (
-        <Practice key={round.join(",")} ids={round} byId={new Map(questions.map((q) => [q.id, q]))} status={status} rate={rate} showTrack={showTrack} onExit={() => setMode("browse")} onRestart={startPractice} />
+        <Practice key={round.join(",")} ids={round} byId={new Map(questions.map((q) => [q.id, q]))} answers={answers} loadAnswer={load} status={status} rate={rate} showTrack={showTrack} onExit={() => setMode("browse")} onRestart={startPractice} />
       ) : (
         <>
           <div className="space-y-3 rounded-xl border bg-card p-3 sm:p-4">
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search questions and answers" aria-label="Search questions and answers" className="pl-8" />
+              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search questions" aria-label="Search questions" className="pl-8" />
             </div>
             <div className="flex flex-wrap gap-2" role="group" aria-label="Level">
               <Chip pressed={level === "all"} onClick={() => setLevel("all")}>All levels</Chip>
@@ -204,7 +221,7 @@ export function InterviewDeck({ questions, initialStatus, showTrack = false }: {
                         </ToneBadge>
                       )}
                     </div>
-                    <button type="button" onClick={() => toggle(q.id)} aria-expanded={isOpen} className="flex w-full items-start justify-between gap-3 rounded-md text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+                    <button type="button" onClick={() => { toggle(q.id); if (!isOpen) load(q.id); }} aria-expanded={isOpen} className="flex w-full items-start justify-between gap-3 rounded-md text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
                       <span className="text-sm font-semibold sm:text-base">
                         <InlineCode text={q.q} />
                       </span>
@@ -212,7 +229,7 @@ export function InterviewDeck({ questions, initialStatus, showTrack = false }: {
                     </button>
                     {isOpen && (
                       <div className="mt-3 space-y-3">
-                        <AnswerBody q={q} />
+                        {answers[q.id] ? <AnswerBody q={q} body={answers[q.id]!} /> : <p className="text-sm text-muted-foreground">Loading answer…</p>}
                         <RateButtons current={s} onRate={(next) => rate(q.id, next)} />
                       </div>
                     )}
@@ -246,6 +263,8 @@ const clock = (secs: number) => `${Math.floor(secs / 60)}:${String(secs % 60).pa
 function Practice({
   ids,
   byId,
+  answers,
+  loadAnswer,
   status,
   rate,
   showTrack,
@@ -254,6 +273,8 @@ function Practice({
 }: {
   ids: string[];
   byId: ReadonlyMap<string, DeckQuestion>;
+  answers: Record<string, AnswerBodyData>;
+  loadAnswer: (id: string) => void;
   status: ReadonlyMap<string, InterviewStatus>;
   rate: (qid: string, s: InterviewStatus) => void;
   showTrack: boolean;
@@ -286,6 +307,7 @@ function Practice({
       if (!q || e.metaKey || e.ctrlKey || e.altKey || el?.closest("input, textarea, button, a, [contenteditable]")) return;
       if (!revealed && (e.key === " " || e.key === "Enter")) {
         e.preventDefault();
+        loadAnswer(q.id);
         setRevealed(true);
       } else if (revealed && e.key.toLowerCase() === "k") answer("known");
       else if (revealed && e.key.toLowerCase() === "r") answer("review");
@@ -369,7 +391,7 @@ function Practice({
             <p className="text-sm text-muted-foreground">Answer out loud or type it: the one-line answer, then why, then a trade-off or example. Then compare.</p>
             <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Your answer (optional, not saved)" aria-label="Your answer" rows={4} className="text-sm" />
             {over && <p className="text-xs text-warning">Past two minutes: in a real interview, land the one-line answer first and offer to go deeper.</p>}
-            <Button onClick={() => setRevealed(true)}>
+            <Button onClick={() => { if (q) loadAnswer(q.id); setRevealed(true); }}>
               <Eye className="size-4" aria-hidden /> Show model answer
             </Button>
             <p className="hidden text-xs text-muted-foreground sm:block">Shortcut: Space to reveal, then K for got it or R for review.</p>
@@ -382,7 +404,7 @@ function Practice({
                 <p className="text-sm whitespace-pre-wrap">{draft}</p>
               </div>
             )}
-            <AnswerBody q={q} />
+            {answers[q.id] ? <AnswerBody q={q} body={answers[q.id]!} /> : <p className="text-sm text-muted-foreground">Loading answer…</p>}
             <p className="text-xs text-muted-foreground">Rate it honestly: Got it only if you said the bolded answer and at least one trade-off without peeking.</p>
             <div className="flex flex-wrap gap-2 border-t pt-4">
               <Button variant="outline" onClick={() => answer("review")}>

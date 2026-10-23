@@ -1,4 +1,5 @@
-import { interviewQuestions, interviewTracks } from "@/core/content";
+import { interviewQuestions, interviewTracks } from "@/core/content/web-interview";
+
 import { connectDb } from "@/core/db";
 import { GeneratedInterviewDoc } from "@/core/models/webdev";
 import { takeToken } from "@/core/services/rate-limit";

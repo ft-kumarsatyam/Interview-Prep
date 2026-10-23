@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { noteFiles, subtopicById, subtopicNotes } from "@/core/content";
+import { subtopicById } from "@/core/content";
+import { noteFiles, subtopicNotes } from "@/core/content/notes";
+
 import { notesFileSchema, notesProblems, notesCoverage, readingMinutes } from "@/modules/learn/domain/notes";
 
 describe("data/notes/*.json", () => {

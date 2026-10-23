@@ -158,6 +158,15 @@ export function masteryProblemById(roadmap: MasteryRoadmap, problemId: string): 
 
 export const flatLessons = (course: Course): Array<CourseLesson & { chapterId: string }> => course.chapters.flatMap((ch) => ch.lessons.map((l) => ({ ...l, chapterId: ch.id })));
 
+export function courseIndexProgress(lessons: ReadonlyArray<{ id: string }>, done: ReadonlySet<string>): { done: number; total: number; pct: number } {
+  const n = lessons.filter((l) => done.has(l.id)).length;
+  return { done: n, total: lessons.length, pct: lessons.length ? Math.round((100 * n) / lessons.length) : 0 };
+}
+
+export function nextIndexLesson<T extends { id: string }>(lessons: readonly T[], done: ReadonlySet<string>): T | null {
+  return lessons.find((l) => !done.has(l.id)) ?? null;
+}
+
 export function courseProgress(course: Course, done: ReadonlySet<string>): { done: number; total: number; pct: number } {
   const all = flatLessons(course);
   const n = all.filter((l) => done.has(l.id)).length;

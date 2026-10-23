@@ -30,11 +30,10 @@ export function TabStrip({
   const [draft, setDraft] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   const refs = useRef(new Map<string, HTMLButtonElement>());
-  const activeRef = refs.current.get(activeId);
 
   useEffect(() => {
     refs.current.get(activeId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeId, activeRef]);
+  }, [activeId, tabs.length]);
 
   const problem = editing ? nameProblem(draft, editing, tabs) : null;
 

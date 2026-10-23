@@ -1,4 +1,5 @@
 import { problems, type ContentProblem } from "@/core/content";
+
 import type { ExternalSheet } from "@/modules/dsa/domain/external-catalogue";
 
 /** Same-pattern problems in plan order (core before extended), for prev/next navigation. */

@@ -22,8 +22,6 @@ import { ExternalResources } from "@/modules/dsa/components/external-resources";
 import { ProblemTable } from "@/modules/dsa/components/problem-table";
 import { SheetHubGrid } from "@/modules/dsa/components/sheet-hub-grid";
 
-/** Inactive tabs stay mounted (just hidden) so switching tabs never resets a filter or a picked section. */
-const PANEL = "data-[state=inactive]:hidden";
 const ENTRY = "inline-flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm hover:bg-muted";
 
 export function DsaPageTabs({
@@ -104,7 +102,7 @@ export function DsaPageTabs({
           <TabsTrigger value="companies">Companies</TabsTrigger>
           <TabsTrigger value="references">References</TabsTrigger>
         </TabsList>
-        <TabsContent value="practice" forceMount className={PANEL}>
+        <TabsContent value="practice">
           <ProblemTable
             key={preset.key}
             rows={rows}
@@ -117,19 +115,19 @@ export function DsaPageTabs({
             companies={companyNames}
           />
         </TabsContent>
-        <TabsContent value="topics" forceMount className={PANEL}>
+        <TabsContent value="topics">
           <DsaBrowser problems={problems} progress={progress} initial={initial} initialOpen={view.open} sheets={sheets} />
         </TabsContent>
-        <TabsContent value="patterns" forceMount className={PANEL}>
+        <TabsContent value="patterns">
           <DsaCheatSheet sheets={cheatSheets} initialId={view.cheat} problemTitles={problemTitles} />
         </TabsContent>
-        <TabsContent value="sheets" forceMount className={PANEL}>
+        <TabsContent value="sheets">
           <SheetHubGrid groups={sheetGroups} />
         </TabsContent>
-        <TabsContent value="companies" forceMount className={PANEL}>
+        <TabsContent value="companies">
           <CompanyGrid companies={companies} />
         </TabsContent>
-        <TabsContent value="references" forceMount className={PANEL}>
+        <TabsContent value="references">
           <ExternalResources resources={resources} />
         </TabsContent>
       </Tabs>

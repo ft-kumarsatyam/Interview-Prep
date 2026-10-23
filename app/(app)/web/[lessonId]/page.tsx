@@ -7,7 +7,9 @@ import { ArticleMarkdown } from "@/modules/news/components/article-markdown";
 import { BackLink } from "@/components/shared/back-link";
 import { InlineCode } from "@/components/shared/inline-code";
 import { ToneBadge } from "@/components/shared/tone-badge";
-import { interviewQuestions, webLessonById, webLessons, webProjects, webTracks } from "@/core/content";
+import { interviewQuestions } from "@/core/content/web-interview";
+import { webLessonById, webLessons, webProjects, webTracks } from "@/core/content/webdev";
+
 import { getDoneLessons } from "@/modules/learn/services/webdev";
 
 export async function generateMetadata({ params }: PageProps<"/web/[lessonId]">): Promise<Metadata> {

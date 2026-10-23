@@ -5,7 +5,8 @@ import { BackLink } from "@/components/shared/back-link";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { interviewQuestions, interviewTracks } from "@/core/content";
+import { interviewQuestions, interviewTracks } from "@/core/content/web-interview";
+
 import { INTERVIEW_LEVELS, interviewStats } from "@/modules/learn/domain/web-interview";
 import { WEB_AREA_INFO, WEB_AREAS, type WebArea } from "@/modules/learn/domain/webdev";
 import { getInterviewStatus } from "@/modules/learn/services/webdev";

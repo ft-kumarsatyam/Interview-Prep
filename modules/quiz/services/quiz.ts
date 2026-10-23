@@ -1,6 +1,7 @@
-import { courseLessonByKey } from "@/core/courses";
+import { getCourseLessonMeta } from "@/core/courses";
 import { CourseLessonProgress } from "@/core/models/course";
 import { problemBySlug, subtopicById, subtopics, type SubtopicInfo } from "@/core/content";
+
 import { connectDb } from "@/core/db";
 import { addDays, type DateStr } from "@/core/domain/dates";
 import type { DayKind } from "@/modules/planner/domain/planner";
@@ -91,7 +92,7 @@ async function loadDailyContext(date: DateStr): Promise<DailyContext> {
     solved,
     plannedSlugs: [...(plan?.dsaNew ?? []), ...(plan?.dsaReview ?? []), plan?.jsProblem, plan?.sqlProblem].filter((s): s is string => !!s),
     // What you studied today: ticked subtopics, plus the subtopic taught by any course lesson you finished today.
-    subtopics: lookup([...new Set([...subRows.map((r) => r.subtopicId), ...lessonRows.flatMap((r) => courseLessonByKey.get(`${r.courseId}/${r.lessonId}`)?.practiceRef ?? [])])]),
+    subtopics: lookup([...new Set([...subRows.map((r) => r.subtopicId), ...lessonRows.flatMap((r) => getCourseLessonMeta(`${r.courseId}/${r.lessonId}`)?.practiceRef ?? [])])]),
     plannedSubtopics: lookup(plan?.theory ?? []),
     articles: articles.map((a) => ({ title: a.title })),
   };

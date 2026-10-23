@@ -1,3 +1,5 @@
-export default function GenaiTestLoading() {
-  return <div className="mx-auto max-w-3xl animate-pulse space-y-4 pt-4" aria-busy aria-label="Loading GenAI tests" />;
+import { PageSkeleton } from "@/components/shared/page-skeleton";
+
+export default function Loading() {
+  return <PageSkeleton cards={5} label="Loading GenAI tests…" />;
 }

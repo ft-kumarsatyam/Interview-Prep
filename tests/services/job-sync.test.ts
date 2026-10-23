@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { careerSources } from "@/core/content";
+
 import { JobPosting, JobSource } from "@/core/models/job-postings";
 import { Settings } from "@/core/models/system";
 import type { Fetcher } from "@/modules/jobs/lib/connectors";

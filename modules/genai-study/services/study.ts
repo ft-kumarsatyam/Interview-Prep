@@ -1,6 +1,6 @@
 import { connectDb } from "@/core/db";
 import type { DateStr } from "@/core/domain/dates";
-import { nodeStudy } from "@/core/genai-study";
+import { loadNodeStudy } from "@/core/genai-study";
 import { GenaiStudyProgress } from "@/core/models/genai-study";
 import type { StudyStatus } from "@/modules/genai-study/domain/study";
 
@@ -13,7 +13,7 @@ export async function getNodeStudyStatus(roadmapId: string, nodeId: string): Pro
 
 /** Rate one sub-topic. "new" clears the rating. Only keys that have a note can be rated. */
 export async function setStudyStatus(roadmapId: string, nodeId: string, key: string, status: StudyStatus, today: DateStr): Promise<void> {
-  if (!nodeStudy(roadmapId, nodeId)?.[key]) throw new Error("Unknown sub-topic");
+  if (!(await loadNodeStudy(roadmapId, nodeId))?.[key]) throw new Error("Unknown sub-topic");
   await connectDb();
   if (status === "new") {
     await GenaiStudyProgress.deleteOne({ roadmapId, nodeId, key });

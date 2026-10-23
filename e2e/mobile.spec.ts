@@ -28,6 +28,8 @@ const PAGES = [
   "/dsa/sheets/system-design",
   "/dsa/companies",
   "/dsa/companies/amazon",
+  "/playground",
+  "/playground/db",
 ];
 
 test.describe("@mobile layout", () => {

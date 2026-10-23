@@ -32,8 +32,8 @@ describe("data/genai-test", () => {
     for (const c of counts) expect(c / levelMcqs.length).toBeLessThan(0.4);
   });
 
-  it("builds a pool with questions for every playbook week", () => {
-    const pool = testPool();
+  it("builds a pool with questions for every playbook week", async () => {
+    const pool = await testPool();
     const ids = [...pool.mcq, ...pool.written].map((q) => q.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const w of plan.weeks) {

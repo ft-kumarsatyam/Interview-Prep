@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { interviewQuestions, interviewTracks } from "@/core/content";
+import { interviewQuestions, interviewTracks } from "@/core/content/web-interview";
+
 import { resetEnvForTests } from "@/core/env";
 import { GeneratedInterviewDoc, WebInterviewProgress } from "@/core/models/webdev";
 import { Settings } from "@/core/models/system";

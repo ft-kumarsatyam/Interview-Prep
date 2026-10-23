@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { PageStack } from "@/components/shared/page-stack";
 import { Button } from "@/components/ui/button";
 import { tierProfiles } from "@/core/content";
+
 import { discoverJobs, getJobPrefs, listSources } from "@/modules/jobs/services/job-discovery";
 import { listProfiles } from "@/modules/jobs/services/job-profiles";
 import { NextStep } from "@/modules/jobs/components/next-step";

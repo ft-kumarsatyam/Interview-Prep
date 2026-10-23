@@ -1,4 +1,6 @@
-import { aptitudeBank, interviewFiles, practiceCases, problems, subtopics, systemDesign, topics } from "@/core/content";
+import { aptitudeBank, practiceCases, problems, subtopics, systemDesign, topics } from "@/core/content";
+import { interviewFiles } from "@/core/content/web-interview";
+
 import { connectDb } from "@/core/db";
 import { ProblemProgress } from "@/core/models/progress";
 import { WebInterviewProgress } from "@/core/models/webdev";

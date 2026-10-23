@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { testcaseBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { jsStarter, parseSignature, pyStarter, pyType, starterFor, tsStarter, tsType } from "@/modules/dsa/domain/starters";
 import { caseToDraft, casesFromInputs, parseDrafts, stepFontSize } from "@/modules/dsa/domain/ide";
 

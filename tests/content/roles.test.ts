@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { topics } from "@/core/content";
+
 import { rolePathView, rolePlacement, roleProblems, roleWeekMap } from "@/modules/planner/domain/role-path";
 import { roles, weekMapForRole } from "@/modules/planner/lib/roles";
 

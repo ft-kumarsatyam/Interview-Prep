@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { dsaCheatSheets, problemBySlug } from "@/core/content";
+import { problemBySlug } from "@/core/content";
+import { dsaCheatSheets } from "@/core/content/sheets";
+
 import { cheatSheetSlugs } from "@/modules/dsa/domain/dsa-cheat-sheet";
 import { STEP_ORDER } from "@/modules/dsa/domain/dsa-sheet";
 

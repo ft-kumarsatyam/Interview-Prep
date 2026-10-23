@@ -111,7 +111,7 @@ export async function startAttempt(input: { kind: TestKind; level?: number }, to
   const slug = `${stem}-${n}`;
   const [covered, history] = await Promise.all([loadCovered(), loadHistory()]);
   const levels = levelTopics();
-  const picked = selectTest({ kind: input.kind, pool: testPool(), weekIdx: ctx.idx, weekId: ctx.week.id, weekLevels: weekLevels(ctx.week.id), priorWeeks: ctx.priorWeeks, priorLevels: ctx.priorLevels, covered, history, seed: slug, today, level: input.level });
+  const picked = selectTest({ kind: input.kind, pool: await testPool(), weekIdx: ctx.idx, weekId: ctx.week.id, weekLevels: weekLevels(ctx.week.id), priorWeeks: ctx.priorWeeks, priorLevels: ctx.priorLevels, covered, history, seed: slug, today, level: input.level });
   if (picked.length === 0) return { ok: false, error: "No questions are available yet" };
   const coverage = coverageStat(expectedTopics(levels, ctx.levelsPerWeek, ctx.idx), covered);
   const doc = await GenaiTestAttempt.create({ slug, kind: input.kind, weekId: ctx.week.id, weekIdx: ctx.idx, level: input.level ?? null, startedOn: today, questions: picked, passMark: passMark(ctx.idx), coverage });

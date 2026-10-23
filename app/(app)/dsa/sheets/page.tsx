@@ -7,7 +7,9 @@ import { effectiveStatuses } from "@/modules/dsa/domain/external-catalogue";
 import { sheetCardGroups } from "@/modules/dsa/domain/sheet-hub";
 import { DB_CHALLENGES } from "@/modules/dsa/domain/db-lab";
 import { LLD_CASES } from "@/modules/design/domain/design-sheet";
-import { companyDataset, dsaCheatSheets, problems, systemDesign } from "@/core/content";
+import { problems, systemDesign } from "@/core/content";
+import { companyDataset, dsaCheatSheets } from "@/core/content/sheets";
+
 import { getExternalProgress } from "@/modules/dsa/services/external-progress";
 import { getProgressMap } from "@/modules/dsa/services/problems";
 import { hubSheets } from "@/modules/dsa/services/sheet-catalogue";

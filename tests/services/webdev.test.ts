@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { interviewQuestions, webProjects } from "@/core/content";
+import { interviewQuestions } from "@/core/content/web-interview";
+import { webProjects } from "@/core/content/webdev";
+
 import { WebInterviewProgress, WebLessonProgress } from "@/core/models/webdev";
 import { Settings } from "@/core/models/system";
 import { exportBackup } from "@/core/services/export";

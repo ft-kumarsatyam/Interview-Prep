@@ -7,7 +7,8 @@ import { requireSession } from "@/core/auth/dal";
 import { todayIn } from "@/modules/planner/services/plan";
 import { getSettings } from "@/modules/settings/services/settings";
 import { INTERVIEW_LEVELS, INTERVIEW_STATUSES } from "@/modules/learn/domain/web-interview";
-import { generateInterviewQuestions } from "@/modules/learn/services/interview-generated";
+import { interviewQuestions } from "@/core/content/web-interview";
+import { generateInterviewQuestions, loadGeneratedInterview } from "@/modules/learn/services/interview-generated";
 import { setInterviewStatus, setLessonDone } from "@/modules/learn/services/webdev";
 
 export async function setInterviewStatusAction(input: unknown): Promise<ActionResult> {
@@ -33,6 +34,17 @@ export async function setLessonDoneAction(input: unknown): Promise<ActionResult>
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Couldn't save" };
   }
+}
+
+export async function getInterviewAnswerAction(qid: string): Promise<ActionResult<{ answer: string; followUps: string[]; mistakes: string[] }>> {
+  await requireSession();
+  const parsed = z.string().max(100).safeParse(qid);
+  if (!parsed.success) return { ok: false, error: "Unknown question" };
+  const authored = interviewQuestions.find((q) => q.id === parsed.data);
+  if (authored) return { ok: true, answer: authored.answer, followUps: authored.followUps, mistakes: authored.mistakes };
+  const generated = (await loadGeneratedInterview()).find((q) => q.id === parsed.data);
+  if (!generated) return { ok: false, error: "Unknown question" };
+  return { ok: true, answer: generated.answer, followUps: generated.followUps, mistakes: generated.mistakes };
 }
 
 const levelSchema = z.enum(INTERVIEW_LEVELS);

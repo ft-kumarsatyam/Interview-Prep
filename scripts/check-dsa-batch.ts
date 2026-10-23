@@ -5,6 +5,7 @@
  *   node --import tsx scripts/check-dsa-batch.ts palindrom
  */
 import { problemBySlug } from "@/core/content";
+
 import { buildEntry } from "./dsa-testcases/build";
 import { ALL_SPECS } from "./dsa-testcases/specs";
 import { ALL_EXTRAS } from "./dsa-extras";

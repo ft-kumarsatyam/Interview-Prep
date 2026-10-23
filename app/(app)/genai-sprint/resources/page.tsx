@@ -10,13 +10,13 @@ export const metadata: Metadata = { title: "GenAI sprint · Resources" };
 export default async function GenaiSprintResourcesPage({ searchParams }: PageProps<"/genai-sprint/resources">) {
   const sp = await searchParams;
   const q = (Array.isArray(sp.q) ? sp.q[0] : sp.q)?.toLowerCase().trim() ?? "";
-  const module = Array.isArray(sp.module) ? sp.module[0] : sp.module;
+  const moduleFilter = Array.isArray(sp.module) ? sp.module[0] : sp.module;
   const type = Array.isArray(sp.type) ? sp.type[0] : sp.type;
   const level = Array.isArray(sp.level) ? sp.level[0] : sp.level;
 
   let list = genaiPrepResources.resources;
-  if (module && RESOURCE_MODULES.includes(module as (typeof RESOURCE_MODULES)[number])) {
-    list = list.filter((r) => r.modules.includes(module as (typeof RESOURCE_MODULES)[number]));
+  if (moduleFilter && RESOURCE_MODULES.includes(moduleFilter as (typeof RESOURCE_MODULES)[number])) {
+    list = list.filter((r) => r.modules.includes(moduleFilter as (typeof RESOURCE_MODULES)[number]));
   }
   if (type && RESOURCE_TYPES.includes(type as (typeof RESOURCE_TYPES)[number])) {
     list = list.filter((r) => r.type === type);
@@ -29,7 +29,7 @@ export default async function GenaiSprintResourcesPage({ searchParams }: PagePro
   const mk = (key: string, value: string | undefined) => {
     const p = new URLSearchParams();
     if (q) p.set("q", q);
-    if (module) p.set("module", module);
+    if (moduleFilter) p.set("module", moduleFilter);
     if (type) p.set("type", type);
     if (level) p.set("level", level);
     if (value) p.set(key, value);
@@ -52,7 +52,7 @@ export default async function GenaiSprintResourcesPage({ searchParams }: PagePro
           placeholder="Search title or why"
           className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
         />
-        <select name="module" defaultValue={module ?? ""} className="h-9 rounded-md border bg-background px-2 text-sm">
+        <select name="module" defaultValue={moduleFilter ?? ""} className="h-9 rounded-md border bg-background px-2 text-sm">
           <option value="">All modules</option>
           {RESOURCE_MODULES.map((m) => (
             <option key={m} value={m}>

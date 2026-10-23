@@ -4,7 +4,9 @@ import { MessageCircleQuestion } from "lucide-react";
 import { BackLink } from "@/components/shared/back-link";
 import { PageHeader } from "@/components/shared/page-header";
 import { InterviewDeck, type DeckQuestion } from "@/modules/learn/components/web/interview-deck";
-import { interviewQuestions, interviewTracks, webLessonById } from "@/core/content";
+import { interviewQuestions, interviewTracks } from "@/core/content/web-interview";
+import { webLessonById } from "@/core/content/webdev";
+
 import type { InterviewStatus } from "@/modules/learn/domain/web-interview";
 import { WEB_AREA_INFO, WEB_AREAS, type WebArea } from "@/modules/learn/domain/webdev";
 import { getInterviewStatus } from "@/modules/learn/services/webdev";
@@ -60,9 +62,6 @@ export default async function InterviewTrackPage({ params }: PageProps<"/web/int
       id: q.id,
       level: q.level,
       q: q.q,
-      answer: q.answer,
-      followUps: q.followUps,
-      mistakes: q.mistakes,
       trackName: trackName.get(q.track) ?? q.track,
       ...(isGeneratedInterviewId(q.id) ? { generated: true } : {}),
       lesson: lesson ? { id: lesson.id, title: lesson.title } : undefined,

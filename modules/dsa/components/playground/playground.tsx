@@ -111,16 +111,17 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
   const modKey = useModKey();
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const wide = useMediaQuery(WIDE_QUERY);
-  const [restored] = useState(() => (initialCode === undefined ? readScratch() : null));
+  const [state, setState] = useState<TabsState>(() => initialState(initialCode));
   const [view, setView] = useState<"editor" | "drills">("editor");
   const [pane, setPane] = useState<Pane>("code");
-  const [language, setLanguage] = useState<Language>(restored?.language ?? "javascript");
-  const [code, setCode] = useState(initialCode ?? restored?.code ?? STARTER);
-  const [baseline, setBaseline] = useState(initialCode ?? restored?.code ?? STARTER);
-  const [result, setResult] = useState<RunResult | null>(null);
+  const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({});
   const [liveLogs, setLiveLogs] = useState<LogLine[]>([]);
   const [running, setRunning] = useState(false);
-  const [current, setCurrent] = useState<Current>({ title: "", tag: "" });
+  const [formatting, setFormatting] = useState(false);
+  const [reveal, setReveal] = useState<{ line: number; column?: number; nonce: number } | undefined>();
+  const [stdinOpen, setStdinOpen] = useState(() => readPref("playground:stdin") === "open");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
   const [draft, setDraft] = useState<Current>({ title: "", tag: "" });
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [snippetsOpen, setSnippetsOpen] = useState(false);
@@ -128,44 +129,96 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
   const [fontSize, setFontSize] = useState(() => Number(readPref("playground:font")) || 14);
   const [pending, startTransition] = useTransition();
 
-  const dirty = code !== baseline;
+  const stateRef = useRef(state);
+  const tab = activeTab(state);
+  const { code, language } = tab;
+  const current: Current = tab.snippet ?? { title: "", tag: "" };
+  const dirty = isDirty(tab);
+  const outcome = outcomes[tab.id];
+  const result = outcome?.result ?? null;
+  const markers = outcome && outcome.code === code ? outcome.markers : undefined;
   const errorCount = result?.logs.filter((l) => l.level === "error").length ?? 0;
   const lines = code.split("\n").length;
+  const py = usePyStatus(language === "python");
 
-  const scratch = useMemo(() => ({ code, language }), [code, language]);
-  const scratchStatus = useAutosave(
-    scratch,
-    (value) => writePref(SCRATCH_KEY, JSON.stringify(value)),
-    { delayMs: 400, enabled: !current.id },
+  const saveStatus = useAutosave(
+    state,
+    (value) => {
+      writePref(TABS_KEY, serializeTabs(value));
+      writePref(SCRATCH_KEY, null);
+    },
+    { delayMs: 400 },
   );
 
-  function confirmDiscard(): boolean {
-    return !dirty || window.confirm("Discard your unsaved changes?");
+  function patchActive(patch: Partial<Omit<Tab, "id">>) {
+    setState((s) => updateTab(s, s.activeId, patch));
+  }
+
+  function setOutcome(id: string, o: Outcome | null) {
+    setOutcomes((cur) => {
+      const next = { ...cur };
+      if (o) next[id] = o;
+      else delete next[id];
+      return next;
+    });
+  }
+
+  function jump(line: number, column?: number) {
+    setReveal((r) => ({ line, column, nonce: (r?.nonce ?? 0) + 1 }));
+    setPane("code");
   }
 
   async function run() {
     if (running) return;
+    const target = activeTab(stateRef.current);
+    const files = stateRef.current.tabs.filter((t) => t.id !== target.id).map((t) => ({ name: t.name, language: t.language, code: t.code }));
     setRunning(true);
     setLiveLogs([]);
+    setOutcome(target.id, null);
     setPane("console");
+    let res: RunResult;
     try {
       // TypeScript and Python are only downloaded the first time you run them.
-      setResult(await runFreeIn(language, code, (line) => setLiveLogs((cur) => [...cur, line])));
+      res = await runFreeIn(target.language, target.code, (line) => setLiveLogs((cur) => [...cur, line]), target.stdin, files);
     } catch (err) {
-      setResult({ logs: [{ level: "error", text: err instanceof Error ? err.message : "Could not run" }], timedOut: false, ms: 0 });
-    } finally {
-      setRunning(false);
+      res = { logs: [{ level: "error", text: err instanceof Error ? err.message : "Could not run" }], timedOut: false, ms: 0 };
+    }
+    setOutcome(target.id, { result: res, code: target.code, markers: errorMarkers(target.language, res.logs, target.code) });
+    setRunning(false);
+    const ok = !res.timedOut && !res.logs.some((l) => l.level === "error");
+    void recordRunAction({ kind: "playground", ref: target.snippet?.id ?? "scratch", language: target.language, action: "run", ok, passed: 0, total: 0, ms: res.ms }).then(() =>
+      setHistoryVersion((v) => v + 1),
+    );
+  }
+
+  async function format() {
+    if (formatting) return;
+    const target = activeTab(stateRef.current);
+    setFormatting(true);
+    const res = await formatCode(target.language, target.code);
+    setFormatting(false);
+    if (res.ok) {
+      setState((s) => (s.tabs.find((t) => t.id === target.id)?.code === target.code ? updateTab(s, target.id, { code: res.code }) : s));
+      setOutcome(target.id, null);
+      toast.success(res.code === target.code ? "Already tidy" : res.label === "Tidy" ? "Tidied whitespace" : "Formatted");
+      return;
+    }
+    const { message, line, column } = res.error;
+    toast.error(line ? `${message} (line ${line})` : message);
+    if (line) {
+      setOutcome(target.id, { result: outcomes[target.id]?.result ?? null, code: target.code, markers: [{ line, column, message }] });
+      jump(line, column);
     }
   }
 
   function persist(details: Current) {
+    const target = tab;
     startTransition(async () => {
       const title = details.title.trim() || "Untitled";
-      const res = await saveSnippetAction({ id: details.id, title, tag: details.tag, code, language });
+      const res = await saveSnippetAction({ id: details.id, title, tag: details.tag, code: target.code, language: target.language });
       if (!res.ok) toast.error(`${res.error}.`);
       else {
-        setCurrent({ id: res.id, title, tag: details.tag });
-        setBaseline(code);
+        setState((s) => updateTab(s, target.id, { snippet: { id: res.id, title, tag: details.tag }, baseline: target.code }));
         setDetailsOpen(false);
         toast.success(details.id ? "Snippet updated" : "Snippet saved");
       }
@@ -183,25 +236,26 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
     setDetailsOpen(true);
   }
 
+  function addTab(input: { language: Language; code: string; name?: string }): boolean {
+    if (!canOpen(stateRef.current)) {
+      toast.error(`Up to ${MAX_TABS} tabs. Close one first.`);
+      return false;
+    }
+    setState((s) => openTab(s, createTab(input, s.tabs)));
+    setPane("code");
+    return true;
+  }
+
   function openSnippet(s: SnippetSummary) {
-    if (s.id !== current.id && !confirmDiscard()) return;
-    setCurrent({ id: s.id, title: s.title, tag: s.tag });
-    setLanguage(s.language);
-    setCode(s.code);
-    setBaseline(s.code);
-    setResult(null);
+    const next = openSnippetTab(stateRef.current, s);
+    if (!next) return void toast.error(`Up to ${MAX_TABS} tabs. Close one first.`);
+    setState(next);
     setPane("code");
     setSnippetsOpen(false);
   }
 
   function newSnippet() {
-    if (!confirmDiscard()) return;
-    setCurrent({ title: "", tag: "" });
-    setCode("");
-    setBaseline("");
-    setResult(null);
-    setPane("code");
-    setSnippetsOpen(false);
+    if (addTab({ language, code: "" })) setSnippetsOpen(false);
   }
 
   function remove(id: string) {
@@ -210,31 +264,35 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
       if (!res.ok) toast.error(`${res.error}. Refresh and try again.`);
       else {
         toast.success("Snippet deleted");
-        if (current.id === id) setCurrent({ title: "", tag: "" });
+        setState((s) => ({ ...s, tabs: s.tabs.map((t) => (t.snippet?.id === id ? { ...t, snippet: undefined } : t)) }));
       }
     });
   }
 
   function openDrill(d: Drill) {
-    if (!confirmDiscard()) return;
-    setCurrent({ title: "", tag: "" });
-    setLanguage("javascript");
-    setCode(d.code);
-    setBaseline(d.code);
-    setResult(null);
-    setPane("code");
-    setView("editor");
+    if (addTab({ language: "javascript", code: d.code, name: "drill.js" })) setView("editor");
+  }
+
+  function closeOne(id: string) {
+    const t = stateRef.current.tabs.find((x) => x.id === id);
+    if (!t) return;
+    if (isDirty(t) && t.code.trim() && !window.confirm(`Close ${t.name}? Its unsaved changes will be lost.`)) return;
+    setState((s) => closeTab(s, id, () => createTab({ language: t.language, code: "" }, [])));
+    setOutcome(id, null);
   }
 
   function changeLanguage(next: Language) {
     if (next === language) return;
     const starter = next === "python" ? PY_STARTER : STARTER;
-    if (code === STARTER || code === PY_STARTER || !code.trim()) {
-      setCode(starter);
-      setBaseline(starter);
-    }
-    setLanguage(next);
-    setResult(null);
+    const isStarter = code === STARTER || code === PY_STARTER || !code.trim();
+    setState((s) => {
+      const t = activeTab(s);
+      const others = s.tabs.filter((x) => x.id !== t.id).map((x) => x.name);
+      const oldExt = `.${extFor(t.language)}`;
+      const name = t.name.toLowerCase().endsWith(oldExt) ? uniqueName(`${t.name.slice(0, -oldExt.length)}.${extFor(next)}`, others) : t.name;
+      return updateTab(s, t.id, { language: next, name, ...(isStarter && !t.snippet ? { code: starter, baseline: starter } : {}) });
+    });
+    setOutcome(tab.id, null);
   }
 
   function changeFont(dir: 1 | -1) {
@@ -250,6 +308,13 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
     });
   }
 
+  function toggleStdin() {
+    setStdinOpen((v) => {
+      writePref("playground:stdin", v ? null : "open");
+      return !v;
+    });
+  }
+
   async function share() {
     const href = playgroundHref(code);
     if (href.length - "/playground?snippet=".length > SHARE_LIMIT) return void toast.error("Too long to share as a link. Save it as a snippet instead.");
@@ -261,10 +326,40 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
     }
   }
 
+  // Shortcuts that must work from inside the editor: switch tabs (Ctrl/Cmd+Alt+Arrow, Alt+1..8) and format (Shift+Alt+F).
+  const actions = useRef({ format });
+  useEffect(() => {
+    stateRef.current = state;
+    actions.current = { format };
+  });
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.altKey) return;
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.code === "ArrowLeft" || e.code === "ArrowRight")) {
+        e.preventDefault();
+        setState((s) => stepTab(s, e.code === "ArrowRight" ? 1 : -1));
+      } else if (!e.ctrlKey && !e.metaKey && !e.shiftKey && /^Digit[1-8]$/.test(e.code)) {
+        e.preventDefault();
+        setState((s) => focusNth(s, Number(e.code.slice(5))));
+      } else if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyF") {
+        e.preventDefault();
+        void actions.current.format();
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   const list = <SnippetList snippets={snippets} currentId={current.id} onOpen={openSnippet} onNew={newSnippet} onDelete={remove} deleting={pending} />;
   const status = current.id
     ? dirty ? "Unsaved changes" : "Saved"
-    : `Scratch · ${scratchStatus === "saving" ? "saving…" : scratchStatus === "error" ? "save failed" : "autosaved on this device"}`;
+    : `Scratch · ${saveStatus === "saving" ? "saving…" : saveStatus === "error" ? "save failed" : "autosaved on this device"}`;
+  const runLabel = running ? "Running…" : "Run";
+  const pyNote = py.loading ? (
+    <span role="status" className="max-w-40 truncate text-2xs text-muted-foreground">
+      {py.stage}…
+    </span>
+  ) : null;
 
   const languagePills = (
     <div role="group" aria-label="Language" className="flex shrink-0 rounded-md bg-muted p-0.5" title="TypeScript: types are stripped and syntax errors reported (no type checking). Python: Pyodide, downloaded on first run.">
@@ -294,10 +389,11 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
       <Button size="icon" variant="ghost" className="hidden size-8 shrink-0 lg:inline-flex" onClick={toggleSidebar} aria-label={showSidebar ? "Hide snippets" : "Show snippets"} title={showSidebar ? "Hide snippets" : "Show snippets"}>
         {showSidebar ? <PanelLeftClose /> : <PanelLeftOpen />}
       </Button>
+      <span className="min-w-0 flex-1 sm:hidden" aria-hidden />
       <button
         type="button"
         onClick={openDetails}
-        className="group flex min-h-8 min-w-0 flex-1 flex-col justify-center rounded-md px-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        className="group hidden min-h-8 min-w-0 flex-1 flex-col justify-center overflow-hidden rounded-md px-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:flex"
         aria-label="Edit snippet title and tags"
       >
         <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
@@ -316,6 +412,21 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
           <AArrowUp />
         </Button>
       </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-8 shrink-0"
+        onClick={() => void format()}
+        disabled={formatting || !code.trim()}
+        aria-label={language === "python" ? "Tidy whitespace" : "Format code"}
+        title={language === "python" ? "Tidy: tabs to spaces, trailing space, final newline (Shift+Alt+F)" : "Format with Prettier (Shift+Alt+F)"}
+      >
+        {formatting ? <Loader2 className="animate-spin" /> : <Sparkles />}
+      </Button>
+      <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" onClick={() => setHistoryOpen(true)} aria-label="Recent runs" title="Recent runs">
+        <History />
+      </Button>
       <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" onClick={share} disabled={!code.trim()} aria-label="Copy a share link" title="Copy a link that opens this code">
         <Link2 />
       </Button>
@@ -323,29 +434,64 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
         {pending ? <Loader2 className="animate-spin" /> : <Save />}
         <span className="hidden sm:inline">{current.id ? "Update" : "Save"}</span>
       </Button>
+      <span className="hidden lg:inline-flex">{pyNote}</span>
       <Button size="sm" onClick={run} disabled={running} className="hidden h-8 shrink-0 px-4 lg:inline-flex">
-        {running ? <Loader2 className="animate-spin" /> : <Play />} {running ? "Running…" : "Run"}
+        {running ? <Loader2 className="animate-spin" /> : <Play />} {runLabel}
         <span className="ml-1 text-xs opacity-70">{modKey}↵</span>
       </Button>
     </div>
   );
 
-  const editor = (
-    <CodeEditor
-      value={code}
-      onChange={setCode}
-      onRun={run}
-      onSave={save}
-      language={language}
-      fontSize={fontSize}
-      fill={desktop}
-      minHeight="min(60dvh, 560px)"
-      ariaLabel="Playground editor"
-      className="rounded-none border-0"
-    />
+  const tabStrip = (
+    <>
+      <TabStrip
+        tabs={state.tabs}
+        activeId={state.activeId}
+        onFocus={(id) => setState((s) => focusTab(s, id))}
+        onClose={closeOne}
+        onRename={(id, name) => setState((s) => renameTab(s, id, name))}
+        onMove={(id, to) => setState((s) => moveTab(s, id, to))}
+        onNew={() => addTab({ language, code: "" })}
+      />
+      {state.tabs.length > 1 && <p className="shrink-0 truncate border-b bg-muted/10 px-3 py-1 text-2xs text-muted-foreground">{moduleHint(language)}</p>}
+    </>
   );
 
-  const consolePane = <ConsoleOutput result={result} liveLogs={liveLogs} running={running} modKey={modKey} onClear={() => setResult(null)} fill={desktop} className={desktop ? undefined : "rounded-none border-0"} />;
+  const editor = (
+    <div id={EDITOR_PANEL_ID} role="tabpanel" aria-labelledby={`playground-tab-${tab.id}`} className={cn("min-h-0", desktop && "flex-1")}>
+      <CodeEditor
+        value={code}
+        onChange={(v) => patchActive({ code: v })}
+        onRun={run}
+        onSave={save}
+        language={language}
+        fontSize={fontSize}
+        fill={desktop}
+        minHeight="min(60dvh, 560px)"
+        ariaLabel="Playground editor"
+        markers={markers}
+        reveal={reveal}
+        className="rounded-none border-0"
+      />
+    </div>
+  );
+
+  const stdinBox = <StdinBox value={tab.stdin} onChange={(v) => patchActive({ stdin: v })} open={stdinOpen} onToggle={toggleStdin} language={language} onRun={run} />;
+
+  const consolePane = (
+    <ConsoleOutput
+      result={result}
+      liveLogs={liveLogs}
+      running={running}
+      modKey={modKey}
+      onClear={() => setOutcome(tab.id, null)}
+      fill={desktop}
+      language={language}
+      source={code}
+      onJump={jump}
+      className={desktop ? undefined : "rounded-none border-0"}
+    />
+  );
 
   const statusBar = (
     <div className="hidden shrink-0 items-center gap-3 border-t bg-muted/30 px-3 py-1 text-2xs text-muted-foreground sm:flex">
@@ -359,8 +505,12 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
         <span aria-hidden>·</span>
         <Kbd>{modKey}</Kbd>
         <Kbd>S</Kbd> save
+        <span aria-hidden className="hidden xl:inline">·</span>
+        <span className="hidden items-center gap-1.5 xl:inline-flex">
+          <Kbd>⇧⌥F</Kbd> format
+        </span>
       </span>
-      <span className="hidden xl:inline">Web Worker · no DOM or network · 3 s limit</span>
+      <span className="hidden 2xl:inline">Web Worker · no DOM or network · 3 s limit</span>
     </div>
   );
 
@@ -385,10 +535,14 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
         {desktop ? (
           <section className="flex h-[calc(100dvh-15rem)] min-h-[520px] min-w-0 flex-col overflow-hidden rounded-xl border bg-card" aria-label="Editor and console">
             {toolbar}
+            {tabStrip}
             <div className="min-h-0 flex-1">
               <ResizablePanelGroup key={wide ? "h" : "v"} storageId={wide ? "playground:split-h" : "playground:split-v"} orientation={wide ? "horizontal" : "vertical"}>
                 <ResizablePanel id="editor" defaultSize="55" minSize="25">
-                  {editor}
+                  <div className="flex h-full min-h-0 flex-col">
+                    {editor}
+                    {stdinBox}
+                  </div>
                 </ResizablePanel>
                 <ResizableHandle orientation={wide ? "horizontal" : "vertical"} className={wide ? "border-l" : "border-t"} />
                 <ResizablePanel id="console" defaultSize="45" minSize="15">
@@ -402,7 +556,11 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
           <div className="space-y-3">
             <section className="overflow-hidden rounded-xl border bg-card" aria-label="Editor">
               {toolbar}
-              <div className={cn(pane !== "code" && "hidden")}>{editor}</div>
+              {tabStrip}
+              <div className={cn(pane !== "code" && "hidden")}>
+                {editor}
+                {stdinBox}
+              </div>
               <div className={cn(pane !== "console" && "hidden")}>{consolePane}</div>
               {statusBar}
             </section>
@@ -436,8 +594,9 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
                   </button>
                 ))}
               </div>
-              <Button onClick={run} disabled={running} className="ml-auto h-10 px-5">
-                {running ? <Loader2 className="animate-spin" /> : <Play />} {running ? "Running…" : "Run"}
+              <span className="ml-auto min-w-0">{pyNote}</span>
+              <Button onClick={run} disabled={running} className="h-10 shrink-0 px-5">
+                {running ? <Loader2 className="animate-spin" /> : <Play />} {runLabel}
               </Button>
             </div>
           </div>
@@ -457,6 +616,16 @@ function PlaygroundIde({ snippets, initialCode }: { snippets: SnippetSummary[]; 
           <div className="min-h-0 flex-1 overflow-y-auto p-4">{list}</div>
         </SheetContent>
       </Sheet>
+
+      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Recent runs</DialogTitle>
+            <DialogDescription>{tab.snippet ? `Runs of ${tab.snippet.title}.` : "Runs of scratch work."} Only the time and result are kept, never your code.</DialogDescription>
+          </DialogHeader>
+          <RunHistory kind="playground" refKey={tab.snippet?.id ?? "scratch"} version={historyVersion} />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent className="sm:max-w-md">

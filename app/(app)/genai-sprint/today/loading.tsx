@@ -1,0 +1,5 @@
+import { PageSkeleton } from "@/components/shared/page-skeleton";
+
+export default function Loading() {
+  return <PageSkeleton cards={3} label="Loading today's sprint…" />;
+}

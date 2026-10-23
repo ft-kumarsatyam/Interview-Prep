@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { testcaseBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { sealCases } from "@/core/sandbox/seal-node";
 import { ALL_SPECS } from "../../scripts/dsa-testcases/specs";
 import { runWorker } from "./helpers";

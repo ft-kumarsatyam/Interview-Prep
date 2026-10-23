@@ -1,4 +1,4 @@
-import { courses } from "@/core/courses";
+import { courseMeta, lessonsOf } from "@/core/courses";
 import { getEmbedder } from "@/core/llm/embeddings";
 import { APP_GUIDE } from "@/modules/chat/domain/app-guide";
 import type { ToolResult } from "@/modules/chat/domain/chat-prompt";
@@ -65,8 +65,8 @@ const RUNNERS: Record<ToolId, (query?: string) => Promise<unknown>> = {
   },
   async courses() {
     const done = await getAllDoneKeys();
-    return courses.map((c) => {
-      const lessons = c.chapters.flatMap((ch) => ch.lessons);
+    return courseMeta().map((c) => {
+      const lessons = lessonsOf(c.id);
       return { id: c.id, title: c.title, lessonsDone: lessons.filter((l) => done.has(`${c.id}/${l.id}`)).length, lessonsTotal: lessons.length };
     });
   },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { webLessonById, webLessons, webProjectBySlug, webProjects, webTracks } from "@/core/content";
+import { webLessonById, webLessons, webProjectBySlug, webProjects, webTracks } from "@/core/content/webdev";
+
 import { WEB_AREAS, webdevFileSchema, webdevProblems } from "@/modules/learn/domain/webdev";
 
 describe("data/webdev.json", () => {

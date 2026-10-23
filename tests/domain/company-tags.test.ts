@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { companyDataset, problems } from "@/core/content";
+import { problems } from "@/core/content";
+import { companyDataset } from "@/core/content/sheets";
+
 import { buildCompanyDataset, companySlug, displayCompanyName, parseCompanyCsv, regionOf, splitCsvLine } from "@/modules/dsa/domain/company-csv";
 import {
   attachCompanyTags,

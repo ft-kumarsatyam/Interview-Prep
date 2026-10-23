@@ -1,4 +1,6 @@
-import { problemBySlug, subtopicById, testcaseBySlug } from "@/core/content";
+import { problemBySlug, subtopicById } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { connectDb } from "@/core/db";
 import type { DateStr } from "@/core/domain/dates";
 import { applySolve } from "@/modules/progress/domain/progress";

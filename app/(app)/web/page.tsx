@@ -9,7 +9,9 @@ import { StatTile } from "@/components/shared/stat-tile";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { interviewQuestions, webLessonById, webLessons, webProjects, webTracks } from "@/core/content";
+import { interviewQuestions } from "@/core/content/web-interview";
+import { webLessonById, webLessons, webProjects, webTracks } from "@/core/content/webdev";
+
 import { WEB_AREA_INFO, WEB_AREAS, nextLesson, projectArea, trackProgress, type WebArea } from "@/modules/learn/domain/webdev";
 import { getDoneLessons } from "@/modules/learn/services/webdev";
 

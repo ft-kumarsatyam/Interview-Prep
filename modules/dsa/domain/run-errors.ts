@@ -119,3 +119,11 @@ export function errorMarkers(language: RunLanguage, logs: ReadonlyArray<{ level:
   }
   return out;
 }
+
+/** Separates an error's message from its stack frames ("    at ..." lines), so the UI can fold the frames away. */
+export function splitStack(text: string): { message: string; frames: string[] } {
+  const frames: string[] = [];
+  const message: string[] = [];
+  for (const line of text.split("\n")) (/^\s+at\s/.test(line) ? frames : message).push(line);
+  return { message: message.join("\n").trimEnd(), frames: frames.map((f) => f.trim()) };
+}

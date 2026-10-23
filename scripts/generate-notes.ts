@@ -12,7 +12,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { subtopicNotes, subtopics, topicById, trackById } from "@/core/content";
+import { subtopics, topicById, trackById } from "@/core/content";
+import { subtopicNotes } from "@/core/content/notes";
+
 import { llmFromEnv, withRetry } from "./lib/llm-env";
 import { isSafeDiagram, notesFileSchema, subtopicNoteSchema, type NotesFile } from "@/modules/learn/domain/notes";
 

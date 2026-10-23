@@ -4,7 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getLeetCodeProblem } from "@/modules/dsa/services/lc-problems";
-import { authoredStatementBySlug, testcaseBySlug } from "@/core/content";
+import { authoredStatementBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { formatExampleInput } from "@/modules/dsa/domain/extra-problems";
 import { AuthoredStatementView } from "@/modules/dsa/components/problem/authored-statement";
 

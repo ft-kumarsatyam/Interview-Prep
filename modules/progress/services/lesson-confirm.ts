@@ -1,5 +1,6 @@
 import { subtopicById } from "@/core/content";
-import { courseLessonByKey } from "@/core/courses";
+
+import { getCourseLessonMeta } from "@/core/courses";
 import { connectDb } from "@/core/db";
 import type { DateStr } from "@/core/domain/dates";
 import { CourseLessonProgress } from "@/core/models/course";
@@ -16,7 +17,7 @@ export interface LessonSubtopic {
 
 /** The syllabus subtopic a course lesson teaches (its `practiceRef`), and whether it is already ticked. Null when it names none. */
 export async function getLessonSubtopic(courseId: string, lessonId: string): Promise<LessonSubtopic | null> {
-  const ref = courseLessonByKey.get(`${courseId}/${lessonId}`)?.practiceRef;
+  const ref = getCourseLessonMeta(`${courseId}/${lessonId}`)?.practiceRef;
   const info = ref ? subtopicById.get(ref) : undefined;
   if (!ref || !info) return null;
   await connectDb();

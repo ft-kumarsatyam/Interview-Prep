@@ -4,6 +4,7 @@ import { BookOpen, GraduationCap, MessageSquareQuote } from "lucide-react";
 import { AskGemini } from "@/modules/ai/components/ask-gemini";
 import { Button } from "@/components/ui/button";
 import { practiceCaseBySlug, practiceCases, topicById } from "@/core/content";
+
 import { casePrompt, joinSections } from "@/modules/ai/domain/ask-prompt";
 import { caseRef } from "@/modules/design/domain/case-quiz";
 import { EXPLAIN_MINUTES, EXPLAIN_RUBRIC, type PracticeKind } from "@/modules/design/domain/practice-cases";

@@ -2,6 +2,7 @@ import { Job } from "@/core/models/jobs";
 import { JobPrefsDoc } from "@/core/models/job-postings";
 import { hasBaseResume } from "@/modules/resume/services/resume";
 import { problems, topics } from "@/core/content";
+
 import { connectDb } from "@/core/db";
 import { buildChecklist, buildUnreachableChecklist, type SetupChecklist, type SetupInput } from "@/modules/planner/domain/setup";
 import { env } from "@/core/env";

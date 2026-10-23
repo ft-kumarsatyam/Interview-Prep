@@ -1,6 +1,8 @@
 import { connectDb } from "@/core/db";
 import { chunkText, contentHash } from "@/modules/ai/domain/rag";
-import { subtopicById, subtopicNotes } from "@/core/content";
+import { subtopicById } from "@/core/content";
+import { subtopicNotes } from "@/core/content/notes";
+
 import type { Embedder } from "@/core/llm/embeddings";
 import { Embedding } from "@/core/models/embedding";
 import { Article } from "@/core/models/system";

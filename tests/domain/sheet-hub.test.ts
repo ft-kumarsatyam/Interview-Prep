@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { companyDataset, dsaSheets, popularDsaSheets, problemBySlug, problems, systemDesign, topicById } from "@/core/content";
+import { problemBySlug, problems, systemDesign, topicById } from "@/core/content";
+import { companyDataset, dsaSheets, popularDsaSheets } from "@/core/content/sheets";
+
 import { designSheetRows, LLD_CASES } from "@/modules/design/domain/design-sheet";
 import { DB_CHALLENGES } from "@/modules/dsa/domain/db-lab";
 import { contentSheetAsExternal, ESSENTIAL_PATTERNS, PACKAGE_TIERS, packageSheet, patternSheet, sheetCardGroups } from "@/modules/dsa/domain/sheet-hub";

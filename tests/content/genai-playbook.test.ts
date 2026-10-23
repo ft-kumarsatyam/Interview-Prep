@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { courseLessonByKey } from "@/core/courses";
+import { courseLessonIndex, hasCourseLesson } from "@/core/courses";
 import { genaiPlaybookPlan as plan, genaiPlaybookSourceMap as sourceMap } from "@/core/genai-playbook";
-import { roadmapById } from "@/core/roadmaps";
+import { loadRoadmap } from "@/core/roadmaps";
 import { TASK_ID } from "@/modules/genai-playbook/domain/schemas";
 
 describe("data/genai-playbook", () => {
@@ -28,12 +28,12 @@ describe("data/genai-playbook", () => {
     for (const d of plan.days) expect(d.tasks.some((t) => t.kind === "dsa"), d.date).toBe(true);
   });
 
-  it("links every week to a real lesson and roadmap node", () => {
-    const roadmap = roadmapById.get("genai-interview-playbook");
+  it("links every week to a real lesson and roadmap node", async () => {
+    const roadmap = await loadRoadmap("genai-interview-playbook");
     expect(roadmap).toBeDefined();
     const nodes = new Map(roadmap!.sections.flatMap((s) => s.nodes).map((n) => [n.id, n]));
     for (const w of plan.weeks) {
-      expect(courseLessonByKey.has(w.lesson), w.lesson).toBe(true);
+      expect(hasCourseLesson(w.lesson), w.lesson).toBe(true);
       expect(nodes.get(w.nodeId)?.lesson, w.nodeId).toBe(w.lesson);
     }
   });
@@ -41,7 +41,7 @@ describe("data/genai-playbook", () => {
   it("only links in-app pages that exist", () => {
     for (const t of plan.days.flatMap((d) => d.tasks)) {
       const m = t.href?.match(/^\/courses\/([a-z0-9-]+)\/([a-z0-9-]+)$/);
-      if (m) expect(courseLessonByKey.has(`${m[1]}/${m[2]}`), t.href).toBe(true);
+      if (m) expect(hasCourseLesson(`${m[1]}/${m[2]}`), t.href).toBe(true);
     }
   });
 
@@ -52,7 +52,7 @@ describe("data/genai-playbook", () => {
     it("maps every playbook lesson once, with a real lesson and known sources", () => {
       const ids = sourceMap.lessons.map((l) => l.lesson_id);
       expect(new Set(ids).size).toBe(ids.length);
-      const playbookLessons = [...courseLessonByKey.keys()].filter((k) => k.startsWith("genai-playbook/"));
+      const playbookLessons = courseLessonIndex().filter((l) => l.courseId === "genai-playbook").map((l) => `${l.courseId}/${l.id}`);
       expect(ids.toSorted()).toEqual(playbookLessons.toSorted());
       for (const l of sourceMap.lessons) {
         expect(byUrl.has(l.primary_source_url), l.lesson_id).toBe(true);
@@ -64,7 +64,7 @@ describe("data/genai-playbook", () => {
     it("covers every domain of the curriculum matrix with real lessons (DSA via the plan)", () => {
       expect(sourceMap.coverage.length).toBeGreaterThanOrEqual(16);
       for (const c of sourceMap.coverage) {
-        for (const key of c.lessons) expect(courseLessonByKey.has(key), `${c.domain}: ${key}`).toBe(true);
+        for (const key of c.lessons) expect(hasCourseLesson(key), `${c.domain}: ${key}`).toBe(true);
         if (c.domain === "DSA") expect(plan.days.every((d) => d.tasks.some((t) => t.kind === "dsa"))).toBe(true);
         else expect(c.lessons.length, c.domain).toBeGreaterThan(0);
       }

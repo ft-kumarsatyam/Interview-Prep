@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { dsaLadders, externalDsaSheets, extraProblems, problemBySlug, problems, testcaseBySlug } from "@/core/content";
+import { extraProblems, problemBySlug, problems } from "@/core/content";
+import { dsaLadders, externalDsaSheets } from "@/core/content/sheets";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { extraCatalogueSchema, extraSlugClashes } from "@/modules/dsa/domain/extra-problems";
 import extraCatalogueJson from "@/data/dsa-extra-problems.json";
 

@@ -2,8 +2,8 @@ import Link from "next/link";
 import { GraduationCap } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { courses } from "@/core/courses";
-import { courseProgress } from "@/modules/course/domain/course";
+import { courseMeta, lessonsOf } from "@/core/courses";
+import { courseIndexProgress } from "@/modules/course/domain/course";
 import { getAllDoneKeys } from "@/modules/course/services/progress";
 import { getStudied } from "@/modules/progress/services/studied";
 import { listRoadmaps } from "@/modules/roadmap/services/roadmap";
@@ -13,7 +13,7 @@ export async function LearningSection() {
   const [studied, doneKeys, roadmaps] = await Promise.all([getStudied(), getAllDoneKeys(), listRoadmaps()]).catch(() => [null, null, null] as const);
   if (!studied || !doneKeys || !roadmaps) return null;
 
-  const rows = courses.map((c) => ({ course: c, p: courseProgress(c, new Set([...doneKeys].filter((k) => k.startsWith(`${c.id}/`)).map((k) => k.slice(c.id.length + 1)))) }));
+  const rows = courseMeta().map((c) => ({ course: c, p: courseIndexProgress(lessonsOf(c.id), new Set([...doneKeys].filter((k) => k.startsWith(`${c.id}/`)).map((k) => k.slice(c.id.length + 1)))) }));
   const joined = roadmaps.filter((r) => r.joinedOn);
 
   return (

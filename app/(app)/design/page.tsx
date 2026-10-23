@@ -8,6 +8,7 @@ import { OpenHashDetails } from "@/modules/design/components/open-hash-details";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { PageHeader } from "@/components/shared/page-header";
 import { DESIGN_CATEGORIES, engineeringBlogs, systemDesign } from "@/core/content";
+
 import { DESIGN_SECTION_IDS } from "@/modules/design/domain/design";
 import { getDesignOverview } from "@/modules/design/services/designs";
 

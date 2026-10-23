@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { problems } from "@/core/content";
+
 import { DEFAULT_COSTS } from "@/modules/planner/domain/time-budget";
 import { DailyPlan, Quiz } from "@/core/models/day";
 import { ProblemProgress } from "@/core/models/progress";

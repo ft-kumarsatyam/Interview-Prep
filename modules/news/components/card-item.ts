@@ -1,4 +1,5 @@
 import { news } from "@/core/content";
+
 import { tagLabel } from "@/modules/news/domain/article";
 import { timeAgo } from "@/modules/news/domain/news";
 import type { ArticleItem } from "@/modules/news/services/news";

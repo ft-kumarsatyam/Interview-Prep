@@ -6,7 +6,9 @@
  */
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { problemBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { externalCatalogueSchema, type CompanyTag, type ExternalLink, type ExternalQuestion, type ExternalSheet } from "@/modules/dsa/domain/external-catalogue";
 import { ARRAY_LADDER } from "./dsa-ladders/arrays";
 import { BINARY_SEARCH_LADDER } from "./dsa-ladders/binary-search";

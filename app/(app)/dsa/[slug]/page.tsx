@@ -9,7 +9,9 @@ import { ProblemNotes } from "@/modules/dsa/components/problem-notes";
 import { ProblemStatement, ProblemStatementSkeleton } from "@/modules/dsa/components/problem-statement-section";
 import { ScratchIde } from "@/modules/dsa/components/scratch-ide";
 import { SqlIde } from "@/modules/dsa/components/sql-ide";
-import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { problemBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { sealCases } from "@/core/sandbox/seal-node";
 import { lessonByProblem } from "@/core/courses";
 import { roadmapNodesByProblem } from "@/core/roadmaps";
@@ -48,7 +50,7 @@ export default async function ProblemPage({ params, searchParams }: PageProps<"/
     : `/dsa?${new URLSearchParams({ ...(problem.track === "main" ? {} : { track: problem.track }), pattern: problem.pattern }).toString()}`;
 
   const lesson = lessonByProblem.get(slug);
-  const nodes = roadmapNodesByProblem.get(slug) ?? [];
+  const nodes = await roadmapNodesByProblem(slug);
   const onLeetCode = problem.url.startsWith("https://leetcode.com/");
 
   const shared = {

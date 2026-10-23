@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { CalendarCheck } from "lucide-react";
+import { problemBySlug } from "@/core/content/problems";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { TaskDetail } from "@/modules/genai-sprint/components/task-detail";
 import { isTaskDone } from "@/modules/genai-sprint/domain/sprint";
 import { getSprintState } from "@/modules/genai-sprint/services/progress";
-import { CalendarCheck } from "lucide-react";
+import { linksForTask } from "@/modules/genai-sprint/services/task-links";
 
 export const metadata: Metadata = { title: "GenAI sprint · Today" };
 
@@ -25,7 +27,18 @@ export default async function GenaiSprintTodayPage() {
         </p>
       )}
       {task ? (
-        <TaskDetail task={task} done={isTaskDone(task.id, state.progress)} />
+        <TaskDetail
+          task={task}
+          done={isTaskDone(task.id, state.progress)}
+          links={linksForTask(task.id)}
+          problems={task.problems.map((p) => ({
+            slug: p.slug,
+            title: problemBySlug.get(p.slug)?.title ?? p.title,
+            pattern: p.pattern,
+            href: problemBySlug.has(p.slug) ? `/dsa/${p.slug}` : p.url,
+            external: !problemBySlug.has(p.slug),
+          }))}
+        />
       ) : (
         <p className="text-sm text-muted-foreground">You finished every task in the pack.</p>
       )}

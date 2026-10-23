@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { webLessonById, webLessons, webProjects } from "@/core/content";
+import { webLessonById, webLessons, webProjects } from "@/core/content/webdev";
+
 import { parseResumeText } from "@/modules/resume/domain/resume";
 import { renderResumeText } from "@/modules/resume/domain/resume-tailor";
 import { addProjectToResume, checkScore, hasPlaceholder, lessonsForProject, nextLesson, projectArea, projectProgress, trackProgress, webdevProblems } from "@/modules/learn/domain/webdev";

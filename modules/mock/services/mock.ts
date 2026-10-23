@@ -1,5 +1,7 @@
 import { Types } from "mongoose";
-import { problems, systemDesign, testcaseBySlug } from "@/core/content";
+import { problems, systemDesign } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { connectDb } from "@/core/db";
 import { addDays, type DateStr } from "@/core/domain/dates";
 import type { BankPrompt } from "@/modules/mock/domain/mock-bank";

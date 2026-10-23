@@ -1,4 +1,5 @@
 import { designCaseBySlug, problemBySlug } from "@/core/content";
+
 import { classifyTags } from "@/modules/news/domain/article";
 import {
   alertMail,

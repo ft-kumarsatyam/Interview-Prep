@@ -1,13 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { problemBySlug, subtopicById, topicById } from "@/core/content";
-import { courseById, courses } from "@/core/courses";
-import { courseMetaSchema, courseProblems, courseLessonSchema, courseProgress, courseNeighbours, flatLessons, masteryPhaseProgress, masteryProblemById, nextCourseLesson } from "@/modules/course/domain/course";
+import { courseMeta, loadAllCourses } from "@/core/courses";
+import { courseMetaSchema, courseProblems, courseLessonSchema, courseProgress, courseNeighbours, flatLessons, masteryPhaseProgress, masteryProblemById, nextCourseLesson, type Course } from "@/modules/course/domain/course";
 
 describe("data/courses", () => {
+  let courses: Course[] = [];
+  const byId = new Map<string, Course>();
+
+  beforeAll(async () => {
+    courses = await loadAllCourses();
+    for (const course of courses) byId.set(course.id, course);
+  });
+
   it("has valid course metadata", () => {
-    for (const c of courses) expect(courseMetaSchema.safeParse({ id: c.id, title: c.title, blurb: c.blurb, intro: c.intro, audience: c.audience }).success, c.id).toBe(true);
-    expect(courseById.size).toBe(courses.length);
-    for (const id of ["dsa", "system-design", "frontend", "genai"]) expect(flatLessons(courseById.get(id)!).length, id).toBeGreaterThanOrEqual(15);
+    for (const c of courseMeta()) expect(courseMetaSchema.safeParse({ id: c.id, title: c.title, blurb: c.blurb, intro: c.intro, audience: c.audience }).success, c.id).toBe(true);
+    expect(byId.size).toBe(courseMeta().length);
+    for (const id of ["dsa", "system-design", "frontend", "genai"]) expect(flatLessons(byId.get(id)!).length, id).toBeGreaterThanOrEqual(15);
   });
 
   it("every lesson matches the schema", () => {
@@ -30,32 +38,30 @@ describe("data/courses", () => {
   });
 
   it("includes the pattern mastery roadmaps with ordered phases", () => {
-    const masteryLessons = flatLessons(courseById.get("dsa")!).filter((lesson) => lesson.mastery);
+    const masteryLessons = flatLessons(byId.get("dsa")!).filter((lesson) => lesson.mastery);
     expect(masteryLessons.length).toBeGreaterThanOrEqual(12);
     const arrays = masteryLessons.find((lesson) => lesson.id === "arrays")?.mastery;
     expect(arrays?.problems).toHaveLength(45);
-    expect(arrays?.phases.map((phase) => phase.title)).toEqual([
-      "Foundation mechanics",
-      "Core interview patterns",
-      "Pattern mixing",
-    ]);
+    expect(arrays?.phases.map((phase) => phase.title)).toEqual(["Foundation mechanics", "Core interview patterns", "Pattern mixing"]);
     expect(arrays ? masteryProblemById(arrays, "c5")?.slug : undefined).toBe("minimum-window-substring");
     expect(arrays ? masteryPhaseProgress(arrays, new Set(["a1", "b6", "b14"])).map((p) => p.done) : []).toEqual([1, 2, 0]);
   });
-});
 
-describe("course progress helpers", () => {
-  const dsa = courseById.get("dsa")!;
-  const all = flatLessons(dsa);
-  it("counts progress and finds the next lesson", () => {
-    expect(courseProgress(dsa, new Set()).pct).toBe(0);
-    expect(nextCourseLesson(dsa, new Set())?.id).toBe(all[0].id);
-    expect(nextCourseLesson(dsa, new Set([all[0].id]))?.id).toBe(all[1].id);
-    expect(courseProgress(dsa, new Set(all.map((l) => l.id))).pct).toBe(100);
-    expect(nextCourseLesson(dsa, new Set(all.map((l) => l.id)))).toBeNull();
-  });
-  it("finds neighbours", () => {
-    expect(courseNeighbours(dsa, all[0].id).prev).toBeNull();
-    expect(courseNeighbours(dsa, all[0].id).next?.id).toBe(all[1].id);
+  describe("course progress helpers", () => {
+    it("counts progress and finds the next lesson", () => {
+      const dsa = byId.get("dsa")!;
+      const all = flatLessons(dsa);
+      expect(courseProgress(dsa, new Set()).pct).toBe(0);
+      expect(nextCourseLesson(dsa, new Set())?.id).toBe(all[0].id);
+      expect(nextCourseLesson(dsa, new Set([all[0].id]))?.id).toBe(all[1].id);
+      expect(courseProgress(dsa, new Set(all.map((l) => l.id))).pct).toBe(100);
+      expect(nextCourseLesson(dsa, new Set(all.map((l) => l.id)))).toBeNull();
+    });
+    it("finds neighbours", () => {
+      const dsa = byId.get("dsa")!;
+      const all = flatLessons(dsa);
+      expect(courseNeighbours(dsa, all[0].id).prev).toBeNull();
+      expect(courseNeighbours(dsa, all[0].id).next?.id).toBe(all[1].id);
+    });
   });
 });

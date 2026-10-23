@@ -1,4 +1,5 @@
 import { subtopics } from "@/core/content";
+
 import { termsIn } from "@/modules/jobs/domain/ats";
 import { buildSkillIndex, readiness, studyPlan, type Readiness, type SkillIndex, type StudyStep } from "@/modules/jobs/domain/job-readiness";
 import { getStudied } from "@/modules/progress/services/studied";

@@ -1,21 +1,21 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { BackLink } from "@/components/shared/back-link";
-import { roadmapById } from "@/core/roadmaps";
+import { loadRoadmap, roadmapMeta } from "@/core/roadmaps";
 import { ResourceLibrary } from "@/modules/roadmap/components/resource-library";
 import { collectResources } from "@/modules/roadmap/domain/roadmap";
 import { getDeadLinks } from "@/modules/roadmap/services/link-health";
 
 export async function generateMetadata({ params }: PageProps<"/roadmaps/[roadmapId]/docs">): Promise<Metadata> {
   const { roadmapId } = await params;
-  const title = roadmapById.get(decodeURIComponent(roadmapId))?.title;
+  const title = roadmapMeta().find((m) => m.id === decodeURIComponent(roadmapId))?.title;
   return { title: title ? `${title}: documentation library` : "Documentation library" };
 }
 
 export default async function RoadmapDocsPage({ params }: PageProps<"/roadmaps/[roadmapId]/docs">) {
   const { roadmapId: raw } = await params;
   const roadmapId = decodeURIComponent(raw);
-  const roadmap = roadmapById.get(roadmapId);
+  const roadmap = await loadRoadmap(roadmapId);
   if (!roadmap) notFound();
   const resources = collectResources(roadmap);
   const dead = await getDeadLinks(resources.map((r) => r.url));

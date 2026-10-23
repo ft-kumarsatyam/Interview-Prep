@@ -8,7 +8,8 @@ import { BackLink } from "@/components/shared/back-link";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { webLessonById, webProjectBySlug } from "@/core/content";
+import { webLessonById, webProjectBySlug } from "@/core/content/webdev";
+
 import { lessonsForProject, projectProgress } from "@/modules/learn/domain/webdev";
 import { getBaseResume } from "@/modules/resume/services/resume";
 import { getDoneLessons, getProjectState } from "@/modules/learn/services/webdev";

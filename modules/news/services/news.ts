@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { news as newsContent } from "@/core/content";
+
 import { connectDb } from "@/core/db";
 import { enqueueEvent } from "@/core/events/outbox";
 import {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { companyDataset, dsaSheets, externalDsaSheets, problems } from "@/core/content";
+import { problems } from "@/core/content";
+import { companyDataset, dsaSheets, externalDsaSheets } from "@/core/content/sheets";
+
 import { parseDsaView } from "@/modules/dsa/components/dsa-view-state";
 import {
   buildPracticeRows,

@@ -2,6 +2,7 @@ import { Bot, Cpu, Database, FileQuestion } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { practiceCases } from "@/core/content";
+
 import { EXPLAIN_MINUTES, EXPLAIN_SECTION_IDS, type PracticeKind } from "@/modules/design/domain/practice-cases";
 import { getPracticeOverview } from "@/modules/design/services/practice-cases";
 import { CaseBrowser } from "@/modules/design/components/case-browser";

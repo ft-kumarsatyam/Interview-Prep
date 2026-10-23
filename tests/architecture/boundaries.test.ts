@@ -36,6 +36,7 @@ const MODULES = readdirSync(join(ROOT, "modules")).filter((n) => statSync(join(R
 /** Every module-to-module import that exists today ("importer > imported"). Adding one is a design decision. */
 const BASELINE = new Set([
   "ai > settings", "aptitude > planner", "aptitude > quiz", "aptitude > settings", "course > learn", "design > ai", "design > news", "design > progress",
+  "course > news",
   "design > quiz", "dsa > ai", "dsa > news", "dsa > planner", "dsa > progress", "dsa > settings", "interview-bank > ai", "interview-bank > news", "jobs > notifications", "jobs > ai", "jobs > planner", "jobs > progress", "jobs > resume",
   "jobs > settings", "jobs > targets", "learn > ai", "learn > design", "learn > news", "learn > progress", "learn > quiz", "learn > resume", "mock > ai", "mock > dsa",
   "mock > planner", "mock > quiz", "mock > settings", "news > planner", "news > settings", "notifications > news", "notifications > planner",
@@ -49,7 +50,7 @@ const BASELINE = new Set([
   // the Stats page shows courses and roadmaps next to studied topics
   "progress > course", "progress > roadmap",
   "practice > design", "practice > dsa", "practice > progress", "practice > quiz", "practice > settings",
-  "study-flow > course", "study-flow > planner", "study-flow > practice", "study-flow > roadmap", "study-flow > settings",
+  "study-flow > course", "study-flow > planner", "study-flow > roadmap", "study-flow > settings",
   // chat is the read-only assistant: its tools read leaf modules' services and nothing points back at it
   "chat > ai", "chat > course", "chat > dsa", "chat > jobs", "chat > mock", "chat > planner", "chat > progress", "chat > quiz", "chat > roadmap", "chat > settings", "chat > targets",
   "genai-sprint > genai-prep",

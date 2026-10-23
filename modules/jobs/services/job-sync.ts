@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { careerSources } from "@/core/content";
+
 import { connectDb } from "@/core/db";
 import { termsIn } from "@/modules/jobs/domain/ats";
 import { requiredYears } from "@/modules/jobs/domain/job-profile";

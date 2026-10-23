@@ -1,5 +1,6 @@
 import { cache } from "react";
 import { mainProblemCount, problemBySlug, problems, subtopicById, type ContentProblem, type SubtopicInfo } from "@/core/content";
+
 import { connectDb } from "@/core/db";
 import { heatmapCells, type HeatCell } from "@/modules/progress/domain/heatmap";
 import { pace, type Pace } from "@/modules/planner/domain/pace";

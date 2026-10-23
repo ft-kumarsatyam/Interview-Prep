@@ -1,4 +1,4 @@
-import { courseLessonByKey } from "@/core/courses";
+import { hasCourseLesson } from "@/core/courses";
 import { connectDb } from "@/core/db";
 import type { DateStr } from "@/core/domain/dates";
 import { CourseLessonProgress } from "@/core/models/course";
@@ -37,7 +37,7 @@ export async function getAllDoneKeys(): Promise<Set<string>> {
 
 /** Marks a lesson done (keeping the best check score), or undoes it. */
 export async function setCourseLessonDone(courseId: string, lessonId: string, done: boolean, today: DateStr, score: number | null = null): Promise<void> {
-  if (!courseLessonByKey.has(`${courseId}/${lessonId}`)) throw new Error("Unknown lesson");
+  if (!hasCourseLesson(`${courseId}/${lessonId}`)) throw new Error("Unknown lesson");
   await connectDb();
   if (!done) {
     await CourseLessonProgress.deleteOne({ courseId, lessonId });

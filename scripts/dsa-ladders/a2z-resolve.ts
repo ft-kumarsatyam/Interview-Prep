@@ -3,7 +3,9 @@
  * it in-app: a manual override, then the LeetCode problem its link names, then an extra whose source page is the
  * row's takeUforward practice page.
  */
-import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { problemBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import type { ExternalQuestion } from "@/modules/dsa/domain/external-catalogue";
 
 /** Rows whose own link doesn't name the right PrepOS problem (duplicates of a ladder problem, renamed items). */

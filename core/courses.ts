@@ -1,107 +1,193 @@
 /**
- * Typed access to the long-form courses (data/courses). One file per chapter so authoring happens in
- * batches; register a new chapter file here. Not part of the syllabus, so the plan never schedules it.
+ * Typed access to the long-form courses (data/courses). Chapter files are loaded on demand.
+ * The slim lesson index (id, title, minutes, problems) is enough for list pages and lookups.
+ * Not part of the syllabus, so the plan never schedules it.
  */
 import coursesJson from "@/data/courses/courses.json";
-import dsa01 from "@/data/courses/dsa/01-foundations.json";
-import dsa02 from "@/data/courses/dsa/02-arrays-hashing.json";
-import dsa03 from "@/data/courses/dsa/03-pointers-search.json";
-import dsa04 from "@/data/courses/dsa/04-linear-structures.json";
-import dsa05 from "@/data/courses/dsa/05-recursion-trees.json";
-import dsa06 from "@/data/courses/dsa/06-heaps-graphs.json";
-import dsa07 from "@/data/courses/dsa/07-backtracking-dp.json";
-import dsa08 from "@/data/courses/dsa/08-advanced-graphs.json";
-import dsa09 from "@/data/courses/dsa/09-strings-bits.json";
-import dsa10 from "@/data/courses/dsa/10-greedy-intervals.json";
-import dsa11 from "@/data/courses/dsa/11-advanced-dp.json";
-import dsa12 from "@/data/courses/dsa/12-sorting.json";
-import dsa13 from "@/data/courses/dsa/13-stack-queue-list-patterns.json";
-import dsa14 from "@/data/courses/dsa/14-trees-and-ranges.json";
-import dsa15 from "@/data/courses/dsa/15-search-heap-grid-patterns.json";
-import dsa16 from "@/data/courses/dsa/16-dp-design-math.json";
-import { dsaMasteryRoadmaps } from "@/data/courses/dsa/mastery-roadmaps";
-import sd01 from "@/data/courses/system-design/01-scaling-building-blocks.json";
-import sd02 from "@/data/courses/system-design/02-data-and-messaging.json";
-import sd03 from "@/data/courses/system-design/03-reliability-and-scale.json";
-import sd04 from "@/data/courses/system-design/04-distributed-systems.json";
-import sd05 from "@/data/courses/system-design/05-case-studies.json";
-import sd06 from "@/data/courses/system-design/06-estimation-and-storage.json";
-import fe01 from "@/data/courses/frontend/01-browser-and-rendering.json";
-import fe02 from "@/data/courses/frontend/02-architecture-at-scale.json";
-import fe03 from "@/data/courses/frontend/03-react-in-depth.json";
-import fe04 from "@/data/courses/frontend/04-performance-and-web-vitals.json";
-import fe05 from "@/data/courses/frontend/05-testing-a11y-security.json";
-import ai01 from "@/data/courses/genai/01-how-llms-work.json";
-import ai02 from "@/data/courses/genai/02-building-with-llms.json";
-import ai03 from "@/data/courses/genai/03-rag-in-depth.json";
-import ai04 from "@/data/courses/genai/04-agents-and-tools.json";
-import ai05 from "@/data/courses/genai/05-evals-and-production.json";
-import be01 from "@/data/courses/backend/01-http-and-apis.json";
-import be02 from "@/data/courses/backend/02-node-runtime.json";
-import be03 from "@/data/courses/backend/03-data.json";
-import be04 from "@/data/courses/backend/04-production.json";
-import cs01 from "@/data/courses/cs-core/01-operating-systems.json";
-import cs02 from "@/data/courses/cs-core/02-computer-networks.json";
-import cs03 from "@/data/courses/cs-core/03-database-internals.json";
-import cs04 from "@/data/courses/cs-core/04-object-oriented-design.json";
-import js01 from "@/data/courses/javascript/01-language-core.json";
-import js02 from "@/data/courses/javascript/02-async-javascript.json";
-import js03 from "@/data/courses/javascript/03-typescript.json";
-import do01 from "@/data/courses/devops/01-linux-and-git.json";
-import do02 from "@/data/courses/devops/02-containers.json";
-import do03 from "@/data/courses/devops/03-delivery-and-cloud.json";
-import py01 from "@/data/courses/python/01-python-core.json";
-import py02 from "@/data/courses/python/02-python-in-practice.json";
-import py03 from "@/data/courses/python/03-python-for-ai-engineers.json";
-import ai06 from "@/data/courses/genai/06-ai-system-design.json";
-import ml01 from "@/data/courses/ml-engineering/01-ml-dl-foundations.json";
-import ml02 from "@/data/courses/ml-engineering/02-mlops-and-deployment.json";
-import ml03 from "@/data/courses/ml-engineering/03-data-engineering-for-ai.json";
-import ai07 from "@/data/courses/genai/07-fine-tuning-and-open-models.json";
-import ai08 from "@/data/courses/genai/08-ai-engineer-interview-deep-dive.json";
-import ai09 from "@/data/courses/genai/09-genai-sprint-guide.json";
-import pb01 from "@/data/courses/genai-playbook/01-positioning-and-python.json";
-import pb02 from "@/data/courses/genai-playbook/02-ml-and-llm-foundations.json";
-import pb03 from "@/data/courses/genai-playbook/03-retrieval-and-rag.json";
-import pb04 from "@/data/courses/genai-playbook/04-agents.json";
-import pb05 from "@/data/courses/genai-playbook/05-production-and-design.json";
-import pb06 from "@/data/courses/genai-playbook/06-interview-loop.json";
-import pb07 from "@/data/courses/genai-playbook/07-playbook-toolkit.json";
+import lessonIndexJson from "@/data/courses/lesson-index.json";
 import type { Course, CourseChapterFile, CourseLesson, CourseMeta } from "@/modules/course/domain/course";
 
-const CHAPTER_FILES: Record<string, CourseChapterFile[]> = {
-  dsa: [dsa01, dsa02, dsa03, dsa12, dsa04, dsa13, dsa05, dsa14, dsa06, dsa07, dsa15, dsa08, dsa09, dsa10, dsa11, dsa16] as unknown as CourseChapterFile[],
-  "system-design": [sd01, sd06, sd02, sd03, sd04, sd05] as unknown as CourseChapterFile[],
-  frontend: [fe01, fe02, fe03, fe04, fe05] as unknown as CourseChapterFile[],
-  backend: [be01, be02, be03, be04] as unknown as CourseChapterFile[],
-  "cs-core": [cs01, cs02, cs03, cs04] as unknown as CourseChapterFile[],
-  javascript: [js01, js02, js03] as unknown as CourseChapterFile[],
-  devops: [do01, do02, do03] as unknown as CourseChapterFile[],
-  python: [py01, py02, py03] as unknown as CourseChapterFile[],
-  "ml-engineering": [ml01, ml02, ml03] as unknown as CourseChapterFile[],
-  "genai-playbook": [pb01, pb02, pb03, pb04, pb05, pb06, pb07] as unknown as CourseChapterFile[],
-  genai: [ai01, ai02, ai03, ai04, ai05, ai06, ai07, ai08, ai09] as unknown as CourseChapterFile[],
+export type CourseLessonMeta = {
+  id: string;
+  title: string;
+  minutes: number;
+  summary: string;
+  problems: string[];
+  practiceRef?: string;
+  chapterId: string;
+  chapterTitle: string;
+  courseId: string;
 };
 
-export const courses: Course[] = (coursesJson.courses as CourseMeta[]).map((meta) => ({
-  ...meta,
-  chapters: (CHAPTER_FILES[meta.id] ?? []).map((f) => ({
-    ...f.chapter,
-    lessons: f.lessons.map((lesson) => {
-      const mastery = meta.id === "dsa" ? dsaMasteryRoadmaps.get(lesson.id) : undefined;
-      return mastery ? { ...lesson, mastery } : lesson;
-    }),
-  })),
-}));
-export const courseById = new Map(courses.map((c) => [c.id, c]));
+type ChapterLoader = () => Promise<{ default: unknown }>;
 
-/** `${courseId}/${lessonId}` → lesson with its chapter, for lookups from progress rows and roadmaps. */
-export const courseLessonByKey = new Map<string, CourseLesson & { courseId: string; chapterId: string; chapterTitle: string }>(
-  courses.flatMap((c) => c.chapters.flatMap((ch) => ch.lessons.map((l) => [`${c.id}/${l.id}`, { ...l, courseId: c.id, chapterId: ch.id, chapterTitle: ch.title }] as const))),
+const CHAPTER_LOADERS: Record<string, ChapterLoader[]> = {
+  dsa: [
+    () => import("@/data/courses/dsa/01-foundations.json"),
+    () => import("@/data/courses/dsa/02-arrays-hashing.json"),
+    () => import("@/data/courses/dsa/03-pointers-search.json"),
+    () => import("@/data/courses/dsa/12-sorting.json"),
+    () => import("@/data/courses/dsa/04-linear-structures.json"),
+    () => import("@/data/courses/dsa/13-stack-queue-list-patterns.json"),
+    () => import("@/data/courses/dsa/05-recursion-trees.json"),
+    () => import("@/data/courses/dsa/14-trees-and-ranges.json"),
+    () => import("@/data/courses/dsa/06-heaps-graphs.json"),
+    () => import("@/data/courses/dsa/07-backtracking-dp.json"),
+    () => import("@/data/courses/dsa/15-search-heap-grid-patterns.json"),
+    () => import("@/data/courses/dsa/08-advanced-graphs.json"),
+    () => import("@/data/courses/dsa/09-strings-bits.json"),
+    () => import("@/data/courses/dsa/10-greedy-intervals.json"),
+    () => import("@/data/courses/dsa/11-advanced-dp.json"),
+    () => import("@/data/courses/dsa/16-dp-design-math.json"),
+  ],
+  "system-design": [
+    () => import("@/data/courses/system-design/01-scaling-building-blocks.json"),
+    () => import("@/data/courses/system-design/06-estimation-and-storage.json"),
+    () => import("@/data/courses/system-design/02-data-and-messaging.json"),
+    () => import("@/data/courses/system-design/03-reliability-and-scale.json"),
+    () => import("@/data/courses/system-design/04-distributed-systems.json"),
+    () => import("@/data/courses/system-design/05-case-studies.json"),
+  ],
+  frontend: [
+    () => import("@/data/courses/frontend/01-browser-and-rendering.json"),
+    () => import("@/data/courses/frontend/02-architecture-at-scale.json"),
+    () => import("@/data/courses/frontend/03-react-in-depth.json"),
+    () => import("@/data/courses/frontend/04-performance-and-web-vitals.json"),
+    () => import("@/data/courses/frontend/05-testing-a11y-security.json"),
+  ],
+  backend: [
+    () => import("@/data/courses/backend/01-http-and-apis.json"),
+    () => import("@/data/courses/backend/02-node-runtime.json"),
+    () => import("@/data/courses/backend/03-data.json"),
+    () => import("@/data/courses/backend/04-production.json"),
+  ],
+  "cs-core": [
+    () => import("@/data/courses/cs-core/01-operating-systems.json"),
+    () => import("@/data/courses/cs-core/02-computer-networks.json"),
+    () => import("@/data/courses/cs-core/03-database-internals.json"),
+    () => import("@/data/courses/cs-core/04-object-oriented-design.json"),
+  ],
+  javascript: [
+    () => import("@/data/courses/javascript/01-language-core.json"),
+    () => import("@/data/courses/javascript/02-async-javascript.json"),
+    () => import("@/data/courses/javascript/03-typescript.json"),
+  ],
+  devops: [
+    () => import("@/data/courses/devops/01-linux-and-git.json"),
+    () => import("@/data/courses/devops/02-containers.json"),
+    () => import("@/data/courses/devops/03-delivery-and-cloud.json"),
+  ],
+  python: [
+    () => import("@/data/courses/python/01-python-core.json"),
+    () => import("@/data/courses/python/02-python-in-practice.json"),
+    () => import("@/data/courses/python/03-python-for-ai-engineers.json"),
+  ],
+  "ml-engineering": [
+    () => import("@/data/courses/ml-engineering/01-ml-dl-foundations.json"),
+    () => import("@/data/courses/ml-engineering/02-mlops-and-deployment.json"),
+    () => import("@/data/courses/ml-engineering/03-data-engineering-for-ai.json"),
+  ],
+  "genai-playbook": [
+    () => import("@/data/courses/genai-playbook/01-positioning-and-python.json"),
+    () => import("@/data/courses/genai-playbook/02-ml-and-llm-foundations.json"),
+    () => import("@/data/courses/genai-playbook/03-retrieval-and-rag.json"),
+    () => import("@/data/courses/genai-playbook/04-agents.json"),
+    () => import("@/data/courses/genai-playbook/05-production-and-design.json"),
+    () => import("@/data/courses/genai-playbook/06-interview-loop.json"),
+    () => import("@/data/courses/genai-playbook/07-playbook-toolkit.json"),
+  ],
+  genai: [
+    () => import("@/data/courses/genai/01-how-llms-work.json"),
+    () => import("@/data/courses/genai/02-building-with-llms.json"),
+    () => import("@/data/courses/genai/03-rag-in-depth.json"),
+    () => import("@/data/courses/genai/04-agents-and-tools.json"),
+    () => import("@/data/courses/genai/05-evals-and-production.json"),
+    () => import("@/data/courses/genai/06-ai-system-design.json"),
+    () => import("@/data/courses/genai/07-fine-tuning-and-open-models.json"),
+    () => import("@/data/courses/genai/08-ai-engineer-interview-deep-dive.json"),
+    () => import("@/data/courses/genai/09-genai-sprint-guide.json"),
+  ],
+};
+
+export const courseMeta = (): CourseMeta[] => coursesJson.courses as CourseMeta[];
+
+const lessonIndex: CourseLessonMeta[] = Object.entries(lessonIndexJson as Record<string, Omit<CourseLessonMeta, "courseId">[]>).flatMap(
+  ([courseId, lessons]) => lessons.map((l) => ({ ...l, courseId })),
 );
 
-/** Problem slug → the first course lesson that practises it, so a problem can link back to where it is taught. */
-export const lessonByProblem = new Map<string, { courseId: string; lessonId: string; title: string }>();
-for (const [key, l] of courseLessonByKey) {
-  for (const slug of l.problems) if (!lessonByProblem.has(slug)) lessonByProblem.set(slug, { courseId: key.split("/")[0] ?? "", lessonId: l.id, title: l.title });
+const lessonByKey = new Map(lessonIndex.map((l) => [`${l.courseId}/${l.id}`, l]));
+
+const chapterIdsInOrder = new Map<string, string[]>();
+for (const lesson of lessonIndex) {
+  const ids = chapterIdsInOrder.get(lesson.courseId) ?? [];
+  if (ids.at(-1) !== lesson.chapterId) ids.push(lesson.chapterId);
+  chapterIdsInOrder.set(lesson.courseId, ids);
 }
+
+export const courseLessonIndex = (): CourseLessonMeta[] => lessonIndex;
+export const lessonsOf = (courseId: string): CourseLessonMeta[] => lessonIndex.filter((l) => l.courseId === courseId);
+export const getCourseLessonMeta = (key: string): CourseLessonMeta | undefined => lessonByKey.get(key);
+export const hasCourseLesson = (key: string): boolean => lessonByKey.has(key);
+
+export const lessonByProblem = new Map<string, { courseId: string; lessonId: string; title: string }>();
+for (const l of lessonIndex) {
+  for (const slug of l.problems) {
+    if (!lessonByProblem.has(slug)) lessonByProblem.set(slug, { courseId: l.courseId, lessonId: l.id, title: l.title });
+  }
+}
+
+const courseCache = new Map<string, Course>();
+
+function assemble(meta: CourseMeta, files: CourseChapterFile[], mastery?: Map<string, CourseLesson["mastery"]>): Course {
+  return {
+    ...meta,
+    chapters: files.map((f) => ({
+      ...f.chapter,
+      lessons: f.lessons.map((lesson) => {
+        const extra = mastery?.get(lesson.id);
+        return extra ? { ...lesson, mastery: extra } : lesson;
+      }),
+    })),
+  };
+}
+
+export async function loadCourse(id: string): Promise<Course | undefined> {
+  const cached = courseCache.get(id);
+  if (cached) return cached;
+  const meta = courseMeta().find((c) => c.id === id);
+  const loaders = CHAPTER_LOADERS[id];
+  if (!meta || !loaders) return undefined;
+  const files = (await Promise.all(loaders.map((load) => load()))).map((m) => m.default as unknown as CourseChapterFile);
+  let mastery: Map<string, CourseLesson["mastery"]> | undefined;
+  if (id === "dsa") {
+    const { dsaMasteryRoadmaps } = await import("@/data/courses/dsa/mastery-roadmaps");
+    mastery = dsaMasteryRoadmaps;
+  }
+  const course = assemble(meta, files, mastery);
+  courseCache.set(id, course);
+  return course;
+}
+
+export async function loadAllCourses(): Promise<Course[]> {
+  const all = await Promise.all(courseMeta().map((m) => loadCourse(m.id)));
+  return all.filter((c): c is Course => !!c);
+}
+
+export async function loadLesson(courseId: string, lessonId: string): Promise<(CourseLesson & { courseId: string; chapterId: string; chapterTitle: string }) | undefined> {
+  const meta = getCourseLessonMeta(`${courseId}/${lessonId}`);
+  const loaders = CHAPTER_LOADERS[courseId];
+  const chapterIndex = (chapterIdsInOrder.get(courseId) ?? []).indexOf(meta?.chapterId ?? "");
+  const loader = loaders?.[chapterIndex];
+  if (!meta || !loader) return undefined;
+  const file = (await loader()).default as unknown as CourseChapterFile;
+  const lesson = file.lessons.find((l) => l.id === lessonId);
+  if (!lesson) return undefined;
+  let mastery: CourseLesson["mastery"];
+  if (courseId === "dsa") {
+    const { dsaMasteryRoadmaps } = await import("@/data/courses/dsa/mastery-roadmaps");
+    mastery = dsaMasteryRoadmaps.get(lessonId);
+  }
+  return { ...lesson, ...(mastery ? { mastery } : {}), courseId, chapterId: meta.chapterId, chapterTitle: meta.chapterTitle };
+}
+
+export const getCourseLesson = loadLesson;

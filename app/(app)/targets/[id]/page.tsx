@@ -12,6 +12,7 @@ import { ToneBadge } from "@/components/shared/tone-badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { tierProfiles } from "@/core/content";
+
 import { PRIORITY_LABEL } from "@/modules/targets/domain/companies";
 import { getTargetDetail } from "@/modules/targets/services/targets";
 

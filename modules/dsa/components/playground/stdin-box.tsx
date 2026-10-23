@@ -12,12 +12,15 @@ export function StdinBox({
   open,
   onToggle,
   language,
+  onRun,
 }: {
   value: string;
   onChange: (v: string) => void;
   open: boolean;
   onToggle: () => void;
   language: Language;
+  /** Mod+Enter inside the box runs the code, as it does in the editor. */
+  onRun?: () => void;
 }) {
   const id = useId();
   const lines = value ? value.split("\n").length : 0;
@@ -39,6 +42,12 @@ export function StdinBox({
           <Textarea
             value={value}
             onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (onRun && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                onRun();
+              }
+            }}
             rows={3}
             maxLength={20_000}
             spellCheck={false}

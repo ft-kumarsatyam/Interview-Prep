@@ -6,10 +6,12 @@
  *   roadmap:   extra = a JSON array of lesson keys that are being written now and count as known
  */
 import { readFileSync } from "node:fs";
-import { problemBySlug, problems, subtopicById, testcaseBySlug, topicById, webLessons, webProjects, webTracks } from "../core/content";
+import { problemBySlug, problems, subtopicById, topicById } from "../core/content";
+import { testcaseBySlug } from "../core/content/testcases";
+import { webLessons, webProjects, webTracks } from "../core/content/webdev";
 import { externalCatalogueSchema } from "../modules/dsa/domain/external-catalogue";
 import { extraCatalogueSchema, extraSlugClashes } from "../modules/dsa/domain/extra-problems";
-import { courseLessonByKey } from "../core/courses";
+import { hasCourseLesson } from "../core/courses";
 import { checkQuestionSchema, webdevFileSchema, webdevProblems, type WebLesson } from "../modules/learn/domain/webdev";
 import { interviewFileSchema, interviewProblems, type InterviewFile } from "../modules/learn/domain/web-interview";
 import { courseChapterFileSchema } from "../modules/course/domain/course";
@@ -80,7 +82,7 @@ if (kind === "webdev") {
     issues.push(
       ...roadmapProblems([r.data], {
         problem: (s) => problemBySlug.has(s),
-        lesson: (k) => planned.has(k) || courseLessonByKey.has(k) || (k.startsWith("web/") && webIds.has(k.slice(4))),
+        lesson: (k) => planned.has(k) || hasCourseLesson(k) || (k.startsWith("web/") && webIds.has(k.slice(4))),
         quiz: (q) => subtopicById.has(q) || topicById.has(q),
       }),
     );

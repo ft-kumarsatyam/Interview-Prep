@@ -13,6 +13,7 @@ import type { Tone } from "@/components/shared/stat-tile";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { companyCatalog, tierProfiles } from "@/core/content";
+
 import { PRIORITY_LABEL, primaryTier } from "@/modules/targets/domain/companies";
 import { diffDays } from "@/core/domain/dates";
 import { todayIn } from "@/modules/planner/services/plan";

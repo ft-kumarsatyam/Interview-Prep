@@ -83,13 +83,13 @@ export interface InterviewFilter {
   search?: string;
 }
 
-export function filterQuestions<Q extends Pick<InterviewQuestion, "id" | "level" | "q" | "answer">>(questions: readonly Q[], status: ReadonlyMap<string, InterviewStatus>, f: InterviewFilter): Q[] {
+export function filterQuestions<Q extends Pick<InterviewQuestion, "id" | "level" | "q"> & { answer?: string }>(questions: readonly Q[], status: ReadonlyMap<string, InterviewStatus>, f: InterviewFilter): Q[] {
   const terms = (f.search ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   return questions.filter((q) => {
     if (f.level && f.level !== "all" && q.level !== f.level) return false;
     if (f.status && f.status !== "all" && (status.get(q.id) ?? "new") !== f.status) return false;
     if (!terms.length) return true;
-    const hay = `${q.q} ${q.answer}`.toLowerCase();
+    const hay = `${q.q} ${q.answer ?? ""}`.toLowerCase();
     return terms.every((t) => hay.includes(t));
   });
 }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { externalDsaSheets, externalResources, problemBySlug } from "@/core/content";
+import { problemBySlug } from "@/core/content";
+import { externalDsaSheets, externalResources } from "@/core/content/sheets";
+
 import { matchExternalQuestion, normalizeTitle } from "@/modules/dsa/domain/external-catalogue";
 
 describe("external DSA catalogue", () => {

@@ -1,32 +1,66 @@
 /**
- * Typed access to the GenAI study notes (data/genai-study/*): quick-review notes and questions per roadmap
- * sub-topic. Add each new file to FILES. Not part of the syllabus, so the plan and streak never see it.
+ * Typed access to the GenAI study notes (data/genai-study/*). The node index is eager;
+ * a level file loads only when a node page needs it. Not part of the syllabus.
  */
-import level0 from "@/data/genai-study/genai-16-levels/level-0.json";
-import level1 from "@/data/genai-study/genai-16-levels/level-1.json";
-import level2 from "@/data/genai-study/genai-16-levels/level-2.json";
-import level3 from "@/data/genai-study/genai-16-levels/level-3.json";
-import level4 from "@/data/genai-study/genai-16-levels/level-4.json";
-import level5 from "@/data/genai-study/genai-16-levels/level-5.json";
-import level6 from "@/data/genai-study/genai-16-levels/level-6.json";
-import level7 from "@/data/genai-study/genai-16-levels/level-7.json";
-import level8 from "@/data/genai-study/genai-16-levels/level-8.json";
-import level9 from "@/data/genai-study/genai-16-levels/level-9.json";
-import level10 from "@/data/genai-study/genai-16-levels/level-10.json";
-import level11 from "@/data/genai-study/genai-16-levels/level-11.json";
-import level12 from "@/data/genai-study/genai-16-levels/level-12.json";
-import level13 from "@/data/genai-study/genai-16-levels/level-13.json";
-import level15 from "@/data/genai-study/genai-16-levels/level-15.json";
+import nodeIndexJson from "@/data/genai-study/node-index.json";
 import { studyFileSchema, subtopicKey, type StudyEntry, type StudyFile } from "@/modules/genai-study/domain/study";
 
-/** Parsed through the schema so a malformed note fails loudly at load. */
-export const studyFiles: StudyFile[] = [level0, level1, level2, level3, level4, level5, level6, level7, level8, level9, level10, level11, level12, level13, level15].map((j) => studyFileSchema.parse(j));
+const LEVEL_LOADERS: Record<number, () => Promise<{ default: unknown }>> = {
+  0: () => import("@/data/genai-study/genai-16-levels/level-0.json"),
+  1: () => import("@/data/genai-study/genai-16-levels/level-1.json"),
+  2: () => import("@/data/genai-study/genai-16-levels/level-2.json"),
+  3: () => import("@/data/genai-study/genai-16-levels/level-3.json"),
+  4: () => import("@/data/genai-study/genai-16-levels/level-4.json"),
+  5: () => import("@/data/genai-study/genai-16-levels/level-5.json"),
+  6: () => import("@/data/genai-study/genai-16-levels/level-6.json"),
+  7: () => import("@/data/genai-study/genai-16-levels/level-7.json"),
+  8: () => import("@/data/genai-study/genai-16-levels/level-8.json"),
+  9: () => import("@/data/genai-study/genai-16-levels/level-9.json"),
+  10: () => import("@/data/genai-study/genai-16-levels/level-10.json"),
+  11: () => import("@/data/genai-study/genai-16-levels/level-11.json"),
+  12: () => import("@/data/genai-study/genai-16-levels/level-12.json"),
+  13: () => import("@/data/genai-study/genai-16-levels/level-13.json"),
+  15: () => import("@/data/genai-study/genai-16-levels/level-15.json"),
+};
 
-const byNode = new Map<string, Record<string, StudyEntry>>();
-for (const f of studyFiles) for (const [nodeId, notes] of Object.entries(f.nodes)) byNode.set(`${f.roadmapId}/${nodeId}`, notes);
+const index = new Set<string>();
+for (const [roadmapId, nodes] of Object.entries(nodeIndexJson as Record<string, string[]>)) {
+  for (const nodeId of nodes) index.add(`${roadmapId}/${nodeId}`);
+}
 
-/** The notes of one node, keyed by sub-topic key, or undefined when none are written yet. */
-export const nodeStudy = (roadmapId: string, nodeId: string): Record<string, StudyEntry> | undefined => byNode.get(`${roadmapId}/${nodeId}`);
+export const studyNodeIndex = (): ReadonlySet<string> => index;
+export const hasNodeStudy = (roadmapId: string, nodeId: string): boolean => index.has(`${roadmapId}/${nodeId}`);
 
-/** The note for one checklist item of a node. */
-export const noteFor = (roadmapId: string, nodeId: string, checklistItem: string): StudyEntry | undefined => nodeStudy(roadmapId, nodeId)?.[subtopicKey(checklistItem)];
+const levelOfNode = (nodeId: string): number | undefined => {
+  const m = nodeId.match(/^m(\d+)-/);
+  return m ? Number(m[1]) : undefined;
+};
+
+const fileCache = new Map<number, StudyFile>();
+
+async function loadLevel(level: number): Promise<StudyFile | undefined> {
+  const cached = fileCache.get(level);
+  if (cached) return cached;
+  const loader = LEVEL_LOADERS[level];
+  if (!loader) return undefined;
+  const parsed = studyFileSchema.parse((await loader()).default);
+  fileCache.set(level, parsed);
+  return parsed;
+}
+
+export async function loadNodeStudy(roadmapId: string, nodeId: string): Promise<Record<string, StudyEntry> | undefined> {
+  const level = levelOfNode(nodeId);
+  if (level === undefined) return undefined;
+  const file = await loadLevel(level);
+  return file?.roadmapId === roadmapId ? file.nodes[nodeId] : undefined;
+}
+
+export async function noteFor(roadmapId: string, nodeId: string, checklistItem: string): Promise<StudyEntry | undefined> {
+  const notes = await loadNodeStudy(roadmapId, nodeId);
+  return notes?.[subtopicKey(checklistItem)];
+}
+
+export async function loadAllStudyFiles(): Promise<StudyFile[]> {
+  const files = await Promise.all(Object.keys(LEVEL_LOADERS).map((k) => loadLevel(Number(k))));
+  return files.filter((f): f is StudyFile => !!f);
+}

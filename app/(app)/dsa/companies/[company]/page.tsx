@@ -7,7 +7,9 @@ import { chipClass } from "@/components/shared/chip";
 import { PageHeader } from "@/components/shared/page-header";
 import { CompanyQuestionTable, type CompanyQuestionRow } from "@/modules/dsa/components/company-question-table";
 import { COMPANY_WINDOW_LABEL, COMPANY_WINDOWS, companyQuestions, localSlugByLeetcode, type CompanyWindow } from "@/modules/dsa/domain/company-tags";
-import { companyDataset, problems } from "@/core/content";
+import { problems } from "@/core/content";
+import { companyDataset } from "@/core/content/sheets";
+
 import { getProgressMap } from "@/modules/dsa/services/problems";
 
 const localSlugs = localSlugByLeetcode(problems);

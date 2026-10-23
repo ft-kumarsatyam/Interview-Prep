@@ -13,7 +13,9 @@ import { buildPracticeRows, levelProgress, rowResources, topicOptions } from "@/
 import { sheetCardGroups } from "@/modules/dsa/domain/sheet-hub";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { companyDataset, dsaCheatSheets, dsaSheets, externalDsaSheets, externalResources, problemBySlug, problems } from "@/core/content";
+import { problemBySlug, problems } from "@/core/content";
+import { companyDataset, dsaCheatSheets, dsaSheets, externalDsaSheets, externalResources } from "@/core/content/sheets";
+
 import { addDays } from "@/core/domain/dates";
 import { todayIn } from "@/modules/planner/services/plan";
 import { listBookmarks } from "@/modules/dsa/services/bookmarks";
@@ -94,7 +96,7 @@ export default async function DsaPage({ searchParams }: PageProps<"/dsa">) {
             }
           />
           <DsaPageTabs
-            problems={problems}
+            problems={problems.map((p) => ({ slug: p.slug, title: p.title, difficulty: p.difficulty, pattern: p.pattern, step: p.step, track: p.track, tier: p.tier, leetcodeId: p.leetcodeId, url: p.url, order: p.order }))}
             progress={progress}
             sheets={dsaSheets}
             cheatSheets={dsaCheatSheets}

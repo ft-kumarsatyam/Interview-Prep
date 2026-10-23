@@ -11,7 +11,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { companyDataset, extraProblems, problems, type ContentProblem } from "@/core/content";
+import { extraProblems, problems, type ContentProblem } from "@/core/content";
+import { companyDataset } from "@/core/content/sheets";
+
 import { leetcodeSlugOf, localSlugByLeetcode } from "@/modules/dsa/domain/company-tags";
 import { externalCatalogueSchema, matchExternalQuestion, type ExternalLink, type ExternalQuestion, type ExternalSheet } from "@/modules/dsa/domain/external-catalogue";
 import { matchCompanyNames, parseApnaGrid, parseArshCsv, parseBabbarJson, parseFrazCsv, titleFromUrl, type Grid, type ImportedItem } from "@/modules/dsa/domain/sheet-import";

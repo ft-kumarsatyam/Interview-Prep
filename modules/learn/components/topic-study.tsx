@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useTransition } from "react";
+import { toast } from "sonner";
 import { BookOpen, GraduationCap, NotebookPen, Sparkles } from "lucide-react";
 import { updateSubtopicNotes } from "@/app/(app)/dashboard/actions";
+import { getSubtopicLessonAction } from "@/app/(app)/learn/[topicId]/actions";
 import { LessonCard } from "@/modules/learn/components/lesson-card";
 import { SubtopicChecklist, type ChecklistItem } from "@/modules/progress/components/subtopic-checklist";
 import { MarkdownNotes } from "@/components/shared/markdown-notes";
@@ -33,22 +35,37 @@ const linkClass =
 export function TopicStudy({
   items,
   notes,
-  lessons,
+  lessonIds,
   courseLessons = {},
   nextId,
   designTemplate,
 }: {
   items: ChecklistItem[];
   notes: Record<string, string>;
-  /** Authored lessons by subtopic id; subtopics without one just show Practice. */
-  lessons: Record<string, SubtopicNote>;
+  /** Subtopic ids that have an authored lesson; the body loads when "Read lesson" opens. */
+  lessonIds: readonly string[];
   /** The in-depth course lesson that teaches a subtopic, when there is one. */
   courseLessons?: Record<string, { href: string; title: string; done: boolean }>;
   nextId: string | null;
   designTemplate: boolean;
 }) {
+  const hasLesson = new Set(lessonIds);
   const [openNotes, setOpenNotes] = useState<string | null>(null);
   const [openLesson, setOpenLesson] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<Record<string, SubtopicNote>>({});
+  const [, start] = useTransition();
+  const open = (id: string) => {
+    setOpenLesson(openLesson === id ? null : id);
+    if (loaded[id] || openLesson === id) return;
+    start(async () => {
+      const res = await getSubtopicLessonAction(id);
+      if (!res.ok) {
+        toast.error(`${res.error}.`);
+        return;
+      }
+      setLoaded((cur) => ({ ...cur, [id]: res.note }));
+    });
+  };
 
   return (
     <SubtopicChecklist
@@ -64,10 +81,10 @@ export function TopicStudy({
               <GraduationCap className="size-3" aria-hidden /> {courseLessons[item.id]!.done ? "Course lesson (read)" : "Course lesson"}
             </Link>
           )}
-          {lessons[item.id] && (
+          {hasLesson.has(item.id) && (
             <button
               type="button"
-              onClick={() => setOpenLesson(openLesson === item.id ? null : item.id)}
+              onClick={() => open(item.id)}
               className={`${linkClass} text-primary hover:bg-primary/10`}
               aria-expanded={openLesson === item.id}
             >
@@ -84,9 +101,9 @@ export function TopicStudy({
               <NotebookPen className="size-3" aria-hidden /> {notes[item.id] ? "Notes" : "Add notes"}
             </button>
           )}
-          {lessons[item.id] && openLesson === item.id && (
+          {hasLesson.has(item.id) && openLesson === item.id && (
             <div className="-ml-7 w-[calc(100%+1.75rem)] pt-1 sm:ml-0 sm:w-full">
-              <LessonCard title={item.title} note={lessons[item.id]} />
+              {loaded[item.id] ? <LessonCard title={item.title} note={loaded[item.id]!} /> : <p className="text-sm text-muted-foreground">Loading lesson…</p>}
             </div>
           )}
           {item.done && openNotes === item.id && (

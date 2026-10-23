@@ -8,7 +8,7 @@ import { signIn } from "./helpers";
 const PAGES = [
   "/dashboard", "/learn", "/courses", "/courses/ml-engineering", "/genai-sprint", "/genai-sprint/today", "/genai-sprint/plan", "/genai-sprint/resources", "/genai-sprint/dsa", "/genai-sprint/projects", "/genai-sprint/interview", "/roadmaps", "/roadmaps/ai-engineer", "/roadmaps/ai-engineer/docs", "/roadmaps/genai-16-levels", "/roadmaps/genai-100-days", "/design", "/web", "/web/interview", "/projects", "/blogs", "/news", "/ask", "/chat", "/plan", "/calendar",
   "/quiz", "/quiz/history", "/quiz/mistakes", "/review", "/backlog", "/stats", "/targets", "/mock", "/jobs", "/jobs/tracker", "/jobs/sources", "/jobs/links",
-  "/resume", "/resume/tailor", "/practice", "/dsa", "/dsa/companies", "/dsa/companies/amazon", "/dsa/sheets", "/dsa/sheets/fraz-250", "/dsa/sheets/sql", "/dsa/sheets/system-design", "/aptitude", "/playground", "/setup", "/settings", "/settings/api-tokens",
+  "/resume", "/resume/tailor", "/practice", "/dsa", "/dsa/companies", "/dsa/companies/amazon", "/dsa/sheets", "/dsa/sheets/fraz-250", "/dsa/sheets/sql", "/dsa/sheets/system-design", "/aptitude", "/playground", "/playground/db", "/setup", "/settings", "/settings/api-tokens",
 ];
 
 /** Pages known to be broken right now are listed here with the reason, so they stay visible instead of being dropped. */

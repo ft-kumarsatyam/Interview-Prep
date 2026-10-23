@@ -3,6 +3,7 @@ import { addDays, type DateStr } from "@/core/domain/dates";
 import { DailyPlan, DayLog } from "@/core/models/day";
 import { PracticeAttempt } from "@/core/models/learning";
 import { subtopicById } from "@/core/content";
+
 import { allocateCatchUp, surplusOf, type CatchUp, type DayDebt, type DaySurplus } from "@/modules/planner/domain/catch-up";
 import { gapsOfDays } from "@/modules/planner/services/plan-log";
 import { todayIn } from "@/modules/planner/services/plan";

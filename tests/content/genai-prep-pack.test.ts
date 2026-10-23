@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { courseLessonByKey } from "@/core/courses";
+import { hasCourseLesson } from "@/core/courses";
 import { flatPackTasks, genaiPrepPlan, genaiPrepResourceById, genaiPrepMapping } from "@/core/genai-prep-pack";
 import { packPlanSchema, packResourcesFileSchema } from "@/modules/genai-prep/domain/schemas";
 
@@ -30,7 +30,7 @@ describe("data/genai-prep-pack", () => {
 
   it("maps learn tasks to real course lessons when set", () => {
     for (const m of genaiPrepMapping.tasks) {
-      if (m.courseLesson) expect(courseLessonByKey.has(m.courseLesson), m.courseLesson).toBe(true);
+      if (m.courseLesson) expect(hasCourseLesson(m.courseLesson), m.courseLesson).toBe(true);
     }
   });
 });

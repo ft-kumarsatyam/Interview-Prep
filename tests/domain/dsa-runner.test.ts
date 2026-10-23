@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { problemBySlug, testcaseBySlug } from "@/core/content";
+import { problemBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { describeFailure, edgeCaseIndices, effectiveCases, nextHint, normaliseHints, pickRevealCase, remapSubset, remapToFullIndex, summarizeCases, visibleCases } from "@/modules/dsa/domain/dsa-runner";
 
 describe("summarizeCases", () => {

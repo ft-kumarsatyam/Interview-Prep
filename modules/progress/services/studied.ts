@@ -1,5 +1,6 @@
 import { subtopicById, subtopics } from "@/core/content";
-import { courseLessonByKey } from "@/core/courses";
+
+import { courseLessonIndex, getCourseLessonMeta } from "@/core/courses";
 import { connectDb } from "@/core/db";
 import { CourseLessonProgress } from "@/core/models/course";
 import { SubtopicProgress } from "@/core/models/progress";
@@ -10,7 +11,7 @@ for (const s of subtopics) subtopicsByTopic.set(s.topicId, [...(subtopicsByTopic
 
 /** Subtopic id -> `${courseId}/${lessonId}` of the lesson that teaches it. Built once from the course content. */
 export const lessonForSubtopic: ReadonlyMap<string, string> = lessonBySubtopic(
-  [...courseLessonByKey].map(([key, l]) => ({ key, practiceRef: l.practiceRef })),
+  courseLessonIndex().map((l) => ({ key: `${l.courseId}/${l.id}`, practiceRef: l.practiceRef })),
   (id) => subtopicById.has(id),
 );
 
@@ -21,7 +22,7 @@ export async function getStudied(): Promise<Studied> {
   return studiedRefs({
     doneSubtopics: ticked.map((r) => r.subtopicId),
     doneLessons: lessons.map((r) => `${r.courseId}/${r.lessonId}`),
-    lessonRef: (key) => courseLessonByKey.get(key)?.practiceRef,
+    lessonRef: (key) => getCourseLessonMeta(key)?.practiceRef,
     topicOf: (id) => subtopicById.get(id)?.topicId,
     subtopicsOf: (topicId) => subtopicsByTopic.get(topicId) ?? [],
   });

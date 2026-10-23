@@ -47,8 +47,8 @@ describe("Postgres introspection queries", () => {
     await pg?.close();
   });
   it("describe the company dataset", async () => {
-    const cols = (await pg.exec(PG_COLUMNS_SQL, { rowMode: "array" }))[0]!.rows;
-    const fks = (await pg.exec(PG_FKS_SQL, { rowMode: "array" }))[0]!.rows;
+    const cols = (await pg.exec(PG_COLUMNS_SQL, { rowMode: "array" }))[0]!.rows as unknown[][];
+    const fks = (await pg.exec(PG_FKS_SQL, { rowMode: "array" }))[0]!.rows as unknown[][];
     const er = buildEr(erFromPostgres(cols, fks));
     expect(er).toContain("assignments {");
     expect(er).toMatch(/employees \}o--\|\| departments : "department_id"/);

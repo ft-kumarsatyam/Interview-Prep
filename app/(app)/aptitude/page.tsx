@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { aptitudeBank } from "@/core/content";
+
 import { hasQuestions } from "@/modules/aptitude/domain/aptitude";
 import { percent } from "@/modules/aptitude/domain/aptitude/progress";
 import { aptitudeCategoryById, APTITUDE_CATEGORIES, APTITUDE_TOPICS, isCategoryId, topicsIn, type AptitudeCategoryId } from "@/modules/aptitude/domain/aptitude/topics";

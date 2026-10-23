@@ -1,4 +1,6 @@
-import { interviewQuestions, interviewTracks, practiceCases, problems, systemDesign } from "@/core/content";
+import { practiceCases, problems, systemDesign } from "@/core/content";
+import { interviewQuestions, interviewTracks } from "@/core/content/web-interview";
+
 import { connectDb } from "@/core/db";
 import { fetchSafe, SafeFetchError } from "@/core/http-safe";
 import { BankQuestion } from "@/core/models/interview-bank";

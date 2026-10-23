@@ -12,6 +12,7 @@ import { DesignPractice } from "@/modules/design/components/design-practice";
 import { MermaidDiagram } from "@/modules/design/components/mermaid-diagram";
 import { Button } from "@/components/ui/button";
 import { DESIGN_CATEGORIES, designBlockById, designCaseBySlug, systemDesign, topicById } from "@/core/content";
+
 import { casePrompt, joinSections } from "@/modules/ai/domain/ask-prompt";
 import { caseRef } from "@/modules/design/domain/case-quiz";
 import { PRACTICE_MINUTES } from "@/modules/design/domain/design";

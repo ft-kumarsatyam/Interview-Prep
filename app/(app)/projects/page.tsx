@@ -6,7 +6,8 @@ import { PageHeader } from "@/components/shared/page-header";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Progress } from "@/components/ui/progress";
-import { webLessonById, webProjects, webTracks } from "@/core/content";
+import { webLessonById, webProjects, webTracks } from "@/core/content/webdev";
+
 import { WEB_AREA_INFO, WEB_AREAS, projectArea, projectProgress, type WebArea } from "@/modules/learn/domain/webdev";
 import { getProjectStates } from "@/modules/learn/services/webdev";
 

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { LogLine, RunResult } from "@/modules/dsa/lib/playground/runner";
 import { testSummary } from "@/modules/dsa/lib/playground/test-summary";
 import { cn } from "@/core/utils";
-import { parseRunError, type RunLanguage } from "@/modules/dsa/domain/run-errors";
+import { parseRunError, splitStack, type RunLanguage } from "@/modules/dsa/domain/run-errors";
 
 const LEVEL: Record<LogLine["level"], { icon: LucideIcon; text: string; row: string; label: string }> = {
   log: { icon: ChevronRight, text: "text-foreground", row: "", label: "log" },
@@ -116,11 +116,18 @@ export function ConsoleOutput({
           const meta = LEVEL[l.level];
           const Icon = meta.icon;
           const parsed = l.level === "error" && language ? parseRunError(language, l.text, source) : null;
+          const stack = l.level === "error" ? splitStack(l.text) : null;
           return (
             <div key={i} className={cn("flex gap-2 border-b border-border/40 px-3 py-1 last:border-b-0", meta.row)}>
               <Icon className={cn("mt-[3px] size-3.5 shrink-0", meta.text, l.level === "log" && "text-muted-foreground")} aria-label={meta.label} />
               <span className="min-w-0 flex-1">
-                <span className={cn("whitespace-pre-wrap [overflow-wrap:anywhere]", meta.text)}>{l.text}</span>
+                <span className={cn("whitespace-pre-wrap [overflow-wrap:anywhere]", meta.text)}>{stack && stack.frames.length ? stack.message : l.text}</span>
+                {stack && stack.frames.length > 0 && (
+                  <details className="mt-1 font-sans text-xs text-muted-foreground">
+                    <summary className="cursor-pointer select-none">Stack ({stack.frames.length})</summary>
+                    <pre className="mt-1 font-mono text-2xs whitespace-pre-wrap [overflow-wrap:anywhere]">{stack.frames.join("\n")}</pre>
+                  </details>
+                )}
                 {parsed?.hint && <span className="mt-1 block font-sans text-xs text-muted-foreground">{parsed.hint}</span>}
               </span>
               {parsed?.line && onJump && (

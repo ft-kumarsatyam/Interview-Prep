@@ -315,7 +315,7 @@ function Workspace({ draftKey, title, entry, cases, onSubmit, submitLabel = "Sub
             <Terminal className="size-3.5" /> Console
             {logs.length > 0 && <span className="font-mono text-2xs text-muted-foreground">{logs.length}</span>}
           </CompactTabsTrigger>
-          {historyRef && <CompactTabsTrigger value="history">History</CompactTabsTrigger>}
+          {historyRef && <CompactTabsTrigger value="history">Runs</CompactTabsTrigger>}
         </CompactTabsList>
       </div>
       <div className={cn("min-h-0 flex-1 p-3", split && "overflow-y-auto overscroll-contain")}>

@@ -1,4 +1,6 @@
-import { companyDataset, dsaLadders, dsaSheets, externalDsaSheets, popularDsaSheets, problemBySlug, problems } from "@/core/content";
+import { problemBySlug, problems } from "@/core/content";
+import { companyDataset, dsaLadders, dsaSheets, externalDsaSheets, popularDsaSheets } from "@/core/content/sheets";
+
 import { attachCompanyTags } from "@/modules/dsa/domain/company-tags";
 import type { ExternalQuestion, ExternalSheet } from "@/modules/dsa/domain/external-catalogue";
 import { contentSheetAsExternal, packageSheet, patternSheet, type SheetGroup } from "@/modules/dsa/domain/sheet-hub";

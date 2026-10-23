@@ -1,6 +1,7 @@
 import bankJson from "@/data/quiz-bank.json";
 import scenariosJson from "@/data/quiz-scenarios.json";
 import { problemBySlug, subtopicById } from "@/core/content";
+
 import { defaultDifficulty, quizBankSchema, type QuizQuestion } from "@/modules/quiz/lib/question";
 
 export interface BankIndex {

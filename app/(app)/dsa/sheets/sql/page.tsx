@@ -6,6 +6,7 @@ import { SqlSheetTable } from "@/modules/dsa/components/sql-sheet-table";
 import { DB_CHALLENGES } from "@/modules/dsa/domain/db-lab";
 import { sqlSheetRows } from "@/modules/dsa/domain/sql-sheet";
 import { problems } from "@/core/content";
+
 import { getProgressMap } from "@/modules/dsa/services/problems";
 
 export const metadata: Metadata = { title: "SQL sheet" };

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { designCaseBySlug } from "@/core/content";
+
 import { Design, Mastery } from "@/core/models/learning";
 import { SubtopicProgress } from "@/core/models/progress";
 import { Article, Settings } from "@/core/models/system";

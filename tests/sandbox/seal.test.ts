@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { testcaseBySlug as testcases } from "@/core/content";
+import { testcaseBySlug as testcases } from "@/core/content/testcases";
+
 import { sealCases } from "@/core/sandbox/seal-node";
 import { workerLib } from "@/core/sandbox/worker-lib-node";
 import type { TestCase } from "@/modules/dsa/domain/dsa-runner";

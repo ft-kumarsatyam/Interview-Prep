@@ -1,4 +1,5 @@
 import { news } from "@/core/content";
+
 import type { SettingsInput } from "@/modules/settings/domain/settings";
 import { DEFAULT_HOURS } from "@/modules/planner/domain/time-budget";
 import type { AppSettings } from "@/modules/settings/services/settings";

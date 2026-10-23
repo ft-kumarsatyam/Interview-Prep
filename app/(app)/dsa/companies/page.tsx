@@ -4,7 +4,7 @@ import { BackLink } from "@/components/shared/back-link";
 import { PageHeader } from "@/components/shared/page-header";
 import { CompanyGrid } from "@/modules/dsa/components/company-grid";
 import { topCompanies } from "@/modules/dsa/domain/company-tags";
-import { companyDataset } from "@/core/content";
+import { companyDataset } from "@/core/content/sheets";
 
 export const metadata: Metadata = { title: "Company-wise DSA" };
 

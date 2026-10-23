@@ -114,3 +114,14 @@ export function QuestionRunnerSkeleton({ className }: { className?: string }) {
     </div>
   );
 }
+
+/** Header plus a list of cards, for nested catalogue and GenAI routes. */
+export function PageSkeleton({ cards = 4, label = "Loading…" }: { cards?: number; label?: string }) {
+  return (
+    <LoadingRegion label={label}>
+      <HeaderSkeleton />
+      <Skeleton className="h-2 w-64 max-w-full" />
+      <RowsSkeleton count={cards} />
+    </LoadingRegion>
+  );
+}

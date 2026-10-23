@@ -12,13 +12,15 @@ import { TrackChip } from "@/components/shared/badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { practiceCases, subtopicNotes, systemDesign, topicById, topics, trackById } from "@/core/content";
+import { practiceCases, systemDesign, topicById, topics, trackById } from "@/core/content";
+import { subtopicNotes } from "@/core/content/notes";
+
 import { casePath } from "@/modules/design/domain/case-quiz";
 import { neighbours, topicProgress } from "@/modules/learn/domain/learn";
 import { learningPath } from "@/modules/learn/domain/learning-flow";
 import { planClock } from "@/core/plan-clock";
 import { getSubtopicProgressMap } from "@/modules/learn/services/learn";
-import { courseLessonByKey } from "@/core/courses";
+import { getCourseLessonMeta } from "@/core/courses";
 import { getAllDoneKeys } from "@/modules/course/services/progress";
 import { getMasteryMap } from "@/modules/progress/services/mastery";
 import { lessonForSubtopic } from "@/modules/progress/services/studied";
@@ -67,11 +69,11 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
   const courseLessons = Object.fromEntries(
     items.flatMap((it) => {
       const key = lessonForSubtopic.get(it.id);
-      const lesson = key ? courseLessonByKey.get(key) : undefined;
+      const lesson = key ? getCourseLessonMeta(key) : undefined;
       return key && lesson ? [[it.id, { href: `/courses/${lesson.courseId}/${lesson.id}`, title: lesson.title, done: doneLessons.has(key) }]] : [];
     }),
   );
-  const lessons = Object.fromEntries(items.flatMap((it) => (subtopicNotes.has(it.id) ? [[it.id, subtopicNotes.get(it.id)!]] : [])));
+  const lessonIds = items.filter((it) => subtopicNotes.has(it.id)).map((it) => it.id);
   const cases = [
     ...systemDesign.cases.filter((c) => c.topicId === topic.id).map((c) => ({ key: `hld:${c.slug}`, title: c.title, summary: c.summary, href: casePath("hld", c.slug) })),
     ...practiceCases.filter((c) => c.topicId === topic.id).map((c) => ({ key: `${c.kind}:${c.slug}`, title: c.title, summary: c.summary, href: casePath(c.kind, c.slug) })),
@@ -125,7 +127,7 @@ export default async function TopicPage({ params }: PageProps<"/learn/[topicId]"
             <CardDescription>Tick each one once you can explain it. Practice runs a short quiz on just that subtopic.</CardDescription>
           </CardHeader>
           <CardContent>
-            <TopicStudy items={items} notes={notes} lessons={lessons} courseLessons={courseLessons} nextId={nextId} designTemplate={topic.track === "hld"} />
+            <TopicStudy items={items} notes={notes} lessonIds={lessonIds} courseLessons={courseLessons} nextId={nextId} designTemplate={topic.track === "hld"} />
           </CardContent>
         </Card>
 

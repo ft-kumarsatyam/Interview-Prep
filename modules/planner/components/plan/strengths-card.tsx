@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { topicById } from "@/core/content";
+
 import { cn } from "@/core/utils";
 import type { Personalisation } from "@/modules/planner/services/intake-weights";
 import { BAR } from "./labels";

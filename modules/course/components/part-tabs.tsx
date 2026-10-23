@@ -1,25 +1,33 @@
-"use client";
+import Link from "next/link";
+import { cn } from "@/core/utils";
 
-import type { ReactNode } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-
-/** Tabs for a lesson's parts (for example HLD and LLD). The content is rendered on the server. */
-export function PartTabs({ parts }: { parts: Array<{ id: string; label: string; content: ReactNode }> }) {
-  if (parts.length === 1) return <>{parts[0].content}</>;
+/** Server tabs: only the active part is rendered by the page, so hidden mermaid trees never mount. */
+export function PartTabs({
+  parts,
+  activeId,
+  hrefFor,
+}: {
+  parts: Array<{ id: string; label: string }>;
+  activeId: string;
+  hrefFor: (id: string) => string;
+}) {
+  if (parts.length <= 1) return null;
   return (
-    <Tabs defaultValue={parts[0].id} className="gap-4">
-      <TabsList aria-label="Lesson parts">
-        {parts.map((p) => (
-          <TabsTrigger key={p.id} value={p.id}>
-            {p.label}
-          </TabsTrigger>
-        ))}
-      </TabsList>
+    <nav aria-label="Lesson parts" className="flex flex-wrap gap-1 rounded-lg bg-muted p-1">
       {parts.map((p) => (
-        <TabsContent key={p.id} value={p.id} className="space-y-4">
-          {p.content}
-        </TabsContent>
+        <Link
+          key={p.id}
+          href={hrefFor(p.id)}
+          scroll={false}
+          className={cn(
+            "inline-flex min-h-9 items-center rounded-md px-3 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+            p.id === activeId ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          aria-current={p.id === activeId ? "page" : undefined}
+        >
+          {p.label}
+        </Link>
       ))}
-    </Tabs>
+    </nav>
   );
 }

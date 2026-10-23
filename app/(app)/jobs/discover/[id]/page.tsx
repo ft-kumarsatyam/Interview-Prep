@@ -9,6 +9,7 @@ import { BackLink } from "@/components/shared/back-link";
 import { ToneBadge } from "@/components/shared/tone-badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { tierProfiles } from "@/core/content";
+
 import { scoreResume } from "@/modules/jobs/domain/ats";
 import { AGGREGATOR_LABEL, AGGREGATOR_URL, type Aggregator } from "@/modules/jobs/domain/job-postings";
 import { getPostingDetail } from "@/modules/jobs/services/job-discovery";

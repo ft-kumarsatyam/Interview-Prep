@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { interviewFiles, interviewQuestionById, interviewQuestions, webLessonById, webLessons } from "@/core/content";
+import { interviewFiles, interviewQuestionById, interviewQuestions } from "@/core/content/web-interview";
+import { webLessonById, webLessons } from "@/core/content/webdev";
+
 import { INTERVIEW_LEVELS, interviewFileSchema, interviewProblems } from "@/modules/learn/domain/web-interview";
 import { WEB_AREAS } from "@/modules/learn/domain/webdev";
 

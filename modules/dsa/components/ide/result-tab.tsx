@@ -35,6 +35,27 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: "b
   );
 }
 
+/** When a case threw, say why in plain words and offer a jump to the line in your code. */
+function ThrownAssist({ actual, language, source, onJump }: { actual: string; language?: RunLanguage; source?: string; onJump?: (line: number, column?: number) => void }) {
+  if (!language || !actual.startsWith("threw ")) return null;
+  const parsed = parseRunError(language, actual.slice(6), source);
+  if (!parsed || (!parsed.hint && !parsed.line)) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+      {parsed.line && onJump && (
+        <button
+          type="button"
+          onClick={() => onJump(parsed.line!, parsed.column)}
+          className="h-7 rounded border bg-background px-2 text-xs font-medium text-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          Go to line {parsed.line}
+        </button>
+      )}
+      {parsed.hint && <span>{parsed.hint}</span>}
+    </div>
+  );
+}
+
 export function ResultTab({
   view,
   params,
@@ -141,6 +162,7 @@ export function ResultTab({
                 <Field key={ai} label={params[ai] ?? `arg ${ai + 1}`} value={show(v)} />
               ))}
               <Field label="Output" value={result.actual} tone={c.custom ? undefined : result.pass ? "good" : "bad"} />
+              <ThrownAssist actual={result.actual} language={language} source={source} onJump={onJump} />
               {c.custom ? <p className="text-2xs text-muted-foreground">Custom input: no expected answer to compare against.</p> : <Field label="Expected" value={show(c.expected)} />}
             </>
           )}

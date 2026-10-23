@@ -7,7 +7,8 @@
  * node:vm harness the generator uses (with the problem's argTypes/returns/compare) and mismatches are printed.
  */
 import path from "node:path";
-import { testcaseBySlug } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { workerLib } from "@/core/sandbox/worker-lib-node";
 import { loadSolution } from "./dsa-testcases/vm-runner";
 

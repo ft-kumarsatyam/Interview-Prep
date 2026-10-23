@@ -1,4 +1,6 @@
-import { interviewQuestionById, webLessonById, webProjectBySlug } from "@/core/content";
+import { interviewQuestionById } from "@/core/content/web-interview";
+import { webLessonById, webProjectBySlug } from "@/core/content/webdev";
+
 import { connectDb } from "@/core/db";
 import type { DateStr } from "@/core/domain/dates";
 import { parseResumeText } from "@/modules/resume/domain/resume";

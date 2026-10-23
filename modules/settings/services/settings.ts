@@ -3,6 +3,7 @@ import { mailField, mailPrefsFrom, type MailKind, type MailPrefs } from "@/modul
 import { effectiveRoastLevel, type RoastLevel } from "@/modules/resume/domain/roast";
 import { cache } from "react";
 import { news } from "@/core/content";
+
 import { connectDb } from "@/core/db";
 import { toLocalDate } from "@/core/domain/dates";
 import { DEFAULT_SETTINGS, type PlanSettings } from "@/modules/planner/domain/plan-config";

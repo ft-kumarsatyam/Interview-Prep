@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { aptitudeBank } from "@/core/content";
+
 import { bankDifficultyCounts, bankKey, buildTopicQuestions, maxQuestions, questionIdentity } from "@/modules/aptitude/domain/aptitude";
 import { pickCaseQuestions } from "@/modules/design/domain/case-quiz";
 import { pickTopicQuestions } from "@/modules/progress/domain/mastery";

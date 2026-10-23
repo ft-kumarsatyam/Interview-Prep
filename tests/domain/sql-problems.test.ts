@@ -3,6 +3,7 @@ import path from "node:path";
 import initSqlJs, { type Database } from "sql.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { problems } from "@/core/content";
+
 import { columnNameNote, compareRows, isBlankQuery, type Row } from "@/modules/dsa/domain/db-lab";
 import { SQL_PROBLEMS, sqlProblemBySlug } from "@/modules/dsa/domain/sql-problems";
 import { parseSchema } from "@/modules/dsa/domain/sql-schema";

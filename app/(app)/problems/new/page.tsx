@@ -3,6 +3,7 @@ import { ClipboardPaste } from "lucide-react";
 import { PasteProblemForm } from "@/modules/dsa/components/problems/paste-problem-form";
 import { PageHeader } from "@/components/shared/page-header";
 import { problems } from "@/core/content";
+
 import { problemTopics } from "@/modules/progress/domain/problem-topics";
 
 export const metadata: Metadata = { title: "Paste a problem" };

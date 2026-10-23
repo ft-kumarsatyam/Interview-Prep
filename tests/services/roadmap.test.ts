@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { roadmapById } from "@/core/roadmaps";
+import { loadRoadmap } from "@/core/roadmaps";
+import type { Roadmap } from "@/modules/roadmap/domain/roadmap";
 import { DayLog } from "@/core/models/day";
 import { PracticeAttempt } from "@/core/models/learning";
 import { ProblemProgress, SubtopicProgress } from "@/core/models/progress";
@@ -10,7 +11,12 @@ import { getRoadmapState, joinRoadmap, leaveRoadmap, listRoadmaps, setChecklistI
 import { invalidateSettings } from "@/modules/settings/services/settings";
 import { resetDb, startDb, stopDb } from "./db";
 
-beforeAll(startDb);
+let R: Roadmap;
+
+beforeAll(async () => {
+  await startDb();
+  R = (await loadRoadmap("dsa"))!;
+});
 afterAll(stopDb);
 beforeEach(async () => {
   await resetDb();
@@ -18,7 +24,6 @@ beforeEach(async () => {
   invalidateSettings();
 });
 
-const R = roadmapById.get("dsa")!;
 const node = (id: string) => R.sections.flatMap((s) => s.nodes).find((n) => n.id === id)!;
 const tickAll = async (id: string) => {
   for (const i of node(id).checklist.keys()) await setChecklistItem("dsa", id, i, true);

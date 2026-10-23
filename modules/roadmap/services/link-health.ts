@@ -1,14 +1,14 @@
 import { connectDb } from "@/core/db";
 import { fetchSafe } from "@/core/http-safe";
 import { LinkHealth } from "@/core/models/link-health";
-import { roadmaps } from "@/core/roadmaps";
+import { loadAllRoadmaps } from "@/core/roadmaps";
 import { allNodes } from "@/modules/roadmap/domain/roadmap";
 import { checkUrlFor, classify, nextEntry, pickBatch, type LinkState } from "@/modules/roadmap/domain/link-health";
 
 const BATCH = 40;
 const CONCURRENCY = 4;
 
-const allUrls = (): string[] => [...new Set(roadmaps.flatMap((r) => allNodes(r).flatMap((n) => n.links.map((l) => l.url))))];
+const allUrls = async (): Promise<string[]> => [...new Set((await loadAllRoadmaps()).flatMap((r) => allNodes(r).flatMap((n) => n.links.map((l) => l.url))))];
 
 /** One GET with the SSRF checks, a small body cap and a short timeout. Returns the HTTP status, or null when the request failed. */
 async function probe(url: string): Promise<number | null> {
@@ -31,7 +31,7 @@ export interface LinkCheckResult {
 /** Checks the next batch of roadmap links and stores the outcome. Safe to call often: it only touches the stalest links. */
 export async function runLinkCheck(now = new Date()): Promise<LinkCheckResult> {
   await connectDb();
-  const urls = allUrls();
+  const urls = await allUrls();
   const rows = await LinkHealth.find({ url: { $in: urls } }, { url: 1, status: 1, failures: 1, checkedAt: 1 }).lean();
   const known = new Map(rows.map((r) => [r.url, r]));
   const batch = pickBatch(urls, known, BATCH);

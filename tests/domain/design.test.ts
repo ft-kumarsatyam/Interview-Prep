@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DESIGN_CATEGORIES, designBlockById, subtopicById, systemDesign, topicById } from "@/core/content";
+
 import {
   DESIGN_SECTION_IDS,
   PRACTICE_MINUTES,

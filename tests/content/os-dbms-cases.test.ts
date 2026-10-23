@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { courseLessonByKey } from "@/core/courses";
+import { hasCourseLesson } from "@/core/courses";
 import { practiceCases, subtopicById, topicById } from "@/core/content";
+
 import { EXPLAIN_MINUTES, EXPLAIN_RUBRIC, EXPLAIN_SECTION_IDS, explainSectionsAttempted, practiceStatus } from "@/modules/design/domain/practice-cases";
 
 const words = (n: number) => Array(n).fill("word").join(" ");
@@ -51,7 +52,7 @@ describe("data/os-dbms-cases.json", () => {
       // AI cases have no syllabus topic (GenAI content never joins the syllabus); practiceRef instead
       // names a real `courseId/lessonId`.
       expect(c.topicId).toBeUndefined();
-      expect(courseLessonByKey.has(c.practiceRef), `practiceRef must be a real course lesson, got ${c.practiceRef}`).toBe(true);
+      expect(hasCourseLesson(c.practiceRef), `practiceRef must be a real course lesson, got ${c.practiceRef}`).toBe(true);
     } else {
       const topic = topicById.get(c.topicId!);
       expect(topic, "topicId must exist in syllabus.json").toBeDefined();

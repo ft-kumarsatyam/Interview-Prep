@@ -1,4 +1,6 @@
-import { problems, testcaseBySlug } from "@/core/content";
+import { problems } from "@/core/content";
+import { testcaseBySlug } from "@/core/content/testcases";
+
 import { connectDb } from "@/core/db";
 import {
   GENERATE_PROMPT_VERSION,

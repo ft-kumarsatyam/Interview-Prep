@@ -25,7 +25,7 @@ flowchart LR
   SVC --> KV[(core/kv: Upstash or Mongo)]
   SVC --> LLM[core/llm: free providers, optional paid last resort]
   EXT[Chrome extension] -->|captures a page you click| ACT
-  DATA[data/*.json] --> LOAD[core/content.ts, courses.ts, roadmaps.ts]
+  DATA[data/*.json] --> LOAD[core/content/*, courses.ts, roadmaps.ts, genai-study.ts, genai-test.ts, genai-playbook.ts]
   LOAD --> DOM
   LOAD --> SVC
 ```
@@ -70,7 +70,7 @@ Modules are not equal. Keep imports pointing at the more stable one.
 | Tier | Modules | Rule of thumb |
 |---|---|---|
 | **Leaf** (own one feature) | `ai`, `aptitude`, `course`, `design`, `dsa`, `interview-bank`, `jobs`, `learn`, `mock`, `news`, `quiz`, `resume`, `roadmap`, `settings`, `targets` | Depend on `settings` and small, stable helpers such as `planner/services/plan#todayIn`. Never on another leaf's components if a prop or `components/shared` will do. `interview-bank` imports `ai` (drafting and extraction) and `news` (the shared Markdown renderer). |
-| **Orchestration** (stitch features together) | `planner`, `progress`, `notifications`, `practice`, `study-flow` | May read many leaves. `planner`, `progress` and `notifications` already form a knot (`progress` <-> `planner` <-> `notifications`); the architecture test freezes it so it cannot grow. `practice` (the Practice hub) is a read-only aggregator: it points at leaves and nothing may import it. `study-flow` is also read-only: it orders existing planner, course, roadmap and practice work without owning progress. |
+| **Orchestration** (stitch features together) | `planner`, `progress`, `notifications`, `practice`, `study-flow` | May read many leaves. `planner`, `progress` and `notifications` already form a knot (`progress` <-> `planner` <-> `notifications`); the architecture test freezes it so it cannot grow. `practice` (the Practice hub) is a read-only aggregator: it points at leaves and nothing may import it. `study-flow` is also read-only: it orders existing planner, course and roadmap work without owning progress. |
 | **Assistant** (read-only aggregator) | `chat` | Like `practice`: its data tools (`services/chat-tools.ts`) read other modules' services so the assistant can answer from your data; nothing may import it, and it never imports `resume`. |
 
 When you need something from an orchestration module in a leaf, prefer moving the small shared piece **down** (a pure function in the leaf's or `core`'s `domain/`) over adding an upward import.
@@ -94,8 +94,12 @@ core/
   db.ts, env.ts             Mongo connection, validated environment
   models/                   Mongoose schemas, one file per area (day, progress, learning, jobs, course, roadmap...)
   domain/                   cross-cutting pure code: dates, sampling, session policy
-  content.ts                typed loaders for data/*.json (syllabus, problems, cases...)
-  courses.ts, roadmaps.ts   loaders for courses and roadmaps (register new chapter/roadmap files here)
+  content.ts                light catalogue (problems, syllabus, design, news). Heavy trees live in content/*
+  content/                  problems, testcases, sheets, notes, webdev, web-interview, syllabus, design, news, catalog
+  courses.ts, roadmaps.ts   courseMeta/loadCourse/loadLesson and roadmapMeta/loadRoadmap (dynamic import per file)
+  genai-study.ts            studyNodeIndex + loadNodeStudy (one level file)
+  genai-test.ts             week-map + authored MCQs; testPool() loads playbook/study on first start
+  genai-playbook.ts, genai-prep-pack.ts   dated playbook and 45-day sprint (small, isolated)
   llm/, kv/, notify/        providers behind ports with fallbacks (no key still works)
   realtime/, pwa/, sandbox/ SSE events, PWA splash, in-browser code and SQL runners
   http-safe.ts              the ONLY way to fetch a user-supplied URL (SSRF checks, size and time caps)
@@ -105,7 +109,7 @@ modules/<feature>/
   services/                 I/O; the only layer that touches models
   components/               UI for this feature (presentational, plus *-section.tsx server boundaries)
   lib/                      framework-light helpers that are not rules (parsers, bank loaders, PDF/DOCX writers)
-data/                       content: syllabus.json, dsa-problems.json, quiz-bank.json, courses/, roadmaps/, notes/ ...
+data/                       content: syllabus.json, dsa-problems.json, quiz-bank.json, courses/, roadmaps/, notes/, genai-study/, genai-test/, genai-playbook/, genai-prep-pack/ ...
 scripts/                    seed, quiz-bank generation, content checks, icon generation
 tests/
   domain/                   pure rules
@@ -117,7 +121,7 @@ extension/                  plain-JS Chrome extension (reads only the page you c
 docs/                       this file, ARCHITECTURE, DESIGN, BUILD_PLAN, ROADMAP, GRAPH
 ```
 
-Modules today: `ai, aptitude, chat, course, design, dsa, jobs, learn, mock, news, notes, notifications, planner, practice, progress, quiz, resume, roadmap, settings, study-flow, targets`.
+Modules today: `ai, aptitude, chat, course, design, dsa, genai-playbook, genai-prep, genai-sprint, genai-study, genai-test, interview-bank, jobs, learn, mock, news, notes, notifications, planner, practice, progress, quiz, resume, roadmap, settings, study-flow, targets`.
 
 ---
 
@@ -180,9 +184,13 @@ Dates are `YYYY-MM-DD` in `APP_TIMEZONE` through `core/domain/dates.ts`; never `
 | Day completion (`DayLog.complete`) | stored | `recomputeDay` (`modules/planner/services/day.ts`) |
 | Subtopic done, problem solved | stored | `toggleSubtopic`, `recordSolve` (`modules/progress/services/progress.ts`) |
 | Course lesson done, roadmap link read | stored (own collections) | `modules/course`, `modules/roadmap` services |
+| GenAI study-note rating (`new` / `review` / `known`) | stored (`GenaiStudyProgress`, owner-scoped, keyed by roadmap/node/subtopic) | `modules/genai-study/services/study.ts`; notes in `data/genai-study/` loaded one level at a time |
 | GenAI sprint task done | stored (`GenaiSprintTask`, keyed by pack task id) | `modules/genai-sprint/services/progress.ts`; data in `data/genai-prep-pack/`; schemas in `modules/genai-prep` |
 | GenAI playbook task done, weekly readiness and mock scores | stored (`GenaiPlaybookTask` keyed by task id, `GenaiPlaybookReview` keyed by kind and week; owner-scoped) | `modules/genai-playbook/services/progress.ts`; schedule in `data/genai-playbook/plan.json` (generated, 157 days, Oct 26 2026 to Mar 31 2027); reading in course `genai-playbook`; roadmap `genai-interview-playbook`; credits in `data/genai-playbook/ATTRIBUTION.md` |
 | GenAI test attempts (questions, answers, grades, pass mark) | stored (`GenaiTestAttempt`, owner-scoped, slug like `weekly-w05-1`); coverage, per-level mastery, level reached and verdict are derived on read | `modules/genai-test/services/test.ts`; pure rules in `modules/genai-test/domain/*`; pool built in `core/genai-test.ts` from playbook lessons, `data/genai-test/mcq/*` and study-note questions (`data/genai-study`); AI feature `test-grade`, self-grade fallback |
+| Playground / DSA / DB Lab run history (counts and time, never code) | stored (`RunLog`, owner-scoped, newest 40 per problem) | `modules/dsa/services/code-lab.ts`, `app/(app)/playground/code-lab-actions.ts` |
+| Saved DB Lab queries and solved challenges | stored (`DbLabQuery`, `DbLabProgress`, owner-scoped); the browser keeps a local cache and imports local-only solves once | `modules/dsa/services/code-lab.ts`, `modules/dsa/domain/db-lab-progress.ts` |
+| Hidden DSA test cases | sealed on the server: expected answers replaced by a SHA-256 of their stable text, judged by hash in the sandbox (inputs stay visible; validity-style compare modes are not sealed) | `core/sandbox/seal-node.ts`, `core/sandbox/worker-lib.ts` (`__sealText`, `__sha256`, `__judgeCase`) |
 | Backlog (what is owed) | **derived** | `loadBacklogItems` |
 | "Caught up" days | **derived** | `loadCatchUp` |
 | Roadmap node done | **derived** | `nodeStatus` |
@@ -238,7 +246,7 @@ Definition of done for any change: `npm run typecheck`, `npx eslint .`, `npm tes
 
 **Add a component.** Pick the lowest row of the taxonomy that fits. Presentational? Props only. Needs data? Make it an async `*-section.tsx`. Needs state? Make a small `"use client"` island and call a Server Action.
 
-**Add a course chapter / roadmap / question bank.** Course: drop `data/courses/<course>/NN-chapter.json`, register it in `core/courses.ts`; `tests/content/courses.test.ts` validates it (and that every `practiceRef` and problem slug exists). Roadmap: `data/roadmaps/<id>.json`, register in `core/roadmaps.ts`. Quiz questions: see `scripts/quiz-bank` and `npm run quiz-bank`.
+**Add a course chapter / roadmap / study level / MCQ file.** Register a **dynamic import**, never a growing static JSON import. Course: drop `data/courses/<course>/NN-chapter.json`, add a `() => import(...)` entry in `CHAPTER_LOADERS` in `core/courses.ts`, and refresh `data/courses/lesson-index.json` (id, title, minutes, problems — no lesson bodies). Roadmap: `data/roadmaps/<id>.json` plus a row in `data/roadmaps/index.json` and a loader in `ROADMAP_LOADERS`. Study level: `data/genai-study/genai-16-levels/level-N.json`, a loader in `LEVEL_LOADERS`, and the node ids in `data/genai-study/node-index.json`. Authored MCQs: `data/genai-test/mcq/level-N.json` and the matching node keys in `data/genai-test/node-keys.json`. Quiz questions: see `scripts/quiz-bank` and `npm run quiz-bank`. Content tests check the schema and that every problem, lesson and quiz ref exists. Do not merge the four GenAI tracks (sprint, playbook, 16-level study, tests).
 
 **Add a setting.** Field on the model in `core/models/system.ts`, a typed value in `AppSettings` (`modules/settings/services/settings.ts`), a setter + zod-validated action, and UI. Document an env var in the README and `.env.example` if one is needed.
 

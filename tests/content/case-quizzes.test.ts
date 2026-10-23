@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { designCaseBySlug, practiceCaseBySlug, practiceCases, systemDesign } from "@/core/content";
+
 import { CASE_ANCHORS, MIN_QUESTIONS_PER_CASE, caseRef, parseCaseRef } from "@/modules/design/domain/case-quiz";
 import { caseBank, learnMoreFor } from "@/modules/quiz/lib/case-bank";
 import { correctAnswerKey } from "@/modules/quiz/domain/quiz";

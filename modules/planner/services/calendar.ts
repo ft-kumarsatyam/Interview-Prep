@@ -1,5 +1,6 @@
 import { problemBySlug, subtopicById } from "@/core/content";
-import { courseLessonByKey } from "@/core/courses";
+
+import { getCourseLessonMeta } from "@/core/courses";
 import { CourseLessonProgress } from "@/core/models/course";
 import { connectDb } from "@/core/db";
 import { addDays, eachDay, type DateStr } from "@/core/domain/dates";
@@ -161,7 +162,7 @@ export async function getCalendarMonth(requested?: string): Promise<CalendarMont
 async function lessonsDoneOn(date: DateStr): Promise<Array<{ key: string; title: string; href: string }>> {
   const rows = await CourseLessonProgress.find({ doneOn: date }, { courseId: 1, lessonId: 1 }).sort({ createdAt: 1 }).lean();
   return rows.flatMap((r) => {
-    const l = courseLessonByKey.get(`${r.courseId}/${r.lessonId}`);
+    const l = getCourseLessonMeta(`${r.courseId}/${r.lessonId}`);
     return l ? [{ key: `${r.courseId}/${r.lessonId}`, title: l.title, href: `/courses/${r.courseId}/${r.lessonId}` }] : [];
   });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { errorMarkers, hintFor, parseRunError } from "@/modules/dsa/domain/run-errors";
+import { errorMarkers, hintFor, parseRunError, splitStack } from "@/modules/dsa/domain/run-errors";
 
 const SRC = "const a = 1;\nconsole.log(b);\nconsole.log(a);";
 
@@ -53,5 +53,10 @@ describe("parseRunError", () => {
       { level: "error", text: "Something odd" },
     ];
     expect(errorMarkers("javascript", logs, SRC)).toEqual([{ line: 2, column: 13, message: "ReferenceError: b is not defined" }]);
+  });
+
+  it("folds stack frames away from the message", () => {
+    expect(splitStack("Uncaught Error: boom\n    at a (x:1:1)\n    at b (y:2:2)")).toEqual({ message: "Uncaught Error: boom", frames: ["at a (x:1:1)", "at b (y:2:2)"] });
+    expect(splitStack("plain")).toEqual({ message: "plain", frames: [] });
   });
 });

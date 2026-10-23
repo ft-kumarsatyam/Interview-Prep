@@ -7,6 +7,7 @@ import { ProfileMatches } from "@/modules/jobs/components/profile-matches";
 import { SearchLinks } from "@/modules/jobs/components/search-links";
 import { PageHeader } from "@/components/shared/page-header";
 import { careerDeepLinks, tierProfiles } from "@/core/content";
+
 import { discoverJobs, getJobPrefs } from "@/modules/jobs/services/job-discovery";
 import { listProfiles } from "@/modules/jobs/services/job-profiles";
 import { listJobs } from "@/modules/jobs/services/jobs";

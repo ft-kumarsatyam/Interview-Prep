@@ -4,14 +4,13 @@ import { notFound } from "next/navigation";
 import { ChevronLeft, ChevronRight, ExternalLink, Lightbulb } from "lucide-react";
 import { BackLink } from "@/components/shared/back-link";
 import { ToneBadge } from "@/components/shared/tone-badge";
-import { courseLessonByKey, courseById } from "@/core/courses";
+import { courseMeta, getCourseLessonMeta, lessonsOf, loadLesson } from "@/core/courses";
 import { problemBySlug } from "@/core/content";
 import { roadmapNodesByLesson } from "@/core/roadmaps";
 import { CodeTabs } from "@/modules/course/components/code-tabs";
 import { CourseCheck } from "@/modules/course/components/course-check";
 import { MasteryRoadmap } from "@/modules/course/components/mastery-roadmap";
 import { PartTabs } from "@/modules/course/components/part-tabs";
-import { courseNeighbours } from "@/modules/course/domain/course";
 import { getDoneLessons } from "@/modules/course/services/progress";
 import { getLessonSubtopic } from "@/modules/progress/services/lesson-confirm";
 import { MermaidDiagram } from "@/modules/design/components/mermaid-diagram";
@@ -19,42 +18,30 @@ import { ArticleMarkdown } from "@/modules/news/components/article-markdown";
 
 export async function generateMetadata({ params }: PageProps<"/courses/[courseId]/[lessonId]">): Promise<Metadata> {
   const { courseId, lessonId } = await params;
-  return { title: courseLessonByKey.get(`${decodeURIComponent(courseId)}/${decodeURIComponent(lessonId)}`)?.title ?? "Lesson" };
+  return { title: getCourseLessonMeta(`${decodeURIComponent(courseId)}/${decodeURIComponent(lessonId)}`)?.title ?? "Lesson" };
 }
 
-export default async function CourseLessonPage({ params }: PageProps<"/courses/[courseId]/[lessonId]">) {
+export default async function CourseLessonPage({ params, searchParams }: PageProps<"/courses/[courseId]/[lessonId]">) {
   const { courseId: rawCourse, lessonId: rawLesson } = await params;
+  const { part: partParam } = await searchParams;
   const courseId = decodeURIComponent(rawCourse);
   const lessonId = decodeURIComponent(rawLesson);
-  const course = courseById.get(courseId);
-  const lesson = courseLessonByKey.get(`${courseId}/${lessonId}`);
+  const lesson = await loadLesson(courseId, lessonId);
+  const course = courseMeta().find((c) => c.id === courseId);
   if (!course || !lesson) notFound();
-  const [done, subtopic] = await Promise.all([getDoneLessons(courseId), getLessonSubtopic(courseId, lessonId)]);
-  const { prev, next } = courseNeighbours(course, lessonId);
-  const nodes = roadmapNodesByLesson.get(`${courseId}/${lessonId}`) ?? [];
+  const [done, subtopic, nodes] = await Promise.all([getDoneLessons(courseId), getLessonSubtopic(courseId, lessonId), roadmapNodesByLesson(`${courseId}/${lessonId}`)]);
   const problems = lesson.problems.flatMap((s) => {
     const p = problemBySlug.get(s);
     return p ? [p] : [];
   });
-
-  const parts = lesson.parts.map((part) => ({
-    id: part.id,
-    label: part.label,
-    content: (
-      <>
-        <article className="min-w-0 rounded-xl border bg-card p-4 sm:p-5">
-          <ArticleMarkdown markdown={part.body} />
-        </article>
-        {part.diagrams.map((d) => (
-          <figure key={d.title} className="space-y-1.5">
-            <MermaidDiagram code={d.code} label={d.title} />
-            <figcaption className="text-center text-xs text-muted-foreground">{d.title}</figcaption>
-          </figure>
-        ))}
-        {part.code.length > 0 && <CodeTabs code={part.code} />}
-      </>
-    ),
-  }));
+  const index = lessonsOf(courseId);
+  const at = index.findIndex((l) => l.id === lessonId);
+  const prev = index[at - 1];
+  const next = index[at + 1];
+  const activeId = typeof partParam === "string" && lesson.parts.some((p) => p.id === partParam) ? partParam : lesson.parts[0]?.id;
+  const part = lesson.parts.find((p) => p.id === activeId) ?? lesson.parts[0];
+  if (!part) notFound();
+  const parts = lesson.parts.map((p) => ({ id: p.id, label: p.label }));
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -83,7 +70,21 @@ export default async function CourseLessonPage({ params }: PageProps<"/courses/[
         )}
       </div>
 
-      <PartTabs parts={parts} />
+      <PartTabs parts={parts} activeId={part.id} hrefFor={(id) => `/courses/${courseId}/${lessonId}${id === lesson.parts[0]?.id ? "" : `?part=${id}`}`} />
+      {part && (
+        <div className="space-y-4">
+          <article className="min-w-0 rounded-xl border bg-card p-4 sm:p-5">
+            <ArticleMarkdown markdown={part.body} />
+          </article>
+          {part.diagrams.map((d) => (
+            <figure key={d.title} className="space-y-1.5">
+              <MermaidDiagram code={d.code} label={d.title} />
+              <figcaption className="text-center text-xs text-muted-foreground">{d.title}</figcaption>
+            </figure>
+          ))}
+          {part.code.length > 0 && <CodeTabs code={part.code} />}
+        </div>
+      )}
 
       {lesson.complexity.length > 0 && (
         <section aria-label="Complexity" className="overflow-x-auto rounded-xl border bg-card">

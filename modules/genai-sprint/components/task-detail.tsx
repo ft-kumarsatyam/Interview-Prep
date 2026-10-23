@@ -3,11 +3,21 @@ import { ExternalLink } from "lucide-react";
 import type { PackTask } from "@/modules/genai-prep/domain/schemas";
 import { KindBadge } from "@/modules/genai-sprint/components/kind-badge";
 import { TaskToggle } from "@/modules/genai-sprint/components/task-toggle";
-import { linksForTask } from "@/modules/genai-sprint/services/task-links";
-import { problemBySlug } from "@/core/content";
 
-export function TaskDetail({ task, done }: { task: PackTask; done: boolean }) {
-  const links = linksForTask(task.id);
+export type TaskLinks = { course?: string; roadmap?: string; project?: string };
+export type TaskProblemLink = { slug: string; title: string; pattern?: string; href: string; external: boolean };
+
+export function TaskDetail({
+  task,
+  done,
+  links,
+  problems,
+}: {
+  task: PackTask;
+  done: boolean;
+  links: TaskLinks;
+  problems: TaskProblemLink[];
+}) {
   return (
     <article className="space-y-4 rounded-lg border bg-card p-4 sm:p-5">
       <div className="flex gap-3">
@@ -75,26 +85,22 @@ export function TaskDetail({ task, done }: { task: PackTask; done: boolean }) {
           </ul>
         </div>
       )}
-      {task.problems.length > 0 && (
+      {problems.length > 0 && (
         <div>
           <h3 className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">Problems</h3>
           <ul className="space-y-1 text-sm">
-            {task.problems.map((p) => {
-              const href = problemBySlug.has(p.slug) ? `/dsa/${p.slug}` : p.url;
-              const external = !problemBySlug.has(p.slug);
-              return (
-                <li key={p.slug}>
-                  <a
-                    href={href}
-                    {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-                    className="hover:text-primary"
-                  >
-                    {p.title}
-                    {p.pattern ? ` · ${p.pattern}` : ""}
-                  </a>
-                </li>
-              );
-            })}
+            {problems.map((p) => (
+              <li key={p.slug}>
+                <a
+                  href={p.href}
+                  {...(p.external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+                  className="hover:text-primary"
+                >
+                  {p.title}
+                  {p.pattern ? ` · ${p.pattern}` : ""}
+                </a>
+              </li>
+            ))}
           </ul>
         </div>
       )}
